@@ -31,6 +31,7 @@ from sqlalchemy import delete
 from app.core.db import AsyncSessionLocal
 from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services import journal_exit_correction
 from app.services import kis_us_inference_expiry_service as us_inference
 from app.services import protected_quantity_service as pq
 from app.services.dots_history_export import reader as dots_reader
@@ -702,6 +703,50 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
 
     [lot] = [lot for lot in lots if lot.key.symbol == scenario.symbol]
     assert lot.quantity == Decimal("10")
+
+
+async def test_journal_exit_correction_drops_the_quarantined_row(
+    db_session, seed
+) -> None:
+    """hk 5357: a quarantined sell never closes a lot journal.
+
+    The reader also keeps only authoritative sources, and only a websocket row
+    can be quarantined, so the source filter would catch this row too (the same
+    position as the ROB-1460 reader). The contract still ANDs the in-effect
+    predicate. The reconciler sell of the same symbol is kept, which shows the
+    reader is not simply empty.
+    """
+    scenario = await seed.scenario(phantom_side="sell")
+    await _quarantine(db_session, scenario)
+    sell = ExecutionLedger(
+        **ExecutionLedgerUpsert(
+            **row_kwargs(
+                symbol=scenario.symbol,
+                order_no=f"S{scenario.symbol[1:]}0001",
+                side="sell",
+                source="reconciler",
+                raw_payload_json=None,
+                fill_seq=0,
+                filled_qty="3",
+                filled_price="6000",
+                filled_notional="18000",
+                filled_at=(NOW - timedelta(hours=1)).isoformat(),
+            )
+        ).model_dump()
+    )
+    db_session.add(sell)
+    await db_session.commit()
+
+    journal = SimpleNamespace(
+        account="kis",
+        symbol=scenario.symbol,
+        instrument_type=journal_exit_correction.InstrumentType.equity_kr,
+        exit_date=NOW,
+    )
+    rows = await journal_exit_correction.load_candidates(db_session, journal)
+    await db_session.rollback()
+    assert [int(r.id) for r in rows] == [int(sell.id)]
+    assert scenario.phantom_id not in {int(r.id) for r in rows}
 
 
 async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:

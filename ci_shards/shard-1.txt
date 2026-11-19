@@ -116,6 +116,7 @@ tests/scripts/test_at_job_runner.py
 tests/scripts/test_at_pre_deploy.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
+tests/scripts/test_correct_journal_exit_fields_cli.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_diagnose_investment_reports.py

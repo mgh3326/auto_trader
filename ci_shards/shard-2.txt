@@ -307,6 +307,8 @@ tests/services/test_candidate_screening_service.py
 tests/services/test_downside_watch_service.py
 tests/services/test_fill_handoff_bundle_shadow.py
 tests/services/test_investment_snapshots_roundtrip.py
+tests/services/test_journal_exit_correction.py
+tests/services/test_journal_exit_correction_db.py
 tests/services/test_kis_mock_holdings_reconciler.py
 tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py

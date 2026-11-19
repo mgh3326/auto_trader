@@ -144,3 +144,20 @@ retrospective를 자동 기록하지 않으며, `save_trade_retrospective`는 �
 - **기타 세션**: premarket/nxt_after 주문은 20:00 KST (`nxt_carry`), off 창 접수 주문은 20:00 KST (`unknown_session`)으로 처리됩니다.
 - **해외/US**: US history 행의 `expiry_reason` 은 `us_day_order` placeholder(NXT 없음)로 기록됩니다.
 
+
+## 늦게 닫힌 매도 저널의 종료 시각·KRW 손익 보정 (hk 5357)
+
+hk 5332(PR #2468, 2026-11-19 12:26 KST 배포) 전에 대사로 부기된 매도는 저널 `exit_date` 에 부기 시각이 남고 `total_pnl_krw` 가 비어 있다(저널 243·244·245). 이후 부기는 `exit_date`=체결 시각, `total_pnl_krw`=`(체결가-진입가)×수량`(KR 주식·KRW 코인)으로 맞게 기록된다. 과거 행은 일회성 CLI `scripts/correct_journal_exit_fields.py` 로 같은 규칙에 맞춘다. 닫힌 lot 저널에는 닫은 주문 참조가 없으므로, 같은 계좌(`kis`·`toss`)·종목·수량·`exit_price` 이고 `exit_date` 이전 7일 안(그리고 lot 생성 이후)에 있는 **in-effect authoritative(reconciler/manual_import) 매도 원장 행이 정확히 하나**일 때만 짝을 짓는다. 0개·2개 이상·격리 행뿐·websocket 행뿐이면 그 저널은 `ineligible` 이고 배치 전체를 쓰지 않는다. `exit_price`·`pnl_pct`·US FX 필드는 건드리지 않고, 감사 메모(원래 값·새 값·원장 행 id·reason·actor·`decision=hk 5357`)를 `notes` 끝에 덧붙인다. 지원 범위는 `equity_kr` 의 `kis`·`toss` 계좌뿐이며 열린 저널·다른 instrument 는 거부한다. 운영 DB 실행은 운영자 승인 뒤에만 한다.
+
+```bash
+# 1) preview 먼저 — 쓰기 0. 저널마다 현재 값·새 값·근거 원장 행 id·적격 여부와 plan_digest 가 나온다
+uv run python -m scripts.correct_journal_exit_fields --database-url-env DATABASE_URL_NAME \
+  --ids 243,244,245 --reason "hk 5357: 대사로 늦게 닫힌 저널 보정" --actor <운영자>
+
+# 2) preview 가 전부 eligible 일 때만, 출력된 plan_digest 로 commit — 사실이 바뀌었으면 전체 롤백(exit 2)
+uv run python -m scripts.correct_journal_exit_fields --database-url-env DATABASE_URL_NAME \
+  --ids 243,244,245 --reason "hk 5357: 대사로 늦게 닫힌 저널 보정" --actor <운영자> \
+  --commit --expect-digest <preview 의 plan_digest>
+```
+
+`--ids` 는 쉼표로 나눈 정확한 양의 정수(최대 20개)이며 범위·패턴·중복은 DB 연결 전에 거부된다. 종료 코드: 0 preview 적격/커밋/no-op, 1 입력·DB 오류, 2 배치 거부 또는 preview 이후 사실 변경. 같은 값·감사 메모가 이미 있는 저널은 no-op 이라 두 번째 `--commit` 은 무변경이다.
