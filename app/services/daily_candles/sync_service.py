@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.core.symbol import to_db_symbol
 from app.services.daily_candles.converters import frame_to_rows
@@ -39,6 +40,18 @@ class SyncTarget:
     market: MarketKey
     symbol: str
     partition: str  # exchange / venue / market
+
+
+def _is_job_wide_database_failure(exc: BaseException) -> bool:
+    """True for database infrastructure errors that must abort the whole job.
+
+    Covers a dropped connection, a pool checkout timeout (pool exhausted) and a
+    DBAPI error whose connection was invalidated. A statement-level DBAPI error
+    on one symbol stays symbol-local.
+    """
+    if isinstance(exc, InterfaceError | OperationalError | PoolTimeoutError):
+        return True
+    return isinstance(exc, DBAPIError) and exc.connection_invalidated
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,13 +262,13 @@ class DailyCandleSyncService:
         for target in targets:
             try:
                 result = await self.sync_one(target=target, horizon_bars=horizon_bars)
-            except (InterfaceError, OperationalError):
-                # A disconnected database is job-wide infrastructure failure,
-                # not a symbol-local candle failure. Let the entrypoint report
-                # its existing status=failed result.
-                await self._repository.session.rollback()
-                raise
             except Exception as exc:
+                if _is_job_wide_database_failure(exc):
+                    # A disconnected or exhausted database is job-wide
+                    # infrastructure failure, not a symbol-local candle failure.
+                    # Let the entrypoint report its existing status=failed result.
+                    await self._repository.session.rollback()
+                    raise
                 # A symbol-local failure (for example a newly listed symbol with
                 # no history at the fallback provider) must not abort the whole
                 # market. A failed statement can leave the shared session unusable

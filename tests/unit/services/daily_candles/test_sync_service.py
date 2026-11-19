@@ -8,6 +8,7 @@ import pytest
 from app.services.daily_candles.repository import MarketKey
 from app.services.daily_candles.sync_service import (
     DailyCandleSyncService,
+    SyncOneResult,
     SyncTarget,
 )
 
@@ -626,3 +627,95 @@ async def test_database_connection_error_still_aborts_the_job(market: str) -> No
 
     repo.session.rollback.assert_awaited_once()
     repo.session.commit.assert_not_awaited()
+
+
+def _pool_timeout():
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+    return PoolTimeoutError("QueuePool limit reached", None, None)
+
+
+def _invalidated_dbapi_error():
+    from sqlalchemy.exc import DBAPIError
+
+    return DBAPIError(
+        "SELECT 1", {}, Exception("server closed"), connection_invalidated=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "infra_error",
+    [_pool_timeout, _invalidated_dbapi_error],
+    ids=["pool", "invalidated"],
+)
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_pool_and_invalidated_connection_errors_abort_the_job(
+    market: str, infra_error
+) -> None:
+    """Pool exhaustion or a dropped connection is not a symbol-local failure."""
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+    target_market = MarketKey.KR if market == "kr" else MarketKey.US
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    svc.sync_one = AsyncMock(side_effect=infra_error())
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=target_market, symbol="A", partition="KRX"),
+            SyncTarget(market=target_market, symbol="B", partition="NASD"),
+        ]
+    )
+
+    with pytest.raises(Exception) as raised:
+        await svc.sync_market_universe(market=market, horizon_bars=1)
+
+    assert type(raised.value) is type(infra_error())
+    assert svc.sync_one.await_count == 1
+    repo.session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_statement_level_dbapi_error_stays_symbol_local() -> None:
+    """A non-invalidated DBAPI error on one symbol is isolated like any other."""
+    from sqlalchemy.exc import DBAPIError
+
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    bad_row = DBAPIError("INSERT", {}, Exception("bad value"))
+    svc.sync_one = AsyncMock(
+        side_effect=[
+            bad_row,
+            SyncOneResult(
+                target=SyncTarget(market=MarketKey.KR, symbol="B", partition="KRX"),
+                rows_upserted=1,
+                fallback_used=False,
+            ),
+        ]
+    )
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=MarketKey.KR, symbol="A", partition="KRX"),
+            SyncTarget(market=MarketKey.KR, symbol="B", partition="KRX"),
+        ]
+    )
+
+    result = await svc.sync_market_universe(market="kr", horizon_bars=1)
+
+    assert result["status"] == "partial"
+    assert result["failed_symbols"] == [{"symbol": "A", "error_class": "DBAPIError"}]
+    assert result["rows_upserted"] == 1
