@@ -9,8 +9,11 @@ so callers cannot smuggle in the live host. The token is fetched via
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 import httpx
@@ -142,6 +145,39 @@ def _validate_relative_path(path: str) -> None:
         raise ValueError(f"Kiwoom request path must be a relative path; got {path!r}")
 
 
+class _PerTrRateLimiter:
+    """Space same-api-id dispatches by ``interval_seconds``; other TRs never wait."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        interval_seconds: float = constants.TR_MIN_INTERVAL_SECONDS,
+    ) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("interval_seconds must be positive")
+        self._clock = clock
+        self._sleep = sleep
+        self._interval_seconds = interval_seconds
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._last_dispatch: dict[str, float] = {}
+
+    async def wait(self, api_id: str) -> None:
+        lock = self._locks.get(api_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[api_id] = lock
+        async with lock:
+            now = self._clock()
+            last_dispatch = self._last_dispatch.get(api_id)
+            if last_dispatch is not None:
+                remaining = self._interval_seconds - (now - last_dispatch)
+                if remaining > 0:
+                    await self._sleep(remaining)
+            self._last_dispatch[api_id] = self._clock()
+
+
 class KiwoomMockClient:
     def __init__(
         self,
@@ -153,6 +189,8 @@ class KiwoomMockClient:
         timeout: float = constants.DEFAULT_TIMEOUT,
         redis_client: Any | None = None,
         redis_settings: Any | None = None,
+        rate_limit_clock: Callable[[], float] = time.monotonic,
+        rate_limit_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if str(base_url).rstrip("/") != constants.MOCK_BASE_URL:
             raise KiwoomEndpointError(
@@ -175,6 +213,10 @@ class KiwoomMockClient:
             redis_settings=redis_settings,
         )
         self._token_override: str | None = None
+        self._tr_rate_limiter = _PerTrRateLimiter(
+            clock=rate_limit_clock,
+            sleep=rate_limit_sleep,
+        )
 
     @classmethod
     def from_app_settings(cls) -> KiwoomMockClient:
@@ -220,9 +262,9 @@ class KiwoomMockClient:
         return await self._auth.get_token()
 
     async def _before_api_dispatch(self, api_id: str) -> None:
-        """Provider-specific dispatch hook; the base mock client is unrestricted."""
+        """Wait out the per-TR mock limit (process-local, same api-id only)."""
 
-        del api_id
+        await self._tr_rate_limiter.wait(api_id)
 
     async def post_api(
         self,

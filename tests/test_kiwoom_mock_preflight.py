@@ -792,7 +792,7 @@ async def test_concurrent_auth_refresh_dedupes_to_single_mint():
     from app.services.brokers.kiwoom import constants
     from app.services.brokers.kiwoom.auth import KiwoomAuthClient
 
-    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+    expires = (dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
     mint_count = 0
 
     def handler(request):  # noqa: ARG001

@@ -64,7 +64,7 @@ _KST = timezone(timedelta(hours=9))
 
 _MOCK_HOSTNAME = "mockapi.kiwoom.com"
 _LIVE_HOSTNAME = "api.kiwoom.com"
-_PACING_SECONDS = 0.1
+_PACING_SECONDS = 1.2
 _SENSITIVE_DIGIT_RUN = re.compile(r"\d{6,}")
 _TOKEN_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"bearer\s+\S+", re.IGNORECASE),

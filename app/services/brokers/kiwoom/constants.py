@@ -58,6 +58,11 @@ SUCCESS_RETURN_CODE = 0
 
 # Defaults
 DEFAULT_TIMEOUT = 5  # seconds
+
+# Mock TR limit is one request per second per api-id (11-19 pi measurement:
+# back-to-back calls raised HTTPStatusError, 1.2s spacing passed). 1.2s keeps a
+# margin over the documented 1/s.
+TR_MIN_INTERVAL_SECONDS = 1.2
 TOKEN_REFRESH_LEEWAY_SECONDS = 30  # refresh slightly before expires_dt
 
 # ROB-418 — Kiwoom REST account-read 필수 파라미터 기본값.

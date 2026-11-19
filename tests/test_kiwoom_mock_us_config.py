@@ -11,11 +11,12 @@ from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import (
     KiwoomConfigurationError,
     KiwoomEndpointError,
-)
-from app.services.brokers.kiwoom.us_client import (
-    KiwoomMockUsClient,
+    KiwoomMockClient,
     _PerTrRateLimiter,
 )
+from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
+
+INTERVAL = constants.TR_MIN_INTERVAL_SECONDS
 
 
 class FakeMonotonicClock:
@@ -49,8 +50,8 @@ async def test_mock_us_rate_limiter_spaces_same_tr_without_serializing_others() 
     await limiter.wait("ust21510")
     await limiter.wait("ust21050")
 
-    assert clock.sleeps == [0.75]
-    assert clock.now == 1.0
+    assert clock.sleeps == [pytest.approx(INTERVAL - 0.25)]
+    assert clock.now == pytest.approx(INTERVAL)
 
 
 @pytest.mark.asyncio
@@ -60,8 +61,8 @@ async def test_mock_us_rate_limiter_serializes_concurrent_same_tr() -> None:
 
     await asyncio.gather(*(limiter.wait("ust21050") for _ in range(3)))
 
-    assert clock.sleeps == [1.0, 1.0]
-    assert clock.now == 2.0
+    assert clock.sleeps == [pytest.approx(INTERVAL)] * 2
+    assert clock.now == pytest.approx(2 * INTERVAL)
 
 
 @pytest.mark.asyncio
@@ -88,8 +89,42 @@ async def test_mock_us_client_applies_rate_limit_at_api_dispatch() -> None:
 
     assert dispatch_times == [
         ("ust21050", 0.0),
-        ("ust21050", 1.0),
-        ("ust21510", 1.0),
+        ("ust21050", pytest.approx(INTERVAL)),
+        ("ust21510", pytest.approx(INTERVAL)),
+    ]
+
+
+def test_tr_interval_is_1_2_seconds() -> None:
+    assert INTERVAL == 1.2
+
+
+@pytest.mark.asyncio
+async def test_kr_client_spaces_same_api_id_by_1_2_seconds_not_others() -> None:
+    clock = FakeMonotonicClock()
+    dispatch_times: list[tuple[str, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        dispatch_times.append((request.headers[constants.HEADER_API_ID], clock.now))
+        return httpx.Response(200, json={"return_code": 0})
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="KR-AK",
+        app_secret="KR-SK",
+        account_no="KR-ACCOUNT",
+        rate_limit_clock=clock,
+        rate_limit_sleep=clock.sleep,
+    )
+    client.set_transport_for_test(httpx.MockTransport(handler), token="TKN")
+
+    for api_id in ("kt00007", "kt00007", "kt00009", "kt00007"):
+        await client.post_api(api_id=api_id, path="/api/mock", body={})
+
+    assert dispatch_times == [
+        ("kt00007", 0.0),
+        ("kt00007", pytest.approx(1.2)),
+        ("kt00009", pytest.approx(1.2)),
+        ("kt00007", pytest.approx(2.4)),
     ]
 
 

@@ -1357,13 +1357,13 @@ async def test_reads_are_serial_and_spaced(fake_ledger) -> None:
 
     await _run(reader, sleeps=sleeps)
 
-    # kt00009 once (today is among the days) + kt00007 per distinct day, 1.0 s apart.
+    # kt00009 once (today is among the days) + kt00007 per distinct day, 1.2 s apart.
     assert reader.calls == [
         ("status", None, None),
         ("detail:20261114", None, None),
         (f"detail:{TODAY}", None, None),
     ]
-    assert sleeps == [1.0, 1.0]
+    assert sleeps == [1.2, 1.2]
 
 
 async def test_paged_listing_is_followed(fake_ledger) -> None:

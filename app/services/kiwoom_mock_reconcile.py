@@ -117,8 +117,9 @@ _MARKET_GATE_ENV: Final = {
     "us": US_TERMINAL_GATE_ENV,
 }
 
-#: Mock TR limit is one request per second and per market (§3.1).
-DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
+#: Mock TR limit is one request per second and per market (§3.1); 1.2s keeps
+#: the margin measured on 11-19 (back-to-back calls were rejected).
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.2
 
 #: Page cap for one listing. A listing still continuing after this many pages is
 #: reported incomplete (``*_page_cap_reached``) instead of silently truncated.

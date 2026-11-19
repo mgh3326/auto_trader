@@ -15,39 +15,6 @@ from app.services.brokers.kiwoom.client import (
 )
 
 
-class _PerTrRateLimiter:
-    """Serialize one mock US dispatch per API ID per second."""
-
-    def __init__(
-        self,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        interval_seconds: float = 1.0,
-    ) -> None:
-        if interval_seconds <= 0:
-            raise ValueError("interval_seconds must be positive")
-        self._clock = clock
-        self._sleep = sleep
-        self._interval_seconds = interval_seconds
-        self._locks: dict[str, asyncio.Lock] = {}
-        self._last_dispatch: dict[str, float] = {}
-
-    async def wait(self, api_id: str) -> None:
-        lock = self._locks.get(api_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[api_id] = lock
-        async with lock:
-            now = self._clock()
-            last_dispatch = self._last_dispatch.get(api_id)
-            if last_dispatch is not None:
-                remaining = self._interval_seconds - (now - last_dispatch)
-                if remaining > 0:
-                    await self._sleep(remaining)
-            self._last_dispatch[api_id] = self._clock()
-
-
 class KiwoomMockUsClient(KiwoomMockClient):
     """Kiwoom mock client constructed exclusively from US credentials."""
 
@@ -72,14 +39,9 @@ class KiwoomMockUsClient(KiwoomMockClient):
             timeout=timeout,
             redis_client=redis_client,
             redis_settings=redis_settings,
+            rate_limit_clock=rate_limit_clock,
+            rate_limit_sleep=rate_limit_sleep,
         )
-        self._tr_rate_limiter = _PerTrRateLimiter(
-            clock=rate_limit_clock,
-            sleep=rate_limit_sleep,
-        )
-
-    async def _before_api_dispatch(self, api_id: str) -> None:
-        await self._tr_rate_limiter.wait(api_id)
 
     @classmethod
     def from_app_settings(cls) -> Self:

@@ -113,8 +113,14 @@ def _client_fingerprint(app_key: str) -> str:
     return hashlib.sha256(app_key.encode("utf-8")).hexdigest()[:16]
 
 
+_KST: Final = dt.timezone(dt.timedelta(hours=9))
+
+
 def _parse_expires_dt(value: str) -> dt.datetime:
-    return dt.datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=dt.UTC)
+    # The spec gives no timezone for ``expires_dt`` (e.g. "20241107083713"). KST
+    # is read as 9h earlier than UTC, so a wrong guess expires the token early
+    # (conservative) instead of keeping a dead token past its real expiry.
+    return dt.datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=_KST)
 
 
 class KiwoomAuthClient:

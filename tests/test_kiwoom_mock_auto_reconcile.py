@@ -82,7 +82,7 @@ def test_terminal_only_with_gate_runs_apply_mode(
     assert stub.calls[0]["dry_run"] is False
     assert stub.calls[0]["terminal_only"] is True
     assert stub.calls[0]["limit"] == 100
-    assert stub.calls[0]["min_request_interval_seconds"] == 1.0
+    assert stub.calls[0]["min_request_interval_seconds"] == 1.2
     capsys.readouterr()
 
 
@@ -246,3 +246,11 @@ def test_apply_and_apply_terminal_only_are_mutually_exclusive(
 
     assert excinfo.value.code == 2
     assert stub.calls == []
+
+
+def test_reconcile_and_smoke_pacing_defaults_are_1_2_seconds() -> None:
+    from app.services import kiwoom_mock_reconcile
+    from scripts import kiwoom_mock_smoke
+
+    assert kiwoom_mock_reconcile.DEFAULT_MIN_REQUEST_INTERVAL_SECONDS == 1.2
+    assert kiwoom_mock_smoke._PACING_SECONDS == 1.2
