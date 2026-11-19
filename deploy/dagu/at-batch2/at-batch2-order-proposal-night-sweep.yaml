@@ -1,0 +1,22 @@
+# 16:30·07:00 KST 월–금 야간 제안 스윕. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 스케줄은 UTC(07:30 월–금, 22:00 일–목)로 표기한다. 본문은 기존 환경 게이트를 유지한다.
+description: "order proposal night sweep (existing environment gate required)"
+schedule:
+  - "CRON_TZ=UTC 30 7 * * 1-5"
+  - "CRON_TZ=UTC 0 22 * * 0-4"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: sweep
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.order_proposal_night_sweep || rc=$?
+      exit "$rc"
+    timeout_sec: 1800
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-order-proposal-night-sweep status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-order-proposal-night-sweep status=failure"'

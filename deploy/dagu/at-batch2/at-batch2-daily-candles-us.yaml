@@ -1,0 +1,20 @@
+# 07:00 KST 화–토 일봉 동기화. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 스케줄은 UTC(전날 22:00, 월–금)로 표기한다. 실패는 journal 한 줄로 남긴다.
+description: "daily candle sync for US"
+schedule: "CRON_TZ=UTC 0 22 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: sync
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_daily_candles --market us || rc=$?
+      exit "$rc"
+    timeout_sec: 1800
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-daily-candles-us status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-daily-candles-us status=failure"'
