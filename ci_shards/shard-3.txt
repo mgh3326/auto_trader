@@ -316,6 +316,7 @@ tests/services/spike_attribution/test_detect.py
 tests/services/spike_attribution/test_materials.py
 tests/services/spike_attribution/test_precompute.py
 tests/services/strategy_sleeves/test_attribution.py
+tests/services/strategy_sleeves/test_attribution_kiwoom.py
 tests/services/strategy_sleeves/test_book.py
 tests/services/test_alpaca_paper_ledger_claim.py
 tests/services/test_alpaca_paper_ledger_service.py
