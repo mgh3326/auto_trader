@@ -254,6 +254,8 @@ class TradeNotifier:
         message_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = "Markdown",
     ) -> TelegramMethodResult:
         """Edit a Telegram message using the singleton HTTP client."""
         if not self._http_client or not self._bot_token:
@@ -268,6 +270,7 @@ class TradeNotifier:
             chat_id=chat_id,
             message_id=message_id,
             text=text,
+            parse_mode=parse_mode,
             reply_markup=reply_markup,
         )
 

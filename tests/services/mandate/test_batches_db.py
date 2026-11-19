@@ -160,10 +160,10 @@ async def scene(
 
 
 async def open_batch(
-    db, seed, sleeve, terms, plans, *, when: str, shift: int = 0
+    db, seed, sleeve, terms, plans, *, when: str, shift: int = 0, times=None
 ) -> Scene:
     """``shift`` moves the calendar by whole days, to give a second batch another target."""
-    created, open_at, close_at = timeline(when)
+    created, open_at, close_at = times or timeline(when)
     cal = calendar(
         open_at + timedelta(days=shift), close_at + timedelta(days=shift), days=3
     )
@@ -219,7 +219,12 @@ async def answer(sc: Scene, card, action: str = "approve") -> cb.Outcome:
 
 
 async def second_live_terms(
-    db, seed: MandateSeed, sleeve, terms, symbols: tuple[str, ...]
+    db,
+    seed: MandateSeed,
+    sleeve,
+    terms,
+    symbols: tuple[str, ...],
+    sector_cap: str = "36",
 ):
     """A new live clause for the same sleeve (changed sector cap, same account)."""
     request = await ms.create_terms_request(
@@ -233,7 +238,7 @@ async def second_live_terms(
             entry_max_premium_bps="30",
             per_order_cap="2000000",
             daily_cap="5000000",
-            sector_cap_pct="36",
+            sector_cap_pct=sector_cap,
             basket_drawdown_freeze_pct="25",
             account_drawdown_freeze_pct="25",
             tranche_rule=d.TRANCHE_RULE,
@@ -1034,3 +1039,304 @@ async def test_candidates_skip_a_plan_whose_account_differs_from_the_live_clause
     await db_session.commit()
     sc = await open_batch(db_session, seed, sleeve, terms, [plan], when="before")
     assert sc.cards == {} and sc.skipped == [plan.id]
+
+
+# -------------------------------------------- review round 1: I22 at card admission
+CARD = (
+    "INSERT INTO review.mandate_plan_batch_members (batch_id, plan_id, card_no, "
+    "kind, terms_id, terms_sha256, plan_sha256, nonce_digest, created_by) "
+    "SELECT :b, :p, :no, 'new_plan', t.id, t.content_sha256, :h, :n, 'op' "
+    "FROM review.mandate_terms t WHERE t.id = :t"
+)
+BATCH = (
+    "INSERT INTO review.mandate_plan_batches (realm, basket_key, market, "
+    "target_session, approval_deadline_at, expires_at, created_by) VALUES "
+    "('mock', :k, 'equity_kr', current_date + :d, now() + interval '1 hour', "
+    "now() + interval '7 hour', 'op') RETURNING id"
+)
+
+
+async def test_i22_two_batches_made_before_any_card_cannot_both_hold_one_plan(
+    db_session, seed
+) -> None:
+    """Both batch rows exist (empty) before either gets members: the second batch's
+    card 1 for the same plan is refused when the first batch has it open."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    first = (
+        await db_session.execute(sa.text(BATCH), {"k": terms.basket_key, "d": 10})
+    ).scalar_one()
+    second = (
+        await db_session.execute(sa.text(BATCH), {"k": terms.basket_key, "d": 11})
+    ).scalar_one()
+    params = {"p": plan.id, "no": 1, "h": "a" * 64, "t": terms.id}
+    await raw(
+        db_session, CARD, b=first, n=rules.nonce_digest(rules.new_nonce()), **params
+    )
+    await db_session.flush()
+    await refused(
+        db_session,
+        CARD,
+        "a plan joins only one open batch",
+        b=second,
+        n=rules.nonce_digest(rules.new_nonce()),
+        **params,
+    )
+
+
+# ------------------------------------------ review round 1: answer vs re-send race
+async def _try(session, statement: str, **params) -> str | None:
+    """Run one statement; the DB error text, or None when it went through."""
+    try:
+        await raw(session, statement, **params)
+        await session.flush()
+        return None
+    except DBAPIError as exc:
+        await session.rollback()
+        return str(exc)
+
+
+ANSWER = (
+    "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+    "terms_sha256, effective_session, batch_member_id, actor) "
+    "SELECT :p, 2, 'approved', t.id, t.content_sha256, :e, :m, 'op' "
+    "FROM review.mandate_terms t WHERE t.id = :t"
+)
+RESEND = CARD.replace(
+    "SELECT :b, :p, :no, 'new_plan', t.id, t.content_sha256, :h,",
+    "SELECT :b, :p, :no, 'new_plan', t.id, t.content_sha256, "
+    "(SELECT plan_sha256 FROM review.mandate_plan_batch_members "
+    " WHERE batch_id = :b AND plan_id = :p AND card_no = 1),",
+)
+
+
+async def test_i22_an_answer_that_commits_first_blocks_a_concurrent_resend(
+    db_session, seed
+) -> None:
+    sc = await scene(db_session, seed)
+    plan = sc.plans[0]
+    card = sc.cards[plan.id]
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        assert (
+            await _try(holder, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
+            is None
+        )  # uncommitted: holds the per-plan lock
+        task = asyncio.create_task(
+            _try(
+                other,
+                RESEND,
+                b=sc.batch_id,
+                p=plan.id,
+                no=2,
+                t=sc.terms.id,
+                n=rules.nonce_digest(rules.new_nonce()),
+            )
+        )
+        await asyncio.sleep(1.0)
+        assert not task.done(), "the resend did not wait for the answer"
+        await holder.commit()
+        message = await asyncio.wait_for(task, 15)
+    assert message is not None and "already answered" in message
+    assert (
+        await count(
+            db_session,
+            "mandate_plan_batch_members",
+            "batch_id = :b AND plan_id = :p AND card_no = 2",
+            b=sc.batch_id,
+            p=plan.id,
+        )
+        == 0
+    )
+
+
+async def test_i22_a_resend_that_commits_first_blocks_a_concurrent_answer(
+    db_session, seed
+) -> None:
+    sc = await scene(db_session, seed)
+    plan = sc.plans[0]
+    card = sc.cards[plan.id]
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        assert (
+            await _try(
+                holder,
+                RESEND,
+                b=sc.batch_id,
+                p=plan.id,
+                no=2,
+                t=sc.terms.id,
+                n=rules.nonce_digest(rules.new_nonce()),
+            )
+            is None
+        )  # uncommitted card 2
+        task = asyncio.create_task(
+            _try(other, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
+        )
+        await asyncio.sleep(1.0)
+        assert not task.done(), "the answer did not wait for the resend"
+        await holder.commit()
+        message = await asyncio.wait_for(task, 15)
+    assert message is not None and "a newer card replaced this one" in message
+    assert await events_of(db_session, plan.id) == ["proposed"]
+
+
+# ------------------------------------- review round 1: a rejection needs a live clause
+async def test_i21_a_rejection_of_a_stale_reapproval_card_writes_no_retired_event(
+    db_session, seed
+) -> None:
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)
+    live = await second_live_terms(
+        db_session, seed, sleeve, terms, (sym,), sector_cap="36"
+    )
+    sc = await open_batch(db_session, seed, sleeve, live, [plan], when="before")
+    card = sc.cards[plan.id]
+    assert card.kind == "reapproval"
+    # the sleeve version changes after the card went out
+    await second_live_terms(db_session, seed, sleeve, live, (sym,), sector_cap="37")
+    out = await answer(sc, card, "reject")
+    assert out == cb.Outcome(False, "mandate_terms_not_current")
+    assert (await events_of(db_session, plan.id))[-1] == "approved"
+    # and the database refuses the retirement for any writer, not only the callback
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+        "terms_sha256, batch_member_id, actor) "
+        "SELECT :p, 3, 'retired', t.id, t.content_sha256, :m, 'op' "
+        "FROM review.mandate_terms t WHERE t.id = :t",
+        "no longer the live clause",
+        p=plan.id,
+        t=live.id,
+        m=card.id,
+    )
+
+
+async def test_i21_a_rejection_of_a_stale_new_plan_card_is_refused_by_the_database(
+    db_session, seed
+) -> None:
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    sc = await open_batch(db_session, seed, sleeve, terms, [plan], when="before")
+    card = sc.cards[plan.id]
+    await second_live_terms(db_session, seed, sleeve, terms, (sym,))
+    assert (await answer(sc, card, "reject")).reason == "mandate_terms_not_current"
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+        "terms_sha256, batch_member_id, actor) "
+        "SELECT :p, 2, 'rejected', t.id, t.content_sha256, :m, 'op' "
+        "FROM review.mandate_terms t WHERE t.id = :t",
+        "no longer the live clause",
+        p=plan.id,
+        t=terms.id,
+        m=card.id,
+    )
+
+
+# ----------------------------------------------- review round 1: CLI on real sessions
+async def test_status_reads_an_existing_batch_through_a_real_session(
+    db_session, seed
+) -> None:
+    from scripts import mandate_batch as cli
+
+    sc = await scene(db_session, seed)
+    args = cli._parser().parse_args(
+        ["--database-url-env", "X", "status", "--batch-id", str(sc.batch_id)]
+    )
+    async with AsyncSessionLocal() as session:
+        payload = await cli._status(session, args)
+    assert payload["batch"]["id"] == sc.batch_id
+    assert payload["plans"][0]["plan_id"] == sc.plans[0].id
+    assert (
+        payload["plans"][0]["latest_card_no"] == 1
+        and payload["plans"][0]["answer"] is None
+    )
+
+
+async def test_resend_of_a_summary_only_batch_sends_the_summary(
+    db_session, seed
+) -> None:
+    from scripts import mandate_batch as cli
+
+    sc = await scene(db_session, seed, approved_first=True)  # nothing to answer
+    assert sc.cards == {}
+    sent: list[str] = []
+
+    async def sender(text, keyboard):
+        sent.append(text)
+        return True, None
+
+    args = cli._parser().parse_args(
+        [
+            "--database-url-env",
+            "X",
+            "resend",
+            "--batch-id",
+            str(sc.batch_id),
+            "--actor",
+            ACTOR,
+            "--commit",
+        ]
+    )
+    code, body = await cli.run(
+        args, session_factory=AsyncSessionLocal, sender=sender, now=datetime.now(UTC)
+    )
+    assert code == 0 and [r["message"] for r in body["sent"]] == ["summary"]
+    assert len(sent) == 1 and "승인할 변경이 없습니다" in sent[0]
+
+
+async def test_i22_an_answer_whose_transaction_began_before_the_close_is_refused_after_it(
+    db_session, seed
+) -> None:
+    """The old Reject's transaction starts before the batch closes and resumes after the
+    successor batch took an Approve: the trigger reads the wall clock, so the retired
+    event cannot override the newer approval."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)
+    live = await second_live_terms(db_session, seed, sleeve, terms, (sym,))
+    now = datetime.now(UTC)
+    old = await open_batch(
+        db_session,
+        seed,
+        sleeve,
+        live,
+        [plan],
+        when="before",
+        times=(now, now + timedelta(seconds=1), now + timedelta(seconds=5)),
+    )
+    old_card = old.cards[plan.id]
+    assert old_card.kind == "reapproval"
+    async with AsyncSessionLocal() as stale:
+        await stale.execute(
+            sa.text("SELECT 1")
+        )  # its transaction (and now()) starts here
+        await asyncio.sleep(
+            max(0.0, (old.expires - datetime.now(UTC)).total_seconds()) + 0.5
+        )
+        # the old batch is closed: a successor batch takes the plan and an Approve
+        successor = await open_batch(
+            db_session, seed, sleeve, live, [plan], when="before", shift=1
+        )
+        out = await answer(successor, successor.cards[plan.id])
+        assert out.handled and out.reason == "approved"
+        message = await _try(
+            stale,
+            "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+            "terms_sha256, batch_member_id, actor) "
+            "SELECT :p, 4, 'retired', t.id, t.content_sha256, :m, 'op' "
+            "FROM review.mandate_terms t WHERE t.id = :t",
+            p=plan.id,
+            t=live.id,
+            m=old_card.id,
+        )
+    assert message is not None and "the batch has expired" in message
+    assert await events_of(db_session, plan.id) == [
+        "proposed",
+        "approved",
+        "terms_rebound",
+    ]

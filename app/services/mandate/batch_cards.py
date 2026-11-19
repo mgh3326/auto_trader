@@ -12,12 +12,20 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from app.services.mandate.batch_rules import MARKET_ZONE
+from app.telegram_contract import (
+    TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+    split_telegram_text,
+    telegram_text_length,
+)
 
 KIND_LABELS: dict[str, str] = {
     "new_plan": "신규 계획 승인",
     "reapproval": "위임장 변경 재승인",
 }
-MAX_TEXT = 3900  # Telegram sendMessage limit is 4096 UTF-16 units
+#: Telegram counts UTF-16 code units; the margin keeps every message well inside it.
+MAX_UNITS = TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - 96
+#: Budget of one context message of the thesis and conditions (the header comes on top).
+STORY_CHUNK_UNITS = 3500
 
 
 @dataclass(frozen=True)
@@ -61,12 +69,22 @@ def _amount(value: Decimal) -> str:
     return format(value.normalize(), "f") if value != 0 else "0"
 
 
-def _clip(text: str) -> str:
-    return text if len(text) <= MAX_TEXT else text[: MAX_TEXT - 1] + "…"
+def _check(text: str) -> str:
+    """Never truncate approvable text: an oversized message is a refusal, not a clip."""
+    if telegram_text_length(text) > MAX_UNITS:
+        raise ValueError("a mandate card message exceeds the Telegram text limit")
+    return text
 
 
-def render_card(facts: CardFacts) -> str:
-    """One member card: what is approved, under which clause, and what each button does."""
+def _story_lines(facts: CardFacts) -> list[str]:
+    lines = [f"논지: {facts.thesis}"]
+    if facts.invalidation_conditions:
+        lines.append("논지 훼손 조건:")
+        lines += [f"- {c}" for c in facts.invalidation_conditions]
+    return lines
+
+
+def _card_lines(facts: CardFacts, *, story: list[str]) -> list[str]:
     new_amount = facts.planned_amount - facts.adopted_amount
     lines = [
         f"[위임장 아침 승인] {KIND_LABELS[facts.kind]}",
@@ -74,12 +92,7 @@ def render_card(facts: CardFacts) -> str:
         f"계획 금액 {_amount(facts.planned_amount)} (편입액 {_amount(facts.adopted_amount)}, "
         f"신규 매수 {_amount(new_amount)})",
         f"업종 {facts.sector_key}",
-        f"논지: {facts.thesis}",
-    ]
-    if facts.invalidation_conditions:
-        lines.append("논지 훼손 조건:")
-        lines += [f"- {c}" for c in facts.invalidation_conditions]
-    lines += [
+        *story,
         f"조항 #{facts.terms_id} 해시 {facts.terms_sha256}",
         f"계획 해시 {facts.plan_sha256}",
         f"대상 거래일 {facts.target_session.isoformat()} · 카드 {facts.card_no}",
@@ -94,7 +107,41 @@ def render_card(facts: CardFacts) -> str:
         )
     else:
         lines.append("기각하면 이 계획은 rejected 입니다.")
-    return _clip("\n".join(lines))
+    return lines
+
+
+def render_card(facts: CardFacts) -> str:
+    """The whole card in one text: what is approved, under which clause, what a button does.
+
+    Raises ``ValueError`` when it does not fit one Telegram message; use
+    ``render_card_messages`` to publish a card of any size.
+    """
+    return _check("\n".join(_card_lines(facts, story=_story_lines(facts))))
+
+
+def render_card_messages(facts: CardFacts) -> tuple[str, ...]:
+    """The messages that publish one card; the last one is the actionable card.
+
+    A card that fits one message is that message. Otherwise the thesis and the
+    invalidation conditions go out first, whole and in order, in UTF-16-bounded context
+    messages, and the actionable card (clause hash, plan hash, deadlines, what a
+    rejection does) carries the buttons. No approvable text is dropped.
+    """
+    try:
+        return (render_card(facts),)
+    except ValueError:
+        pass
+    chunks = split_telegram_text(
+        "\n".join(_story_lines(facts)), max_units=STORY_CHUNK_UNITS
+    )
+    context = tuple(
+        _check(
+            f"[위임장 아침 승인] {facts.symbol} 논지·훼손 조건 ({i}/{len(chunks)})\n{chunk}"
+        )
+        for i, chunk in enumerate(chunks, 1)
+    )
+    pointer = [f"논지와 훼손 조건은 위 메시지 {len(chunks)}개에 전문이 있습니다."]
+    return (*context, _check("\n".join(_card_lines(facts, story=pointer))))
 
 
 def render_summary(facts: SummaryFacts) -> str:
@@ -115,9 +162,9 @@ def render_summary(facts: SummaryFacts) -> str:
         lines += [f"- {sym} {idx}차" for sym, idx in facts.armed_tranches]
     else:
         lines.append("오늘 armed 회차 없음")
-    return _clip("\n".join(lines))
+    return _check("\n".join(lines))
 
 
 def render_answered(facts: CardFacts, outcome: str) -> str:
     """The card text after an answer; the buttons are removed by the caller."""
-    return _clip(f"{render_card(facts)}\n\n결과: {outcome}")
+    return _check(f"{render_card_messages(facts)[-1]}\n\n결과: {outcome}")

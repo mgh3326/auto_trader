@@ -280,8 +280,9 @@ async def test_resend_preview_and_commit(wired, monkeypatch) -> None:
     assert wired.session.log == ["reissue", "rollback"]
     wired.session.log.clear()
     code, body = await run(wired, "resend", "--batch-id", "9", *ACTOR, "--commit")
-    assert code == 0 and wired.session.log == ["reissue", "commit", "send"]
-    (text, board) = wired.sent[0]
+    assert code == 0 and wired.session.log == ["reissue", "commit", "send", "send"]
+    assert "오늘 적용 기준" in wired.sent[0][0]  # the summary goes first
+    (text, board) = wired.sent[1]
     parsed = rules.parse_callback_data(board["inline_keyboard"][0][0]["callback_data"])
     assert parsed.member_id == 200 and parsed.nonce == "C" * 22
     assert "C" * 22 not in json.dumps(body)
@@ -327,11 +328,52 @@ def test_a_summary_without_members_is_the_whole_message() -> None:
     assert "승인할 변경이 없습니다" in text and "armed 회차 없음" in text
 
 
-def test_text_stays_inside_the_telegram_limit() -> None:
-    long = facts()
-    long = cards.CardFacts(**{**long.__dict__, "thesis": "x" * 9000})
-    assert len(cards.render_card(long)) <= cards.MAX_TEXT
-    assert len(cards.render_answered(long, "승인했습니다.")) <= cards.MAX_TEXT
+ASTRAL = "\U0001d54f"  # one code point, two UTF-16 units
+
+
+def oversize_facts():
+    base = facts()
+    return cards.CardFacts(
+        **{
+            **base.__dict__,
+            "thesis": ASTRAL * 1000,
+            "invalidation_conditions": tuple(ASTRAL * 500 for _ in range(3)),
+        }
+    )
+
+
+def test_an_astral_heavy_card_is_published_whole_in_utf16_bounded_parts() -> None:
+    from app.telegram_contract import (
+        TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+        telegram_text_length,
+    )
+
+    big = oversize_facts()
+    assert len(cards.render_card.__doc__ or "") > 0
+    with pytest.raises(ValueError):
+        cards.render_card(big)  # it does not fit one message, and is never clipped
+    messages = cards.render_card_messages(big)
+    assert len(messages) >= 2
+    assert all(
+        telegram_text_length(m) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT for m in messages
+    )
+    context, action = messages[:-1], messages[-1]
+    # the thesis and the conditions arrive whole and in order
+    story = "".join(m.split("\n", 1)[1] for m in context)
+    assert story.count(ASTRAL) == 1000 + 3 * 500
+    assert story.startswith("논지: ")
+    # the actionable card keeps the clause, the plan hash and what a rejection does
+    assert "a" * 64 in action and "b" * 64 in action and "기각하면" in action
+    assert "위 메시지" in action
+    # the answered card is bounded too and keeps the same terms
+    answered = cards.render_answered(big, "승인했습니다.")
+    assert telegram_text_length(answered) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+    assert "a" * 64 in answered and "결과: 승인했습니다." in answered
+
+
+def test_a_card_that_fits_is_one_message_with_the_story_inline() -> None:
+    (only,) = cards.render_card_messages(facts())
+    assert "tight supply" in only and "capex cut" in only
 
 
 # ---------------------------------------------------------------------- the runbook
@@ -351,3 +393,167 @@ def test_every_runbook_command_parses_with_the_real_argparse() -> None:
     assert {c[2] for c in commands} == {"create", "resend", "status"}
     for argv in commands:
         cli._parser().parse_args(argv)
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_card_is_sent_as_context_parts_then_the_card_with_buttons(
+    wired, monkeypatch
+) -> None:
+    async def card_facts(db, batch, member):
+        return oversize_facts()
+
+    monkeypatch.setattr(cli, "_card_facts", card_facts)
+    code, body = await run(
+        wired,
+        "create",
+        "--realm",
+        "mock",
+        "--basket-key",
+        "basket-1",
+        *ACTOR,
+        "--commit",
+    )
+    assert code == cli.EXIT_OK
+    boards = [b for _, b in wired.sent]
+    assert boards[0] is None  # the summary
+    # per card: context parts without buttons, the last message with the buttons
+    with_buttons = [b for b in boards if b is not None]
+    assert len(with_buttons) == 2
+    assert sum(1 for b in boards if b is None) > 1 + 0
+    from app.telegram_contract import telegram_text_length
+
+    assert all(telegram_text_length(t) <= 4096 for t, _ in wired.sent)
+
+
+@pytest.mark.asyncio
+async def test_a_card_that_cannot_be_made_sendable_is_refused_before_the_commit(
+    wired, monkeypatch
+) -> None:
+    def too_big(f):
+        raise ValueError("a mandate card message exceeds the Telegram text limit")
+
+    monkeypatch.setattr(cards, "render_card_messages", too_big)
+    with pytest.raises(cli.MandateCliError):
+        await run(
+            wired,
+            "create",
+            "--realm",
+            "mock",
+            "--basket-key",
+            "basket-1",
+            *ACTOR,
+            "--commit",
+        )
+    assert "commit" not in wired.session.log and wired.sent == []
+    # and a preview refuses it too
+    with pytest.raises(cli.MandateCliError):
+        await run(
+            wired, "create", "--realm", "mock", "--basket-key", "basket-1", *ACTOR
+        )
+
+
+@pytest.mark.asyncio
+async def test_resend_with_no_unanswered_card_still_sends_the_summary(
+    wired, monkeypatch
+) -> None:
+    """A summary-only batch whose first send failed is recoverable."""
+
+    async def get_batch(db, batch_id):
+        return issued_batch().batch
+
+    async def reissue(db, *, batch_id, actor, now):
+        wired.session.log.append("reissue")
+        return []
+
+    monkeypatch.setattr(bt, "get_batch", get_batch)
+    monkeypatch.setattr(bt, "reissue_cards", reissue)
+    code, body = await run(wired, "resend", "--batch-id", "9", *ACTOR, "--commit")
+    assert code == 0
+    assert [r["message"] for r in body["sent"]] == ["summary"]
+    assert len(wired.sent) == 1 and "오늘 적용 기준" in wired.sent[0][0]
+    assert "승인할 변경이 없습니다" in wired.sent[0][0]
+
+
+@pytest.mark.asyncio
+async def test_the_default_sender_uses_the_approval_bot_token_of_the_trade_notifier(
+    monkeypatch,
+) -> None:
+    """``TELEGRAM_TOKEN`` (what TradeNotifier answers and edits with), not the unused one."""
+    from app.core.config import settings
+    from app.monitoring.trade_notifier import transports
+
+    seen: dict = {}
+
+    async def fake_send(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(ok=True, failure_code=None)
+
+    monkeypatch.setattr(transports, "send_telegram_message", fake_send)
+    monkeypatch.setattr(settings, "telegram_token", "notifier-token")
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-1")
+    sender = cli.default_sender(object())
+    assert await sender("hello", None) == (True, None)
+    assert seen["bot_token"] == "notifier-token" and seen["chat_id"] == "-1"
+    assert seen["parse_mode"] is None
+    monkeypatch.setattr(settings, "telegram_token", None)
+    assert await sender("hello", None) == (False, "telegram_not_configured")
+
+
+@pytest.mark.asyncio
+async def test_status_builds_its_payload_before_the_rollback_expires_the_objects(
+    monkeypatch,
+) -> None:
+    class Expiring:
+        """Like an ORM row after ``rollback()``: attribute reads raise."""
+
+        def __init__(self, **values):
+            self.__dict__["_values"] = values
+            self.__dict__["expired"] = False
+
+        def __getattr__(self, name):
+            if self.__dict__["expired"]:
+                raise RuntimeError("MissingGreenlet: expired attribute read")
+            return self.__dict__["_values"][name]
+
+    batch = Expiring(
+        id=9,
+        realm="mock",
+        basket_key="b",
+        market="equity_kr",
+        target_session=date(2026, 11, 23),
+        approval_deadline_at=datetime(2026, 11, 23, 0, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 11, 23, 6, 30, tzinfo=UTC),
+    )
+    first = Expiring(plan_id=10, kind="new_plan", terms_id=21)
+    latest = Expiring(card_no=2)
+    plan = Expiring(symbol="005930")
+
+    class Session:
+        async def rollback(self):
+            for row in (batch, first, latest, plan):
+                row.__dict__["expired"] = True
+
+        async def get(self, model, key):
+            return plan
+
+    async def get_batch(db, batch_id):
+        return batch
+
+    async def members(db, batch_id):
+        return [first]
+
+    async def latest_card(db, batch_id, plan_id):
+        return latest
+
+    async def answer_event(db, batch_id, plan_id):
+        return None
+
+    monkeypatch.setattr(bt, "get_batch", get_batch)
+    monkeypatch.setattr(bt, "members_of_batch", members)
+    monkeypatch.setattr(bt, "latest_card", latest_card)
+    monkeypatch.setattr(bt, "answer_event", answer_event)
+    payload = await cli._status(Session(), parse("status", "--batch-id", "9"))
+    assert payload["batch"]["id"] == 9
+    assert payload["plans"][0]["symbol"] == "005930"
+    assert payload["plans"][0]["latest_card_no"] == 2

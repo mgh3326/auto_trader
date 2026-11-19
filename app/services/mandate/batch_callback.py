@@ -41,7 +41,7 @@ from app.services.mandate import batches as bt
 from app.services.mandate import hashing
 from app.services.mandate import store as ms
 from app.services.mandate import vocabulary as v
-from app.services.mandate.locks import acquire_basket_lock
+from app.services.mandate.locks import acquire_basket_lock, acquire_sleeve_lock
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +175,15 @@ async def answer(
     *,
     now: datetime,
     calendar: rules.SessionCalendar,
+    resample: Callable[[], datetime] | None = None,
 ) -> Outcome:
-    """Check 4 and the write. Commits on success, rolls back on every refusal."""
+    """Check 4 and the write. Commits on success, rolls back on every refusal.
+
+    ``now`` is when the button arrived. ``resample`` reads the clock again once the
+    basket and sleeve locks are held: expiry and the effective session are judged at
+    that moment, so a request that waited on a lock cannot answer after the batch
+    closed (the database trigger reads the wall clock for the same reason).
+    """
     moment = now.astimezone(UTC)
     member = await bt.get_member(session, auth.parsed.member_id)
     if member is None:
@@ -187,8 +194,17 @@ async def answer(
         return Outcome(False, v.MandateRefusal.NONCE_MISMATCH.value)
     batch = await bt.get_batch(session, member.batch_id)
     assert batch is not None
-    # L2, then (inside the event writer) L3. Everything below sees committed state.
+    # L2, then L3: the sleeve lock is taken before any check, so a sleeve-version
+    # writer (which takes only that lock) cannot change the live clause between the
+    # check and the event. Everything below sees committed state.
+    plan_row = await ms.get_plan(session, member.plan_id)
+    if plan_row is None:
+        await session.rollback()
+        return Outcome(False, v.MandateRefusal.BINDING_BROKEN.value)
     await acquire_basket_lock(session, batch.realm, batch.basket_key)
+    await acquire_sleeve_lock(session, plan_row.sleeve_id)
+    if resample is not None:
+        moment = max(moment, resample().astimezone(UTC))
     refusal = await _refusal(session, member, batch, moment)
     if refusal is not None:
         await session.rollback()
@@ -289,6 +305,7 @@ async def handle_mandate_callback(
     session_factory: Callable[[], Any] | None = None,
     notifier: Any = None,
     calendar: rules.SessionCalendar | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Handle one ``mpb:`` update. Never raises; the HTTP layer answers 200 either way."""
     auth = authorize(update)
@@ -306,6 +323,7 @@ async def handle_mandate_callback(
                 auth,
                 now=now,
                 calendar=calendar or rules.ExchangeCalendar(),
+                resample=clock or (lambda: datetime.now(UTC)),
             )
     except Exception as exc:  # noqa: BLE001 - fail closed, never leak the cause
         logger.error(
@@ -355,6 +373,7 @@ async def _edit(notifier: Any, auth: Authorized, text: str) -> None:
             auth.message_id,
             text,
             reply_markup={"inline_keyboard": []},
+            parse_mode=None,  # the card was sent as plain text
         )
     except Exception:  # noqa: BLE001
         logger.warning("mandate.batch_callback.edit_failed")

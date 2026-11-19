@@ -542,10 +542,13 @@ async def edit_message_text(
     chat_id: str,
     message_id: int,
     text: str,
-    parse_mode: str = "Markdown",
+    parse_mode: str | None = "Markdown",
     reply_markup: dict[str, Any] | None = None,
 ) -> TelegramMethodResult:
-    """Edit one message with the same UTF-16 and safe-result contract."""
+    """Edit one message with the same UTF-16 and safe-result contract.
+
+    ``parse_mode=None`` sends plain text (the default stays Markdown).
+    """
     payload_chars = telegram_text_length(text)
     if payload_chars > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT:
         result = TelegramMethodResult.failed(
@@ -561,8 +564,9 @@ async def edit_message_text(
         "chat_id": chat_id,
         "message_id": message_id,
         "text": text,
-        "parse_mode": parse_mode,
     }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
 

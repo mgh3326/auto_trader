@@ -12,7 +12,9 @@ Additive: two new ``review`` tables, one index and three triggers on the T1
 
 Both tables are append-only for any role (no UPDATE, DELETE or TRUNCATE, I13).
 
-Triggers hold the rules for any writer:
+Triggers hold the rules for any writer. Expiry and the approval deadline are read from
+the wall clock (``clock_timestamp()``), never from ``now()``: a transaction that began
+before the batch closed must not be able to answer after it closed:
 
 * batch insert (I22): takes the basket lock (L2, the same key the store uses), and
   refuses a new batch while an earlier batch of the basket is still open — that is,
@@ -21,10 +23,11 @@ Triggers hold the rules for any writer:
   account reference, clause hash); the plan holds the authority state the card kind
   needs; card 1 only comes with its batch; later cards follow ``card_no`` and repeat the
   snapshot, and only while the batch is open and the plan is unanswered;
-* plan event insert carrying ``batch_member_id`` (answers): the card is the newest card
-  of its plan, the batch is not expired, the plan has no other answer (serialized by
-  an advisory lock), the event matches the card kind, the clause is the card's and
-  the sleeve's current one, and ``effective_session`` follows the approval deadline.
+* plan event insert carrying ``batch_member_id`` (answers): under the sleeve lock and
+  the per-plan card lock (the card insert takes the same one), the card is the newest
+  card of its plan, the batch is not expired, the plan has no other answer, the event
+  matches the card kind, the card's clause is the sleeve's current one (for all four
+  answer events), and ``effective_session`` follows the approval deadline.
 
 The app role gets SELECT and INSERT only (hard rule 18).
 
@@ -103,7 +106,7 @@ def _guard_ddl() -> tuple[str, ...]:
                   FROM review.mandate_plan_batches b
                  WHERE b.realm = NEW.realm
                    AND b.basket_key = NEW.basket_key
-                   AND b.expires_at > now()
+                   AND b.expires_at > clock_timestamp()
                    AND EXISTS (
                        SELECT 1
                          FROM review.mandate_plan_batch_members m
@@ -151,6 +154,10 @@ def _guard_ddl() -> tuple[str, ...]:
             END IF;
             PERFORM pg_advisory_xact_lock(hashtextextended(
                 'mandate_basket:' || b.realm || ':' || b.basket_key, 0));
+            -- the answer trigger takes this same lock (always after the basket and
+            -- sleeve locks), so a re-send and an answer of one plan cannot both pass
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+                'mandate_batch_member:' || NEW.batch_id || ':' || NEW.plan_id, 0));
             SELECT p.sleeve_id, p.account_ref,
                    review.mandate_realm(s.account_mode) AS realm, s.market
               INTO pl
@@ -185,6 +192,30 @@ def _guard_ddl() -> tuple[str, ...]:
                     RAISE EXCEPTION 'a plan joins a batch only in the batch own transaction'
                         USING ERRCODE = 'restrict_violation';
                 END IF;
+                IF EXISTS (
+                    SELECT 1
+                      FROM review.mandate_plan_batches o
+                     WHERE o.realm = b.realm
+                       AND o.basket_key = b.basket_key
+                       AND o.id <> NEW.batch_id
+                       AND o.expires_at > clock_timestamp()
+                       AND EXISTS (
+                           SELECT 1
+                             FROM review.mandate_plan_batch_members m
+                            WHERE m.batch_id = o.id AND m.card_no = 1
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                    FROM review.mandate_plan_batch_members x
+                                    JOIN review.mandate_plan_events e
+                                      ON e.batch_member_id = x.id
+                                   WHERE x.batch_id = m.batch_id
+                                     AND x.plan_id = m.plan_id
+                              )
+                       )
+                ) THEN
+                    RAISE EXCEPTION 'the basket has an open batch; a plan joins only one open batch'
+                        USING ERRCODE = 'restrict_violation';
+                END IF;
                 st := review.mandate_plan_auth_state(NEW.plan_id);
                 IF (NEW.kind = 'new_plan' AND st IS DISTINCT FROM 'proposed')
                    OR (NEW.kind = 'reapproval'
@@ -208,7 +239,7 @@ def _guard_ddl() -> tuple[str, ...]:
                     RAISE EXCEPTION 'a re-sent card keeps the snapshot of card 1'
                         USING ERRCODE = 'restrict_violation';
                 END IF;
-                IF now() >= b.expires_at THEN
+                IF clock_timestamp() >= b.expires_at THEN
                     RAISE EXCEPTION 'an expired batch takes no new card'
                         USING ERRCODE = 'restrict_violation';
                 END IF;
@@ -255,9 +286,14 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the answer names no card of this plan'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            -- the sleeve lock is the one every sleeve-version writer takes
+            -- (review.strategy_sleeves:<id>); the clause is read after it, so a
+            -- version change cannot slip in between the check and this insert
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+                'review.strategy_sleeves:' || mem.sleeve_id, 0));
             PERFORM pg_advisory_xact_lock(hashtextextended(
                 'mandate_batch_member:' || mem.batch_id || ':' || mem.plan_id, 0));
-            IF now() >= mem.expires_at THEN
+            IF clock_timestamp() >= mem.expires_at THEN
                 RAISE EXCEPTION 'the batch has expired'
                     USING ERRCODE = 'restrict_violation';
             END IF;
@@ -287,19 +323,19 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the event clause is not the card clause'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            SELECT t.id INTO cur_terms
+              FROM review.strategy_sleeve_versions v
+              JOIN review.mandate_terms t ON t.sleeve_version_id = v.id
+             WHERE v.id = (
+                   SELECT x.id FROM review.strategy_sleeve_versions x
+                    WHERE x.sleeve_id = mem.sleeve_id
+                    ORDER BY x.version DESC LIMIT 1);
+            IF cur_terms IS DISTINCT FROM mem.terms_id THEN
+                RAISE EXCEPTION 'the card clause is no longer the live clause'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             IF NEW.event IN ('approved', 'terms_rebound') THEN
-                SELECT t.id INTO cur_terms
-                  FROM review.strategy_sleeve_versions v
-                  JOIN review.mandate_terms t ON t.sleeve_version_id = v.id
-                 WHERE v.id = (
-                       SELECT x.id FROM review.strategy_sleeve_versions x
-                        WHERE x.sleeve_id = mem.sleeve_id
-                        ORDER BY x.version DESC LIMIT 1);
-                IF cur_terms IS DISTINCT FROM mem.terms_id THEN
-                    RAISE EXCEPTION 'the card clause is no longer the live clause'
-                        USING ERRCODE = 'restrict_violation';
-                END IF;
-                IF now() < mem.approval_deadline_at THEN
+                IF clock_timestamp() < mem.approval_deadline_at THEN
                     IF NEW.effective_session <> mem.target_session THEN
                         RAISE EXCEPTION 'before the deadline an approval takes effect on the target session'
                             USING ERRCODE = 'restrict_violation';

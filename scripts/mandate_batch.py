@@ -64,12 +64,17 @@ Sender = Callable[[str, dict | None], Awaitable[tuple[bool, str | None]]]
 
 
 def default_sender(client: httpx.AsyncClient) -> Sender:
-    """Send to the first chat on the approval allowlist with the approval bot."""
+    """Send to the first chat on the approval allowlist with the approval bot.
+
+    The approval bot is the one the process-wide ``TradeNotifier`` uses
+    (``TELEGRAM_TOKEN``), the same bot that answers and edits in the callback;
+    ``ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`` is not read anywhere.
+    """
 
     async def send(text: str, keyboard: dict | None) -> tuple[bool, str | None]:
         from app.monitoring.trade_notifier.transports import send_telegram_message
 
-        token = settings.ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN
+        token = settings.telegram_token
         chats = settings.order_proposals_telegram_chat_allowlist
         if not token or not chats:
             return False, "telegram_not_configured"
@@ -177,26 +182,40 @@ class Outgoing:
     plan_id: int
     card_no: int
     nonce: str
-    facts: cards.CardFacts
+    messages: tuple[str, ...]  # context messages, then the actionable card
 
 
 def _outgoing(pairs: list[tuple[bt.IssuedCard, cards.CardFacts]]) -> list[Outgoing]:
-    return [
-        Outgoing(c.member.id, c.member.plan_id, c.member.card_no, c.nonce, f)
-        for c, f in pairs
-    ]
+    """Render every message now: an unsendable card is refused before the commit."""
+    out: list[Outgoing] = []
+    for c, f in pairs:
+        try:
+            messages = cards.render_card_messages(f)
+        except ValueError as exc:
+            raise MandateCliError(
+                f"카드를 발송 가능한 크기로 만들 수 없습니다: {exc}"
+            ) from exc
+        out.append(
+            Outgoing(c.member.id, c.member.plan_id, c.member.card_no, c.nonce, messages)
+        )
+    return out
 
 
 async def _deliver_cards(
     sender: Sender, outgoing: list[Outgoing]
 ) -> list[dict[str, Any]]:
-    """One message per card. A failed send never stops the others."""
+    """Context messages, then the card with its buttons. A failed card never stops the others."""
     results: list[dict[str, Any]] = []
     for card in outgoing:
-        ok, failure = await sender(
-            cards.render_card(card.facts),
-            rules.inline_keyboard(card.member_id, card.nonce),
-        )
+        ok, failure = True, None
+        for text in card.messages[:-1]:
+            ok, failure = await sender(text, None)
+            if not ok:
+                break
+        if ok:
+            ok, failure = await sender(
+                card.messages[-1], rules.inline_keyboard(card.member_id, card.nonce)
+            )
         results.append(
             {
                 "message": "card",
@@ -207,6 +226,21 @@ async def _deliver_cards(
             }
         )
     return results
+
+
+async def _summary_text(session: AsyncSession, batch: Any, member_count: int) -> str:
+    armed = await _armed_tranches(session, batch.realm, batch.basket_key)
+    return cards.render_summary(
+        cards.SummaryFacts(
+            market=batch.market,
+            basket_key=batch.basket_key,
+            target_session=batch.target_session,
+            approval_deadline_at=batch.approval_deadline_at,
+            expires_at=batch.expires_at,
+            armed_tranches=armed,
+            member_count=member_count,
+        )
+    )
 
 
 async def _create(
@@ -227,18 +261,7 @@ async def _create(
     )
     batch = issued.batch
     facts = [(c, await _card_facts(session, batch, c.member)) for c in issued.cards]
-    armed = await _armed_tranches(session, args.realm, args.basket_key)
-    summary = cards.render_summary(
-        cards.SummaryFacts(
-            market=batch.market,
-            basket_key=batch.basket_key,
-            target_session=batch.target_session,
-            approval_deadline_at=batch.approval_deadline_at,
-            expires_at=batch.expires_at,
-            armed_tranches=armed,
-            member_count=len(issued.cards),
-        )
-    )
+    summary = await _summary_text(session, batch, len(issued.cards))
     body: dict[str, Any] = {
         "batch": {
             "id": batch.id,
@@ -255,11 +278,11 @@ async def _create(
             for s in issued.skipped
         ],
     }
+    outgoing = _outgoing(facts)  # an unsendable card is refused in a preview too
     if not args.commit:
         await session.rollback()
         body["batch"]["id"] = None
         return EXIT_OK, {"mode": "preview", **body}
-    outgoing = _outgoing(facts)
     await session.commit()  # rows first: a delivered card always names a stored digest
     assert sender is not None
     ok, failure = await sender(summary, None)
@@ -277,6 +300,11 @@ async def _resend(
     now: datetime,
     sender: Sender | None,
 ) -> tuple[int, dict[str, Any]]:
+    """Re-send the summary and a new card for every plan still unanswered.
+
+    The summary goes out even when no card is left, so a batch whose first send
+    failed (including a summary-only batch) is recoverable.
+    """
     batch = await bt.get_batch(session, args.batch_id)
     if batch is None:
         raise MandateCliError(f"batch {args.batch_id}가 없습니다")
@@ -284,17 +312,20 @@ async def _resend(
         session, batch_id=args.batch_id, actor=actor, now=now
     )
     facts = [(c, await _card_facts(session, batch, c.member)) for c in issued]
+    summary = await _summary_text(session, batch, len(issued))
     body: dict[str, Any] = {
         "batch_id": batch.id,
         "cards": [_card_row(c, f) for c, f in facts],
     }
+    outgoing = _outgoing(facts)
     if not args.commit:
         await session.rollback()
         return EXIT_OK, {"mode": "preview", **body}
-    outgoing = _outgoing(facts)
     await session.commit()
     assert sender is not None
-    results = await _deliver_cards(sender, outgoing)
+    ok, failure = await sender(summary, None)
+    results = [{"message": "summary", "sent": ok, "failure_code": failure}]
+    results += await _deliver_cards(sender, outgoing)
     body["sent"] = results
     code = EXIT_OK if all(r["sent"] for r in results) else EXIT_SEND_FAILED
     return code, {"mode": "commit", **body}
@@ -328,8 +359,7 @@ async def _status(session: AsyncSession, args: argparse.Namespace) -> dict[str, 
                 },
             }
         )
-    await session.rollback()
-    return {
+    payload = {
         "mode": "read",
         "batch": {
             "id": batch.id,
@@ -342,6 +372,8 @@ async def _status(session: AsyncSession, args: argparse.Namespace) -> dict[str, 
         },
         "plans": plans,
     }
+    await session.rollback()  # after the payload: a rollback expires every ORM object
+    return payload
 
 
 async def run(

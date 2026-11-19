@@ -125,7 +125,7 @@ def test_i22_the_batch_unique_key_and_the_open_batch_trigger() -> None:
     assert key in body
     assert "the basket has an open batch" in body
     assert body.index(key) < body.index("the basket has an open batch")
-    assert "b.expires_at > now()" in body
+    assert "b.expires_at > clock_timestamp()" in body
     assert "m.card_no = 1" in body
     assert "READ COMMITTED" in body.upper() or "read committed" in body
 
@@ -252,3 +252,80 @@ def test_the_check_texts_of_the_orm_match_the_migration() -> None:
         for c in orm.__table__.constraints:
             if c.name and str(c.name).startswith("ck_"):
                 assert _norm(str(c.sqltext)) in sql, c.name
+
+
+def _body(name: str) -> str:
+    ddl = _ddl()
+    start = ddl.index(f"CREATE OR REPLACE FUNCTION review.{name}()")
+    return ddl[start : ddl.index("$$ LANGUAGE plpgsql", start)]
+
+
+def test_i22_card_one_is_admitted_only_while_no_other_batch_of_the_basket_is_open() -> (
+    None
+):
+    body = _body("mandate_plan_batch_members_guard")
+    assert "o.id <> NEW.batch_id" in body
+    assert "a plan joins only one open batch" in body
+    # the check sits in the card-1 branch, under the basket lock, before the kind check
+    assert body.index("'mandate_basket:'") < body.index(
+        "a plan joins only one open batch"
+    )
+    assert body.index("a plan joins only one open batch") < body.index(
+        "the plan authority does not fit the card kind"
+    )
+
+
+def test_a_resend_and_an_answer_serialize_on_the_same_per_plan_lock() -> None:
+    key = "'mandate_batch_member:' || "
+    card = _body("mandate_plan_batch_members_guard")
+    answer = _body("mandate_plan_events_batch_guard")
+    assert key + "NEW.batch_id || ':' || NEW.plan_id" in card
+    assert key + "mem.batch_id || ':' || mem.plan_id" in answer
+    # taken before either side reads the other's rows
+    assert card.index(key) < card.index("SELECT max(card_no)")
+    assert answer.index(key) < answer.index(
+        "the plan of this batch is already answered"
+    )
+
+
+def test_the_answer_takes_the_sleeve_lock_and_rechecks_the_live_clause_for_every_event() -> (
+    None
+):
+    body = _body("mandate_plan_events_batch_guard")
+    sleeve = "'review.strategy_sleeves:' || mem.sleeve_id"
+    assert sleeve in body
+    assert locks_sleeve_key_matches()
+    # sleeve lock, then the per-plan lock, then the checks
+    assert body.index(sleeve) < body.index("'mandate_batch_member:'")
+    live = body.index("the card clause is no longer the live clause")
+    approval_only = body.index("IF NEW.event IN ('approved', 'terms_rebound') THEN")
+    assert live < approval_only  # not inside the approval-only branch
+    assert body.index(sleeve) < live
+
+
+def locks_sleeve_key_matches() -> bool:
+    """The SQL key is the string ``acquire_sleeve_lock`` hashes."""
+    import inspect
+
+    from app.services.strategy_sleeves import store
+
+    return 'f"review.strategy_sleeves:{int(sleeve_id)}"' in inspect.getsource(
+        store.acquire_sleeve_lock
+    )
+
+
+def test_expiry_and_the_deadline_are_read_from_the_wall_clock_not_the_transaction_start() -> (
+    None
+):
+    """A transaction that began before the close must not answer after it."""
+    for name in (
+        "mandate_plan_batches_guard",
+        "mandate_plan_batch_members_guard",
+        "mandate_plan_events_batch_guard",
+    ):
+        body = _body(name)
+        assert "now()" not in body, name
+        assert "clock_timestamp()" in body, name
+    answer = _body("mandate_plan_events_batch_guard")
+    assert "IF clock_timestamp() >= mem.expires_at THEN" in answer
+    assert "IF clock_timestamp() < mem.approval_deadline_at THEN" in answer

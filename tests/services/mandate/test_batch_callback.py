@@ -67,13 +67,17 @@ class Notifier:
     def __init__(self) -> None:
         self.answers: list[tuple[str, str | None]] = []
         self.edits: list[tuple[str, int, str, dict | None]] = []
+        self.edit_modes: list[Any] = []
 
     async def answer_callback(self, callback_query_id, text=None):
         self.answers.append((callback_query_id, text))
         return True
 
-    async def edit_message(self, chat_id, message_id, text, reply_markup=None):
+    async def edit_message(
+        self, chat_id, message_id, text, reply_markup=None, *, parse_mode="Markdown"
+    ):
         self.edits.append((chat_id, message_id, text, reply_markup))
+        self.edit_modes.append(parse_mode)
 
 
 class NoSession:
@@ -246,6 +250,7 @@ class Recorder:
         self.commits = 0
         self.rollbacks = 0
         self.locks: list[tuple[str, str]] = []
+        self.moments: list[datetime] = []
 
 
 @pytest.fixture
@@ -262,6 +267,7 @@ def world(monkeypatch):
     )
     plan = SimpleNamespace(
         id=11,
+        sleeve_id=5,
         symbol="005930",
         planned_amount=Decimal("2350000"),
         adopted_amount=Decimal("0"),
@@ -305,7 +311,12 @@ def world(monkeypatch):
     async def lock(session, realm, basket_key):
         rec.locks.append((realm, basket_key))
 
+    async def sleeve_lock(session, sleeve_id):
+        rec.locks.append(("sleeve", sleeve_id))
+
     async def refusal(session, mem, bat, moment):
+        rec.locks.append(("checks", None))
+        rec.moments.append(moment)
         return state["refusal"]
 
     async def get_plan(session, plan_id):
@@ -323,6 +334,7 @@ def world(monkeypatch):
     monkeypatch.setattr(ms, "get_plan", get_plan)
     monkeypatch.setattr(ms, "append_plan_event", append)
     monkeypatch.setattr(cb, "acquire_basket_lock", lock)
+    monkeypatch.setattr(cb, "acquire_sleeve_lock", sleeve_lock)
     monkeypatch.setattr(cb, "_refusal", refusal)
     return SimpleNamespace(
         rec=rec, state=state, member=member, session=Session(), batch=batch
@@ -365,7 +377,8 @@ async def test_new_plan_approve_before_the_deadline_is_approved_effective_on_the
     assert (event["terms_id"], event["terms_sha256"]) == (21, "a" * 64)
     assert event["actor"] == f"operator:telegram:{OPERATOR}"
     assert world.rec.commits == 1 and world.rec.rollbacks == 0
-    assert world.rec.locks == [("mock", "basket-1")]
+    # L2 then L3, both before the checks
+    assert world.rec.locks == [("mock", "basket-1"), ("sleeve", 5), ("checks", None)]
 
 
 @pytest.mark.asyncio
@@ -538,6 +551,7 @@ async def test_handle_replies_and_edits_the_card_after_the_commit(world) -> None
     assert notifier.answers == [("cbq-1", cb.ANSWER_TEXT["approved"])]
     (chat, message_id, text, markup) = notifier.edits[0]
     assert (chat, message_id, markup) == (CHAT, 55, {"inline_keyboard": []})
+    assert notifier.edit_modes == [None]  # plain text, as the card was sent
     assert "결과: 승인했습니다." in text
 
 
@@ -695,3 +709,65 @@ async def test_refusal_terms_expired(checks) -> None:
     checks.terms.expires_at = NOW
     got = await cb._refusal(checks.session, checks.member, checks.batch, NOW)
     assert got == "mandate_expired"
+
+
+# ------------------------------------------------ the edit is plain text on the wire
+@pytest.mark.asyncio
+async def test_the_card_edit_reaches_telegram_as_plain_text_with_markdown_punctuation() -> (
+    None
+):
+    """Transport level: ``parse_mode=None`` sends no ``parse_mode``; the default is unchanged."""
+    import httpx
+
+    from app.monitoring.trade_notifier.transports import edit_message_text
+
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 55, "chat": {"id": -1}}}
+        )
+
+    text = "논지: a_b*c [x](y) `z` _open"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await edit_message_text(
+            http_client=client,
+            bot_token="T",
+            chat_id="-1",
+            message_id=55,
+            text=text,
+            parse_mode=None,
+            reply_markup={"inline_keyboard": []},
+        )
+        await edit_message_text(
+            http_client=client, bot_token="T", chat_id="-1", message_id=55, text="x"
+        )
+    assert "parse_mode" not in seen[0] and seen[0]["text"] == text
+    assert seen[1]["parse_mode"] == "Markdown"
+
+
+@pytest.mark.asyncio
+async def test_the_expiry_clock_is_read_again_after_the_locks_are_held(world) -> None:
+    """A button that waited on a lock is judged at the moment it got the lock."""
+    later = NOW + timedelta(hours=9)
+    await cb.answer(
+        world.session,
+        auth_for("approve"),
+        now=BEFORE_OPEN,
+        calendar=FixedCalendar(),
+        resample=lambda: later,
+    )
+    assert world.rec.moments == [later]
+    # an older resample never moves the clock back
+    world.rec.moments.clear()
+    await cb.answer(
+        world.session,
+        auth_for("approve"),
+        now=AFTER_OPEN,
+        calendar=FixedCalendar(),
+        resample=lambda: BEFORE_OPEN,
+    )
+    assert world.rec.moments == [AFTER_OPEN]
