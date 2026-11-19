@@ -224,11 +224,16 @@ def _client_fingerprint(app_key: str) -> str:
 
 
 def _parse_expires_dt(value: str) -> float:
-    """Kiwoom returns ``YYYYMMDDHHMMSS``; convert to a POSIX timestamp."""
+    """Kiwoom returns ``YYYYMMDDHHMMSS``; convert to a POSIX timestamp.
+
+    The spec gives no timezone. KST is read as 9h earlier than UTC, so a wrong
+    guess expires the token early (conservative) rather than too late.
+    """
 
     import datetime as dt
 
-    parsed = dt.datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=dt.UTC)
+    kst = dt.timezone(dt.timedelta(hours=9))
+    parsed = dt.datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=kst)
     return parsed.timestamp()
 
 

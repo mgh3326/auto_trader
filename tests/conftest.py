@@ -1463,3 +1463,13 @@ async def binance_demo_smoke_ledger_isolation(binance_demo_reservation_lock):
     await _cleanup()
     yield
     await _cleanup()
+
+
+@pytest.fixture(autouse=True)
+def _reset_kiwoom_shared_tr_limiters():
+    """Kiwoom TR pacing is process-wide per app key; keep tests independent."""
+    from app.services.brokers.kiwoom import client as kiwoom_client
+
+    kiwoom_client._SHARED_TR_LIMITERS.clear()
+    yield
+    kiwoom_client._SHARED_TR_LIMITERS.clear()

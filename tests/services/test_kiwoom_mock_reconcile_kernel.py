@@ -1357,13 +1357,13 @@ async def test_reads_are_serial_and_spaced(fake_ledger) -> None:
 
     await _run(reader, sleeps=sleeps)
 
-    # kt00009 once (today is among the days) + kt00007 per distinct day, 1.0 s apart.
+    # kt00009 once (today is among the days) + kt00007 per distinct day, 1.2 s apart.
     assert reader.calls == [
         ("status", None, None),
         ("detail:20261114", None, None),
         (f"detail:{TODAY}", None, None),
     ]
-    assert sleeps == [1.0, 1.0]
+    assert sleeps == [1.2, 1.2]
 
 
 async def test_paged_listing_is_followed(fake_ledger) -> None:
@@ -1475,3 +1475,37 @@ async def test_no_candidates_returns_success(fake_ledger) -> None:
     assert result["success"] is True
     assert result["reconciled"] == []
     assert result["unresolved_count"] == 0
+
+
+async def test_cancel_confirmation_row_closes_the_original_not_itself(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hk 5419: 0159707 accepted, cancel confirmation row 0159729 (ori_ord 0159707)."""
+    monkeypatch.setenv(TERMINAL_GATE_ENV, "true")
+    FakeService.rows = [_row(1, broker_order_id="0159707")]
+    FakeService.total = 1
+    FakeService.cancels = {"0159707"}
+    reader = FakeReader(
+        status_pages=[_status_payload()],
+        detail_pages={
+            TODAY: [
+                _detail_payload(
+                    _detail_row(ord_no="0159707", ord_remnq="0"),
+                    _detail_row(
+                        ord_no="0159729",
+                        ori_ord="0159707",
+                        mdfy_cncl="취소확인",
+                        ord_remnq="0",
+                    ),
+                )
+            ]
+        },
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert [r["broker_order_id"] for r in result["reconciled"]] == ["0159707"]
+    assert result["reconciled"][0]["verdict"] == "cancelled"
+    assert result["unresolved_count"] == 0
+    writes = _writes(fake_ledger)
+    assert [w[:3] for w in writes] == [("mark_terminal", 1, "cancelled")]

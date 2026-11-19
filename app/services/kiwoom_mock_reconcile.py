@@ -62,6 +62,7 @@ from app.services.brokers.kiwoom.mock_reconcile import (
     evidence_from_payloads,
     return_code_ok,
     us_evidence_from_payloads,
+    us_listing_rows,
     us_past_day_evidence,
 )
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
@@ -117,8 +118,9 @@ _MARKET_GATE_ENV: Final = {
     "us": US_TERMINAL_GATE_ENV,
 }
 
-#: Mock TR limit is one request per second and per market (§3.1).
-DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.0
+#: Mock TR limit is one request per second and per market (§3.1); 1.2s keeps
+#: the margin measured on 11-19 (back-to-back calls were rejected).
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final = 1.2
 
 #: Page cap for one listing. A listing still continuing after this many pages is
 #: reported incomplete (``*_page_cap_reached``) instead of silently truncated.
@@ -739,6 +741,7 @@ async def _reconcile_orders(
         *,
         list_key: str,
         label: str,
+        allow_typo_key: bool = False,
     ) -> _Listing:
         rows: list[Any] = []
         cont_yn: str | None = None
@@ -749,7 +752,11 @@ async def _reconcile_orders(
                 return _Listing(None, f"{label}_unreadable")
             if not return_code_ok(payload):
                 return _Listing(None, f"{label}_broker_error")
-            page_rows = payload.get(list_key)
+            page_rows = (
+                us_listing_rows(payload, allow_typo_key=allow_typo_key)
+                if list_key == US_ORDER_LIST_KEY
+                else payload.get(list_key)
+            )
             continuation = payload.get("continuation")
             if not isinstance(page_rows, list) or not isinstance(continuation, Mapping):
                 return _Listing(None, f"{label}_unparseable")
@@ -791,6 +798,8 @@ async def _reconcile_orders(
             ),
             list_key=US_ORDER_LIST_KEY,
             label="us_today_orders",
+            # The spec's ust21510 example spells the key ``result_lsit``.
+            allow_typo_key=True,
         )
         us_open_listing = await _collect(
             lambda cont_yn, next_key: reader.read_open_orders(
@@ -1049,7 +1058,12 @@ async def _reconcile_orders(
         if verdict.filled_quantity is not None:
             outcome["filled_qty"] = verdict.filled_quantity
         if verdict.average_price is not None:
-            outcome["avg_price"] = verdict.average_price
+            # KR: integer won. US: exact USD ``cntr_uv`` as text (never a float).
+            outcome["avg_price"] = (
+                verdict.average_price
+                if isinstance(verdict.average_price, int)
+                else str(verdict.average_price)
+            )
 
         if verdict.verdict in _TERMINAL_VERDICTS:
             if verdict.filled_quantity and not full_mode:

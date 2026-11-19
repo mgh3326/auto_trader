@@ -1303,7 +1303,7 @@ def test_no_j3a_sql_or_reason_enum_copied() -> None:
 
 
 _KIWOOM_CLIENT_PY_SHA256: str = (
-    "7c68b03e5e99582071207ce7518891ec8d50d733a06cb356b48414f06bf15a93"
+    "02997f518d6ce3fd8efa544aae049dfb9418fa16406a0d7f276741825dbe96c7"
 )
 
 

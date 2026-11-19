@@ -1001,3 +1001,11 @@ async def test_all_four_chart_trs_route_to_the_chart_path(armed):
     for request in calls["requests"]:
         assert request.url.path == CHART_PATH
         assert request.url.host == "api.kiwoom.com"
+
+
+def test_live_expires_dt_is_read_as_kst_not_utc() -> None:
+    import datetime as dt
+
+    expected = dt.datetime(2024, 11, 6, 23, 37, 13, tzinfo=dt.UTC).timestamp()
+
+    assert live_mod._parse_expires_dt("20241107083713") == expected

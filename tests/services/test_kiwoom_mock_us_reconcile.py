@@ -263,7 +263,12 @@ async def test_us_dry_run_reports_verdicts_and_writes_nothing(
         today_pages=[
             _payload(
                 _us_row(),
-                _us_row(ord_no="000000064", cntr_qty="1", ord_remnq="0"),
+                _us_row(
+                    ord_no="000000064",
+                    cntr_qty="1",
+                    cntr_uv="155.2600",
+                    ord_remnq="0",
+                ),
                 _us_row(
                     ord_no="000000065",
                     ord_cntr_tp="12",
@@ -283,11 +288,12 @@ async def test_us_dry_run_reports_verdicts_and_writes_nothing(
         2: "deferred_fill_booking",
         3: "would_mark_cancelled",
     }
-    # A fill has no price in the US listings, but it is still a fill.
+    # The fill price (cntr_uv) rides on the verdict as exact text; US fills are
+    # still never booked here.
     filled = next(r for r in result["reconciled"] if r["ledger_id"] == 2)
     assert filled["verdict"] == "filled"
     assert filled["filled_qty"] == 1
-    assert "avg_price" not in filled
+    assert filled["avg_price"] == "155.2600"
 
 
 async def test_us_terminal_only_applies_with_the_us_gate(
@@ -331,6 +337,7 @@ async def test_us_terminal_only_defers_a_settled_partial_instead_of_closing_it(
                     ord_no="000000064",
                     ord_qty="10",
                     cntr_qty="4",
+                    cntr_uv="155.2600",
                     ord_remnq="0",
                     ord_stat="Expired",
                 )
@@ -453,6 +460,7 @@ def test_us_evidence_maps_the_observed_row_fields() -> None:
                 stk_cd="nvda",
                 ord_qty="3",
                 cntr_qty="1",
+                cntr_uv="155.2600",
                 ord_remnq="2",
                 ord_stat="접수",
             )
@@ -466,7 +474,7 @@ def test_us_evidence_maps_the_observed_row_fields() -> None:
     assert row.ordered_quantity == 3
     assert row.filled_quantity == 1
     assert row.remaining_quantity == 2
-    assert row.average_price is None  # the US listings carry no fill price
+    assert row.average_price == Decimal("155.2600")  # cntr_uv, exact
     assert row.marker is None
 
 
@@ -489,6 +497,7 @@ def _classify(
     cancel_row: bool = False,
     own_cancel: bool = False,
     require_fill_price: bool = False,
+    fill_price: str | None = "155.2600",
 ):
     overrides: dict[str, Any] = {
         "ord_qty": str(ordered),
@@ -497,6 +506,8 @@ def _classify(
     }
     if filled is not None:
         overrides["cntr_qty"] = str(filled)
+        if fill_price is not None:
+            overrides["cntr_uv"] = fill_price
     if remaining is not None:
         overrides["ord_remnq"] = str(remaining)
     return classify_verdict(
@@ -549,11 +560,221 @@ def test_us_pending_and_partial() -> None:
     assert partial.filled_quantity == 1
 
 
-def test_us_fill_price_is_required_only_when_the_caller_books() -> None:
-    booked = _classify(filled=1, remaining=0, require_fill_price=True)
-    assert booked.verdict == "unknown"
-    assert booked.reason == "fill_price_unparseable"
+def test_us_fill_verdict_carries_the_exact_cntr_uv_price() -> None:
+    filled = _classify(filled=1, remaining=0, fill_price="155.2600")
+    assert filled.verdict == "filled"
+    assert filled.average_price == Decimal("155.2600")
 
-    reported = _classify(filled=1, remaining=0, require_fill_price=False)
-    assert reported.verdict == "filled"
-    assert reported.average_price is None
+    partial = _classify(ordered=3, filled=1, remaining=2, fill_price="1,155.5")
+    assert partial.verdict == "partial"
+    assert partial.average_price == Decimal("1155.5")
+
+
+@pytest.mark.parametrize("bad_price", [None, "", "0.0000", "-1.0", "abc", "NaN"])
+def test_us_fill_without_a_usable_price_makes_the_evidence_incomplete(
+    bad_price: str | None,
+) -> None:
+    row = _us_row(cntr_qty="1", ord_remnq="0")
+    if bad_price is not None:
+        row["cntr_uv"] = bad_price
+
+    for today, open_ in (
+        (_payload(row), _payload()),
+        (_payload(), _payload(row)),
+    ):
+        evidence = us_evidence_from_payloads(today_orders=today, open_orders=open_)
+        assert evidence.complete is False
+        assert evidence.reason == "us_fill_price_incomplete"
+        verdict = classify_verdict(
+            ledger=LedgerOrder(
+                client_order_id="kwoomus-1",
+                status="accepted",
+                broker_order_id="000000063",
+                quantity=1,
+                symbol="NVDA",
+            ),
+            evidence=evidence,
+            own_cancel_acknowledged=False,
+        )
+        assert verdict.verdict == "unknown"
+        assert verdict.reason == "us_fill_price_incomplete"
+
+
+def test_us_no_fill_row_needs_no_price() -> None:
+    evidence = us_evidence_from_payloads(
+        today_orders=_payload(_us_row(cntr_qty="0", cntr_uv="0.0000")),
+        open_orders=_payload(),
+    )
+    assert evidence.complete is True
+    assert evidence.rows[0].average_price is None
+
+
+# --- hk 5419: confirmation rows, cntr_uv, result_lsit ----------------------
+
+
+async def test_us_cancel_confirmation_row_closes_the_original_only(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    fake_service.rows = [_row(1, broker_order_id="000000063")]
+    fake_service.total = 1
+    fake_service.cancels = {"000000063"}
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(ord_remnq="0"),
+                _us_row(
+                    ord_no="000000064",
+                    orig_ord_no="000000063",
+                    ord_cntr_tp="12",
+                    ord_stat="취소완료",
+                    ord_remnq="0",
+                ),
+            )
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert [r["broker_order_id"] for r in result["reconciled"]] == ["000000063"]
+    assert result["reconciled"][0]["action"] == "mark_cancelled"
+    assert result["unresolved_count"] == 0
+    marks = [c for c in fake_service.sink if c[0] == "mark_terminal"]
+    assert [m[2:4] for m in marks] == [(1, "cancelled")]
+
+
+async def test_us_fill_is_reported_with_cntr_uv_but_never_booked(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    fake_service.rows = [_row(1, broker_order_id="000000064")]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(
+                    ord_no="000000064",
+                    cntr_qty="1",
+                    cntr_uv="155.2600",
+                    ord_remnq="0",
+                )
+            )
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == "deferred_fill_booking"
+    assert outcome["avg_price"] == "155.2600"
+    assert not [c for c in fake_service.sink if c[0] == "mark_terminal"]
+
+
+async def test_us_fill_without_a_price_leaves_the_row_unclassified(
+    fake_service: type[FakeService],
+) -> None:
+    fake_service.rows = [_row(1, broker_order_id="000000064")]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(
+                    ord_no="000000064", cntr_qty="1", cntr_uv="0.0000", ord_remnq="0"
+                )
+            )
+        ]
+    )
+
+    result = await _run(reader)
+
+    outcome = result["reconciled"][0]
+    assert outcome["verdict"] == "unknown"
+    assert outcome["reason"] == "us_fill_price_incomplete"
+    assert result["unresolved_count"] == 1
+
+
+async def test_us_invalid_order_closes_as_rejected(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    fake_service.rows = [_row(1, broker_order_id="000000064")]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(_us_row(ord_no="000000064", ord_stat="무효주문", ord_remnq="0"))
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert result["reconciled"][0]["action"] == "mark_rejected"
+
+
+def _typo_payload(*rows: dict[str, Any]) -> dict[str, Any]:
+    payload = _payload(*rows)
+    payload["result_lsit"] = payload.pop("result_list")
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("label", "payload", "expect_verdict"),
+    [
+        ("canonical", _payload(_us_row()), "pending"),
+        ("typo", _typo_payload(_us_row()), "pending"),
+        (
+            "both",
+            {**_payload(_us_row()), "result_lsit": [_us_row()]},
+            "unknown",
+        ),
+        (
+            "neither",
+            {"return_code": 0, "continuation": _continuation()},
+            "unknown",
+        ),
+    ],
+)
+async def test_us_ust21510_list_key_shapes(
+    fake_service: type[FakeService],
+    label: str,
+    payload: dict[str, Any],
+    expect_verdict: str,
+) -> None:
+    fake_service.rows = [_row(1, broker_order_id="000000063")]
+    fake_service.total = 1
+    reader = FakeUsReader(today_pages=[payload])
+
+    result = await _run(reader)
+
+    outcome = result["reconciled"][0]
+    assert outcome["verdict"] == expect_verdict, label
+    if expect_verdict == "unknown":
+        assert outcome["reason"] == "us_today_orders_unparseable"
+        assert result["unresolved_count"] == 1
+
+
+async def test_us_invalid_cancel_request_never_closes_the_original(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    fake_service.rows = [_row(1, broker_order_id="000000063")]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(ord_remnq="0"),
+                _us_row(
+                    ord_no="000000064",
+                    orig_ord_no="000000063",
+                    ord_cntr_tp="12",
+                    ord_stat="무효주문",
+                    ord_remnq="0",
+                ),
+            )
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert result["reconciled"][0]["verdict"] == "unknown"
+    assert result["reconciled"][0]["reason"] == "child_operation_unresolved"
+    assert not [c for c in fake_service.sink if c[0] == "mark_terminal"]

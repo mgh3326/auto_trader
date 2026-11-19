@@ -130,7 +130,8 @@ def mock_token_transport() -> httpx.MockTransport:
             json={
                 "token": f"tkn-{calls['count']}",
                 "expires_dt": (
-                    dt.datetime.now(dt.UTC) + dt.timedelta(seconds=300)
+                    dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+                    + dt.timedelta(seconds=300)
                 ).strftime("%Y%m%d%H%M%S"),
                 "token_type": "Bearer",
                 "return_code": 0,
@@ -287,3 +288,12 @@ async def test_concurrent_failed_token_reissue_mints_once(monkeypatch, fake_redi
 
     assert tokens == ["fresh-token"] * len(managers)
     assert issue_calls == 1
+
+
+def test_expires_dt_is_read_as_kst_not_utc() -> None:
+    from app.services.brokers.kiwoom.auth import _parse_expires_dt
+
+    parsed = _parse_expires_dt("20241107083713")
+
+    assert parsed == dt.datetime(2024, 11, 6, 23, 37, 13, tzinfo=dt.UTC)
+    assert parsed.utcoffset() == dt.timedelta(hours=9)

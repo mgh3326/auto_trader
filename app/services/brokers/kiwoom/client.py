@@ -9,8 +9,13 @@ so callers cannot smuggle in the live host. The token is fetched via
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import re
+import time
+import weakref
+from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 import httpx
@@ -142,6 +147,61 @@ def _validate_relative_path(path: str) -> None:
         raise ValueError(f"Kiwoom request path must be a relative path; got {path!r}")
 
 
+class _PerTrRateLimiter:
+    """Space same-api-id dispatches by ``interval_seconds``; other TRs never wait."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        interval_seconds: float = constants.TR_MIN_INTERVAL_SECONDS,
+    ) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("interval_seconds must be positive")
+        self._clock = clock
+        self._sleep = sleep
+        self._interval_seconds = interval_seconds
+        # asyncio locks bind to the loop that contends them, and a shared
+        # limiter can outlive a loop (scripts, tests): one lock set per loop.
+        self._locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
+        self._last_dispatch: dict[str, float] = {}
+
+    async def wait(self, api_id: str) -> None:
+        loop_locks = self._locks.setdefault(asyncio.get_running_loop(), {})
+        lock = loop_locks.get(api_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            loop_locks[api_id] = lock
+        async with lock:
+            now = self._clock()
+            last_dispatch = self._last_dispatch.get(api_id)
+            if last_dispatch is not None:
+                remaining = self._interval_seconds - (now - last_dispatch)
+                if remaining > 0:
+                    await self._sleep(remaining)
+            self._last_dispatch[api_id] = self._clock()
+
+
+#: One limiter per Kiwoom app key for the whole process. The broker limit is per
+#: key and request, but handlers build a fresh client per tool call, so pacing
+#: kept on the client instance would never see the previous call. KR and US use
+#: distinct app keys (``assert_distinct_kr_us_identities``), so they stay
+#: independent; different api-ids never wait on each other.
+_SHARED_TR_LIMITERS: dict[str, _PerTrRateLimiter] = {}
+
+
+def _shared_tr_limiter(app_key: str) -> _PerTrRateLimiter:
+    identity = hashlib.sha256(app_key.encode("utf-8")).hexdigest()
+    limiter = _SHARED_TR_LIMITERS.get(identity)
+    if limiter is None:
+        limiter = _PerTrRateLimiter()
+        _SHARED_TR_LIMITERS[identity] = limiter
+    return limiter
+
+
 class KiwoomMockClient:
     def __init__(
         self,
@@ -153,6 +213,8 @@ class KiwoomMockClient:
         timeout: float = constants.DEFAULT_TIMEOUT,
         redis_client: Any | None = None,
         redis_settings: Any | None = None,
+        rate_limit_clock: Callable[[], float] | None = None,
+        rate_limit_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if str(base_url).rstrip("/") != constants.MOCK_BASE_URL:
             raise KiwoomEndpointError(
@@ -175,6 +237,14 @@ class KiwoomMockClient:
             redis_settings=redis_settings,
         )
         self._token_override: str | None = None
+        if rate_limit_clock is None and rate_limit_sleep is None:
+            self._tr_rate_limiter = _shared_tr_limiter(app_key)
+        else:
+            # Injected clock/sleep (tests) get a private limiter.
+            self._tr_rate_limiter = _PerTrRateLimiter(
+                clock=rate_limit_clock or time.monotonic,
+                sleep=rate_limit_sleep or asyncio.sleep,
+            )
 
     @classmethod
     def from_app_settings(cls) -> KiwoomMockClient:
@@ -220,9 +290,9 @@ class KiwoomMockClient:
         return await self._auth.get_token()
 
     async def _before_api_dispatch(self, api_id: str) -> None:
-        """Provider-specific dispatch hook; the base mock client is unrestricted."""
+        """Wait out the per-TR mock limit (process-local, same api-id only)."""
 
-        del api_id
+        await self._tr_rate_limiter.wait(api_id)
 
     async def post_api(
         self,

@@ -96,6 +96,7 @@ tests/schemas/test_investment_stages_schema.py
 tests/schemas/test_research_pipeline_schemas.py
 tests/schemas/test_trade_journal_schemas.py
 tests/schemas/test_trading_policy_schema.py
+tests/scripts/b0x/kr/kiwoom/test_kiwoom_evaluation_field.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_round_trip.py
 tests/scripts/b0x/test_kill_switch_and_touch_rule.py
 tests/scripts/b0x/test_labels.py
@@ -177,6 +178,7 @@ tests/services/brokers/binance/spot_demo/test_spot_demo_submit_callers.py
 tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/binance/test_ws_reconnect.py
 tests/services/brokers/kis/test_market_data_throttle_retry.py
+tests/services/brokers/kiwoom/test_mock_reconcile_confirmation_rows.py
 tests/services/brokers/nhplug/test_auth.py
 tests/services/brokers/nhplug/test_live_period_collect.py
 tests/services/brokers/nhplug/test_stage2_listing_client.py
@@ -430,6 +432,7 @@ tests/test_kis_tasks.py
 tests/test_kiwoom_chart_compare.py
 tests/test_kiwoom_mock_smoke_cli.py
 tests/test_kiwoom_mock_us_smoke_cli.py
+tests/test_kiwoom_order_history_pacing.py
 tests/test_kiwoom_stage2_daily_collect.py
 tests/test_kr_aliases_extension.py
 tests/test_kr_fundamentals_lazy_dart.py
