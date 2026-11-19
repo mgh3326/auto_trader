@@ -34,6 +34,7 @@ from app.services.retro_v1.envelope import (
     read_snapshot,
     resolve_from,
 )
+from app.services.retro_v1.funnel_scope import stage_scope
 from app.services.retro_v1.market import MarketInfo, resolve_market
 
 _RATE_SCALE = Decimal("0.0001")
@@ -92,6 +93,7 @@ def funnel_rows(data: ChainData, market: MarketInfo, cohort: str) -> list[Row]:
                     "unit": "events",
                     "basis": "inference",
                     "missing_reason": reason,
+                    **stage_scope(stage, market.key),
                 },
                 {
                     "denominator": hint,
@@ -115,6 +117,7 @@ def funnel_rows(data: ChainData, market: MarketInfo, cohort: str) -> list[Row]:
                 "missing_reason": None
                 if rejected is not None
                 else "incomplete_evidence",
+                **stage_scope("rejected_forecast", market.key),
             },
             {"denominator": "not_applicable", "fill_rate": "not_applicable"},
         )

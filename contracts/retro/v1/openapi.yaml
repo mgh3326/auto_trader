@@ -1017,6 +1017,35 @@ components:
           anyOf:
           - $ref: '#/components/schemas/UnknownReason'
           - type: 'null'
+        account_mode:
+          description: Present only on stages that read live account populations.
+          type: string
+          enum:
+          - live
+        brokers:
+          description: Live brokers whose ledger population this stage's query selected
+            for the market. Present with account_mode only.
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+            - kis
+            - toss
+            - upbit
+        date_basis:
+          description: The KST window column the stage was filtered on. candidate_recorded_at_kst
+            - screener pick recorded_at. forecast_created_kst - rejected forecast created_at.
+            proposal_created_kst - proposal created_at (rung counts use their proposal's
+            date). order_trade_date_kst - trade_date of the live order ledgers. fill_filled_at_kst
+            - execution_ledger filled_at.
+          type: string
+          enum:
+          - candidate_recorded_at_kst
+          - forecast_created_kst
+          - proposal_created_kst
+          - order_trade_date_kst
+          - fill_filled_at_kst
     Benchmark:
       type: object
       additionalProperties: false

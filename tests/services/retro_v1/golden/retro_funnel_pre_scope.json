@@ -1,0 +1,341 @@
+{
+  "crypto": {
+    "cursor": null,
+    "data": [
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "candidate",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "proposal",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "rung",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "order",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "fill",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "crypto:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "rejected_forecast",
+        "unit": "events"
+      }
+    ],
+    "data_as_of": "2026-01-05T02:00:00Z",
+    "limit": 100,
+    "next_cursor": null,
+    "timezone": "KST",
+    "total": 6,
+    "truncated": false,
+    "unknowns": [
+      {
+        "field": "data.0.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.1.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.2.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.3.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.4.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.missing_reason",
+        "reason": "not_applicable"
+      }
+    ]
+  },
+  "kr": {
+    "cursor": null,
+    "data": [
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "candidate",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "proposal",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "rung",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "order",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "fill",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "kr:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "rejected_forecast",
+        "unit": "events"
+      }
+    ],
+    "data_as_of": "2026-01-05T02:00:00Z",
+    "limit": 100,
+    "next_cursor": null,
+    "timezone": "KST",
+    "total": 6,
+    "truncated": false,
+    "unknowns": [
+      {
+        "field": "data.0.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.1.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.2.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.3.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.4.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.missing_reason",
+        "reason": "not_applicable"
+      }
+    ]
+  },
+  "us": {
+    "cursor": null,
+    "data": [
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "candidate",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "proposal",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "rung",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "order",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": 1,
+        "fill_rate": "1.0000",
+        "missing_reason": null,
+        "stage": "fill",
+        "unit": "events"
+      },
+      {
+        "basis": "inference",
+        "cohort": "us:2026-01-05..2026-01-05",
+        "count": 1,
+        "denominator": null,
+        "fill_rate": null,
+        "missing_reason": null,
+        "stage": "rejected_forecast",
+        "unit": "events"
+      }
+    ],
+    "data_as_of": "2026-01-05T02:00:00Z",
+    "limit": 100,
+    "next_cursor": null,
+    "timezone": "KST",
+    "total": 6,
+    "truncated": false,
+    "unknowns": [
+      {
+        "field": "data.0.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.0.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.1.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.2.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.3.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.4.missing_reason",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.denominator",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.fill_rate",
+        "reason": "not_applicable"
+      },
+      {
+        "field": "data.5.missing_reason",
+        "reason": "not_applicable"
+      }
+    ]
+  }
+}
