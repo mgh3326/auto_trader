@@ -143,9 +143,8 @@ def test_a_card_answers_exactly_the_events_of_the_design() -> None:
         "(mem.kind = 'new_plan' AND NEW.event IN ('approved', 'rejected')) "
         "OR (mem.kind = 'reapproval' AND NEW.event IN ('terms_rebound', 'retired'))"
     ) in ddl
-    for kind, events in v.BATCH_ANSWER_EVENTS.items():
-        for event in events:
-            assert event in ("approved", "rejected", "terms_rebound", "retired")
+    answers = {e for events in v.BATCH_ANSWER_EVENTS.values() for e in events}
+    assert answers == {"approved", "rejected", "terms_rebound", "retired"}
     # the T1 CHECK that lets an event carry a card id names the same four events
     from app.models.mandate import event_check_sql
 

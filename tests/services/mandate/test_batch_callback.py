@@ -121,17 +121,17 @@ def test_a_listed_sender_in_an_allowed_chat_is_authorized() -> None:
     assert auth.message_id == 55 and auth.callback_query_id == "cbq-1"
 
 
-def test_an_empty_approver_list_means_nobody_can_approve(monkeypatch) -> None:
+def test_i21_an_empty_approver_list_means_nobody_can_approve(monkeypatch) -> None:
     monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "")
     got = cb.authorize(update())
     assert got == cb.Rejected("mandate_approver_not_allowed", "cbq-1")
 
 
-def test_a_sender_who_is_not_listed_is_refused_in_an_allowed_chat() -> None:
+def test_i21_a_sender_who_is_not_listed_is_refused_in_an_allowed_chat() -> None:
     assert cb.authorize(update(user=OTHER)).reason == "mandate_approver_not_allowed"
 
 
-def test_a_listed_sender_in_a_chat_that_is_not_allowed_is_refused_first() -> None:
+def test_i21_a_listed_sender_in_a_chat_that_is_not_allowed_is_refused_first() -> None:
     assert cb.authorize(update(chat="-999")).reason == "chat_not_allowed"
 
 
@@ -157,7 +157,9 @@ def test_an_update_without_a_callback_query_is_refused() -> None:
 
 # ------------------------------------------------- no row, no nonce for an unlisted id
 @pytest.mark.asyncio
-async def test_an_unlisted_sender_never_opens_the_database_and_gets_a_reply() -> None:
+async def test_i21_an_unlisted_sender_never_opens_the_database_and_gets_a_reply() -> (
+    None
+):
     notifier = Notifier()
     result = await cb.handle_mandate_callback(
         update(user=OTHER), now=NOW, session_factory=NoSession(), notifier=notifier
@@ -170,7 +172,7 @@ async def test_an_unlisted_sender_never_opens_the_database_and_gets_a_reply() ->
 
 
 @pytest.mark.asyncio
-async def test_an_empty_list_never_opens_the_database(monkeypatch) -> None:
+async def test_i21_an_empty_list_never_opens_the_database(monkeypatch) -> None:
     monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "")
     result = await cb.handle_mandate_callback(
         update(), now=NOW, session_factory=NoSession(), notifier=Notifier()
@@ -179,7 +181,7 @@ async def test_an_empty_list_never_opens_the_database(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_disallowed_chat_never_opens_the_database() -> None:
+async def test_i21_a_disallowed_chat_never_opens_the_database() -> None:
     result = await cb.handle_mandate_callback(
         update(chat="-999"), now=NOW, session_factory=NoSession(), notifier=Notifier()
     )
