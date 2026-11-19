@@ -24,6 +24,7 @@ SERVICES = PI / "services.yaml"
 CUTOVER = PI / "services.cutover.yaml"
 DEPLOY_SH = PI / "deploy.sh"
 SWAP_SH = PI / "swap-singletons.sh"
+HOST_LOCK = PI / "host-lock.sh"
 RUNBOOK = REPO / "docs" / "runbooks" / "pi-shiftgate-deploy.md"
 GATE = REPO / "scripts" / "deploy_ci_gate.py"
 
@@ -283,23 +284,30 @@ cmd="$1"; shift
 case "$cmd" in
   inspect)
     name="${@: -1}"
+    [[ -f "$S/c/$name" ]] || exit 1
     case "$*" in
-      *State.Running*) [[ -f "$S/c/$name" ]] || exit 1; cat "$S/r/$name"; echo ;;
-      *) [[ -f "$S/c/$name" ]] || exit 1; echo "id-$name" ;;
+      *State.Running*) cat "$S/r/$name" ;;
+      *Config.Image*) [[ -f "$S/i/$name" ]] || exit 1; cat "$S/i/$name" ;;
+      *) echo "id-$name" ;;
     esac ;;
   stop) name="${@: -1}"; echo false > "$S/r/$name" ;;
-  rename) mv "$S/c/$1" "$S/c/$2"; mv "$S/r/$1" "$S/r/$2" ;;
-  rm) name="${@: -1}"; rm -f "$S/c/$name" "$S/r/$name" ;;
+  rename) mv "$S/c/$1" "$S/c/$2"; mv "$S/r/$1" "$S/r/$2"; [[ ! -f "$S/i/$1" ]] || mv "$S/i/$1" "$S/i/$2" ;;
+  rm) name="${@: -1}"; rm -f "$S/c/$name" "$S/r/$name" "$S/i/$name" ;;
   start) echo true > "$S/r/$1" ;;
   run)
-    name=""; prev=""
-    for arg in "$@"; do [[ "$prev" == --name ]] && name="$arg"; prev="$arg"; done
+    name=""; prev=""; image=""
+    for arg in "$@"; do
+      [[ "$prev" == --name ]] && name="$arg"
+      [[ "$arg" == ghcr.io/* ]] && image="$arg"
+      prev="$arg"
+    done
     [[ "$FAKE_RUN_FAIL" == "$name" ]] && exit 1
-    echo "new $*" > "$S/c/$name"; echo true > "$S/r/$name" ;;
+    echo "new $*" > "$S/c/$name"; echo true > "$S/r/$name"; echo "$image" > "$S/i/$name" ;;
   logs)
     name="${@: -1}"
-    [[ "$FAKE_LOG_BAD" == "$name" ]] || echo 'Listening started connected=True'
-    ;;
+    [[ "$FAKE_LOG_BAD" == "$name" ]] && exit 0
+    if [[ "$FAKE_LOG_SUPERVISOR_ONLY" == "$name" ]]; then echo 'Starting 1 worker processes.'; exit 0; fi
+    echo 'Listening started connected=True' ;;
   ps) ;;
   *) exit 42 ;;
 esac
@@ -315,7 +323,7 @@ def executable(path: Path, body: str) -> Path:
 @pytest.fixture
 def host(tmp_path: Path) -> dict:
     state = tmp_path / "state"
-    for sub in ("c", "r"):
+    for sub in ("c", "r", "i"):
         (state / sub).mkdir(parents=True)
     (state / "log").write_text("")
     bindir = tmp_path / "bin"
@@ -334,10 +342,13 @@ def host(tmp_path: Path) -> dict:
     return {"state": state, "bindir": bindir, "run": run, "env": env, "tmp": tmp_path}
 
 
-def seed_old(host: dict, *names: str) -> None:
+def seed_old(
+    host: dict, *names: str, image: str = f"{IMAGE}@sha256:{'9' * 64}"
+) -> None:
     for name in names:
         (host["state"] / "c" / name).write_text(f"old {name}\n")
         (host["state"] / "r" / name).write_text("true\n")
+        (host["state"] / "i" / name).write_text(image + "\n")
 
 
 def docker_log(host: dict) -> list[str]:
@@ -373,7 +384,7 @@ def test_swap_runs_exactly_the_at_swap_arguments(host: dict) -> None:
         assert f"rename {name} {name}-prev" in log
         assert log.index(f"stop -t 60 {name}") < log.index(f"rename {name} {name}-prev")
         assert (host["state"] / "c" / f"{name}-prev").read_text() == f"old {name}\n"
-    # 이 스크립트는 deployed-digest 를 쓰지 않는다(deploy.sh 가 모두 성공한 뒤 한 번 쓴다).
+    # 이 스크립트는 deployed-digest 를 쓰지 않는다(deploy.sh 가 모두 확인한 뒤 한 번 쓴다).
     assert not (host["run"] / "deployed-digest").exists()
 
 
@@ -403,8 +414,44 @@ def test_swap_with_no_previous_container_just_starts_and_failure_leaves_nothing(
     result = swap(host, PINNED)
     assert result.returncode == 0, result.stderr
     assert (host["state"] / "r" / "at-worker").read_text().strip() == "true"
-    failed = swap(host, PINNED, FAKE_RUN_FAIL="at-upbit-ws")
+    failed = swap(host, f"{IMAGE}@sha256:{'2' * 64}", FAKE_RUN_FAIL="at-upbit-ws")
     assert failed.returncode == 1
+
+
+def test_swap_skips_a_singleton_already_running_the_image(host: dict) -> None:
+    seed_old(host, "at-worker", "at-upbit-ws", image=PINNED)
+    seed_old(host, "at-upbit-ws", image=f"{IMAGE}@sha256:{'9' * 64}")
+    result = swap(host, PINNED)
+    assert result.returncode == 0, result.stderr
+    log = docker_log(host)
+    # at-worker 는 이미 그 이미지: 정지·보관·새 run 없이 보관 컨테이너(직전 세대)도 그대로.
+    assert not any(
+        line.startswith(("stop", "rename at-worker", "rm -f at-worker"))
+        and "at-worker" in line
+        for line in log
+    )
+    assert "stop -t 60 at-upbit-ws" in log
+
+
+def test_swap_worker_ready_requires_the_worker_line_not_the_supervisor_line(
+    host: dict,
+) -> None:
+    seed_old(host, "at-worker", "at-upbit-ws")
+    result = swap(host, PINNED, FAKE_LOG_SUPERVISOR_ONLY="at-worker")
+    assert result.returncode == 1
+    assert (
+        (host["state"] / "c" / "at-worker").read_text() == "old at-worker\n"
+    )  # 복원됨, 새 digest 가 healthy 로 표시되지 않는다
+
+
+def test_swap_refuses_backup_only_layout_without_starting_anything(host: dict) -> None:
+    seed_old(host, "at-worker-prev", image=f"{IMAGE}@sha256:{'9' * 64}")
+    (host["state"] / "r" / "at-worker-prev").write_text("false\n")
+    result = swap(host, PINNED)
+    assert result.returncode == 1
+    assert "docker rename at-worker-prev at-worker" in result.stderr
+    assert not any(line.startswith("run ") for line in docker_log(host))
+    assert (host["state"] / "c" / "at-worker-prev").exists()
 
 
 @pytest.mark.parametrize(
@@ -418,8 +465,25 @@ def test_swap_refuses_anything_but_a_pinned_image_without_touching_docker(
     assert docker_log(host) == []
 
 
+def test_swap_takes_the_host_lock_and_honours_a_parent_lock(host: dict) -> None:
+    lock = host["run"] / "shiftgate-deploy.lock"
+    lock.mkdir()
+    (lock / "pid").write_text(f"{os.getpid()}\n")  # 살아 있는 다른 소유자
+    busy = swap(host, PINNED)
+    assert busy.returncode == 75 and docker_log(host) == []
+    inherited = swap(host, PINNED, AT_DEPLOY_LOCK_HELD=str(os.getpid()))
+    assert inherited.returncode == 0, inherited.stderr
+    assert (lock / "pid").exists()  # 부모의 잠금은 자식이 풀지 않는다
+    forged = swap(host, PINNED, AT_DEPLOY_LOCK_HELD="1")
+    assert forged.returncode == 75
+
+
 # --- (c) deploy.sh -------------------------------------------------------------------------
 
+DIGEST_A = "a" * 64
+DIGEST_B = DIGEST_HEX
+REF_A = f"{IMAGE}@sha256:{DIGEST_A}"
+REF_B = PINNED
 
 FAKE_GATE_OK = f"""\
 import sys
@@ -431,16 +495,52 @@ import sys
 print("deploy gate: REFUSED (exit 78)", file=sys.stderr)
 sys.exit(78)
 """
+# 가짜 shiftgate: <FAKE_SG>/<svc>.active|.previous 에 digest(없으면 none)를 두고 f8a11c6 처럼 동작한다
+# (deploy 는 같은 digest 라도 항상 이전 색을 지우고 active→previous 로 민다).
 FAKE_SHIFTGATE = """#!/usr/bin/env bash
+D="$FAKE_SG"
+args=("$@"); [[ "$1" == --config ]] && args=("${@:3}")
+sub="${args[0]}"
+if [[ "$sub" == status && "${args[1]}" == --json ]]; then
+  printf '['
+  first=1
+  for svc in at-api at-mcp; do
+    [[ $first == 1 ]] || printf ','
+    first=0
+    a="$(cat "$D/$svc.active")"; p="$(cat "$D/$svc.previous")"
+    pending=false; [[ -f "$D/$svc.pending" ]] && pending=true
+    printf '{"name":"%s","state":{' "$svc"
+    [[ "$a" == none ]] || printf '"active":{"color":"blue","digest":"%s"},' "$a"
+    [[ "$p" == none ]] || printf '"previous":{"color":"green","digest":"%s"},"rollback_available":true,' "$p"
+    [[ $pending == false ]] || printf '"pending":{"op_id":"x"},'
+    printf '"generation":1}}'
+  done
+  printf ']\\n'
+  exit 0
+fi
 printf 'shiftgate %s\\n' "$*" >> "$FAKE_CALLS"
-if [[ "$*" == *"deploy $FAKE_SG_FAIL "* ]]; then exit "${FAKE_SG_RC:-1}"; fi
+svc="${args[1]}"
+if [[ "$svc" == "$FAKE_SG_FAIL" ]]; then exit "${FAKE_SG_RC:-1}"; fi
+case "$sub" in
+  deploy) digest="${args[3]}"; cp "$D/$svc.active" "$D/$svc.previous"; printf '%s\\n' "$digest" > "$D/$svc.active" ;;
+  rollback) a="$(cat "$D/$svc.active")"; cp "$D/$svc.previous" "$D/$svc.active"; printf '%s\\n' "$a" > "$D/$svc.previous" ;;
+  status) ;;
+esac
 exit 0
 """
 FAKE_SWAP = """#!/usr/bin/env bash
 printf 'swap %s\\n' "$*" >> "$FAKE_CALLS"
-exit "${FAKE_SWAP_RC:-0}"
+[[ "${FAKE_SWAP_RC:-0}" == 0 ]] || exit "$FAKE_SWAP_RC"
+[[ -z "$FAKE_SWAP_NOOP" ]] || exit 0
+for name in at-worker at-upbit-ws; do printf '%s\\n' "$1" > "$FAKE_SG/single.$name"; done
 """
-FAKE_DOCKER_CALLS = """#!/usr/bin/env bash
+FAKE_DOCKER_DEPLOY = """#!/usr/bin/env bash
+if [[ "$1" == inspect ]]; then
+  name="${@: -1}"
+  [[ -f "$FAKE_SG/single.$name" ]] || exit 1
+  case "$*" in *State.Running*) echo true ;; *Config.Image*) cat "$FAKE_SG/single.$name" ;; esac
+  exit 0
+fi
 printf 'docker %s\\n' "$*" >> "$FAKE_CALLS"
 """
 
@@ -449,11 +549,13 @@ printf 'docker %s\\n' "$*" >> "$FAKE_CALLS"
 def deploy_env(tmp_path: Path) -> dict:
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    executable(bindir / "docker", FAKE_DOCKER_CALLS)
+    executable(bindir / "docker", FAKE_DOCKER_DEPLOY)
     run = tmp_path / "run"
     run.mkdir()
     calls = tmp_path / "calls"
     calls.write_text("")
+    sg = tmp_path / "sg"
+    sg.mkdir()
     gate = tmp_path / "gate.py"
     gate.write_text(FAKE_GATE_OK)
     shiftgate = executable(tmp_path / "shiftgate", FAKE_SHIFTGATE)
@@ -468,8 +570,46 @@ def deploy_env(tmp_path: Path) -> dict:
         "AT_SHIFTGATE_CONFIG": "/etc/shiftgate/services.yaml",
         "AT_SWAP_SINGLETONS": str(swapper),
         "FAKE_CALLS": str(calls),
+        "FAKE_SG": str(sg),
     }
-    return {"env": env, "run": run, "calls": calls, "gate": gate, "tmp": tmp_path}
+    fixture = {
+        "env": env,
+        "run": run,
+        "calls": calls,
+        "gate": gate,
+        "tmp": tmp_path,
+        "sg": sg,
+    }
+    set_fleet(fixture)  # 기본: 네 컴포넌트가 모두 A, 마커 A
+    return fixture
+
+
+def set_fleet(
+    fixture: dict,
+    *,
+    api: tuple[str, str] = (DIGEST_A, "none"),
+    mcp: tuple[str, str] = (DIGEST_A, "none"),
+    singletons: str = REF_A,
+    marker: str | None = REF_A,
+    previous_marker: str | None = None,
+) -> None:
+    for name, (active, previous) in (("at-api", api), ("at-mcp", mcp)):
+        (fixture["sg"] / f"{name}.active").write_text(
+            f"sha256:{active}\n" if active != "none" else "none\n"
+        )
+        (fixture["sg"] / f"{name}.previous").write_text(
+            f"sha256:{previous}\n" if previous != "none" else "none\n"
+        )
+    for name in ("at-worker", "at-upbit-ws"):
+        (fixture["sg"] / f"single.{name}").write_text(singletons + "\n")
+    for path, value in (
+        ("deployed-digest", marker),
+        ("deployed-digest.previous", previous_marker),
+    ):
+        target = fixture["run"] / path
+        target.unlink(missing_ok=True)
+        if value:
+            target.write_text(value + "\n")
 
 
 def deploy(env: dict, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -486,19 +626,34 @@ def recorded(env: dict) -> list[str]:
     return env["calls"].read_text().splitlines()
 
 
+def marker(env: dict, name: str = "deployed-digest") -> str | None:
+    path = env["run"] / name
+    return path.read_text().strip() if path.exists() else None
+
+
+def fleet_digests(env: dict) -> dict[str, str]:
+    out = {}
+    for name in ("at-api", "at-mcp"):
+        out[name] = (env["sg"] / f"{name}.active").read_text().strip()
+        out[name + ".previous"] = (env["sg"] / f"{name}.previous").read_text().strip()
+    for name in ("at-worker", "at-upbit-ws"):
+        out[name] = (env["sg"] / f"single.{name}").read_text().strip()
+    return out
+
+
 def test_gate_refusal_touches_nothing(deploy_env: dict) -> None:
     deploy_env["gate"].write_text(FAKE_GATE_REFUSE)
-    (deploy_env["run"] / "deployed-digest").write_text(
-        "ghcr.io/mgh3326/auto_trader@sha256:" + "9" * 64 + "\n"
-    )
+    before = fleet_digests(deploy_env)
     result = deploy(deploy_env, "main")
     assert result.returncode == 78
     assert "no container was touched" in result.stderr
     assert recorded(deploy_env) == []  # shiftgate·swap·docker 어느 것도 호출되지 않았다
+    assert fleet_digests(deploy_env) == before
     assert (
-        (deploy_env["run"] / "deployed-digest").read_text().strip().endswith("9" * 64)
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") is None
     )
-    assert not (deploy_env["run"] / "deployed-digest.previous").exists()
+    assert not (deploy_env["run"] / "shiftgate-deploy.lock").exists()
 
 
 def test_gate_python_too_old_refuses_before_any_container(deploy_env: dict) -> None:
@@ -517,23 +672,22 @@ def test_missing_gate_script_refuses(deploy_env: dict) -> None:
 
 
 def test_success_order_and_single_digest_write(deploy_env: dict) -> None:
-    previous = "ghcr.io/mgh3326/auto_trader@sha256:" + "9" * 64
-    (deploy_env["run"] / "deployed-digest").write_text(previous + "\n")
     result = deploy(deploy_env, "main")
     assert result.returncode == 0, result.stderr
     cfg = "--config /etc/shiftgate/services.yaml"
     assert recorded(deploy_env) == [
-        f"shiftgate {cfg} deploy at-api --digest sha256:{DIGEST_HEX}",
-        f"shiftgate {cfg} deploy at-mcp --digest sha256:{DIGEST_HEX}",
-        f"swap {PINNED}",
+        f"shiftgate {cfg} deploy at-api --digest sha256:{DIGEST_B}",
+        f"shiftgate {cfg} deploy at-mcp --digest sha256:{DIGEST_B}",
+        f"swap {REF_B}",
     ]
-    assert (deploy_env["run"] / "deployed-digest").read_text() == PINNED + "\n"
-    assert (
-        deploy_env["run"] / "deployed-digest.previous"
-    ).read_text() == previous + "\n"
+    assert marker(deploy_env) == REF_B
+    assert marker(deploy_env, "deployed-digest.previous") == REF_A
     assert (
         deploy_env["gate"].with_name("gate.py.args")
     ).read_text() == f"--image {IMAGE}:main"
+    assert not (
+        deploy_env["run"] / "shiftgate-deploy.lock"
+    ).exists()  # 잠금은 끝나면 풀린다
 
 
 def test_allow_unverified_reaches_the_gate_only(deploy_env: dict) -> None:
@@ -547,16 +701,18 @@ def test_allow_unverified_reaches_the_gate_only(deploy_env: dict) -> None:
 def test_shiftgate_failure_stops_before_later_stages_and_keeps_digest(
     deploy_env: dict, failing: str
 ) -> None:
-    (deploy_env["run"] / "deployed-digest").write_text("old\n")
     result = deploy(deploy_env, "main", FAKE_SG_FAIL=failing)
     assert result.returncode == 1
     calls = recorded(deploy_env)
     assert not any(call.startswith("swap ") for call in calls)
     if failing == "at-api":
         assert not any("deploy at-mcp" in call for call in calls)
-    assert any(" status" in call for call in calls)  # 실패 시 상태 출력
-    assert any(call.startswith("docker ps") for call in calls)
-    assert (deploy_env["run"] / "deployed-digest").read_text() == "old\n"
+    assert any(call.startswith("docker ps") for call in calls)  # 실패 시 상태 출력
+    assert (
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") is None
+    )
+    assert "resume" in result.stderr
 
 
 def test_recovery_exit_code_is_propagated_with_a_hint(deploy_env: dict) -> None:
@@ -565,12 +721,203 @@ def test_recovery_exit_code_is_propagated_with_a_hint(deploy_env: dict) -> None:
     assert "recover" in result.stderr
 
 
-def test_singleton_failure_keeps_digest_unwritten(deploy_env: dict) -> None:
-    (deploy_env["run"] / "deployed-digest").write_text("old\n")
-    result = deploy(deploy_env, "main", FAKE_SWAP_RC="1")
+def test_singleton_failure_keeps_marker_and_retry_resumes_without_consuming_the_rollback_target(
+    deploy_env: dict,
+) -> None:
+    failed = deploy(deploy_env, "main", FAKE_SWAP_RC="1")
+    assert failed.returncode == 1
+    assert (
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") is None
+    )
+    after_failure = fleet_digests(deploy_env)
+    assert (
+        after_failure["at-api"] == f"sha256:{DIGEST_B}"
+        and after_failure["at-api.previous"] == f"sha256:{DIGEST_A}"
+    )
+    deploy_env["calls"].write_text("")
+    retry = deploy(deploy_env, "main")
+    assert retry.returncode == 0, retry.stderr
+    # 이미 B 인 두 서비스에는 shiftgate deploy 를 다시 부르지 않는다: 보관된 A 색이 살아 있다.
+    assert recorded(deploy_env) == [f"swap {REF_B}"]
+    state = fleet_digests(deploy_env)
+    assert (
+        state["at-api.previous"] == f"sha256:{DIGEST_A}"
+        and state["at-mcp.previous"] == f"sha256:{DIGEST_A}"
+    )
+    assert (
+        marker(deploy_env) == REF_B
+        and marker(deploy_env, "deployed-digest.previous") == REF_A
+    )
+
+
+def test_same_digest_retry_after_mid_stage_failure_only_runs_unfinished_stages(
+    deploy_env: dict,
+) -> None:
+    set_fleet(
+        deploy_env, api=(DIGEST_B, DIGEST_A), mcp=(DIGEST_A, "none")
+    )  # api 는 끝났고 mcp 가 pull 에서 실패했던 상태
+    result = deploy(deploy_env, "main")
+    assert result.returncode == 0, result.stderr
+    assert [c.split(" ")[4] for c in recorded(deploy_env) if " deploy " in c] == [
+        "at-mcp"
+    ]
+    assert fleet_digests(deploy_env)["at-api.previous"] == f"sha256:{DIGEST_A}"
+
+
+def test_fully_deployed_release_is_a_no_op_and_keeps_previous(deploy_env: dict) -> None:
+    set_fleet(
+        deploy_env,
+        api=(DIGEST_B, DIGEST_A),
+        mcp=(DIGEST_B, DIGEST_A),
+        singletons=REF_B,
+        marker=REF_B,
+        previous_marker=REF_A,
+    )
+    result = deploy(deploy_env, "main")
+    assert result.returncode == 0, result.stderr
+    assert recorded(deploy_env) == []
+    assert (
+        marker(deploy_env) == REF_B
+        and marker(deploy_env, "deployed-digest.previous") == REF_A
+    )
+
+
+def test_pending_shiftgate_operation_refuses_before_touching_it(
+    deploy_env: dict,
+) -> None:
+    (deploy_env["sg"] / "at-api.pending").write_text("x")
+    result = deploy(deploy_env, "main")
+    assert result.returncode == 3
+    assert not any(" deploy " in c for c in recorded(deploy_env))
+
+
+def test_a_second_deployment_cannot_interleave(deploy_env: dict) -> None:
+    lock = deploy_env["run"] / "shiftgate-deploy.lock"
+    lock.mkdir()
+    (lock / "pid").write_text(f"{os.getpid()}\n")  # 살아 있는 소유자
+    before = fleet_digests(deploy_env)
+    for args in (["main"], ["--rollback"]):
+        result = deploy(deploy_env, *args)
+        assert result.returncode == 75, result.stderr
+    assert recorded(deploy_env) == [] and fleet_digests(deploy_env) == before
+    assert (lock / "pid").read_text().strip() == str(
+        os.getpid()
+    )  # 남의 잠금을 풀지 않는다
+
+
+def test_a_dead_owners_lock_is_reclaimed(deploy_env: dict) -> None:
+    lock = deploy_env["run"] / "shiftgate-deploy.lock"
+    lock.mkdir()
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    (lock / "pid").write_text(f"{dead.pid}\n")
+    assert deploy(deploy_env, "main").returncode == 0
+
+
+def test_marker_publication_failure_exits_nonzero_and_keeps_the_active_marker(
+    deploy_env: dict,
+) -> None:
+    (deploy_env["run"] / "deployed-digest.previous").mkdir()  # 백업 발행이 실패한다
+    result = deploy(deploy_env, "main")
+    assert result.returncode != 0
+    assert "deploy OK" not in result.stdout
+    assert marker(deploy_env) == REF_A
+    assert not list(
+        deploy_env["run"].glob(".deployed-digest.*")
+    )  # 임시 파일을 남기지 않는다
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root 는 읽기 전용 디렉터리에도 쓴다")
+def test_marker_publication_failure_after_staging_leaves_marker_untouched(
+    deploy_env: dict,
+) -> None:
+    run = deploy_env["run"]
+    run.chmod(0o500)  # 임시 파일 생성부터 실패: mktemp 가 막힌다
+    try:
+        result = deploy(deploy_env, "main")
+    finally:
+        run.chmod(0o700)
+    assert result.returncode != 0 and "deploy OK" not in result.stdout
+    assert marker(deploy_env) == REF_A
+
+
+def test_rollback_after_partial_forward_failure_touches_only_the_diverged_components(
+    deploy_env: dict,
+) -> None:
+    # A→B: api 는 승격됐고 mcp 는 pull 에서 실패, 싱글턴은 실행되지 않았다. 마커는 A 그대로다.
+    set_fleet(deploy_env, api=(DIGEST_B, DIGEST_A), mcp=(DIGEST_A, "none"))
+    result = deploy(deploy_env, "--rollback")
+    assert result.returncode == 0, result.stderr
+    calls = recorded(deploy_env)
+    assert [c for c in calls if c.startswith("shiftgate")] == [
+        "shiftgate --config /etc/shiftgate/services.yaml rollback at-api"
+    ]
+    assert fleet_digests(deploy_env)["at-api"] == f"sha256:{DIGEST_A}"
+    assert fleet_digests(deploy_env)["at-mcp"] == f"sha256:{DIGEST_A}"
+    assert calls[-1] == f"swap {REF_A}"  # 이미 A 인 싱글턴은 swap 스크립트가 건너뛴다
+    assert (
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") is None
+    )
+
+
+def test_rollback_of_a_complete_release_swaps_the_marker_after_verifying(
+    deploy_env: dict,
+) -> None:
+    set_fleet(
+        deploy_env,
+        api=(DIGEST_B, DIGEST_A),
+        mcp=(DIGEST_B, DIGEST_A),
+        singletons=REF_B,
+        marker=REF_B,
+        previous_marker=REF_A,
+    )
+    result = deploy(deploy_env, "--rollback")
+    assert result.returncode == 0, result.stderr
+    assert recorded(deploy_env) == [
+        "shiftgate --config /etc/shiftgate/services.yaml rollback at-api",
+        "shiftgate --config /etc/shiftgate/services.yaml rollback at-mcp",
+        f"swap {REF_A}",
+    ]
+    assert (
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") == REF_B
+    )
+
+
+def test_rollback_failure_leaves_the_marker_alone(deploy_env: dict) -> None:
+    set_fleet(
+        deploy_env,
+        api=(DIGEST_B, DIGEST_A),
+        mcp=(DIGEST_B, DIGEST_A),
+        singletons=REF_B,
+        marker=REF_B,
+        previous_marker=REF_A,
+    )
+    result = deploy(deploy_env, "--rollback", FAKE_SWAP_RC="1")
     assert result.returncode == 1
-    assert (deploy_env["run"] / "deployed-digest").read_text() == "old\n"
-    assert not (deploy_env["run"] / "deployed-digest.previous").exists()
+    assert (
+        marker(deploy_env) == REF_B
+        and marker(deploy_env, "deployed-digest.previous") == REF_A
+    )
+
+
+def test_rollback_without_a_recorded_previous_release_refuses(deploy_env: dict) -> None:
+    result = deploy(deploy_env, "--rollback")  # 전부 마커(A)와 같고 previous 가 없다
+    assert result.returncode == 78
+    assert recorded(deploy_env) == []
+
+
+def test_rollback_converges_via_deploy_when_the_retained_color_is_not_the_target(
+    deploy_env: dict,
+) -> None:
+    set_fleet(deploy_env, api=(DIGEST_B, "c" * 64), mcp=(DIGEST_A, "none"))
+    assert deploy(deploy_env, "--rollback").returncode == 0
+    assert (
+        f"shiftgate --config /etc/shiftgate/services.yaml deploy at-api --digest sha256:{DIGEST_A}"
+        in recorded(deploy_env)
+    )
 
 
 @pytest.mark.parametrize(
@@ -582,6 +929,8 @@ def test_singleton_failure_keeps_digest_unwritten(deploy_env: dict) -> None:
         ["main", "extra"],
         ["--nope", "main"],
         ["--allow-unverified"],
+        ["--rollback", "main"],
+        ["--rollback", "--allow-unverified", "x"],
     ],
 )
 def test_usage_errors_touch_nothing(deploy_env: dict, args: list[str]) -> None:
@@ -591,7 +940,7 @@ def test_usage_errors_touch_nothing(deploy_env: dict, args: list[str]) -> None:
 
 
 def test_scripts_are_valid_bash_and_executable() -> None:
-    for script in (DEPLOY_SH, SWAP_SH):
+    for script in (DEPLOY_SH, SWAP_SH, HOST_LOCK):
         assert script.stat().st_mode & stat.S_IXUSR
         assert subprocess.run(["bash", "-n", str(script)], check=False).returncode == 0
         assert script.read_text().startswith("#!/usr/bin/env bash\n")
@@ -656,7 +1005,7 @@ def test_runbook_has_the_required_sections() -> None:
         "go build",
         "docker buildx imagetools inspect",
         "shiftgate render --dry-run",
-        "shiftgate rollback at-api",
+        "/root/at-run/shiftgate-pi/deploy.sh --rollback",
         "shiftgate status",
         "shiftgate check",
     ):
@@ -683,12 +1032,15 @@ def test_runbook_shiftgate_commands_use_only_real_subcommands_and_flags() -> Non
             f"허용되지 않은 플래그 {flags - SHIFTGATE_SUBCOMMANDS[sub]}: {command}"
         )
         if sub == "deploy":
+            # 컷오버 1단계 전용: 검증된 셸 변수만 쓴다(꺾쇠 자리표시자는 셸 문법 오류다).
             assert re.fullmatch(
-                r"deploy at-(api|mcp) --digest <digest>", " ".join(rest)
+                r"deploy at-(api|mcp) --digest \$DIGEST", " ".join(rest)
             ), command
-        if sub in ("rollback", "recover"):
+        if sub == "recover":
             assert args in (["at-api"], ["at-mcp"]), command
-    assert {"deploy", "rollback", "recover", "status", "check", "render"} <= seen
+    # 롤백은 호스트 잠금을 잡는 deploy.sh --rollback 으로만 한다: 날 shiftgate rollback 은 런북에 없다.
+    assert "rollback" not in seen
+    assert {"deploy", "recover", "status", "check", "render"} <= seen
 
 
 def test_runbook_adapter_commands_match_script_usage() -> None:
@@ -697,7 +1049,7 @@ def test_runbook_adapter_commands_match_script_usage() -> None:
         script_flags(SWAP_SH),
         gate_flags(),
     )
-    assert deploy_flags == {"--allow-unverified"}
+    assert deploy_flags == {"--allow-unverified", "--rollback"}
     assert swap_flags == {"--wait-attempts"}
     assert {
         "--image",
@@ -712,18 +1064,16 @@ def test_runbook_adapter_commands_match_script_usage() -> None:
             assert tokens[0] == "/root/at-run/shiftgate-pi/deploy.sh"
             flags = {t for t in tokens[1:] if t.startswith("--")}
             assert flags <= deploy_flags, command
-            assert tokens[-1] == "main", "deploy.sh 의 인자는 digest 가 아니라 태그다"
-            used.add("deploy")
-        if tokens[0].endswith("/swap-singletons.sh"):
-            assert tokens[0] == "/root/at-run/shiftgate-pi/swap-singletons.sh"
-            assert not {t for t in tokens[1:] if t.startswith("--")} - swap_flags, (
-                command
+            assert tokens[-1] in ("main", "--rollback"), (
+                "deploy.sh 의 인자는 digest 가 아니라 태그(또는 --rollback)다"
             )
-            assert re.fullmatch(rf"{re.escape(IMAGE)}@sha256:<64hex>", tokens[-1]), (
-                command
-            )
-            used.add("swap")
-    assert used == {"deploy", "swap"}
+            used.add("rollback" if "--rollback" in tokens else "deploy")
+            if "--rollback" in tokens:
+                assert tokens == [tokens[0], "--rollback"], command
+        assert not tokens[0].endswith("/swap-singletons.sh"), (
+            "싱글턴 교체는 deploy.sh 만 부른다(호스트 잠금·재개 규칙)"
+        )
+    assert used == {"deploy", "rollback"}
 
 
 def test_runbook_install_sources_exist_and_are_installed_where_the_scripts_look() -> (
@@ -737,6 +1087,8 @@ def test_runbook_install_sources_exist_and_are_installed_where_the_scripts_look(
     }  # 레포 상대 경로만
     for source in sources:
         assert (REPO / source).is_file(), source
+    # 두 스크립트가 source 하므로 host-lock.sh 도 같이 설치한다.
+    assert "deploy/shiftgate/pi/host-lock.sh" in sources
     # deploy.sh 는 deploy_ci_gate.py 를 옆에서 찾으므로 같은 디렉터리에 설치된다.
     host_dir = [t for t in installs if t[-1] == "/root/at-run/shiftgate-pi/"]
     assert host_dir and {
@@ -787,3 +1139,37 @@ def test_runbook_cutover_ports_and_paths_match_services_yaml() -> None:
     for port in (18000, 28000, 18765, 28765, 8100, 8865):
         assert str(port) in text
     assert os.path.basename(str(GATE)) == "deploy_ci_gate.py"
+
+
+def test_runbook_bash_blocks_are_valid_shell() -> None:
+    text = RUNBOOK.read_text()
+    blocks = re.findall(r"```bash\n(.*?)```", text, flags=re.S)
+    assert blocks
+    for block in blocks:
+        result = subprocess.run(
+            ["bash", "-n"], input=block, capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, f"{result.stderr}\n{block}"
+    # 꺾쇠 자리표시자(<digest>, <64hex> …)는 셸에서 리다이렉션이라 실행 블록에 둘 수 없다.
+    assert not re.search(r"<[a-z0-9]+>", "\n".join(blocks))
+
+
+def test_runbook_keeps_legacy_containers_until_both_rollback_targets_exist() -> None:
+    text = RUNBOOK.read_text()
+    section = text[text.index("### 3.4") : text.index("## 4.")]
+    assert "docker rm at-api at-mcp" in section
+    assert "컨테이너를 지우기 전 조건" in section
+    assert "PREVIOUS" in section and "다른 digest" in section
+
+
+def test_marker_is_written_only_after_all_four_components_are_verified_at_the_target(
+    deploy_env: dict,
+) -> None:
+    # 싱글턴 교체가 성공을 보고했지만 실제로는 옛 이미지가 남아 있다.
+    result = deploy(deploy_env, "main", FAKE_SWAP_NOOP="1")
+    assert result.returncode != 0
+    assert "not at target: at-worker" in result.stderr
+    assert (
+        marker(deploy_env) == REF_A
+        and marker(deploy_env, "deployed-digest.previous") is None
+    )

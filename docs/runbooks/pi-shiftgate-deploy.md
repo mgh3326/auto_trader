@@ -12,8 +12,9 @@ pi(Debian 12, aarch64)의 AT 앱 컨테이너 네 개를 `shiftgate`(https://git
 
 - `deploy/shiftgate/pi/services.yaml` — 최종 설정. `/etc/shiftgate/services.yaml`.
 - `deploy/shiftgate/pi/services.cutover.yaml` — 컷오버 1단계 전용. `services.yaml` 과 `binds` 두 줄(임시 포트 8100/8865)만 다르다.
-- `deploy/shiftgate/pi/deploy.sh <tag>` — 일상 배포 진입점.
-- `deploy/shiftgate/pi/swap-singletons.sh <image@digest>` — 싱글턴 교체.
+- `deploy/shiftgate/pi/deploy.sh <tag>` / `deploy.sh --rollback` — 일상 배포와 복구의 유일한 진입점.
+- `deploy/shiftgate/pi/swap-singletons.sh <image@digest>` — `deploy.sh` 가 부르는 싱글턴 교체(직접 부르지 않는다).
+- `deploy/shiftgate/pi/host-lock.sh` — 두 스크립트가 source 하는 호스트 배포 잠금.
 
 규칙: `shiftgate follow` / `check` / `prune` 타이머를 등록하지 않는다(수동 배포만 — follow 는 `deploy_ci_gate.py` 의 정확한 SHA 전체 스위트 게이트를 우회한다). `MCP_PROFILE=default` 는 `services.yaml` 에 명시되어 있어야 한다(#1189). `deploy_ci_gate.py` 와 은퇴 컨테이너 검사 규칙(ROB-1436)은 완화하지 않는다. env 파일은 경로로만 참조하고 열거나 출력하지 않는다.
 
@@ -45,7 +46,7 @@ shiftgate --config /etc/shiftgate/services.yaml status
 
 ```bash
 install -d -m 0755 /root/at-run/shiftgate-pi
-install -m 0755 deploy/shiftgate/pi/deploy.sh deploy/shiftgate/pi/swap-singletons.sh scripts/deploy_ci_gate.py /root/at-run/shiftgate-pi/
+install -m 0755 deploy/shiftgate/pi/deploy.sh deploy/shiftgate/pi/swap-singletons.sh deploy/shiftgate/pi/host-lock.sh scripts/deploy_ci_gate.py /root/at-run/shiftgate-pi/
 python3 -c 'import sys; print(sys.version_info >= (3, 11))'
 gh auth status
 ```
@@ -85,7 +86,14 @@ docker inspect --format '{{.Config.Image}}' at-api at-mcp at-worker at-upbit-ws
 docker ps --filter name=at- --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 ```
 
-네 컨테이너의 이미지가 모두 같은 `ghcr.io/mgh3326/auto_trader@sha256:…` 인지 본다. 다르면 보고하고 멈춘다. 아래 `<digest>` 는 그 `sha256:…` 부분이다.
+네 컨테이너의 이미지가 모두 같은 `ghcr.io/mgh3326/auto_trader@sha256:…` 인지 본다. 다르면 보고하고 멈춘다. 같으면 그 digest 를 셸 변수에 담고 모양을 확인한다(다음 명령이 이 변수를 쓰므로 같은 셸에서 이어서 한다):
+
+```bash
+DIGEST="$(docker inspect --format '{{.Config.Image}}' at-api | sed 's/^[^@]*@//')"
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] && echo "digest 확인: $DIGEST" || echo "중단: digest 형식이 아니다"
+```
+
+"중단" 이 나오면 여기서 멈추고 보고한다.
 
 ## 3. 컷오버 순서
 
@@ -98,8 +106,8 @@ docker ps --filter name=at- --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 §1 의 `services.cutover.yaml` 이 설치된 상태에서 같은 digest 로 배포한다:
 
 ```bash
-shiftgate deploy at-api --digest <digest>
-shiftgate deploy at-mcp --digest <digest>
+shiftgate deploy at-api --digest "$DIGEST"
+shiftgate deploy at-mcp --digest "$DIGEST"
 shiftgate status
 ```
 
@@ -151,7 +159,9 @@ curl -fsS http://100.90.137.33:8765/health
 docker rm at-api at-mcp
 ```
 
-그 뒤 롤백은 §5 의 `shiftgate rollback` 이 보관한 이전 색 컨테이너로 한다. 컷오버로 `deployed-digest` 는 바뀌지 않는다(같은 digest). 첫 `deploy.sh` 가 처음 쓴다.
+**컨테이너를 지우기 전 조건**: 컷오버가 만든 shiftgate 색은 각 서비스에 하나뿐이라 아직 롤백 대상(이전 색)이 없다(f8a11c6 `rollback` 은 이전 색이 없으면 거부한다). 그래서 위 `docker rm` 은 **§4 의 일반 배포를 다른 digest 로 한 번 성공시킨 뒤**, `shiftgate status` 에서 `at-api`·`at-mcp` 두 서비스 모두 PREVIOUS 가 채워져 있고 롤백이 가능함을 확인한 다음에만 한다. 그 전에는 기존 컨테이너를 정지 상태로 남겨 §3.3 롤백을 유지한다.
+
+컷오버로 `deployed-digest` 는 바뀌지 않는다(같은 digest). 첫 `deploy.sh` 가 처음 갱신한다.
 
 ## 4. 일상 배포
 
@@ -161,49 +171,35 @@ docker rm at-api at-mcp
 /root/at-run/shiftgate-pi/deploy.sh main
 ```
 
-순서: 게이트 → `at-api` → `at-mcp` → 싱글턴 → `deployed-digest` 갱신(모두 성공한 뒤 한 번). 대기 시간은 `at-api` 드레인 최대 120초, `at-mcp` 드레인 최대 300초(서비스 잠금을 잡고 CLI 를 막는다)다. 단계가 실패하면 거기서 멈추고 `shiftgate status` 와 컨테이너 표를 출력하며, 이미 끝난 앞 단계를 자동으로 되돌리지 않는다(§5). `--allow-unverified REASON` 은 CI 증거만 면제하는 기록되는 우회이며 이미지 digest 고정은 그대로다:
+순서: 호스트 잠금 → 게이트 → `at-api` → `at-mcp` → 싱글턴 → 네 컴포넌트 digest 재확인 → `deployed-digest` 갱신(모두 확인된 뒤 한 번, 모든 파일 작업을 확인). 다른 배포·롤백이 돌고 있으면 exit 75 로 끝난다(잠금은 `/root/at-run/shiftgate-deploy.lock`, 죽은 소유자의 잠금은 자동으로 치운다). 대기 시간은 `at-api` 드레인 최대 120초, `at-mcp` 드레인 최대 300초(서비스 잠금을 잡고 CLI 를 막는다)다.
+
+단계가 실패하면 거기서 멈추고 `shiftgate status` 와 컨테이너 표를 출력하며 `deployed-digest` 는 그대로다. **같은 명령을 다시 실행하면 이어진다**: 이미 그 digest 인 서비스·싱글턴은 건너뛰므로 보관된 이전 색 컨테이너와 `deployed-digest.previous` 가 보존되고(shiftgate 는 같은 digest 라도 비활성 색을 지우고 다시 만들기 때문에 건너뛰지 않으면 롤백 대상을 잃는다), 모두 확인된 뒤에만 마커가 갱신된다. 이미 전부 그 digest 이고 마커도 같으면 아무것도 하지 않는다. exit 3 이면 `shiftgate recover <service>` 를 먼저 한다(§5). `--allow-unverified REASON` 은 CI 증거만 면제하는 기록되는 우회이며 이미지 digest 고정은 그대로다:
 
 ```bash
 /root/at-run/shiftgate-pi/deploy.sh --allow-unverified "<이유>" main
 ```
 
-`deploy.sh` 의 인자는 **태그**다(`deploy_ci_gate.py --image` 가 태그만 받는다). 싱글턴만 다시 돌릴 때(예: 이전 시도가 거기서 실패한 경우)는 게이트를 통과한 digest 로:
+`deploy.sh` 의 인자는 **태그**다(`deploy_ci_gate.py --image` 가 태그만 받는다). 싱글턴만 실패했을 때도 같은 `deploy.sh <tag>` 를 다시 실행한다(이미 끝난 서비스는 건너뛰고 싱글턴만 교체하며 마커를 갱신한다). `swap-singletons.sh` 를 직접 부르지 않는다.
+
+## 5. 롤백과 복구
+
+모든 롤백은 `deploy.sh --rollback` 하나로 한다(호스트 잠금을 잡고, 게이트는 보지 않는 긴급 경로). 기준은 `deployed-digest` — **마지막으로 네 컴포넌트가 모두 끝난 릴리스**다:
+
+- 어떤 컴포넌트가 그 digest 와 다르면(전진 배포가 중간에 실패한 경우) **다른 컴포넌트만** 그 digest 로 되돌린다. 보관된 이전 색이 그 digest 이면 pull 없이 `shiftgate rollback`, 아니면 그 digest 로 `shiftgate deploy`. 이미 맞는 컴포넌트와 `deployed-digest` 는 건드리지 않는다.
+- 네 컴포넌트가 모두 그 digest 이면(끝난 릴리스를 되돌릴 때) `deployed-digest.previous` 로 완결 롤백하고, 네 컴포넌트를 확인한 **뒤에** 마커를 맞바꾼다(`previous` 가 없으면 exit 78).
 
 ```bash
-/root/at-run/shiftgate-pi/swap-singletons.sh ghcr.io/mgh3326/auto_trader@sha256:<64hex>
+/root/at-run/shiftgate-pi/deploy.sh --rollback
 ```
 
-## 5. 롤백
-
-blue/green 두 서비스는 보관된 이전 색 컨테이너를 pull 없이 다시 올려 되돌린다(한 단계 전까지). 보관 컨테이너가 없으면 거부된다. 드레인 중이면 서비스 잠금 때문에 exit 75 이므로 드레인이 끝난 뒤 다시 한다:
-
-```bash
-shiftgate rollback at-mcp
-shiftgate rollback at-api
-shiftgate status
-```
-
-배포 도중 exit 3 이 나왔으면 다른 일을 하기 전에 해당 서비스를 복구한다:
+실행 전후로 상태를 본다(§6). 드레인 중이면 서비스 잠금 때문에 `shiftgate` 가 exit 75 를 내므로 드레인이 끝난 뒤 다시 한다. 배포 도중 exit 3 이 나왔으면 다른 일을 하기 전에 해당 서비스를 복구한 뒤 위 명령이나 `deploy.sh <tag>` 를 다시 실행한다:
 
 ```bash
 shiftgate recover at-api
 shiftgate recover at-mcp
 ```
 
-싱글턴은 `swap-singletons.sh` 가 이전 컨테이너를 `<이름>-prev` 로 보관한다(한 세대). 실패한 교체는 스크립트가 알아서 복원하고, 성공한 뒤의 롤백은 손으로 한다(싱글턴마다 한 번씩. 예: worker):
-
-```bash
-docker stop -t 60 at-worker
-docker rename at-worker at-worker-bad
-docker rename at-worker-prev at-worker
-docker start at-worker
-```
-
-`at-upbit-ws` 도 같은 네 줄에서 이름만 바꾼다. 롤백 뒤에는 `deployed-digest` 를 직전 값으로 되돌린다:
-
-```bash
-cp /root/at-run/deployed-digest.previous /root/at-run/deployed-digest
-```
+싱글턴은 `swap-singletons.sh` 가 이전 컨테이너를 `<이름>-prev` 로 보관한다(한 세대). 실패한 교체는 스크립트가 알아서 복원한다. 교체가 옛 컨테이너를 보관한 직후 끊겨 `at-worker`(또는 `at-upbit-ws`)가 없고 `-prev` 만 있으면 스크립트가 거부하며 복구 명령을 출력한다 — 그 명령(`docker rename <이름>-prev <이름> && docker start <이름>`)을 실행한 뒤 다시 한다. 손으로 위의 롤백 단계를 흉내 내지 않는다(어느 세대가 최신인지 잘못 고르면 마커와 어긋난다).
 
 ## 6. 확인 명령
 

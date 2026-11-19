@@ -6,11 +6,13 @@
 # 이 스크립트가 같은 digest 로 교체한다:
 #   옛 컨테이너 정지(-t 60) → <이름>-prev 로 보관 → 새 digest 로 docker run → 로그/상태 확인.
 #   어느 하나라도 실패하면 이미 바꾼 것까지 역순으로 옛 컨테이너를 복원하고 exit 1.
+# 이미 그 이미지로 실행 중인 싱글턴은 건드리지 않는다(재시도·재개가 멱등). 호스트 배포 잠금을 잡는다(host-lock.sh).
 # deployed-digest 는 여기서 쓰지 않는다: shiftgate 두 서비스와 싱글턴이 모두 성공한 뒤 deploy.sh 가 한 번 쓴다.
 # 스케줄러·타이머는 등록하지 않는다. 수동 실행만.
 set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
+SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIRECTORY="${AT_RUN_DIR:-/root/at-run}"
 ENV_API="${AT_ENV_API:-/srv/at/secrets/.env.api}"
 ENV_SCHEDULER="${AT_ENV_SCHEDULER:-/srv/at/secrets/.env.scheduler}"
@@ -40,7 +42,7 @@ done
 SINGLETONS=(at-worker at-upbit-ws)
 log_pattern() {
   case "$1" in
-    at-worker) printf 'Listening started|Starting 1 worker processes.' ;;
+    at-worker) printf 'Listening started' ;;
     at-upbit-ws) printf 'connected=True' ;;
   esac
 }
@@ -103,8 +105,23 @@ start_new() {
     "$IMAGE" "${cmd[@]}" >/dev/null
 }
 
+already_at_image() {
+  local name="$1"
+  [[ "$(docker inspect --format '{{.Config.Image}}' "$name" 2>/dev/null)" == "$IMAGE" ]] \
+    && [[ "$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" == true ]]
+}
+
 swap_one() {
   local name="$1"
+  if already_at_image "$name"; then
+    printf 'already at image, skipped: %s\n' "$name"
+    return 0
+  fi
+  if ! exists "$name" && exists "${name}-prev"; then
+    # 이전 실행이 옛 컨테이너를 보관한 직후 끊겼다: 이 상태에서 새로 띄우다 실패하면 복원할 대상을 잃는다.
+    printf 'interrupted swap: %s is missing but %s-prev exists. Recover first: docker rename %s-prev %s && docker start %s\n' "$name" "$name" "$name" "$name" "$name" >&2
+    return 1
+  fi
   if exists "$name"; then
     # 보관 자리는 한 세대만 둔다: 직전 세대는 이번 교체가 시작될 때 버린다.
     docker rm -f "${name}-prev" >/dev/null 2>&1 || true
@@ -117,6 +134,10 @@ swap_one() {
   wait_ready "$name" || { save_failure_logs "$name"; return 1; }
   printf 'swapped: %s -> %s\n' "$name" "$IMAGE"
 }
+
+# shellcheck source=host-lock.sh
+source "${SCRIPT_DIRECTORY}/host-lock.sh"
+acquire_host_lock || exit "$?"
 
 for name in "${SINGLETONS[@]}"; do
   if ! swap_one "$name"; then
