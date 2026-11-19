@@ -997,6 +997,13 @@ components:
           - markout
           - lot
         event_at: *id003
+        fill_time_basis:
+          description: >-
+            Time basis of event_at on a fill row. Complete same-order websocket
+            coverage supplies the latest broker fill time for an aggregate row.
+            Otherwise the ledger row supplies the time and basis. Absent when unknown.
+          type: string
+          enum: [broker_fill_time, broker_order_time, observed_at]
         event_ref: *id001
         linked_ref: *id002
         status: *id001
