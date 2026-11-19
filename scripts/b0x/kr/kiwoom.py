@@ -746,9 +746,10 @@ def _row_symbol(row: dict[str, Any]) -> str:
     return raw
 
 
-#: kt00018 row fields that may carry a position's mark-to-market value, in the
-#: order the official response table lists them.
-_EVALUATION_FIELDS: tuple[str, ...] = ("evlt_amt", "evltv_amt", "evlu_amt")
+#: The one kt00018 row field that carries a position's mark-to-market value
+#: (``evlt_amt`` 평가금액). Other spellings (``evltv_amt``, ``evlu_amt``) are not
+#: in the official response table and must not be read.
+_EVALUATION_FIELDS: tuple[str, ...] = ("evlt_amt",)
 
 
 def _echoed_evaluation(row: dict[str, Any] | None) -> Decimal:
