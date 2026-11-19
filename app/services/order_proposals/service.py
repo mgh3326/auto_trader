@@ -35,6 +35,7 @@ from app.models.order_proposals import (
 from app.models.review import TossLiveOrderLedger
 from app.services.mandate import proposal_gate
 from app.services.mandate import store as mandate_store
+from app.services.order_proposals import mandate_quote
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
@@ -955,7 +956,9 @@ class OrderProposalsService:
                 or quantity <= 0
             ):
                 raise OrderProposalError("mandate_price_unavailable")
-            quote = await proposal_gate.load_proposal_quote(mandate)
+            quote = await proposal_gate.load_proposal_quote(
+                mandate, mandate_quote.read_plan_quote
+            )
             if quote is None:
                 raise OrderProposalError("mandate_ask_unavailable")
             if not quote.current_price.is_finite() or quote.current_price <= 0:
@@ -966,7 +969,7 @@ class OrderProposalsService:
                 observed_at=quote.ask_observed_at,
                 tick_size=quote.tick_size,
                 premium_bps=mandate.terms.entry_max_premium_bps,
-                now=now,
+                now=proposal_gate.ask_check_time(now, quote.read_at),
             )
             if band_refusal is not None:
                 raise OrderProposalError(band_refusal[0])
