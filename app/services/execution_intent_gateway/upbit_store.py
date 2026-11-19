@@ -264,6 +264,22 @@ class UpbitGatewayStore:
             await session.rollback()
             return snapshot
 
+    async def read_intent_orders(
+        self, intent: IntentSnapshot
+    ) -> list[IntentChildOrder]:
+        """This intent's orders with their evidence. Takes no lock, writes nothing."""
+        if intent.sleeve_id is None:
+            return []
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            orders = [
+                order
+                for order in await load_intent_child_orders(session, intent.sleeve_id)
+                if order.intent_id == intent.intent_id
+            ]
+            await session.rollback()
+            return orders
+
     async def list_open_intents(
         self, account: str, *, now: datetime
     ) -> list[dict[str, Any]]:

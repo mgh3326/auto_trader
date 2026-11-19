@@ -60,6 +60,19 @@ def _render(fn: str) -> str:
     return buffer.getvalue()
 
 
+def _hk5441_alters(table: str) -> str:
+    path = ROOT / "alembic/versions/20261120_hk5441_upbit_intent_gateway.py"
+    spec = importlib.util.spec_from_file_location("hk5441_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return "\n".join(
+        statement
+        for statement in module.ALTER_DDL
+        if f"review.{table} " in statement
+    )
+
+
 def _table_block(sql: str, table: str) -> str:
     start = sql.index(f"CREATE TABLE review.{table} (")
     return sql[start : sql.index(";", start)]
@@ -93,7 +106,9 @@ def test_migration_is_additive_only() -> None:
 @pytest.mark.parametrize("model", [StrategySleeve, StrategySleeveVersion])
 def test_migration_columns_and_checks_match_the_model(model: type) -> None:
     table: sa.Table = model.__table__  # type: ignore[attr-defined]
-    block = _table_block(_render("upgrade"), table.name)
+    # The table as created (20261102) plus what hk 5441 added to it
+    # (``strategy_sleeves.execution_path``).
+    block = _table_block(_render("upgrade"), table.name) + _hk5441_alters(table.name)
     for column in table.columns:
         assert f"{column.name} " in block, column.name
     checks = [c for c in table.constraints if isinstance(c, sa.CheckConstraint)]

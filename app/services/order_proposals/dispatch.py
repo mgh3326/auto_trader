@@ -113,6 +113,7 @@ from app.services.order_proposals.revalidation import (
 )
 from app.services.order_proposals.service import OrderProposalsService
 from app.services.strategy_sleeves.dispatch_gate import evaluate_sleeve_for_dispatch
+from app.services.strategy_sleeves.gate import SleeveGateVerdict
 from app.services.strategy_sleeves.vocabulary import SleeveGateReason
 from app.services.trading_policy_service import load_trading_policy
 from app.telegram_contract import (
@@ -678,6 +679,24 @@ async def _register_and_publish_batch_summary(
     )
 
 
+async def _exit_handoff_card_refusal(session: Any, group: Any) -> str | None:
+    """Why an exit handoff card may not be published, or ``None``."""
+    handoff_id = getattr(group, "exit_handoff_id", None)
+    if handoff_id is None:
+        return None
+    from app.services.strategy_sleeves.account_binding import (
+        configured_upbit_account_ref,
+    )
+    from app.services.strategy_sleeves.exit_handoffs import card_refusal
+
+    return await card_refusal(
+        session,
+        handoff_id=handoff_id,
+        proposal_id=group.proposal_id,
+        configured_account_ref=configured_upbit_account_ref(),
+    )
+
+
 async def send_proposal_for_approval(
     proposal_id: uuid.UUID,
     *,
@@ -715,6 +734,20 @@ async def send_proposal_for_approval(
     async with service_factory() as session:
         service = OrderProposalsService(session)
         group, window_rungs = await service.get_proposal(proposal_id)
+        # hk 5441 (design 5438 S5 d): an exit handoff card is published only
+        # while it holds the claim and the configured Upbit account is the
+        # mandate's. Any other proposal returns ``None`` here without a read.
+        handoff_refusal = await _exit_handoff_card_refusal(session, group)
+        if handoff_refusal is not None:
+            await session.rollback()
+            return await record_approval_dispatch_failure(
+                proposal_id,
+                publication=ApprovalPublication.failed(
+                    payload_chars=0, failure_code=handoff_refusal
+                ),
+                now=now,
+                service_factory=service_factory,
+            )
         evaluate_window = window_evaluator or evaluate_approval_window
         clock = now_fn or (lambda: now)
         window = await evaluate_approval_window_boundary(
@@ -1175,9 +1208,19 @@ async def dispatch_proposal(
             # sleeve lock this transaction holds until commit. Any other answer
             # demotes to the human card with the sleeve reason. An untagged
             # proposal (sleeve_id NULL) never enters this branch.
-            sleeve_verdict = await evaluate_sleeve_for_dispatch(
-                session, group=group, rungs=initial_rungs, now=gate_now
-            )
+            if getattr(group, "exit_handoff_id", None) is not None:
+                # hk 5441 (design 5438 S5): an exit handoff card is never
+                # auto-approved, whatever the sleeve's state. It exists because
+                # the loss-sell guard wants a person.
+                sleeve_verdict = SleeveGateVerdict(
+                    False,
+                    SleeveGateReason.EXIT_HANDOFF_CARD,
+                    {"sleeve_id": str(group.sleeve_id)},
+                )
+            else:
+                sleeve_verdict = await evaluate_sleeve_for_dispatch(
+                    session, group=group, rungs=initial_rungs, now=gate_now
+                )
             if not sleeve_verdict.allowed:
                 fallback_decisions.extend(
                     _sleeve_fallback_decisions(

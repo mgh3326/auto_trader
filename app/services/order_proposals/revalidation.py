@@ -78,6 +78,7 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
 )
+from app.services.order_proposals.exit_handoff_card import exit_handoff_place_fn
 from app.services.order_proposals.parking_sell_exemption import (
     ParkingSellContext,
     bind_parking_sell_context,
@@ -1450,6 +1451,10 @@ async def _revalidate_place_rung(
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
+    # hk 5441 (design 5438 S5 d): an exit handoff card's live send is fenced on
+    # its handoff and re-checks the account before the POST. Any other proposal
+    # gets ``place_order_fn`` back unchanged.
+    place_order_fn = exit_handoff_place_fn(group, place_order_fn)
     proposal_client_order_id = (
         _toss_proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "toss_live"

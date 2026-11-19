@@ -877,9 +877,14 @@ class OrderProposalsService:
         sleeve_id: int | None = None,
         candidate_ref: dict[str, Any] | None = None,
         decision_price_text: str | None = None,
+        exit_handoff_id: int | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
+        if exit_handoff_id is not None and (
+            isinstance(exit_handoff_id, bool) or not isinstance(exit_handoff_id, int)
+        ):
+            raise OrderProposalError("exit_handoff_id must be an integer")
         if sleeve_id is not None and (
             isinstance(sleeve_id, bool) or not isinstance(sleeve_id, int)
         ):
@@ -975,6 +980,20 @@ class OrderProposalsService:
             await self._validate_sleeve_binding(
                 sleeve_id=sleeve_id, account_mode=account_mode, market=market
             )
+        # hk 5441 (design 5438 S5, S7): the only card that may tag a go-path
+        # sleeve is the one that claims its exit handoff, here, in the
+        # transaction that inserts it.
+        await self._claim_exit_handoff_card(
+            exit_handoff_id=exit_handoff_id,
+            sleeve_id=sleeve_id,
+            proposal_id=proposal_id,
+            symbol=symbol,
+            side=side,
+            action=normalized_action,
+            is_revision=supersedes_proposal_id is not None,
+            rungs=rungs,
+            now=now,
+        )
 
         payload_hash = compute_proposal_payload_hash(
             symbol=symbol,
@@ -1041,6 +1060,7 @@ class OrderProposalsService:
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
             sleeve_id=sleeve_id,
+            exit_handoff_id=exit_handoff_id,
             decision_id=decision_id,
             lifecycle_state="proposed",
             correlation_id=correlation_id,
@@ -1096,6 +1116,71 @@ class OrderProposalsService:
                 f"sleeve {sleeve_id} is {sleeve.account_mode}/{sleeve.market}, "
                 f"not {account_mode}/{market}"
             )
+
+    async def _claim_exit_handoff_card(
+        self,
+        *,
+        exit_handoff_id: int | None,
+        sleeve_id: int | None,
+        proposal_id: uuid.UUID,
+        symbol: str,
+        side: str,
+        action: str | None,
+        is_revision: bool,
+        rungs: list[RungInput],
+        now: datetime | None,
+    ) -> None:
+        """hk 5441: bind a card to a go-path sleeve through its exit handoff.
+
+        A proposal that names no go-path sleeve and no handoff is untouched:
+        this returns before any read beyond the sleeve row it already has.
+        Otherwise the handoff is claimed (``ready_for_card`` to
+        ``card_claimed``) under the sleeve lock, with the configured account
+        checked against the mandate's. Any refusal raises before a row is
+        written. The DB triggers enforce the same rules for any writer.
+        """
+        if sleeve_id is None:
+            if exit_handoff_id is not None:
+                raise OrderProposalError("exit_handoff_id needs a sleeve_id")
+            return
+        from app.services.strategy_sleeves.store import get_sleeve
+
+        sleeve = await get_sleeve(self._session, sleeve_id)
+        on_go_path = getattr(sleeve, "execution_path", "card") == "go"
+        if not on_go_path:
+            if exit_handoff_id is not None:
+                raise OrderProposalError("exit_handoff_id needs a go-path sleeve")
+            return
+        if exit_handoff_id is None:
+            raise OrderProposalError(
+                "a go-path sleeve takes only the card of its exit handoff"
+            )
+        if is_revision or (action or "place") != "place":
+            raise OrderProposalError(
+                "an exit handoff card is a new place proposal, never a revision"
+            )
+        from app.services.strategy_sleeves.account_binding import (
+            configured_upbit_account_ref,
+        )
+        from app.services.strategy_sleeves.exit_handoffs import (
+            ExitHandoffError,
+            claim_exit_handoff,
+        )
+
+        try:
+            await claim_exit_handoff(
+                self._session,
+                handoff_id=exit_handoff_id,
+                proposal_id=proposal_id,
+                sleeve_id=sleeve_id,
+                symbol=symbol,
+                side=side,
+                rung_quantities=[Decimal(str(r.quantity)) for r in rungs],
+                configured_account_ref=configured_upbit_account_ref(),
+                now=now or datetime.now(UTC),
+            )
+        except ExitHandoffError as exc:
+            raise OrderProposalError(exc.code) from exc
 
     async def _validate_exit_binding(
         self,

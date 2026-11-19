@@ -45,6 +45,8 @@ class SleeveGateReason(StrEnum):
     PNL_UNMEASURED = "sleeve_pnl_unmeasured"
     USED_UNMEASURED = "sleeve_used_unmeasured"
     UNREADABLE = "sleeve_unreadable"
+    #: hk 5441: an exit handoff card (design 5438 S5) is always a person's call.
+    EXIT_HANDOFF_CARD = "sleeve_exit_handoff_card"
 
 
 @dataclass(frozen=True)
