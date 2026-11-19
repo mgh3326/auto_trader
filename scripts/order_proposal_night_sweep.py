@@ -13,6 +13,8 @@ from app.mcp_server.tooling.order_proposal_tools import run_order_proposal_night
 
 
 async def _run() -> tuple[dict[str, Any], int]:
+    if not settings.order_proposal_night_sweep_schedule_enabled:
+        return {"status": "skipped"}, 0
     if not settings.order_proposal_night_sweep_enabled:
         return {"status": "skipped"}, 0
 
@@ -22,13 +24,15 @@ async def _run() -> tuple[dict[str, Any], int]:
         print("order proposal night sweep raised an exception", file=sys.stderr)
         return {}, 1
 
+    inference_failed = result["inference"].get("failed", 0)
     output = {
-        "status": "ok",
+        "status": "failed" if inference_failed else "ok",
         "swept": result["expiry"].get("swept_count", 0),
         "inferred": result["inference"].get("applied", 0),
         "inference_blocked": len(result["inference"].get("blocked_rows", [])),
+        "failed": inference_failed,
     }
-    return output, 0
+    return output, int(inference_failed > 0)
 
 
 def main() -> int:

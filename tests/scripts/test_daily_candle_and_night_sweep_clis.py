@@ -39,6 +39,24 @@ def test_daily_candles_cli_fails_for_job_failure(monkeypatch, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
+def test_daily_candles_cli_fails_for_partial_job_result(monkeypatch, capsys) -> None:
+    async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
+        return {
+            "status": "partial",
+            "market": market,
+            "failed_symbols": ["BTC-USDT"],
+        }
+
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
+
+    assert sync_daily_candles.main(["--market", "crypto"]) != 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "partial"
+    assert result["failed_symbols"] == ["BTC-USDT"]
+
+
 def test_daily_candles_cli_fails_on_exception(monkeypatch, capsys) -> None:
     async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
         raise RuntimeError("unexpected")
@@ -73,12 +91,44 @@ def test_night_sweep_gate_off_prints_skipped_and_does_not_call_job(
     assert json.loads(capsys.readouterr().out) == {"status": "skipped"}
 
 
+def test_night_sweep_schedule_gate_off_prints_skipped_and_does_not_call_job(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_schedule_enabled",
+        False,
+    )
+
+    async def unexpected_call(**kwargs):
+        raise AssertionError("night sweep job must not run while schedule is disabled")
+
+    monkeypatch.setattr(
+        order_proposal_night_sweep,
+        "run_order_proposal_night_sweep",
+        unexpected_call,
+    )
+
+    assert order_proposal_night_sweep.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "skipped"}
+
+
 def test_night_sweep_enabled_calls_job_and_prints_task_summary(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(
         order_proposal_night_sweep.settings,
         "order_proposal_night_sweep_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_schedule_enabled",
         True,
     )
     now = datetime(2026, 11, 19, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
@@ -105,6 +155,7 @@ def test_night_sweep_enabled_calls_job_and_prints_task_summary(
         "swept": 2,
         "inferred": 1,
         "inference_blocked": 1,
+        "failed": 0,
     }
 
 
@@ -112,6 +163,11 @@ def test_night_sweep_job_exception_is_nonzero(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         order_proposal_night_sweep.settings,
         "order_proposal_night_sweep_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_schedule_enabled",
         True,
     )
 
@@ -126,3 +182,33 @@ def test_night_sweep_job_exception_is_nonzero(monkeypatch, capsys) -> None:
 
     assert order_proposal_night_sweep.main() != 0
     assert capsys.readouterr().out == ""
+
+
+def test_night_sweep_inference_failure_is_reported_and_nonzero(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_schedule_enabled",
+        True,
+    )
+
+    async def run_order_proposal_night_sweep(**kwargs) -> dict[str, object]:
+        return {
+            "expiry": {"swept_count": 0},
+            "inference": {"applied": 0, "failed": 1, "blocked_rows": []},
+        }
+
+    monkeypatch.setattr(
+        order_proposal_night_sweep,
+        "run_order_proposal_night_sweep",
+        run_order_proposal_night_sweep,
+    )
+
+    assert order_proposal_night_sweep.main() != 0
+    assert json.loads(capsys.readouterr().out)["failed"] == 1

@@ -18,7 +18,7 @@ async def _run(market: str) -> tuple[dict[str, Any], int]:
     except Exception:
         print("daily candle sync raised an exception", file=sys.stderr)
         return {}, 1
-    return result, int(result.get("status") == "failed")
+    return result, int(result.get("status") != "ok")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

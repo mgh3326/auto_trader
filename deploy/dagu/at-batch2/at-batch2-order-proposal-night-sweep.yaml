@@ -1,5 +1,5 @@
 # 16:30·07:00 KST 월–금 야간 제안 스윕. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
-# 스케줄은 UTC(07:30 월–금, 22:00 일–목)로 표기한다. 본문은 기존 환경 게이트를 유지한다.
+# 스케줄은 UTC(07:30 월–금, 22:00 일–목)로 표기한다. 기존 body·schedule 두 게이트가 모두 필요하다.
 description: "order proposal night sweep (existing environment gate required)"
 schedule:
   - "CRON_TZ=UTC 30 7 * * 1-5"
