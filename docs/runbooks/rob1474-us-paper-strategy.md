@@ -171,3 +171,39 @@ process control exceptions propagate instead of being treated as entry failures.
 Use `status` to identify unresolved orders. Broker exceptions and DB DSNs are not
 printed: the CLI emits a fixed error and exception class, and returns nonzero for
 unresolved sends. No schedules, TaskIQ jobs, cron entries or deployments are added.
+
+## Operator-declared ticker change (hk 5518)
+
+A merger or rename can leave an episode's entry symbol unknown to the broker while
+the position lives under a new ticker (2026-11-20: BKH → HZN, exit legs stranded as
+`planned`). `close-due` and `status` accept a repeatable `--symbol-change OLD=NEW`;
+`run` rejects it. Malformed input (shape, `OLD==NEW`, repeated OLD or NEW, chains)
+fails before any broker or database access. Nothing is inferred from corporate-action
+feeds; the operator declares the mapping.
+
+```bash
+python -m scripts.mock_strategy close-due --venue alpaca_paper --asof 2026-11-20 \
+  --confirm --symbol-change BKH=HZN
+```
+
+`close-due` applies a mapping only when read-only broker evidence shows all of: OLD
+is a 404, inactive or non-tradable asset; OLD has no position; NEW is an active
+tradable `us_equity`; NEW's position has the same direction and at least the summed
+open quantity of every unclosed episode journaled under OLD (entry fills minus proven
+exit fills). An unresolved entry or exit leg (`sending`/`uncertain`/`accepted`) makes
+that quantity unknowable, so the mapping is refused for the run. A refused mapping
+leaves its legs `planned`, sends nothing and prints the reason under `symbol_changes`
+and on each affected order. Open episodes already journaled under NEW itself are not counted in that bound:
+they share NEW's position with the mapped legs, so the later leg can fail its fresh
+position guard and stay `planned` (nothing over-sells); avoid mapping onto a symbol
+that has its own open episodes. The per-leg send guards (fresh NEW position and available
+quantity, session, shape, switches, account identity) still run before the POST.
+
+An applied mapping journals `meta.symbol_change` (`from`, `to`, evidence) on the exit
+leg while the immutable `symbol` column keeps OLD. The leg is claimed and sent once
+as NEW, and its echo is verified against NEW. Later runs refresh the leg by client
+order ID with no flag. A leg that already has a journaled mapping is not sent again
+unless the same run re-verifies the same mapping. `sending`/`uncertain` legs are
+never resent, mapping or not. `status --symbol-change` is read-only: it prints the
+declared mapping as unverified, since verification needs the broker. Without the
+flag, `close-due`, `status` and `run` output is unchanged.
