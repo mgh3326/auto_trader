@@ -735,18 +735,22 @@ async def test_journal_exit_correction_drops_the_quarantined_row(
         ).model_dump()
     )
     db_session.add(sell)
+    await db_session.flush()
+    sell_id = int(sell.id)
     await db_session.commit()
 
     journal = SimpleNamespace(
         account="kis",
         symbol=scenario.symbol,
         instrument_type=journal_exit_correction.InstrumentType.equity_kr,
+        created_at=NOW - timedelta(days=30),
         exit_date=NOW,
     )
     rows = await journal_exit_correction.load_candidates(db_session, journal)
+    loaded_ids = {int(r.id) for r in rows}  # before rollback expires the rows
     await db_session.rollback()
-    assert [int(r.id) for r in rows] == [int(sell.id)]
-    assert scenario.phantom_id not in {int(r.id) for r in rows}
+    assert loaded_ids == {sell_id}
+    assert scenario.phantom_id not in loaded_ids
 
 
 async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:
