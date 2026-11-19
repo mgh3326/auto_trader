@@ -712,6 +712,9 @@ def evaluate_auto_approve_eligibility(
             details["price_context_message"] = price_context_message
         return AutoApproveDecision(False, reason, {**base, **details})
 
+    if getattr(group, "mandate_plan_id", None) is not None:
+        return reject("mandate_not_eligible")
+
     mode = limits.mode
     if mode not in ("off", "expanded"):
         # An unrecognised mode is not a licence to submit.

@@ -238,6 +238,18 @@ def test_expanded_buy_inside_min_distance_is_eligible():
     assert decision.details["mode"] == "expanded"
 
 
+def test_i23_mandate_buy_below_market_requires_human_approval():
+    decision = _evaluate(
+        group_overrides={"mandate_plan_id": 42},
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "mandate_not_eligible"
+
+
 def test_off_mode_rejects_what_expanded_would_allow():
     """Mutant ⑧ — the §40차 rules must not leak into the default mode."""
     near_market_buy = {
