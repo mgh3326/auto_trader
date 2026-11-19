@@ -339,7 +339,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 - `intent_id = uuid5(NAMESPACE, f"{strategy}|{strategy_code_sha}|{symbol}|{decision_at.isoformat()}|{action}")`. 같은 결정 시각 재실행은 같은 id → `store_intent` no-op(I12). 다른 내용이면 `IntentConflict`로 실패하고 잡이 비영(非0)으로 끝난다(경보).
 - 진입: `max_notional_krw` = 4885 §3.5 크기(`LEG_CAP × min(1, σ*/σ̂)`), 50,000 미만이면 intent 없음 + `skipped_below_floor` 기록. `limit_price_krw` = 잡 시점 최우선 매도호가(호가 단위), `max_slippage_bps` = 위임장 `price_band_bps`. `max_quantity_decimal` = `max_notional / limit_price`를 8자리 내림.
-- 청산: 수량 = sleeve 귀속 보유 전량. 가격 = 최우선 매수호가. 평단×1.01 미만이 **예상되면** intent 대신 바로 loss_cut 제안 카드(§2.1 A)를 낸다 — 게이트웨이 거부를 기다리지 않는다. 판정 실패(평단 읽기 실패)는 intent를 내고 게이트웨이 판정에 맡긴다.
+- 청산: 수량 = sleeve 귀속 보유 전량. 가격 = 최우선 매수호가. 평단×1.01 미만이 **예상되면**, live 결정은 intent 대신 바로 S5 청산 인계를 연다(카드는 인계에서만) — 게이트웨이 거부를 기다리지 않는다. shadow 결정은 B21대로 결정 행만 남기고 인계·카드·제안을 만들지 않는다. 판정 실패(평단 읽기 실패)는 intent를 내고 게이트웨이 판정에 맡긴다.
 - 쿨다운 중인 심볼의 진입은 intent를 만들지 않고 `blocked_by_cooldown`.
 
 ### 6.4 결정 로그
@@ -356,7 +356,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 | 4885 위치 | 바뀌는 것 |
 |---|---|
-| §4 머리 | "카드 경로"는 이 문서의 의도 경로로 대체된다는 안내 줄 추가. 기존 §4 본문은 의도 경로가 live로 열리기 전까지의 대체 경로이자, 평단 아래 청산(§2.1 A)에서 계속 쓰는 loss_cut 카드 절차로 남는다 |
+| §4 머리 | "카드 경로"는 이 문서의 의도 경로로 대체된다는 안내 줄 추가. 기존 §4 본문은 의도 경로가 live로 열리기 전까지의 대체 경로이자, 평단×1.01 미만 또는 평단 미증명 청산(§2.1 A, B9·B27, S5 청산 인계)에서 계속 쓰는 loss_cut 카드 절차로 남는다 |
 | §9 첫 줄·"건별 주문 승인" 줄 | "자동 집행·위임장 미승인"을 "자동 집행은 5438 의도 경로 + 최소 위임장으로 개정(at-go-executor), 그 경로의 shadow→live 전환·위임장 행 승인은 별도 운영자 행위"로 바꾼다 |
 | §9 "스케줄러" 줄 | 결정·점검 Dagu 잡 등록도 별도 승인임을 명시 |
 
@@ -371,7 +371,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 1. 4885 §3.3~3.5 규칙을 순수 함수로 구현하고, 경계값(NO_SIGNAL, 바닥 50,000, σ̂ 스케일, 8자리 내림) 테스트가 있다.
 2. `decide`·`stop-check`는 기본 preview(쓰기 0)이고 `--commit`일 때만 `store_intent`·결정 행을 쓴다.
 3. 같은 결정 시각 재실행은 intent·결정 행 수를 바꾸지 않는다(테스트).
-4. 평단×1.01 미만 예상 청산은 intent가 아니라 기존 loss_cut 제안을 만든다(테스트, 제안 도구 호출 대체).
+4. live 결정의 평단×1.01 미만 예상 청산은 intent가 아니라 S5 청산 인계를 연다. shadow 결정은 결정 행만 남기고 인계·제안을 만들지 않는다(둘 다 테스트).
 5. 쿨다운 심볼 진입은 intent 없음 + `blocked_by_cooldown` 결정 행.
 6. 브로커 주문 모듈을 import하지 않는다(정적 테스트).
 7. Dagu YAML은 `deploy/dagu/` 사본뿐이며 등록하지 않는다.
