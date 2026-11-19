@@ -164,6 +164,17 @@ from .screener_pick_log import ScreenerPickLog
 from .sell_condition import SellCondition
 from .session_context import OperatorSessionContext
 from .strategy_learning_event import ResearchStrategyLearningEvent
+from .mandate import (
+    MandateActivationProfile,
+    MandateApproval,
+    MandateApprovalRequest,
+    MandatePlan,
+    MandatePlanEvent,
+    MandatePlanTranche,
+    MandateSymbolReservation,
+    MandateSymbolReservationRelease,
+    MandateTerms,
+)
 from .strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from .symbol_news_relevance import SymbolNewsRelevance
 from .symbol_sectors import SymbolSector
@@ -230,6 +241,15 @@ __all__ = [
     "ScalpingReviewAction",
     "ExecutionChildRequest",
     "ExecutionIntent",
+    "MandateActivationProfile",
+    "MandateApproval",
+    "MandateApprovalRequest",
+    "MandatePlan",
+    "MandatePlanEvent",
+    "MandatePlanTranche",
+    "MandateSymbolReservation",
+    "MandateSymbolReservationRelease",
+    "MandateTerms",
     "StrategySleeve",
     "StrategySleeveVersion",
     "ExecutionLedger",
