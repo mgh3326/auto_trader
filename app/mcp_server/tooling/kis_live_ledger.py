@@ -1005,6 +1005,8 @@ async def _reconcile_one_ledger_row(
             )
     elif row.side == "sell":
         close_result = await _close_journals_on_sell(
+            # Cumulative evidence does not identify a trustworthy fill time for this delta.
+            exit_at=None,
             symbol=row.symbol,
             sell_quantity=float(delta_qty),
             sell_price=float(avg_price),

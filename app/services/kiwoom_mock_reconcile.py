@@ -480,6 +480,8 @@ async def _journal_unjournaled(
         journaled_now = unjournaled
     else:
         close = await order_journal._close_journals_on_sell(
+            # Bookings and recovered remainders have no broker fill timestamp.
+            exit_at=None,
             symbol=booking.symbol,
             sell_quantity=float(unjournaled),
             sell_price=float(price),

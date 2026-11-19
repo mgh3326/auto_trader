@@ -45,7 +45,10 @@ from app.services.fill_notification import (
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
 from app.services.protected_position_auto_follow import follow_committed_fills
-from app.services.toss_execution_ledger import upsert_toss_execution_fill
+from app.services.toss_execution_ledger import (
+    _parse_toss_fill_time,
+    upsert_toss_execution_fill,
+)
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 _TOSS_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us"}
@@ -677,7 +680,9 @@ async def _reconcile_one_toss_row(
                 account="toss",
             )
     elif row.side == "sell":
+        fill_at, fill_basis = _parse_toss_fill_time(dict(evidence.raw_order or {}))
         fx_summary = await _close_journals_on_sell(
+            exit_at=fill_at if fill_basis == "broker_fill_time" else None,
             symbol=row.symbol,
             sell_quantity=float(delta),
             sell_price=float(avg_price),
