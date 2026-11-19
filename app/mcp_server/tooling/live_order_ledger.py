@@ -643,6 +643,8 @@ async def _reconcile_one_live_row(
                 approval_verified_at=row.trade_date or datetime.now(UTC),
             )
         fx_summary = await _close_journals_on_sell(
+            # Cumulative evidence does not identify a trustworthy fill time for this delta.
+            exit_at=None,
             symbol=row.symbol,
             sell_quantity=float(delta),
             sell_price=float(avg_price),

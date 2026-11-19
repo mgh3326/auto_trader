@@ -37,6 +37,8 @@
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
+대사로 부킹한 매도 저널은 신뢰할 수 있는 브로커 체결 시각이 있으면 이를 `exit_date`에 기록한다. KRW 청산은 수수료 차감 전 `(매도가 - 진입가) × 청산 수량`을 `total_pnl_krw`에 기록한다.
+
 **ROB-1474 모의 크기 상한 예외 (운영자 결정 2026-11-02,
 `decision/2026-11-02/mock-trading-all-venues-no-caps`)**: Alpaca paper의
 수량·금액 상한을 제거한다. 양수·유한값, 정확한 주문 크기의 승인 패킷 결속,

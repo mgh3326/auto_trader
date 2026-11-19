@@ -404,6 +404,7 @@ tests/test_investor_flow_snapshot_builder.py
 tests/test_investor_flow_snapshot_fields.py
 tests/test_investor_flow_snapshot_job.py
 tests/test_journal_counterfactual_service.py
+tests/test_journal_exit_time.py
 tests/test_journal_verdict_service.py
 tests/test_kis_circuit_breaker_dispatch.py
 tests/test_kis_domestic_order_normalization.py

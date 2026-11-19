@@ -292,6 +292,7 @@ def _apply_sell_close_fields(
     fx_pnl_accuracy: str | None,
     exit_reason: str,
     defensive_trim_ctx: DefensiveTrimContext | None,
+    exit_at: datetime.datetime | None,
 ) -> tuple[dict[str, Decimal] | None, bool]:
     """Stamp a lot row as sold.
 
@@ -306,7 +307,7 @@ def _apply_sell_close_fields(
     """
     journal.status = JournalStatus.closed
     journal.exit_price = sell_price
-    journal.exit_date = now_kst()
+    journal.exit_date = now_kst() if exit_at is None else exit_at
     journal.exit_reason = exit_reason
     if defensive_trim_ctx is not None:
         journal.notes = _append_defensive_trim_note(
@@ -321,6 +322,19 @@ def _apply_sell_close_fields(
             "100"
         )
         journal.pnl_pct = pnl_pct
+
+    if (
+        closed_quantity is not None
+        and journal.entry_price is not None
+        and (
+            journal.instrument_type == InstrumentType.equity_kr
+            or (
+                journal.instrument_type == InstrumentType.crypto
+                and journal.symbol.startswith("KRW-")
+            )
+        )
+    ):
+        journal.total_pnl_krw = (sell_price - journal.entry_price) * closed_quantity
 
     # ROB-568 — US FX PnL split
     fx_attempted = (
@@ -412,6 +426,7 @@ async def _close_journals_on_sell(
     fx_pnl_accuracy: str | None = None,
     db: AsyncSession | None = None,
     journal_created_before: datetime.datetime | None = None,
+    exit_at: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -449,6 +464,8 @@ async def _close_journals_on_sell(
     existed when the sell first missed, so a lot journaled from a later buy
     is not retroactively closed against the older sell.
     """
+    if exit_at is not None and (exit_at.tzinfo is None or exit_at.utcoffset() is None):
+        raise ValueError("exit_at must be timezone-aware")
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
     sell_fx_rate_dec = Decimal(str(sell_fx_rate)) if sell_fx_rate is not None else None
@@ -497,6 +514,7 @@ async def _close_journals_on_sell(
                 fx_pnl_accuracy=fx_pnl_accuracy,
                 exit_reason=resolved_reason,
                 defensive_trim_ctx=defensive_trim_ctx,
+                exit_at=exit_at,
             )
             realized.append((closed_quantity, row, fx_values, fx_attempted))
             closed_ids.append(row.id)
