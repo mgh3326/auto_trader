@@ -185,8 +185,10 @@ python -m scripts.mock_strategy close-due --venue alpaca_paper --asof 2026-11-20
 is a 404, inactive or non-tradable asset; OLD has no position; NEW is an active
 tradable `us_equity`; NEW's position has the same direction and at least the summed
 open quantity of every unclosed episode journaled under OLD (entry fills minus proven
-exit fills). An unresolved entry or exit leg (`sending`/`uncertain`/`accepted`) makes
-that quantity unknowable, so the mapping is refused for the run. A refused mapping
+exit fills). Before judging, unsettled orders under OLD (including not-yet-due sibling episodes)
+are recovered by the usual client-ID lookup through the recorder; an entry or exit
+leg still `sending`/`uncertain`/`accepted` afterwards (lookup failed, mismatched or
+missing) makes that quantity unknowable, so the mapping is refused for the run. A refused mapping
 leaves its legs `planned`, sends nothing and prints the reason under `symbol_changes`
 and on each affected order. Open episodes already journaled under NEW itself are not counted in that bound:
 they share NEW's position with the mapped legs, so the later leg can fail its fresh

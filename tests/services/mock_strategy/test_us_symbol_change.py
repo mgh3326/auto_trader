@@ -739,7 +739,7 @@ async def test_conflicting_declaration_keeps_the_journaled_ticker_on_the_booked_
             "from": "BKH",
             "to": "QQQ",
             "applied": False,
-            "reason": "exit_leg_unresolved",
+            "reason": "no_open_quantity",  # the fill was recovered first
         }
 
 
@@ -780,6 +780,7 @@ class IncidentTransport(SwapTransport):
         }
         self.orders = {}
         self.posts = []
+        self.broken_lookups = set()
 
     async def request(self, method, path, **kwargs):
         import httpx
@@ -807,6 +808,8 @@ class IncidentTransport(SwapTransport):
             return httpx.Response(200, json=order)
         if path == "/v2/orders:by_client_order_id":
             self.calls.append((method, path, kwargs))
+            if kwargs["params"]["client_order_id"] in self.broken_lookups:
+                return httpx.Response(503, json={})
             found = self.orders.get(kwargs["params"]["client_order_id"])
             if found is None:
                 return httpx.Response(404, json={})
@@ -960,4 +963,55 @@ async def test_incident_with_a_short_position_sends_nothing(enabled):
     assert result["symbol_changes"][0]["reason"] == (
         "new symbol position below open episode quantity"
     )
+    assert {recorder.rows[i].status for i in exit_ids.values()} == {"planned"}
+
+
+def journal_h10_as_accepted(recorder):
+    entry = next(
+        r for r in recorder.rows.values() if r.side == "buy" and r.meta["horizon"] == 10
+    )
+    entry.status = "accepted"
+    entry.entry_price = None
+    entry.meta = {
+        k: v
+        for k, v in entry.meta.items()
+        if k not in {"filled_qty", "broker_terminal", "broker_status"}
+    } | {"broker_status": "pending_new", "filled_qty": "0"}
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_not_yet_due_sibling_entry_is_recovered_from_broker_evidence(enabled):
+    transport = IncidentTransport()
+    recorder, exit_ids = seed_incident(transport)
+    sibling = journal_h10_as_accepted(recorder)  # broker already has it filled
+    result = await UsPaperStrategy(recorder, make(transport)).close_due(
+        asof=INCIDENT_DAY, confirm=True, symbol_changes=CHANGES
+    )
+    assert result["symbol_changes"] == [{"from": "BKH", "to": "HZN", "applied": True}]
+    assert [b["qty"] for b in transport.posts] == ["4.670052539", "4.658087807"]
+    assert sibling.status == "filled"  # recovered through the recorder
+    assert sibling.meta["filled_qty"] == "4.653210795"
+    assert sibling.meta["broker_terminal"] is True
+    assert {recorder.rows[i].status for i in exit_ids.values()} == {"closed"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["lookup_error", "wrong_symbol", "no_order"])
+async def test_unrecoverable_sibling_entry_still_refuses_the_mapping(enabled, failure):
+    transport = IncidentTransport()
+    recorder, exit_ids = seed_incident(transport)
+    sibling = journal_h10_as_accepted(recorder)
+    if failure == "lookup_error":
+        transport.broken_lookups.add(sibling.client_order_id)
+    elif failure == "wrong_symbol":
+        transport.orders[sibling.client_order_id]["symbol"] = "WRONG"
+    else:
+        del transport.orders[sibling.client_order_id]
+    result = await UsPaperStrategy(recorder, make(transport)).close_due(
+        asof=INCIDENT_DAY, confirm=True, symbol_changes=CHANGES
+    )
+    assert not transport.posts
+    assert result["symbol_changes"][0]["applied"] is False
+    assert result["symbol_changes"][0]["reason"] == "entry_fill_unresolved"
     assert {recorder.rows[i].status for i in exit_ids.values()} == {"planned"}

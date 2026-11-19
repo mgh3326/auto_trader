@@ -380,12 +380,25 @@ class UsPaperStrategy:
         self, account: str, due: list[MockStrategyOrder], changes: dict[str, str]
     ) -> dict[str, dict]:
         """Per declared OLD=NEW with a due episode: broker proof or a refusal."""
+        declared = {old for old in changes if old in {e.symbol for e in due}}
+        # The open quantity needs settled fills. Recover sent-but-unsettled orders
+        # under a declared symbol (including not-yet-due sibling episodes) by the
+        # usual client-ID lookup; lookups that fail or mismatch stay unresolved.
+        for row in await self.recorder.list_orders(venue=VENUE, account_ref=account):
+            if row.symbol in declared and (
+                row.status in {"sending", "uncertain", "accepted"}
+                or (
+                    row.status == "partially_filled"
+                    and not row.meta.get("broker_terminal")
+                )
+            ):
+                await self._refresh(row)
         rows = await self.recorder.list_orders(venue=VENUE, account_ref=account)
         verdicts = {}
         for old, new in changes.items():
             verdict = {"from": old, "to": new, "applied": False}
             verdicts[old] = verdict
-            if old not in {entry.symbol for entry in due}:
+            if old not in declared:
                 verdict["reason"] = "no_due_episode"
                 continue
             quantity = open_quantity(rows, old)
