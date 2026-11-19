@@ -5,7 +5,7 @@
 ## 먼저 설정할 것
 
 - **`MANDATE_APPROVER_TELEGRAM_USER_IDS`** — 위임장 카드에 응답할 수 있는 Telegram 사용자 id를 쉼표로 적는다(정수 십진수만). **기본은 빈 값이고 빈 값이면 아무도 승인할 수 없다.** 항목 하나라도 형식이 틀리면 목록 전체가 빈 값으로 취급된다(fail-closed). 이 값은 env 변경이므로 배포 때 내용 기준 승인을 받는다.
-- 카드는 승인 allowlist(`ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`)의 첫 chat으로 보낸다. **봇은 기존 승인 메시지와 같은 `TELEGRAM_TOKEN`(TradeNotifier가 쓰는 BotFather 토큰)이고, 웹훅을 등록한 봇이어야 한다.** 카드를 보내는 봇과 버튼 응답·메시지 수정을 하는 봇이 같아야 하며, `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`은 어떤 코드도 읽지 않는다. 콜백은 기존 webhook(`/trading/api/telegram/callback`) 하나로 들어오며 `ORDER_PROPOSALS_TELEGRAM_ENABLED`가 꺼져 있으면 받지 않는다.
+- 카드는 승인 allowlist(`ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`)의 첫 chat으로 보낸다. **봇은 기존 승인 메시지와 같은 `TELEGRAM_TOKEN`(TradeNotifier가 쓰는 BotFather 토큰)이고, 웹훅을 등록한 봇이어야 한다.** 카드를 보내는 봇과 버튼 응답·메시지 수정을 하는 봇이 같아야 하며, 이 CLI(`scripts/mandate_batch.py`)는 `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`을 읽지 않는다(조항·프로필 카드를 발송하는 T3b `scripts/mandate.py`는 이 변수를 읽으므로 두 종류의 카드를 함께 쓰는 배포에서는 지우지 않는다). 콜백은 기존 webhook(`/trading/api/telegram/callback`) 하나로 들어오며 `ORDER_PROPOSALS_TELEGRAM_ENABLED`가 꺼져 있으면 받지 않는다.
 - 마이그레이션 `20261120_hk5648_mandate_batches`가 적용돼 있어야 한다(운영자 적용).
 
 ## 공통 규칙
