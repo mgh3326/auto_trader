@@ -39,22 +39,58 @@ def test_daily_candles_cli_fails_for_job_failure(monkeypatch, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
-def test_daily_candles_cli_fails_for_partial_job_result(monkeypatch, capsys) -> None:
+def test_daily_candles_cli_exits_3_for_partial_job_result(monkeypatch, capsys) -> None:
     async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
         return {
             "status": "partial",
             "market": market,
-            "failed_symbols": ["BTC-USDT"],
+            "failed_count": 1,
+            "failed_symbols": [{"symbol": "ANT", "error_class": "ValueError"}],
         }
 
     monkeypatch.setattr(
         sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
     )
 
-    assert sync_daily_candles.main(["--market", "crypto"]) != 0
+    assert sync_daily_candles.main(["--market", "us"]) == 3
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "partial"
-    assert result["failed_symbols"] == ["BTC-USDT"]
+    assert result["failed_count"] == 1
+    assert result["failed_symbols"] == [{"symbol": "ANT", "error_class": "ValueError"}]
+
+
+def test_daily_candles_cli_exits_1_when_every_target_failed(
+    monkeypatch, capsys
+) -> None:
+    async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
+        return {
+            "status": "failed",
+            "market": market,
+            "targets_total": 2,
+            "failed_count": 2,
+            "failed_symbols": [],
+        }
+
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
+
+    assert sync_daily_candles.main(["--market", "kr"]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def test_daily_candles_cli_exits_1_for_job_result_without_failed_count(
+    monkeypatch, capsys
+) -> None:
+    async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
+        return {"status": "failed", "market": market, "error": "db down"}
+
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
+
+    assert sync_daily_candles.main(["--market", "kr"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "db down"
 
 
 def test_daily_candles_cli_fails_on_exception(monkeypatch, capsys) -> None:

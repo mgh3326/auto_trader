@@ -12,6 +12,7 @@ steps:
     script: |
       rc=0
       docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_daily_candles --market crypto || rc=$?
+      if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch "dag=at-batch2-daily-candles-crypto step=sync status=attention" || true; exit 0; fi
       exit "$rc"
     timeout_sec: 1800
 handler_on:
