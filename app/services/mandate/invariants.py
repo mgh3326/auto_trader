@@ -169,10 +169,8 @@ def sector_cap_check(
                   unreleased plan of the basket, this one included
     The sector must satisfy ``numerator x 100 <= denominator x sector_cap_pct``.
     """
-    plans = [*existing, new]
-    numerator = sum((p.planned for p in plans if p.sector_key == new.sector_key), ZERO)
-    denominator = sum(constituent_budget_caps, ZERO) + sum(
-        (p.adopted for p in plans), ZERO
+    numerator, denominator = sector_exposure(
+        [*existing, new], constituent_budget_caps, new.sector_key
     )
     if numerator * HUNDRED > denominator * sector_cap_pct:
         raise InvariantViolation(
@@ -180,6 +178,17 @@ def sector_cap_check(
             f"sector {new.sector_key!r}: {numerator} of {denominator} exceeds "
             f"{sector_cap_pct}%",
         )
+
+
+def sector_exposure(
+    plans: Sequence[PlanAmounts],
+    constituent_budget_caps: Iterable[Decimal],
+    sector_key: str,
+) -> tuple[Decimal, Decimal]:
+    return (
+        sum((p.planned for p in plans if p.sector_key == sector_key), ZERO),
+        sum(constituent_budget_caps, ZERO) + sum((p.adopted for p in plans), ZERO),
+    )
 
 
 # --- I5 / I6 / I7 -------------------------------------------------------------

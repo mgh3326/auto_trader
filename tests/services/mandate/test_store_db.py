@@ -1297,3 +1297,114 @@ async def test_i1_a_concurrent_reservation_and_released_event_leave_no_stranded_
         p=plan_id,
     )
     assert unreleased == 0
+
+
+@pytest.mark.parametrize(
+    ("account_matches", "reason"),
+    [
+        pytest.param(False, "mandate_account_mismatch", id="I15_account_mismatch"),
+        pytest.param(True, "mandate_tranche_duplicate", id="I9_no_open_binding"),
+    ],
+)
+async def test_t4a_dispatch_refuses_after_locking_the_durable_plan(
+    db_session, seed, account_matches, reason
+) -> None:
+    from app.services.mandate.proposal_gate import check_dispatch, lock_plan_proposal
+
+    sleeve, _terms, plan = await _approved(seed, db_session)
+    proposal = await seed.bound_proposal(plan=plan, sleeve=sleeve)
+    await db_session.commit()
+    now = datetime(2026, 11, 23, 1, tzinfo=UTC)
+    context = await lock_plan_proposal(db_session, plan.id, 1)
+
+    verdict, detail = await check_dispatch(
+        db_session,
+        context,
+        proposal_id=proposal.proposal_id,
+        broker_account_id=plan.account_ref if account_matches else "other-account",
+        now=now,
+    )
+
+    assert (verdict, detail) == (reason, {})
+    assert not (await ms.plan_state(db_session, plan.id)).unclosed_fences
+    await db_session.rollback()
+
+
+async def test_t4a_I4_dispatch_reads_the_strictest_current_basket_cap(
+    db_session, seed, monkeypatch
+) -> None:
+    from decimal import Decimal
+    from unittest.mock import AsyncMock
+
+    from app.services.mandate import proposal_gate as gate
+
+    symbol = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(symbol,))
+    registered = await seed.register(sleeve, terms, symbol, planned="2000000")
+    plan = seed.plan_snapshot(registered.plan)
+    await seed.approve_plan(plan.id, terms)
+    request = await ms.create_profile_request(
+        db_session,
+        sleeve_id=sleeve.id,
+        terms_id=terms.id,
+        max_tranche_index=1,
+        effective_session=EFFECTIVE,
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        approval_ref="hk:test",
+        requested_by="operator:test",
+    )
+    await ms.record_approval(
+        db_session,
+        request_id=request.id,
+        decision="approved",
+        principal=PRINCIPAL,
+        nonce_digest=digest("profile"),
+    )
+    proposal = await seed.bound_proposal(plan=plan, sleeve=sleeve)
+    for event in ("tranche_armed", "tranche_proposed"):
+        fields = (
+            {"proposal_id": proposal.proposal_id} if event == "tranche_proposed" else {}
+        )
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event=event,
+            actor="operator:test",
+            tranche_index=1,
+            **fields,
+        )
+    await db_session.commit()
+    await seed.clause_sleeve(
+        symbols=(new_symbol(),),
+        basket_key=terms.basket_key,
+        account_mode="toss_live",
+        sector_cap_pct="5",
+    )
+    now = datetime(2026, 11, 23, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        gate,
+        "buy_freeze_state",
+        AsyncMock(
+            return_value=gate.FreezeVerdict(
+                frozen=False,
+                reason="fixture",
+                evidence={},
+                valid_until=now + timedelta(minutes=1),
+            )
+        ),
+    )
+
+    context = await gate.lock_plan_proposal(db_session, plan.id, 1)
+    reason, detail = await gate.check_dispatch(
+        db_session,
+        context,
+        proposal_id=proposal.proposal_id,
+        broker_account_id=plan.account_ref,
+        now=now,
+    )
+
+    assert reason == "mandate_sector_cap"
+    assert Decimal(detail["mandate_sector_amount"]) == Decimal("2000000")
+    assert Decimal(detail["mandate_sector_denominator"]) == Decimal("20000000")
+    assert Decimal(detail["mandate_sector_cap_pct"]) == Decimal("5")
+    await db_session.rollback()

@@ -28,9 +28,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.mandate import (
     MandateActivationProfile,
@@ -1058,7 +1059,7 @@ async def _open_loss_cut(session: AsyncSession, market: str, symbol: str) -> boo
     return any(sleeve_store.sleeve_symbol(r[0], market) == symbol for r in rows)
 
 
-async def _unreleased_plan_amounts(
+async def unreleased_plan_amounts(
     session: AsyncSession,
     *,
     sleeve_id: int | None = None,
@@ -1089,6 +1090,36 @@ class BasketView:
     constituent_budget_caps: tuple[Decimal, ...]
     sector_cap_pct: Decimal  # the strictest live clause of the basket
     mismatch: bool = False
+
+
+async def basket_auto_fenced_notional(
+    session: AsyncSession, *, realm: str, basket_key: str, kst_day: date
+) -> Decimal:
+    """Read the advisory basket total from §4.6, under the caller's L2."""
+    fence = MandatePlanEvent
+    release = aliased(MandatePlanEvent)
+    modes = [mode for mode, value in v.REALM_BY_ACCOUNT_MODE.items() if value == realm]
+    query = (
+        select(func.coalesce(func.sum(fence.notional), 0))
+        .join(MandatePlan, MandatePlan.id == fence.plan_id)
+        .join(MandateTerms, MandateTerms.id == MandatePlan.approved_terms_id)
+        .join(StrategySleeve, StrategySleeve.id == MandatePlan.sleeve_id)
+        .where(
+            MandateTerms.basket_key == basket_key,
+            StrategySleeve.account_mode.in_(modes),
+            fence.event == "tranche_send_fenced",
+            fence.approval_mode == "auto",
+            fence.kst_day == kst_day,
+            ~exists(
+                select(1).where(
+                    release.plan_id == fence.plan_id,
+                    release.event == "tranche_send_released",
+                    release.fenced_seq == fence.seq,
+                )
+            ),
+        )
+    )
+    return Decimal(str((await session.execute(query)).scalar_one()))
 
 
 async def basket_view(session: AsyncSession, realm: str, basket_key: str) -> BasketView:
@@ -1228,13 +1259,13 @@ async def register_plan(
         new = PlanAmounts(planned, adopted, sector_key)
         sleeve_budget_check(
             new,
-            await _unreleased_plan_amounts(session, sleeve_id=data.sleeve_id),
+            await unreleased_plan_amounts(session, sleeve_id=data.sleeve_id),
             Decimal(str(version.budget_cap)),
         )
         view = await basket_view(session, realm, terms.basket_key)
         sector_cap_check(
             new,
-            await _unreleased_plan_amounts(
+            await unreleased_plan_amounts(
                 session, realm=realm, basket_key=terms.basket_key
             ),
             view.constituent_budget_caps,

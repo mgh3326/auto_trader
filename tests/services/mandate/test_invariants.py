@@ -210,3 +210,227 @@ def test_i15_live_scope_is_both_real_accounts_and_mock_scope_is_one() -> None:
     mock = {**live, "realm": "mock"}
     assert account_binding_ok(**mock)
     assert not account_binding_ok(**{**mock, "scope_account_refs": ["t", "k"]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("I7_unarmed", "mandate_invalid_transition"),
+        ("I8_tranche", "mandate_tranche_amount_exceeded"),
+        ("I8_plan", "mandate_plan_amount_exceeded"),
+        ("I9_open", "mandate_tranche_duplicate"),
+        ("I9_uncertain", "mandate_tranche_uncertain"),
+        ("I11_missing_freeze_reader", "mandate_drawdown_frozen"),
+        ("I16_not_effective", "mandate_plan_not_active"),
+    ],
+)
+async def test_t4a_creation_refuses_before_write(case, reason):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.services.mandate.fold import PlanState
+    from app.services.mandate.proposal_gate import (
+        PlanProposalContext,
+        check_proposal_creation,
+    )
+
+    today = date(2026, 11, 20)
+    state = PlanState(authority="approved", effective_session=today)
+    index = 2 if case == "I7_unarmed" else 1
+    first = state.tranche(1)
+    if case == "I9_open":
+        first = replace(first, open_proposals=(uuid4(),))
+    if case == "I9_uncertain":
+        first = replace(first, unclosed_fences=(10,))
+    state = replace(state, tranches=(first, *state.tranches[1:]))
+    if case == "I16_not_effective":
+        state = replace(state, effective_session=date(2026, 11, 23))
+    context = PlanProposalContext(
+        plan=SimpleNamespace(
+            planned_amount=Decimal(50 if case == "I8_plan" else 200),
+            adopted_amount=Decimal(0),
+        ),
+        sleeve=SimpleNamespace(id=1, account_mode="kiwoom_mock", market="equity_kr"),
+        state=state,
+        terms=SimpleNamespace(),
+        tranche=SimpleNamespace(tranche_index=index, amount=Decimal(100)),
+    )
+    session = AsyncMock()
+
+    with pytest.raises(ValueError, match=reason):
+        await check_proposal_creation(
+            session,
+            context,
+            notional=Decimal(101 if case == "I8_tranche" else 80),
+            now=datetime(2026, 11, 20, 1, tzinfo=UTC),
+        )
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("I4_sector", "mandate_sector_cap"),
+        ("I11_stale_freeze", "mandate_drawdown_frozen"),
+        ("I12_expired", "mandate_expired"),
+        ("I15_account", "mandate_account_mismatch"),
+        ("I18_ceiling", "mandate_tranche_not_activated"),
+        ("I21_hash", "mandate_binding_broken"),
+    ],
+)
+async def test_t4a_dispatch_checks_durable_evidence(monkeypatch, case, reason):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.services.mandate import proposal_gate as gate
+    from app.services.mandate.fold import PlanState
+
+    now = datetime(2026, 11, 20, 1, tzinfo=UTC)
+    proposal_id = uuid4()
+    index = 2 if case == "I18_ceiling" else 1
+    state = PlanState(
+        authority="active", effective_session=now.date(), current_terms_sha256="terms"
+    )
+    state = replace(
+        state,
+        tranches=tuple(
+            replace(tranche, open_proposals=(proposal_id,))
+            if tranche.index == index
+            else replace(tranche, completed=True)
+            if tranche.index < index
+            else tranche
+            for tranche in state.tranches
+        ),
+    )
+    terms = SimpleNamespace(
+        id=9,
+        approval_id=10,
+        content_sha256="terms",
+        expires_at=now if case == "I12_expired" else now + timedelta(days=1),
+        basket_key="basket",
+    )
+    profile = SimpleNamespace(
+        terms_id=9,
+        approval_id=11,
+        content_sha256="profile",
+        expires_at=now + timedelta(days=1),
+        effective_session=now.date(),
+        max_tranche_index=1,
+    )
+    context = gate.PlanProposalContext(
+        plan=SimpleNamespace(sleeve_id=1, account_ref="reference", sector_key="sector"),
+        sleeve=SimpleNamespace(id=1, account_mode="kiwoom_mock", market="equity_kr"),
+        state=state,
+        terms=terms,
+        tranche=SimpleNamespace(tranche_index=index),
+    )
+    monkeypatch.setattr(
+        gate.store,
+        "current_terms",
+        AsyncMock(return_value=(SimpleNamespace(state="live"), terms)),
+    )
+    monkeypatch.setattr(gate.store, "latest_profile", AsyncMock(return_value=profile))
+    monkeypatch.setattr(
+        gate,
+        "buy_freeze_state",
+        AsyncMock(
+            return_value=gate.FreezeVerdict(
+                frozen=False,
+                reason="fixture",
+                evidence={},
+                valid_until=now
+                if case == "I11_stale_freeze"
+                else now + timedelta(seconds=1),
+            )
+        ),
+    )
+    monkeypatch.setattr(gate.store, "terms_content_from_rows", lambda *_: {})
+    monkeypatch.setattr(gate.store, "profile_content_from_row", lambda *_: {})
+    monkeypatch.setattr(
+        gate, "_approval_matches", AsyncMock(return_value=case != "I21_hash")
+    )
+    monkeypatch.setattr(
+        gate.store,
+        "basket_view",
+        AsyncMock(return_value=gate.store.BasketView((Decimal(100),), Decimal(35))),
+    )
+    monkeypatch.setattr(
+        gate.store,
+        "unreleased_plan_amounts",
+        AsyncMock(return_value=[PlanAmounts(Decimal(40), Decimal(0), "sector")]),
+    )
+
+    verdict, detail = await gate.check_dispatch(
+        AsyncMock(),
+        context,
+        proposal_id=proposal_id,
+        broker_account_id="other" if case == "I15_account" else "reference",
+        now=now,
+    )
+    assert verdict == reason
+    if case == "I4_sector":
+        assert detail == {
+            "mandate_sector_amount": "40",
+            "mandate_sector_denominator": "100",
+            "mandate_sector_cap_pct": "35",
+        }
+    if case == "I18_ceiling":
+        assert detail == {"tranche_index": "2", "max_tranche_index": "1"}
+
+
+@pytest.mark.parametrize(
+    ("case", "price", "sessions", "failure_field"),
+    [
+        ("I5_trigger", "96", (date(2026, 11, 20),), "trigger_pct_from_first"),
+        ("I6_gap", "95", (), "min_gap_sessions"),
+        ("I8_notional", "95", (date(2026, 11, 20),), "mandate_remaining"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_t4a_dispatch_market_recheck(case, price, sessions, failure_field):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from app.services.mandate.fold import PlanState
+    from app.services.mandate.proposal_gate import (
+        PlanProposalContext,
+        TrancheMarketEvidence,
+        check_tranche_market_evidence,
+    )
+
+    state = PlanState(first_fill_amount=Decimal(100), first_fill_quantity=Decimal(1))
+    first = replace(state.tranche(1), completed=True, settled_on=date(2026, 11, 19))
+    state = replace(state, tranches=(first, *state.tranches[1:]))
+    context = PlanProposalContext(
+        plan=SimpleNamespace(planned_amount=Decimal(1000), adopted_amount=Decimal(0)),
+        sleeve=SimpleNamespace(),
+        state=state,
+        terms=SimpleNamespace(),
+        tranche=SimpleNamespace(
+            tranche_index=2,
+            amount=Decimal(94 if case == "I8_notional" else 100),
+            trigger_pct_from_first=Decimal(-5),
+            min_gap_sessions=1,
+        ),
+    )
+    refusal = check_tranche_market_evidence(
+        context,
+        TrancheMarketEvidence(Decimal(price), Decimal(94), Decimal(1), sessions),
+        now=datetime(2026, 11, 20, 1, tzinfo=UTC),
+    )
+
+    assert refusal is not None
+    reason, detail = refusal
+    assert reason == (
+        "mandate_tranche_amount" if case == "I8_notional" else "mandate_tranche_not_due"
+    )
+    assert failure_field in detail

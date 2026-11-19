@@ -109,8 +109,30 @@ def _dispatch_fallback_reasons() -> set[str]:
         ):
             for keyword in node.keywords:
                 if keyword.arg == "reason":
-                    assert isinstance(keyword.value, ast.Constant)
-                    reasons.add(keyword.value.value)
+                    value = keyword.value
+                    if isinstance(value, ast.Constant):
+                        reasons.add(value.value)
+                    else:
+                        assert ast.unparse(value) == (
+                            "mandate_reason or 'mandate_unreadable'"
+                        )
+                        reasons.add("mandate_unreadable")
+                        for gate in (
+                            dispatch.proposal_gate.check_dispatch,
+                            dispatch.proposal_gate.check_tranche_market_evidence,
+                            dispatch.proposal_gate.check_near_ask,
+                        ):
+                            for statement in ast.walk(
+                                ast.parse(inspect.getsource(gate))
+                            ):
+                                if (
+                                    isinstance(statement, ast.Return)
+                                    and isinstance(statement.value, ast.Tuple)
+                                    and isinstance(
+                                        statement.value.elts[0], ast.Constant
+                                    )
+                                ):
+                                    reasons.add(statement.value.elts[0].value)
     return reasons
 
 
