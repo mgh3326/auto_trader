@@ -581,13 +581,14 @@ def decide_upbit_child(
     shape = shape_refusal(request)
     if shape is not None:
         return _no_row(shape)
+    # §8.2-4: with the live switch off this process calls no Upbit order
+    # function at all, a cancel included. Like the env gate it leaves no row.
+    if intent.execution_mode == "live" and not reads.live_enabled:
+        return _no_row(Refusal.UPBIT_LIVE_DISABLED)
     if isinstance(request, CancelChild):
         return _decide_cancel(request, children)
     if not isinstance(request, UpbitSubmitChild):  # narrowed by shape_refusal
         return _no_row(Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT)
-    # §8.2-4: a live child needs the live switch; like the env gate it leaves no row.
-    if intent.execution_mode == "live" and not reads.live_enabled:
-        return _no_row(Refusal.UPBIT_LIVE_DISABLED)
 
     quantity = Decimal(request.quantity_decimal)
     price = request.limit_price_krw

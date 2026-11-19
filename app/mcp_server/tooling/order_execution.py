@@ -32,6 +32,7 @@ from app.mcp_server.tick_size import (
 )
 from app.mcp_server.tooling import order_approval
 from app.mcp_server.tooling import order_validation as ov
+from app.mcp_server.tooling.crypto_prevalidated_wire import PrevalidatedCryptoWire
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
     _close_journals_on_sell,
@@ -212,6 +213,7 @@ async def _execute_order(
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
     idempotency_key: str | None = None,
+    prevalidated_wire: PrevalidatedCryptoWire | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
@@ -224,6 +226,7 @@ async def _execute_order(
             price,
             identifier=identifier,
             pre_send_hook=pre_send_hook,
+            prevalidated_wire=prevalidated_wire,
         )
     if market_type == "equity_kr":
         return await _execute_kr_order(
@@ -258,7 +261,11 @@ async def _execute_crypto_order(
     price: float | None,
     identifier: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    prevalidated_wire: PrevalidatedCryptoWire | None = None,
 ) -> dict[str, Any]:
+    # hk 5441: a prevalidated wire is a limit order only, and is never adjusted.
+    if prevalidated_wire is not None and order_type != "limit":
+        raise ValueError("a prevalidated crypto wire is a limit order")
     if side == "buy":
         if order_type == "market":
             price_str = f"{price:.0f}" if price else "0"
@@ -269,7 +276,11 @@ async def _execute_crypto_order(
                 pre_send_hook=pre_send_hook,
             )
         volume_str = f"{quantity:.8f}"
-        adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
+        adjusted_price = (
+            upbit_service.adjust_price_to_upbit_unit(price)
+            if prevalidated_wire is None
+            else prevalidated_wire.checked_price(price=price, volume_str=volume_str)
+        )
         return await upbit_service.place_buy_order(
             symbol,
             adjusted_price,
@@ -293,7 +304,11 @@ async def _execute_crypto_order(
             pre_send_hook=pre_send_hook,
         )
 
-    adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
+    adjusted_price = (
+        upbit_service.adjust_price_to_upbit_unit(price)
+        if prevalidated_wire is None
+        else prevalidated_wire.checked_price(price=price, volume_str=volume_str)
+    )
     return await upbit_service.place_sell_order(
         symbol,
         volume_str,
@@ -978,6 +993,7 @@ async def _execute_and_record(
     mirror_source_bucket: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
+    prevalidated_wire: PrevalidatedCryptoWire | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     total_started_at = time.perf_counter()
@@ -1383,6 +1399,12 @@ async def _execute_and_record(
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
                 idempotency_key=edge_idempotency_key,
+                # Passed only when set, so every other caller's call is unchanged.
+                **(
+                    {"prevalidated_wire": prevalidated_wire}
+                    if prevalidated_wire is not None
+                    else {}
+                ),
             )
         except BaseException:
             if protection_lease is not None:
@@ -1969,6 +1991,7 @@ async def _place_order_impl(
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
     reserve_mock_derived_idempotency: bool = False,
+    prevalidated_wire: PrevalidatedCryptoWire | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -2456,6 +2479,11 @@ async def _place_order_impl(
                 if attempt_hook is not None
                 else pre_send_hook,
                 send_outcome=send_outcome,
+                **(
+                    {"prevalidated_wire": prevalidated_wire}
+                    if prevalidated_wire is not None
+                    else {}
+                ),
                 **(
                     {
                         "reserve_mock_idempotency": (

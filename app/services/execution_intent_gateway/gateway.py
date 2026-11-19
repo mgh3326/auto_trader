@@ -22,12 +22,15 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from app.schemas.execution_intent import (
+    UPBIT_LIVE_ACCOUNT,
     AmendChild,
+    AnyChild,
     CancelChild,
     SubmitChild,
+    UpbitSubmitChild,
     contract_digest,
 )
 from app.services.execution_intent_gateway.decisions import (
@@ -40,6 +43,7 @@ from app.services.execution_intent_gateway.decisions import (
     Refusal,
     decide,
 )
+from app.services.execution_intent_gateway.forward_result import ForwardResult
 from app.services.execution_intent_gateway.store import GatewayStore
 from app.services.kis_mock_runner.control import (
     KillMode,
@@ -47,24 +51,21 @@ from app.services.kis_mock_runner.control import (
     read_effective_kill_switch,
 )
 
+if TYPE_CHECKING:
+    from app.services.execution_intent_gateway.upbit_gateway import UpbitGatewayPath
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_ENABLED_ENV: Final = "EXECUTION_INTENT_GATEWAY_ENABLED"
 _MAX_RESULT_BYTES: Final = 16_384
 
-OutcomeStatus = Literal["accepted", "uncertain", "sending", "refused", "conflict"]
+#: ``shadowed`` (hk 5441): a shadow intent's child passed every check and nothing
+#: was sent. A child proven not sent is answered as ``refused`` with its reason.
+OutcomeStatus = Literal[
+    "accepted", "uncertain", "sending", "refused", "conflict", "shadowed"
+]
 
-
-@dataclass(frozen=True, slots=True)
-class ForwardResult:
-    """What a broker service call proved. Anything short of ``accepted`` is
-    treated as an unknown outcome, because a failure result does not prove that
-    the broker received nothing.
-    """
-
-    accepted: bool
-    broker_order_id: str | None
-    result: dict[str, Any]
+__all__ = ["ForwardResult", "GatewayOutcome", "IntentGateway"]
 
 
 class BrokerForwarder(Protocol):
@@ -98,7 +99,8 @@ def _refused(reason: Refusal, child_id: int | None = None) -> GatewayOutcome:
 
 def _replay(child: ChildSnapshot) -> GatewayOutcome:
     return GatewayOutcome(
-        status=child.state.value,
+        # Proven not sent replays as the refusal it is (design B29).
+        status="refused" if child.state is ChildState.NOT_SENT else child.state.value,
         reason=child.refusal_reason,
         child_id=child.child_id,
         broker_order_id=child.broker_order_id,
@@ -127,21 +129,42 @@ class IntentGateway:
         kill_switch: KillSwitchStore,
         environment: Mapping[str, str] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        upbit: UpbitGatewayPath | None = None,
     ) -> None:
         not_mock = set(forwarders) - MOCK_ACCOUNTS
         if not_mock:
             raise ValueError(f"forwarders for non-mock accounts: {sorted(not_mock)}")
+        # hk 5441: the upbit_live account has its own path (mandate, sleeve,
+        # account kill row, shadow or live forwarder). It is not a "forwarder"
+        # of this class and cannot be passed as one.
+        self._upbit = upbit
         self._store = store
         self._forwarders = dict(forwarders)
         self._kill_switch = kill_switch
         self._environment = os.environ if environment is None else environment
         self._clock = clock
 
-    async def handle(self, request: Child, *, confirm: bool = False) -> GatewayOutcome:
+    async def handle(
+        self, request: AnyChild, *, confirm: bool = False
+    ) -> GatewayOutcome:
         if self._environment.get(GATEWAY_ENABLED_ENV) != "true":
             return _refused(Refusal.GATEWAY_DISABLED)
         if confirm is not True:
             return _refused(Refusal.CONFIRM_REQUIRED)
+
+        if self._upbit is not None:
+            account = await self._upbit.account_of(request.intent_id)
+            if account == UPBIT_LIVE_ACCOUNT:
+                return await self._upbit.handle(request)
+            if isinstance(request, UpbitSubmitChild):
+                return _refused(
+                    Refusal.INTENT_NOT_FOUND
+                    if account is None
+                    else Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT
+                )
+        if isinstance(request, UpbitSubmitChild):
+            # Only an upbit_live intent takes this shape; nothing was decided.
+            return _refused(Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT)
 
         kill_mode: KillMode | None = None
         if request.action != "cancel":
