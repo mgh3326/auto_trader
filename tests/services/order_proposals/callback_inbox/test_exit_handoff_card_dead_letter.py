@@ -181,7 +181,7 @@ async def test_o3_after_a_w5_pre_core_dead_letter_the_position_sells_at_most_onc
     mandate = await _mandate(sleeve, "live")
     handoff_id = await _handoff(sleeve, mandate)
     await _set_state(handoff_id, "ready_for_card")
-    card = await _publish(await _card(sleeve, handoff_id), nonce="nonce-hk5441-o3")
+    card = await _publish(await _card(sleeve, handoff_id), nonce="nonce-hk5441")
     before = await _proposal(card.proposal_id)
 
     await _dead_letter_before_the_core(
@@ -191,7 +191,7 @@ async def test_o3_after_a_w5_pre_core_dead_letter_the_position_sells_at_most_onc
     # Nothing on the proposal changed: the original card is still approvable.
     after = await _proposal(card.proposal_id)
     assert after.lifecycle_state == before.lifecycle_state
-    assert after.approval_nonce == "nonce-hk5441-o3"
+    assert after.approval_nonce == "nonce-hk5441"
     assert after.approval_nonce_used_at is None
     # So the handoff is still that card's, with no send attempt counted.
     handoff = await _handoff_row(handoff_id)
