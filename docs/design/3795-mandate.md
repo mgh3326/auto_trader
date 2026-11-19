@@ -377,6 +377,13 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 3. 콜백 `mta`(묶음 승인 콜백 `mpb`와 같은 계열, 주문·제안 모듈 import 금지 정적 테스트)가 한 트랜잭션에서: 승인 기록 INSERT → (`terms`) 새 sleeve 버전(`state='live'`, `set_by = operator:telegram:<principal>`) + 그 버전에 결속된 조항 행 INSERT / (`activation_profile`) 프로필 행 INSERT. `base_sleeve_version`이 낡았거나 nonce가 이미 소비됐으면 아무것도 쓰지 않는다. 조항만 바뀌고 sleeve 값은 그대로인 변경도 새 버전을 붙여야 하는데 기존 `set_sleeve_version`은 그런 버전을 거부한다(§2.3 F8). 그래서 T1의 store는 "승인 기록과 조항을 동반한 버전 append" 함수를 따로 두고, 기존 함수와 ROB-1470의 DB 트리거는 바꾸지 않는다.
 4. `denied`는 승인 기록만 남기고 다른 행을 만들지 않는다.
 
+T3b 구현 결정(hk #592877): `mta`는 기존 Telegram webhook 인증과 활성화
+게이트 아래에서 별도로 처리한다. 주문을 만들지 않으므로 W5 inbox·CHECK·마이그레이션은
+그대로 둔다. 카드 발송 시 메시지 ID를 먼저 받고, 서버 비밀에서
+`mandate-approval-v1`로 분리 유도한 HMAC으로 chat·메시지·요청·내용 해시·결정·만료를
+결속한 버튼을 게시한다. 두 allowlist를 통과한 요청만 상수 시간으로 결속을 대조한다.
+요청당 결정은 하나이며, 소비한 nonce의 digest를 승인 기록에 남긴다.
+
 소비 시 검증(I21): 계획 게이트는 조항·프로필을 읽을 때 (1) 그 행의 `approval_id`가 가리키는 승인 기록이 `approved`이고 그 `subject_sha256`이 행의 `content_sha256`과 같은지, (2) 행의 내용 열(위 두 표의 `content_sha256` 정의, 조항이면 그 sleeve 버전의 값 포함)로 다시 계산한 해시가 `content_sha256`과 같은지 확인한다. 하나라도 다르면 결속 파손으로 전송 차단(`mandate_binding_broken`, §4.7)이다.
 
 경계:
