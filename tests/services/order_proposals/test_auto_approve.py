@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -36,8 +37,10 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     _apply_eligibility_gate,
+    revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.telegram_callback import _handle_approve
 
 
 def _group(**overrides):
@@ -248,6 +251,75 @@ def test_i23_mandate_buy_below_market_requires_human_approval():
 
     assert decision.eligible is False
     assert decision.reason == "mandate_not_eligible"
+
+
+@pytest.mark.asyncio
+async def test_i23_mandate_auto_revalidation_blocks_before_broker():
+    group = _group(mandate_plan_id=42, account_mode="kiwoom_mock")
+    rung = _rung(state="pending_approval")
+    service = AsyncMock()
+    service.get_proposal.return_value = (group, [rung])
+    broker = AsyncMock(side_effect=AssertionError("unexpected broker call"))
+    eligible = AsyncMock(side_effect=AssertionError("unexpected eligibility gate"))
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=uuid.uuid4(),
+        now=datetime.now(UTC),
+        place_order_fn=broker,
+        eligibility_gate=eligible,
+    )
+
+    assert outcomes == [
+        RungOutcome(
+            rung.rung_index,
+            "guard_blocked",
+            {"reason": "mandate_send_boundary_pending"},
+        )
+    ]
+    broker.assert_not_called()
+    eligible.assert_not_called()
+    service.transition_rung.assert_not_called()
+    assert rung.state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkeypatch):
+    group = _group(mandate_plan_id=42, account_mode="kiwoom_mock")
+    rung = _rung(state="pending_approval")
+    service = AsyncMock()
+    service.get_proposal.return_value = (group, [rung])
+    monkeypatch.setattr(
+        "app.services.order_proposals.telegram_callback._preflight_proposal_callback",
+        AsyncMock(return_value=None),
+    )
+    submit = AsyncMock(side_effect=AssertionError("unexpected submit call"))
+    proposal_id = uuid.uuid4()
+
+    result = await _handle_approve(
+        session=AsyncMock(),
+        service=service,
+        proposal_id=proposal_id,
+        callback=SimpleNamespace(),
+        now=datetime.now(UTC),
+        notifier=AsyncMock(),
+        chat_id="1",
+        message_id=None,
+        callback_query_id=None,
+        telegram_user_id="1",
+        revalidate_fn=submit,
+    )
+
+    assert result == {
+        "handled": False,
+        "reason": "mandate_send_boundary_pending",
+        "proposal_id": str(proposal_id),
+    }
+    submit.assert_not_called()
+    service.consume_published_proposal_callback.assert_not_called()
+    service.acquire_commit_lease.assert_not_called()
+    service.transition_rung.assert_not_called()
+    assert rung.state == "pending_approval"
 
 
 def test_off_mode_rejects_what_expanded_would_allow():

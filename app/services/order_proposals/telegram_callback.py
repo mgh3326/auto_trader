@@ -114,6 +114,7 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
+    mandate_send_block_reason,
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import (
@@ -770,6 +771,14 @@ async def _handle_approve(
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
     target_group, target_rungs = await service.get_proposal(proposal_id)
+    mandate_block = mandate_send_block_reason(target_group)
+    if mandate_block is not None:
+        await session.commit()
+        return {
+            "handled": False,
+            "reason": mandate_block,
+            "proposal_id": str(proposal_id),
+        }
     await service.acquire_target_mutation_lock(target_group)
 
     window = await _evaluate_bound_window(
@@ -1202,6 +1211,11 @@ async def _handle_batch_approve(
         if len(proposals) < 2:
             await session.commit()
             return {"handled": False, "reason": "approval_batch_too_small"}
+        for group, _rungs in proposals:
+            mandate_block = mandate_send_block_reason(group)
+            if mandate_block is not None:
+                await session.commit()
+                return {"handled": False, "reason": mandate_block}
         member_expired = False
         for group, _rungs in proposals:
             validity_block = valid_until_block(group.valid_until, now=gate_now)

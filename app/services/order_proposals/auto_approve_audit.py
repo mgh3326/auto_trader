@@ -186,6 +186,7 @@ _KNOWN_REASON_CODES = frozenset(
         "expected_pnl_not_positive",
         "loss_cut_intent",
         "mandate_not_eligible",
+        "mandate_send_boundary_pending",
         "marketable_not_resting",
         "mechanical_loss_cut_refused",
         "multi_rung_requires_approval",

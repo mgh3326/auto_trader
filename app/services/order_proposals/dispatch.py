@@ -131,7 +131,11 @@ PriceFallbackFn = Callable[..., Awaitable[PriceFallback]]
 
 _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
-    {"eligibility_error", "multi_rung_requires_approval"}
+    {
+        "eligibility_error",
+        "mandate_send_boundary_pending",
+        "multi_rung_requires_approval",
+    }
 )
 # ROB-1281: prefix for "no card was rendered because the proposal is no longer
 # approvable", kept distinct from card-rendering/transport failure codes.
