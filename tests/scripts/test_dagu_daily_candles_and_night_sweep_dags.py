@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DAG_DIR = ROOT / "deploy/dagu/at-batch2"
 DAGS = {
@@ -46,21 +45,17 @@ def test_dag_copy_contract(name: str, expected: tuple[object, str]) -> None:
     assert lines[0] == "rc=0"
     assert lines[1].startswith(
         "docker run --rm --init --network host --workdir /app --env-file "
-        "/root/at-secrets/.env.api \"$(cat /root/at-run/deployed-digest)\" "
+        '/root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" '
         "/app/.venv/bin/python -m "
     )
     assert lines[1].endswith(f"{module} || rc=$?")
     assert lines[2] == 'exit "$rc"'
-    assert raw.count('logger -t at-dagu-batch') == 2
+    assert raw.count("logger -t at-dagu-batch") == 2
     assert dag["handler_on"] == {
         "success": {
-            "command": (
-                f'logger -t at-dagu-batch "dag={name} status=success"'
-            )
+            "command": (f'logger -t at-dagu-batch "dag={name} status=success"')
         },
         "failure": {
-            "command": (
-                f'logger -t at-dagu-batch "dag={name} status=failure"'
-            )
+            "command": (f'logger -t at-dagu-batch "dag={name} status=failure"')
         },
     }

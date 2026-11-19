@@ -4,8 +4,6 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from scripts import order_proposal_night_sweep, sync_daily_candles
 
 
@@ -16,7 +14,9 @@ def test_daily_candles_cli_prints_job_result_and_succeeds(monkeypatch, capsys) -
         calls.append({"market": market})
         return {"status": "ok", "market": market, "synced": 12}
 
-    monkeypatch.setattr(sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync)
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
 
     assert sync_daily_candles.main(["--market", "kr"]) == 0
     assert calls == [{"market": "kr"}]
@@ -31,7 +31,9 @@ def test_daily_candles_cli_fails_for_job_failure(monkeypatch, capsys) -> None:
     async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
         return {"status": "failed", "market": market, "error": "sync failed"}
 
-    monkeypatch.setattr(sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync)
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
 
     assert sync_daily_candles.main(["--market", "us"]) != 0
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
@@ -41,7 +43,9 @@ def test_daily_candles_cli_fails_on_exception(monkeypatch, capsys) -> None:
     async def run_daily_candles_sync(*, market: str) -> dict[str, object]:
         raise RuntimeError("unexpected")
 
-    monkeypatch.setattr(sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync)
+    monkeypatch.setattr(
+        sync_daily_candles, "run_daily_candles_sync", run_daily_candles_sync
+    )
 
     assert sync_daily_candles.main(["--market", "crypto"]) != 0
     assert capsys.readouterr().out == ""
