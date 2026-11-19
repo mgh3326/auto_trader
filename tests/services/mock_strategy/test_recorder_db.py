@@ -121,3 +121,34 @@ async def test_migration_trigger_preserves_the_send_fence(db_session, recorder):
                 await session.commit()
             await session.rollback()
     assert (await recorder.get(coid)).status == "sending"
+
+    # The same trigger allows a zero-fill terminal outcome while keeping
+    # the original client ID permanently fenced.
+    absent = await recorder.confirm_alpaca_absence(coid, account_ref="fixture")
+    assert absent.status == "rejected"
+    assert absent.meta["broker_status"] == "broker_confirmed_absent"
+    assert absent.meta["filled_qty"] == "0"
+    assert (await recorder.get(coid)).meta == absent.meta
+    assert not await recorder.claim(coid)
+
+
+async def test_symbol_change_journals_on_a_planned_exit_leg_only(db_session, recorder):
+    coid = f"r1474-sc-{uuid4().hex}"
+    leg = replace(intent(client_order_id=coid), symbol="BKH", side="sell")
+    await recorder.record(leg)
+    event = {"from": "BKH", "to": "HZN", "applied": True}
+    await recorder.record_symbol_change(coid, event)
+    await recorder.record_symbol_change(coid, event)  # same mapping: idempotent
+    row = await recorder.get(coid)
+    assert row.symbol == "BKH" and row.meta["symbol_change"] == event
+    with pytest.raises(ValueError, match="conflicts"):
+        await recorder.record_symbol_change(coid, {**event, "to": "ABC"})
+    with pytest.raises(ValueError, match="journaled symbol"):
+        await recorder.record_symbol_change(coid, {**event, "from": "ZZZ"})
+    entry = replace(intent(client_order_id=f"{coid}-e"), symbol="BKH", side="buy")
+    await recorder.record(entry)
+    with pytest.raises(ValueError, match="planned exit leg"):
+        await recorder.record_symbol_change(entry.client_order_id, event)
+    assert await recorder.claim(coid)
+    with pytest.raises(ValueError, match="planned exit leg"):
+        await recorder.record_symbol_change(coid, event)

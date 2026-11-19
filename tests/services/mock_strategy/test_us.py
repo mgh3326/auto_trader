@@ -13,6 +13,7 @@ import pytest
 
 from app.models.mock_strategy import OPEN_STATUSES, MockStrategyOrder
 from app.services.brokers.alpaca.schemas import Asset, Order
+from app.services.mock_strategy.recorder import record_alpaca_absence
 from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
 from app.services.mock_strategy.us_broker import PreDispatchRefusal
 from app.services.mock_strategy.us_signals import Candidate, UsSelection, session_times
@@ -81,6 +82,12 @@ class MemoryRecorder:
             return False
         row.status = "sending"
         return True
+
+    async def confirm_alpaca_absence(self, client_order_id, *, account_ref):
+        row = self.rows[client_order_id]
+        assert row.account_ref == account_ref
+        record_alpaca_absence(row)
+        return row
 
     async def update(self, client_order_id, *, status, meta=None, **kwargs):
         if self.fail_updates:
@@ -827,3 +834,26 @@ async def test_terminal_partial_fill_remains_partial_with_authoritative_broker_s
     await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
     assert entry.status == "closed"
     assert broker.posts[-1][0] == "sell" and broker.posts[-1][1].qty == Decimal("40")
+
+
+async def test_close_due_recovers_entry_without_sending_that_episode_until_next_run():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    entry.status = "sending"
+    entry.broker_order_id = None
+    entry.opened_at = None
+    entry.entry_price = None
+    entry.meta = {
+        key: value for key, value in entry.meta.items() if key != "filled_qty"
+    }
+
+    due = date(2026, 11, 9)
+    await strategy.close_due(asof=due, confirm=True)
+    assert entry.broker_order_id == broker.orders[entry.client_order_id].id
+    assert entry.meta["filled_qty"] == "100"
+    assert [side for side, _ in broker.posts] == ["buy", "short", "cover"]
+
+    await strategy.close_due(asof=due, confirm=True)
+    assert [side for side, _ in broker.posts] == ["buy", "short", "cover", "sell"]

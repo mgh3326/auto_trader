@@ -249,6 +249,37 @@ async def test_an_expected_market_event_source_with_no_partitions_is_missing() -
     response = await read_data_gaps(session)
     rows = by_dataset(response)
     assert rows["market_events.finnhub.earnings.us"]["missing_reason"] == "missing_data"
+    assert rows["market_events.dart.disclosure.kr"]["missing_reason"] == "missing_data"
+
+
+@pytest.mark.asyncio
+async def test_manual_only_market_event_sources_are_never_reported_missing() -> None:
+    # forexfactory (economic/global) and wisefn (earnings/kr) have no scheduled
+    # ingestion, so an empty partition table must not report them as missing
+    # from the EXPECTED_SOURCES loop.
+    # Finding: MarketEventsFreshnessService.compute() takes its keys from
+    # partitions AND from MarketEvent rows in the window ("FROM market_events",
+    # _fetch_event_counts). A key with events but no succeeded partition gets
+    # latest_succeeded_partition_date=None and data_gaps reports it as
+    # missing_data, whatever EXPECTED_SOURCES says. That is by design and is
+    # not changed here. Real data reaches it only with event rows in the window
+    # and no succeeded partition, e.g. after a failed manual run. The fixture's
+    # shared "FROM market_events" route supplies event rows for every source
+    # without partitions, so it is cleared to isolate the expected-set behavior.
+    session = gap_session(
+        **{"FROM market_event_ingestion_partitions": [], "FROM market_events": []}
+    )
+    response = await read_data_gaps(session)
+    missing = {
+        row["dataset"]
+        for row in response["data"]
+        if row["dataset"].startswith("market_events.")
+        and row.get("missing_reason") == "missing_data"
+    }
+    assert missing == {
+        "market_events.finnhub.earnings.us",
+        "market_events.dart.disclosure.kr",
+    }
 
 
 # --------------------------------------------------------------------------

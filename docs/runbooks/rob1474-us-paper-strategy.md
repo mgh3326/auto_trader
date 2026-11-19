@@ -145,10 +145,17 @@ boundary remains ambiguous, even a ValueError or a refusal-shaped exception.
 Cancellation propagates unchanged and leaves the durable sending fence intact.
 
 Timeout, bad broker echo, failed result commit or crash leaves `uncertain` or the
-already committed `sending`. Replay only looks up evidence by client ID; missing
-or failed lookup is never permission to resubmit. An uncertain or nonterminal close
-keeps its reservation and blocks later legs. Once all preceding legs have proven
-terminal outcomes, a later `close-due` invocation can create one indexed leg for
+already committed `sending`. Under
+`decision/2026-11-20/at-mock-uncertain-and-data-gaps` item 1, only HTTP 404 from
+Alpaca paper's `GET /v2/orders:by_client_order_id` for that leg's exact client ID
+lets the recorder mark an unbound, unfilled `sending` or `uncertain` leg
+`rejected` with zero fill and `broker_confirmed_absent`. A failed lookup, timeout,
+5xx, empty response or mismatched order echo preserves pending legs and their
+reservations. Per design escalation answer 591964, a matching HTTP 200 order
+restores its binding and fill evidence. The episode can send a new leg on a later
+invocation. Once all preceding
+legs have proven terminal outcomes, `close-due` can create one indexed leg with
+a fresh client ID for
 the entry fill quantity minus their proven fills. Canceled, expired or rejected
 zero-fill closes release no filled quantity. A terminal partial fill reduces only
 the residual. Each leg commits and claims separately. The episode closes only when
@@ -156,8 +163,8 @@ aggregate terminal fills cover the entry, with weighted exit price and aggregate
 gross P&L. Do not delete rows, reset statuses or invent a new index without the
 preceding terminal evidence.
 
-`run` reconciles existing entry evidence on same-session replay. `close-due`
-reconciles due entry/exit evidence and safely resumes bookkeeping after a crash.
+`run` looks up existing entries on same-session replay. `close-due` checks due
+entry and exit evidence and resumes bookkeeping after a crash.
 An ordinary error in one due entry is reported as `episode_status=unresolved`
 with its exception class; independent entries continue and the CLI returns nonzero.
 This result does not change the entry's durable status or grant retry authority.
@@ -166,3 +173,39 @@ process control exceptions propagate instead of being treated as entry failures.
 Use `status` to identify unresolved orders. Broker exceptions and DB DSNs are not
 printed: the CLI emits a fixed error and exception class, and returns nonzero for
 unresolved sends. No schedules, TaskIQ jobs, cron entries or deployments are added.
+
+## Operator-declared ticker change (hk 5518)
+
+A merger or rename can leave an episode's entry symbol unknown to the broker while
+the position lives under a new ticker (2026-11-20: BKH → HZN, exit legs stranded as
+`planned`). `close-due` and `status` accept a repeatable `--symbol-change OLD=NEW`;
+`run` rejects it. Malformed input (shape, `OLD==NEW`, repeated OLD or NEW, chains)
+fails before any broker or database access. Nothing is inferred from corporate-action
+feeds; the operator declares the mapping.
+
+```bash
+python -m scripts.mock_strategy close-due --venue alpaca_paper --asof 2026-11-20 \
+  --confirm --symbol-change BKH=HZN
+```
+
+`close-due` applies a mapping only when read-only broker evidence shows all of: OLD
+is a 404, inactive or non-tradable asset; OLD has no position; NEW is an active
+tradable `us_equity`; NEW's position has the same direction and at least the summed
+open quantity of every unclosed episode journaled under OLD (entry fills minus proven
+exit fills). An unresolved entry or exit leg (`sending`/`uncertain`/`accepted`) makes
+that quantity unknowable, so the mapping is refused for the run. A refused mapping
+leaves its legs `planned`, sends nothing and prints the reason under `symbol_changes`
+and on each affected order. Open episodes already journaled under NEW itself are not counted in that bound:
+they share NEW's position with the mapped legs, so the later leg can fail its fresh
+position guard and stay `planned` (nothing over-sells); avoid mapping onto a symbol
+that has its own open episodes. The per-leg send guards (fresh NEW position and available
+quantity, session, shape, switches, account identity) still run before the POST.
+
+An applied mapping journals `meta.symbol_change` (`from`, `to`, evidence) on the exit
+leg while the immutable `symbol` column keeps OLD. The leg is claimed and sent once
+as NEW, and its echo is verified against NEW. Later runs refresh the leg by client
+order ID with no flag. A leg that already has a journaled mapping is not sent again
+unless the same run re-verifies the same mapping. `sending`/`uncertain` legs are
+never resent, mapping or not. `status --symbol-change` is read-only: it prints the
+declared mapping as unverified, since verification needs the broker. Without the
+flag, `close-due`, `status` and `run` output is unchanged.
