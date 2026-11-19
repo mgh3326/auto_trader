@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -142,14 +143,22 @@ async def buy_freeze_state(
 async def _is_frozen(
     session: AsyncSession, context: PlanProposalContext, now: datetime
 ) -> bool:
-    verdict = await buy_freeze_state(
-        session,
-        account_mode=context.sleeve.account_mode,
-        market=context.sleeve.market,
-        sleeve_id=context.sleeve.id,
-        now=now,
+    try:
+        verdict = await buy_freeze_state(
+            session,
+            account_mode=context.sleeve.account_mode,
+            market=context.sleeve.market,
+            sleeve_id=context.sleeve.id,
+            now=now,
+        )
+    except Exception:  # noqa: BLE001 - missing measurement is frozen
+        return True
+    return (
+        verdict.frozen
+        or verdict.valid_until is None
+        or verdict.valid_until.utcoffset() is None
+        or verdict.valid_until <= now
     )
-    return verdict.frozen or verdict.valid_until is None or verdict.valid_until <= now
 
 
 async def check_proposal_creation(
@@ -192,7 +201,7 @@ async def check_dispatch(
     proposal_id: UUID,
     broker_account_id: str | None,
     now: datetime,
-    market_evidence: TrancheMarketEvidence | None = None,
+    market_reader: MarketEvidenceReader | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Evaluate durable evidence only. This verdict carries no send authority."""
     context.check_authority(now)
@@ -206,6 +215,8 @@ async def check_dispatch(
         return "mandate_tranche_uncertain", {}
     if tranche.open_proposals != (proposal_id,):
         return "mandate_tranche_duplicate", {}
+    if await _is_frozen(session, context, now):
+        return "mandate_drawdown_frozen", {}
     if not tranche_order_ok(context.state, index):
         return "mandate_tranche_not_due", {"tranche_index": str(index)}
     version, current_terms = await store.current_terms(session, plan.sleeve_id)
@@ -262,16 +273,55 @@ async def check_dispatch(
             "mandate_sector_denominator": format(denominator, "f"),
             "mandate_sector_cap_pct": format(basket.sector_cap_pct, "f"),
         }
-    if await _is_frozen(session, context, now):
-        return "mandate_drawdown_frozen", {}
+    basket_notional = await store.basket_auto_fenced_notional(
+        session,
+        realm=realm,
+        basket_key=terms.basket_key,
+        kst_day=now.astimezone(KST).date(),
+    )
+    basket_detail = {
+        "mandate_basket_notional": format(basket_notional, "f"),
+        "mandate_basket_daily_cap": format(terms.daily_cap, "f"),
+    }
+    market_evidence = await market_reader(context, now) if market_reader else None
     if market_evidence is None:
         # T4d supplies fresh market evidence. T4a keeps dispatch free of
         # preview/transport calls for bound proposals.
-        return "mandate_ask_unavailable", {}
+        return "mandate_ask_unavailable", basket_detail
     refusal = check_tranche_market_evidence(context, market_evidence, now=now)
     if refusal is not None:
         return refusal
-    return "mandate_send_boundary_pending", {}
+    notional = (
+        max(market_evidence.current_price, market_evidence.limit_price)
+        * market_evidence.quantity
+    )
+    if basket_notional + notional > terms.daily_cap:
+        return "mandate_basket_daily_cap", {
+            **basket_detail,
+            "notional": format(notional, "f"),
+        }
+    global_budget = market_evidence.global_budget
+    if global_budget is None:
+        return "mandate_unreadable", basket_detail
+    if notional > global_budget.per_order_cap:
+        return "per_order_cap_exceeded", {
+            "notional": format(notional, "f"),
+            "per_order_cap": format(global_budget.per_order_cap, "f"),
+        }
+    global_total = global_budget.daily_used + notional
+    if global_total > global_budget.daily_cap:
+        return "daily_cap_exceeded", {
+            "daily_notional_after": format(global_total, "f"),
+            "daily_cap": format(global_budget.daily_cap, "f"),
+        }
+    return "mandate_send_boundary_pending", basket_detail
+
+
+@dataclass(frozen=True)
+class GlobalBudgetEvidence:
+    per_order_cap: Decimal
+    daily_cap: Decimal
+    daily_used: Decimal
 
 
 @dataclass(frozen=True)
@@ -283,6 +333,12 @@ class TrancheMarketEvidence:
     best_ask: Decimal | None = None
     ask_observed_at: datetime | None = None
     tick_size: Decimal | None = None
+    global_budget: GlobalBudgetEvidence | None = None
+
+
+MarketEvidenceReader = Callable[
+    [PlanProposalContext, datetime], Awaitable[TrancheMarketEvidence | None]
+]
 
 
 @dataclass(frozen=True)

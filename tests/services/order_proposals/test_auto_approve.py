@@ -2684,6 +2684,7 @@ async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeyp
     service = AsyncMock()
     service.get_proposal.return_value = (group, [rung])
     mandate = MagicMock()
+    mandate.sleeve.id = 1
     monkeypatch.setattr(dispatch.settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(dispatch, "OrderProposalsService", lambda _: service)
     monkeypatch.setattr(dispatch, "limits_for_market", lambda _: _EXPANDED)

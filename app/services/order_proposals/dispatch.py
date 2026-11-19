@@ -34,6 +34,7 @@ from app.core.timezone import now_kst
 from app.services.fill_notification import resolve_display_name_db
 from app.services.mandate import proposal_gate
 from app.services.mandate.store import MandateError
+from app.services.mandate.vocabulary import MandateRefusal
 from app.services.mechanical_loss_cut.gate import (
     POLICY_MARKET,
     MechanicalLossCutBinding,
@@ -1047,6 +1048,7 @@ async def dispatch_proposal(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
     price_fallback_fn: PriceFallbackFn | None = fetch_kis_quote_fallback,
+    mandate_market_reader: proposal_gate.MarketEvidenceReader | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Auto-submit an eligible resting proposal, otherwise send for approval.
 
@@ -1214,6 +1216,11 @@ async def dispatch_proposal(
             if mandate_context is not None:
                 try:
                     async with session.begin_nested():
+                        if group.sleeve_id != mandate_context.sleeve.id:
+                            raise MandateError(
+                                MandateRefusal.BINDING_MISMATCH,
+                                "proposal sleeve differs from plan",
+                            )
                         mandate_context.check_binding(
                             symbol=group.symbol,
                             market=group.market,
@@ -1228,6 +1235,7 @@ async def dispatch_proposal(
                             proposal_id=proposal_id,
                             broker_account_id=group.broker_account_id,
                             now=gate_now,
+                            market_reader=mandate_market_reader,
                         )
                 except MandateError as exc:
                     mandate_reason = exc.code.value

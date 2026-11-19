@@ -276,6 +276,7 @@ async def test_t4a_creation_refuses_before_write(case, reason):
     ("case", "reason"),
     [
         ("I4_sector", "mandate_sector_cap"),
+        ("I11_stale_freeze", "mandate_drawdown_frozen"),
         ("I12_expired", "mandate_expired"),
         ("I15_account", "mandate_account_mismatch"),
         ("I18_ceiling", "mandate_tranche_not_activated"),
@@ -337,6 +338,20 @@ async def test_t4a_dispatch_checks_durable_evidence(monkeypatch, case, reason):
         AsyncMock(return_value=(SimpleNamespace(state="live"), terms)),
     )
     monkeypatch.setattr(gate.store, "latest_profile", AsyncMock(return_value=profile))
+    monkeypatch.setattr(
+        gate,
+        "buy_freeze_state",
+        AsyncMock(
+            return_value=gate.FreezeVerdict(
+                frozen=False,
+                reason="fixture",
+                evidence={},
+                valid_until=now
+                if case == "I11_stale_freeze"
+                else now + timedelta(seconds=1),
+            )
+        ),
+    )
     monkeypatch.setattr(gate.store, "terms_content_from_rows", lambda *_: {})
     monkeypatch.setattr(gate.store, "profile_content_from_row", lambda *_: {})
     monkeypatch.setattr(
