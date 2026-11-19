@@ -2,6 +2,8 @@
 
 This document is the contract the E2 Go executor implements. Python owns what may trade. Go owns when, and at what price, inside that permission. Go never reaches a broker or the database directly in this design: it sends child requests to a Python gateway, which calls the existing broker services.
 
+**Accounts:** `kis_mock` (schema v1, everything below unless it says otherwise) and, since hk 5441, `upbit_live` (schema v2, see [upbit_live](#upbit_live-schema-v2-hk-5441)). A v1 intent, its children, its answers and the recorded fixtures are unchanged.
+
 **Status:** default-disabled. Since ROB-1461, one HTTP route reaches the gateway. It is served only by a separate loopback process that an operator starts by hand. `app.main`, MCP tools and schedulers do not reach it. No KR mock order can be sent until a coordination route is installed (see [Open items](#open-items-for-e2-and-e3)).
 
 ## Roles
@@ -168,7 +170,7 @@ The schema is in `app/schemas/execution_intent.py`. Intents are immutable once s
 | `schema_version` | Exactly `1` |
 | `intent_id` | UUID |
 | `strategy` | At most 128 characters, before and after normalization. Placeholders are refused, using the same check as the kis_mock attribution gate |
-| `account` | Exactly `kis_mock`. A DB CHECK enforces the same list |
+| `account` | Exactly `kis_mock` for a v1 intent. A DB CHECK binds each schema version to its account and venue |
 | `venue` | Exactly `krx` |
 | `symbol` | KRX code, six characters |
 | `side` | `buy` or `sell` |
@@ -285,4 +287,118 @@ The migration's downgrade refuses while either table holds rows. Dropping the jo
 - **Resolving `uncertain` and `sending`:** nothing in E1 moves these rows, and there is no automatic replay. The [query](#query) lets E2 reconcile when the ledger has evidence, and it answers `view: null` when it does not. An order with an unknown later child still cannot be cancelled through the gateway (`target_superseded`), so it must be cleared outside it.
 - **Expiry and kill at the wire:** both are judged at reservation, not at the broker call. Expiry is read under the intent row lock. The kill state is read just before that lock, so a lock wait can make it stale. A send can still cross `expires_at` or a newly engaged kill in the time between the journal commit and the wire. Closing that needs a journal state for "reserved, proven not sent" and a pre-send check on every forward path. `_place_order_impl` and `cancel_order_impl` take a `pre_send_hook`, but `modify_order_impl` does not. Decide this in E2, before the E3 pilot.
 - **What the DB cannot check:** a role with INSERT on intents can still write a row inside every bound, because the database cannot verify `authorization_ref`. Placeholder strategies are not checked in the DB either; the kis_mock attribution gate refuses them before a send. Intents must enter only through `store_intent`.
-- **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration.
+- **Other accounts:** adding `kiwoom_mock` or `nh_mock` means adding a forwarder and extending the schema `Literal`, `MOCK_ACCOUNTS`, and the DB CHECK in a new migration. `upbit_live` was added differently, as its own path with its own schema version (below), because a real account needs gates a mock forwarder does not have.
+
+## upbit_live (schema v2, hk 5441)
+
+Design: `docs/design/5438-go-execution-path.md` §2-§4 and §8.2. Operator decision: `hk:doc decision/2026-11-20/at-5438-d1-d19`. This is a real account. Everything above still holds for it (one route, env gate, confirm header, journal before forward, one send per key, no replay of an unknown outcome). This section lists what differs.
+
+### What must be true before anything is sent
+
+| Gate | Off means |
+|---|---|
+| `EXECUTION_INTENT_GATEWAY_ENABLED` exactly `true`, and the confirm header | Refused before any DB access (unchanged) |
+| `EXECUTION_INTENT_GATEWAY_UPBIT_LIVE_ENABLED` exactly `true` (default off) | A child of a live intent is refused `upbit_live_disabled` with no row, a cancel included. A shadow intent does not need it |
+| Intent `execution_mode` | `shadow` can only reach the shadow forwarder, which sends nothing |
+| Mandate (`review.execution_mandates`) | No row, revoked, expired, or the intent is outside it: `mandate_missing`, `mandate_revoked`, `mandate_expired`, `mandate_scope_mismatch` |
+| Sleeve state | A live intent needs the sleeve `live`, a shadow intent needs it `shadow` |
+| Account kill row (`review.execution_account_control`) | Only `ACTIVE` allows a submit. A missing row or a failed read is a freeze. A cancel does not read it |
+
+The live forwarder checks the live switch, the kill row, the intent's expiry, the mandate, the sleeve state, an open exit handoff and the account fingerprint again in the transport's pre-send hook, immediately before the request. This closes "Expiry and kill at the wire" above for this account.
+
+### Intent (`ExecutionIntentV2`)
+
+Stored only through `UpbitGatewayStore.store_intent`, under the sleeve lock and the mandate row lock. The same contents again is a no-op.
+
+| Field | Rule |
+|---|---|
+| `schema_version` | Exactly `2` |
+| `account`, `venue` | Exactly `upbit_live`, `upbit` |
+| `execution_mode` | `shadow` or `live`. Required, no default, never changes. Equal to the mandate's `mode` |
+| `mandate_id`, `sleeve_id` | Required. The sleeve is the mandate's |
+| `symbol` | `KRW-<ticker>`, and in the mandate's list |
+| `max_quantity_decimal` | Decimal string, at most 8 places, above 0, at most 1,000,000. `max_quantity` is not a v2 field |
+| `max_notional_krw` | Integer KRW, at least 5,000. Binds a buy, and must be within the mandate's per-intent cap. A sell has a quantity cap only |
+| `limit_price_krw` | Integer KRW on the Upbit KRW price unit (`app/core/upbit_tick.py`) |
+| `max_slippage_bps` | At most the mandate's `price_band_bps` |
+| `strategy_code_sha` | 40 lowercase hex characters, equal to the mandate's |
+| `expires_at` | Within the mandate's `max_intent_ttl` of storing, and before the mandate expires |
+| `inventory` | The three positions as decimal strings |
+| `authorization_ref` | `mandate:<mandate_id>`, or `operator-exit:<id>` for an operator exit |
+| `decision_ref` | Required. The decision this intent belongs to |
+| `origin`, `operator_exit_id` | `strategy` by default. `operator_exit` is a sell that names its `review.execution_operator_exits` row |
+
+`store_intent` refuses with `IntentRefused` when a rule below refuses. A DB trigger repeats the mandate checks at INSERT.
+
+### Child request
+
+```json
+{"action": "submit", "intent_id": "<uuid>", "idempotency_key": "<key>",
+ "quantity_decimal": "0.00320000", "limit_price_krw": 150000000}
+
+{"action": "cancel", "intent_id": "<uuid>", "idempotency_key": "<key>",
+ "target_idempotency_key": "<key of the working order>"}
+```
+
+- The account of the stored intent decides the field set. A submit that carries `quantity_decimal` is read as the Upbit shape; every other body is validated exactly as before.
+- A child whose shape does not match its intent's account is refused `child_shape_invalid_for_account` and leaves no row. So does a key longer than 40 characters: the key is the Upbit `identifier` and cannot be shortened.
+- There is no amend. `POST /children` answers 422 `amend_unsupported_for_account`; a replacement is a cancel and a new submit under a new key.
+- `quantity_decimal × limit_price_krw` is computed exactly. Nothing is rounded.
+
+### Outcome
+
+| `status` | Meaning | What Go does |
+|---|---|---|
+| `shadowed` | A shadow intent's child passed every check. Nothing was sent, and `broker_order_id` is always empty | Treat as a virtual acceptance. Never as `accepted` |
+| `refused` with a `child_id` and a state `not_sent` in the journal | The row was reserved, and the request provably never reached the broker | Same as any refusal: a new decision with a new key |
+
+The other statuses are unchanged. A `not_sent` row replays as `refused` with its reason.
+
+**What proves a non-send.** The order layer calls the pre-send hook immediately before the HTTP request and nowhere else. If the hook did not return normally, no request was made: a guard below refused first (`lower_guard_refused`), the approved price or volume differed from what was about to be posted (`price_normalization_mismatch`), or the hook's own recheck refused (its reason). Once the hook has returned, any failure or exception is `uncertain`, as for kis_mock. A DB trigger accepts `sending → not_sent` only for a v2 intent, with no broker order id and a reason from the closed list in `upbit_decisions.NOT_SENT_REASONS`.
+
+### Refusal reasons added
+
+| Reason | Condition |
+|---|---|
+| `upbit_live_disabled` | The live switch is off (no row) |
+| `child_shape_invalid_for_account`, `amend_unsupported_for_account` | The body does not fit the account (no row) |
+| `price_off_tick`, `price_tick_unsupported` | Not a multiple of the price unit, or a range whose unit is below 1 KRW |
+| `mandate_missing`, `mandate_revoked`, `mandate_expired`, `mandate_scope_mismatch` | See the gates above |
+| `max_open_intents_exceeded` | More unexpired buy intents than the mandate allows (at store) |
+| `sleeve_not_live`, `sleeve_not_shadow` | The sleeve state does not match the execution mode |
+| `sleeve_budget_exceeded`, `sleeve_loss_limit_reached`, `sleeve_pnl_unmeasured`, `sleeve_used_unmeasured`, `sleeve_unreadable` | The sleeve gate for a buy. An unmeasured value refuses; it is never zero |
+| `sleeve_holdings_unmeasured`, `inventory_constraint_exceeded` | A sell above the sleeve's proven position, or a position that cannot be proven |
+| `open_sell_intent_exists` | Another unfinished sell intent on the same sleeve and symbol |
+| `unresolved_prior_order` | An order on the same sleeve and symbol whose end the broker has not proven |
+| `exit_handoff_active` | The symbol is handed off to an approval card |
+| `loss_sell_requires_card`, `avg_price_unproven` | The loss-sell guard would refuse the sale, or the account's average buy price cannot be read. A live `loss_sell_requires_card` opens the exit handoff in the same transaction |
+| `cooldown_active` | The symbol is in its stop-loss cooldown, or the cooldown could not be read |
+| `operator_exit_invalid` | An operator exit intent without a valid, unexpired exit row |
+| `account_mismatch` | The configured Upbit credentials are not the ones the mandate was approved for (pre-send, `not_sent`) |
+
+A cancel reads none of these except the live switch: it needs a target submit of the same intent that has a broker order id and that no later child may have moved.
+
+### Query
+
+`GET /execution-intents/intents?account=upbit_live&open=true` lists the unexpired intents of the account, oldest first. It is read only and carries no mandate terms. Any other `account`, or `open` other than `true`, is 422.
+
+`GET /intents/<id>` and `/fills` answer for a v2 intent with the same shape as v1, with quantities as exact decimal strings: `view.filled_qty`, `view.order.qty`, `children[].quantity_decimal`, and in `/fills` `qty` and `cumulative_qty`. `price` in `view.order` stays an integer.
+
+An Upbit order is one uuid for life, so there are no day identities and no lineage. Each row has a test in `tests/services/execution_intent_gateway/test_upbit_query.py`:
+
+| Case | Answer |
+|---|---|
+| A submit that was refused or is `not_sent` | Left out of the view, kept in `children`. A retry after a lost answer never sees a `not_sent` submit as a working order |
+| A `shadowed` submit | Not working. Counted as filled in full |
+| An accepted submit with no end | The working order |
+| `review.execution_child_order_evidence` shows a final broker state | Not working. `filled_qty` still comes from the ledger only |
+| A `sending` or `uncertain` submit, no evidence | `no_ledger_evidence`, `view: null` |
+| A `sending` or `uncertain` cancel on an open order | `no_ledger_evidence` until the order's own evidence is final |
+| Ledger fills above the order's quantity | `fill_evidence_conflict` |
+| Two working orders | `multiple_working_orders` |
+
+`filled_qty` counts only in-effect `execution_ledger` rows of the live Upbit account that carry a uuid this intent's own children are bound to. A child whose outcome was never recorded is bound by the evidence row found under its own identifier.
+
+### Evidence and what stays unresolved
+
+Nothing moves a journal row. `scripts/execution_intent_upbit_resolve.py` (preview by default) reads each unresolved order from Upbit, by uuid or by identifier, and records what the broker returned in `review.execution_child_order_evidence`. "Not found" and a failed read record nothing and prove nothing. An order is resolved only by a final broker state in that table. Until then the gateway refuses a new intent on that sleeve and symbol.

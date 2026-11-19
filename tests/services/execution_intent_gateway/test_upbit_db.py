@@ -1021,3 +1021,193 @@ async def test_the_account_kill_row_is_read_fail_closed_and_cannot_be_deleted() 
                     "DELETE FROM review.execution_account_control WHERE account = 'upbit_live'"
                 )
             )
+
+
+# ------------------------------------------------------------------ B10
+
+
+@pytest.mark.asyncio
+async def test_b10_a_revocation_lists_the_children_reserved_before_it() -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    key = _key()
+    reservation = await store.reserve(
+        _submit(intent, key, quantity="1"),
+        request_digest="digest",
+        decide=lambda *_a: UpbitDecision(),
+        now_fn=_now,
+    )
+    assert reservation.is_new is True
+
+    async with AsyncSessionLocal() as session:
+        _row, pending = await revoke_mandate(
+            session, mandate_id=mandate.id, reason="db test", actor="test-operator"
+        )
+        await session.commit()
+
+    assert [(child.idempotency_key, child.state) for child in pending] == [
+        (key, "sending")
+    ]
+    # After the commit every new child of the mandate is refused.
+    path, _shadow, live = _path(store)
+    refused = await path.handle(_submit(intent, _key(), quantity="1"))
+    assert refused.reason == "mandate_revoked" and live.calls == []
+
+
+# ------------------------------------------------------------------ S5 (c), O2
+
+
+@pytest.mark.asyncio
+async def test_s5_an_unresolved_order_keeps_the_handoff_open() -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    # A child that was reserved and whose outcome nobody recorded: it may be an
+    # order at the broker, under a uuid nobody knows.
+    await store.reserve(
+        _submit(intent, _key(), quantity="1"),
+        request_digest="digest",
+        decide=lambda *_a: UpbitDecision(),
+        now_fn=_now,
+    )
+    handoff_id = await _handoff(sleeve, mandate)
+
+    async with AsyncSessionLocal() as session:
+        state = await exit_handoffs.advance_exit_handoff(
+            session, handoff_id, now=_now()
+        )
+        await session.commit()
+
+    assert state == "open"
+
+
+async def _sent_card(
+    sleeve: StrategySleeve, mandate: ExecutionMandate
+) -> tuple[int, Any]:
+    """A claimed card whose rung the broker took and then cancelled part-filled."""
+    handoff_id = await _handoff(sleeve, mandate)
+    await _set_state(handoff_id, "ready_for_card")
+    card = await _card(sleeve, handoff_id)
+    await fence_card_send(
+        AsyncSessionLocal,
+        handoff_id=handoff_id,
+        proposal_id=card.proposal_id,
+        configured_account_ref=ACCOUNT_REF,
+        now=_now(),
+    )
+    async with AsyncSessionLocal() as session:
+        rung = await session.scalar(
+            select(OrderProposalRung).where(OrderProposalRung.proposal_pk == card.id)
+        )
+        assert rung is not None
+        rung.broker_order_id = "uuid-card"
+        rung_id = rung.id
+        await session.commit()
+    return handoff_id, rung_id
+
+
+def _ledger_total(
+    monkeypatch: pytest.MonkeyPatch, rung_id: int, quantity: str | None
+) -> None:
+    """What the ledger attributes to the card's rung (``None`` = unattributed)."""
+    from types import SimpleNamespace
+
+    async def inputs(_session: Any, _sleeve: Any) -> Any:
+        if quantity is None:
+            return SimpleNamespace(fills=[], unattributed_rungs=(rung_id,))
+        return SimpleNamespace(
+            fills=[SimpleNamespace(rung_id=rung_id, quantity=Decimal(quantity))],
+            unattributed_rungs=(),
+        )
+
+    monkeypatch.setattr(exit_handoffs, "load_sleeve_inputs", inputs)
+
+
+async def _settle_with(handoff_id: int, reading: Any) -> Any:
+    async with AsyncSessionLocal() as session:
+        result = await settle_exit_handoff(
+            session, handoff_id, expected_claim_count=1, reading=reading, now=_now()
+        )
+        await session.commit()
+        return result
+
+
+@pytest.mark.asyncio
+async def test_s5_a_part_filled_then_cancelled_card_returns_the_remainder(
+    proven: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, rung_id = await _sent_card(sleeve, mandate)
+    _ledger_total(monkeypatch, rung_id, "15")
+    reading = exit_handoffs.BrokerOrderReading("uuid-card", "cancel", Decimal("15"))
+
+    result = await _settle_with(handoff_id, reading)
+
+    # The broker and the ledger agree, and a position is left (the fixture's 100).
+    assert result.outcome is SettleOutcome.RETURNED_REMAINDER
+    assert result.state == "ready_for_card"
+    async with AsyncSessionLocal() as session:
+        handoff = await session.get(ExecutionExitHandoff, handoff_id)
+        assert handoff is not None and handoff.proposal_id is None
+        assert handoff.fills_unmeasured is False
+
+
+@pytest.mark.asyncio
+async def test_s5_a_card_that_sold_everything_closes_the_handoff(
+    proven: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, rung_id = await _sent_card(sleeve, mandate)
+    _ledger_total(monkeypatch, rung_id, "40")
+
+    async def nothing_left(_session: Any, _sleeve: Any, _symbol: str) -> Decimal:
+        return Decimal("0")
+
+    monkeypatch.setattr(exit_handoffs, "proven_holdings", nothing_left)
+    reading = exit_handoffs.BrokerOrderReading("uuid-card", "done", Decimal("40"))
+
+    result = await _settle_with(handoff_id, reading)
+
+    assert result.outcome is SettleOutcome.CLOSED and result.state == "closed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ledger", "reading"),
+    [
+        # The ledger lags the broker.
+        ("10", exit_handoffs.BrokerOrderReading("uuid-card", "cancel", Decimal("15"))),
+        # The broker could not be read.
+        ("15", None),
+        ("15", exit_handoffs.UNREADABLE_ORDER),
+        # The order is still open at the broker.
+        ("15", exit_handoffs.BrokerOrderReading("uuid-card", "wait", Decimal("15"))),
+        # The ledger could not attribute the rung.
+        (None, exit_handoffs.BrokerOrderReading("uuid-card", "cancel", Decimal("15"))),
+    ],
+)
+async def test_o2_o4_an_unproven_sent_card_keeps_the_claim_and_is_unmeasured(
+    proven: None, monkeypatch: pytest.MonkeyPatch, ledger: str | None, reading: Any
+) -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, rung_id = await _sent_card(sleeve, mandate)
+    _ledger_total(monkeypatch, rung_id, ledger)
+
+    result = await _settle_with(handoff_id, reading)
+
+    assert result.outcome is SettleOutcome.HELD_UNMEASURED
+    assert result.state == "card_claimed"
+    async with AsyncSessionLocal() as session:
+        handoff = await session.get(ExecutionExitHandoff, handoff_id)
+        assert handoff is not None and handoff.fills_unmeasured is True
+    # No second card while this one is unproven.
+    with pytest.raises(OrderProposalError, match="exit_handoff_not_ready"):
+        await _card(sleeve, handoff_id)

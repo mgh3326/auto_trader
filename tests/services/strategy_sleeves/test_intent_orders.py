@@ -284,3 +284,87 @@ def test_holdings_are_unknown_when_the_book_is_unreadable_or_unproven() -> None:
             now=NOW,
         )
         assert symbol.holdings is None
+
+
+# ------------------------------------------------------------ card sleeves unchanged
+
+
+class _EmptyResult:
+    def all(self) -> list:
+        return []
+
+    def scalars(self) -> _EmptyResult:
+        return self
+
+
+class _CountingSession:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, statement, *_args, **_kwargs):
+        self.statements.append(str(statement))
+        return _EmptyResult()
+
+
+@pytest.mark.asyncio
+async def test_a_card_sleeve_reads_nothing_of_the_second_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``card`` sleeve's attribution is the one query it always was: no intent
+    child and no handoff is read, so its result cannot change (design §1.4).
+    """
+    from app.services.strategy_sleeves import store
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("a card sleeve must not read intent orders")
+
+    monkeypatch.setattr(store, "load_intent_child_orders", must_not_run)
+    monkeypatch.setattr(store, "_mark_unmeasured_handoff_cards", must_not_run)
+    session = _CountingSession()
+    sleeve = SimpleNamespace(
+        id=1,
+        account_mode="upbit",
+        market="crypto",
+        currency="KRW",
+        execution_path="card",
+    )
+
+    inputs = await store.load_sleeve_inputs(session, sleeve)  # type: ignore[arg-type]
+
+    assert inputs.orders == () and inputs.fills == ()
+    assert len(session.statements) == 1
+    assert "order_proposal_rungs" in session.statements[0]
+    assert "execution_child_requests" not in session.statements[0]
+
+
+@pytest.mark.asyncio
+async def test_a_go_sleeve_reads_its_intent_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.strategy_sleeves import store
+
+    async def orders(_session, _sleeve_id):
+        return [
+            order(evidence=("uuid-1", "done", "10")),
+            order(2, state="shadowed", uuid=None),
+        ]
+
+    async def unchanged(_session, _sleeve, existing):
+        return existing
+
+    monkeypatch.setattr(store, "load_intent_child_orders", orders)
+    monkeypatch.setattr(store, "_mark_unmeasured_handoff_cards", unchanged)
+    session = _CountingSession()
+    sleeve = SimpleNamespace(
+        id=1,
+        account_mode="upbit",
+        market="crypto",
+        currency="KRW",
+        execution_path="go",
+    )
+
+    inputs = await store.load_sleeve_inputs(session, sleeve)  # type: ignore[arg-type]
+
+    # The live order is in the book; the shadow one never is.
+    assert [o.rung_id for o in inputs.orders] == [child_order_key(1)]
+    assert inputs.orders[0].state == "filled"

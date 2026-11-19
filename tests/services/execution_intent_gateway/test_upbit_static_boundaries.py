@@ -432,3 +432,34 @@ def test_the_child_shape_is_chosen_by_quantity_decimal_only() -> None:
     ):
         with pytest.raises(ValidationError):
             parse_child_request(mixed)
+
+
+# ------------------------------------------------------------ S3, §8.2-5
+
+
+def test_s3_a_mandate_has_no_calendar_day_cap() -> None:
+    columns = {column.name for column in ExecutionMandate.__table__.columns}  # type: ignore[attr-defined]
+    assert not {name for name in columns if "daily" in name or "per_day" in name}
+    assert "per_intent_max_notional_krw" in columns and "max_open_intents" in columns
+
+
+def test_the_loss_sell_guard_cooldown_and_loss_cut_are_not_bypassed_from_here() -> None:
+    """§8.2-5: this path reads the guards' inputs and never passes a bypass.
+
+    The forwarder calls the order function with none of the arguments that
+    switch a guard off, and no module of the package names one.
+    """
+    bypasses = (
+        "defensive_trim",
+        "scalping_exit",
+        "cash_funding_target",
+        "parking_sell_ctx",
+        "exit_intent",
+        "allow_loss_sell",
+        "approval_issue_id",
+        "retrospective_id",
+    )
+    for path in sorted(PACKAGE.glob("upbit_*.py")):
+        source = path.read_text("utf-8")
+        for name in bypasses:
+            assert name not in source, (path.name, name)
