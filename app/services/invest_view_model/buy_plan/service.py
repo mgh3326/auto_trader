@@ -138,6 +138,7 @@ AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("side_not_supported", "지원되는 매매구분"),
     ("distance_below_minimum", "최소 이격 거리"),
     ("marketable_not_resting", "비-marketable(대기형) 주문"),
+    ("mandate_not_eligible", "계획 결속 제안은 사람 승인 필요"),
     ("breakeven_band", "매도 breakeven 밴드 밖"),
     ("expected_pnl_not_positive", "매도 기대손익 > 0"),
     ("sell_classification_unavailable", "매도 분류 가능"),

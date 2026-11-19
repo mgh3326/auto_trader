@@ -1179,6 +1179,7 @@ async def dispatch_proposal(
         mandate_context = None
         mandate_reason = None
         mandate_detail: dict[str, str] = {}
+        mandate_policy_version = limits.policy_version if limits is not None else ""
         if getattr(group, "mandate_plan_id", None) is not None:
             try:
                 async with session.begin_nested():
@@ -1189,11 +1190,9 @@ async def dispatch_proposal(
                 mandate_reason = exc.code.value
             except Exception:  # noqa: BLE001 - plan evidence is fail-closed
                 mandate_reason = "mandate_unreadable"
-        if (
-            limits is not None
-            and mandate_reason is None
-            and getattr(group, "sleeve_id", None) is not None
-        ):
+            if mandate_reason is not None:
+                limits = None
+        if limits is not None and getattr(group, "sleeve_id", None) is not None:
             # ROB-1470: a sleeve-tagged proposal is auto-approvable only while
             # its sleeve is live, under its loss limit and inside its budget.
             # Measured before revalidation (before any broker call), under the
@@ -1245,14 +1244,14 @@ async def dispatch_proposal(
                 _manual_fallback_decisions(
                     rungs=initial_rungs,
                     reason="mandate_not_eligible",
-                    policy_version=limits.policy_version if limits is not None else "",
+                    policy_version=mandate_policy_version,
                 )
             )
             fallback_decisions.extend(
                 _manual_fallback_decisions(
                     rungs=initial_rungs,
                     reason=mandate_reason or "mandate_unreadable",
-                    policy_version=limits.policy_version if limits is not None else "",
+                    policy_version=mandate_policy_version,
                     **mandate_detail,
                 )
             )
