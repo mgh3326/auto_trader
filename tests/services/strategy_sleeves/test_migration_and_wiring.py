@@ -67,9 +67,7 @@ def _hk5441_alters(table: str) -> str:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return "\n".join(
-        statement
-        for statement in module.ALTER_DDL
-        if f"review.{table} " in statement
+        statement for statement in module.ALTER_DDL if f"review.{table} " in statement
     )
 
 
