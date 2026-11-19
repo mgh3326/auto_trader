@@ -188,7 +188,10 @@ open quantity of every unclosed episode journaled under OLD (entry fills minus p
 exit fills). An unresolved entry or exit leg (`sending`/`uncertain`/`accepted`) makes
 that quantity unknowable, so the mapping is refused for the run. A refused mapping
 leaves its legs `planned`, sends nothing and prints the reason under `symbol_changes`
-and on each affected order. The per-leg send guards (fresh NEW position and available
+and on each affected order. Open episodes already journaled under NEW itself are not counted in that bound:
+they share NEW's position with the mapped legs, so the later leg can fail its fresh
+position guard and stay `planned` (nothing over-sells); avoid mapping onto a symbol
+that has its own open episodes. The per-leg send guards (fresh NEW position and available
 quantity, session, shape, switches, account identity) still run before the POST.
 
 An applied mapping journals `meta.symbol_change` (`from`, `to`, evidence) on the exit
