@@ -1,0 +1,21 @@
+# 16:30 KST 월–금 일봉 동기화. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 등록 전 기존 TaskIQ at-scheduler가 중지되었는지 확인해 중복 실행을 막는다.
+# 스케줄은 UTC(07:30)로 표기한다. 실패는 journal 한 줄로 남긴다.
+description: "daily candle sync for KR"
+schedule: "CRON_TZ=UTC 30 7 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: sync
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_daily_candles --market kr || rc=$?
+      exit "$rc"
+    timeout_sec: 1800
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-daily-candles-kr status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-daily-candles-kr status=failure"'

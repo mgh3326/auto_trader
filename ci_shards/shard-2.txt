@@ -108,7 +108,9 @@ tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_binance_spot_demo_d2_root_reconcile_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_dagu_at_batch_dags.py
+tests/scripts/test_dagu_daily_candles_and_night_sweep_dags.py
 tests/scripts/test_dagu_terminal_reconcile_dag.py
+tests/scripts/test_daily_candle_and_night_sweep_clis.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_list_recent_watch_events_cli.py
