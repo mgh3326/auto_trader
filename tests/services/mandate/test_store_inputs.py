@@ -372,7 +372,15 @@ async def test_a_refused_terms_approval_writes_nothing(monkeypatch) -> None:
         def first(self):
             return None
 
+    class Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
     session = MagicMock()
+    session.begin_nested = Savepoint
     added: list[object] = []
     session.add.side_effect = added.append
     session.flush = AsyncMock()
@@ -414,3 +422,61 @@ async def test_a_refused_terms_approval_writes_nothing(monkeypatch) -> None:
             nonce_digest="a" * 64,
         )
     assert added == []
+
+
+def test_prereg_must_fit_its_columns_exactly() -> None:
+    """1.23456 would round to 1.2346 in NUMERIC(10,4) and break the approved hash."""
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        ms._prereg(PreRegistration("m", D("1.23456"), 20, 90))
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        ms._prereg(PreRegistration("m", D("1"), 2**31, 90))
+    assert ms._prereg(PreRegistration("m", D("1.2346"), 20, 90)).min_effect_pct == D(
+        "1.2346"
+    )
+
+
+def test_a_hash_breach_is_not_a_closed_refusal() -> None:
+    assert not issubclass(ms.MandateIntegrityError, ms.MandateError)
+    assert not issubclass(ms.MandateIntegrityError, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_a_fence_cannot_cite_another_sleeves_activation_profile(
+    monkeypatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    plan = SimpleNamespace(
+        id=1, sleeve_id=7, symbol="X", account_ref="a", scope_account_refs=["a", "b"]
+    )
+    profile = SimpleNamespace(sleeve_id=99)
+    session = MagicMock()
+    session.get = AsyncMock(return_value=profile)
+
+    async def done(*_a, **_k):
+        return None
+
+    async def get_plan(*_a, **_k):
+        return plan
+
+    async def sleeve(*_a, **_k):
+        return _sleeve()
+
+    monkeypatch.setattr(ms, "get_plan", get_plan)
+    monkeypatch.setattr(ms, "_sleeve", sleeve)
+    monkeypatch.setattr(ms, "acquire_sleeve_lock", done)
+    with raises(v.MandateRefusal.BINDING_MISMATCH):
+        await ms.append_plan_event(
+            session,
+            plan_id=1,
+            event="tranche_send_fenced",
+            actor="o",
+            tranche_index=1,
+            proposal_id=uuid4(),
+            notional=D("1"),
+            kst_day=datetime(2026, 11, 23).date(),
+            approval_mode="auto",
+            account_ref="a",
+            attempt_id=uuid4(),
+            activation_profile_id=5,
+        )

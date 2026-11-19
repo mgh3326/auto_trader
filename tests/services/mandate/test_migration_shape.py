@@ -284,3 +284,15 @@ def test_i21_principal_check_bounds_the_user_id_like_the_writer() -> None:
         if c.name == "ck_mandate_approvals_principal_format"
     )
     assert bound in str(orm.sqltext)
+
+
+def test_review_round2_guards_are_in_the_rendered_triggers() -> None:
+    ddl = _norm("\n".join(_load().GUARD_DDL))
+    # a released plan cannot take a reservation (it would never get a release row)
+    assert "a released plan cannot take a reservation" in ddl
+    # settlement and release wait for every open tranche proposal
+    assert "a tranche proposal is still open" in ddl
+    # a fence cites a profile of its own sleeve
+    assert "ap.sleeve_id = pl.sleeve_id" in ddl
+    # a live plan scopes two real accounts, a mock plan one
+    assert "CASE sl.realm WHEN 'live' THEN 2 ELSE 1 END" in ddl

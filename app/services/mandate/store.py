@@ -91,6 +91,15 @@ _LIVE_ACCOUNT_MODES = tuple(
 _ADOPTED_EVIDENCE_KEYS = frozenset({"checked_at", "holdings", "price", "price_source"})
 
 
+class MandateIntegrityError(RuntimeError):
+    """A stored row does not hash to what was approved: an invariant breach.
+
+    Deliberately not a ``MandateError``: it is not a closed refusal a caller may
+    handle and carry on from. ``record_approval`` runs its writes in a savepoint,
+    so this leaves nothing written.
+    """
+
+
 class MandateError(ValueError):
     """A command the store refuses; nothing was written. ``code`` is closed."""
 
@@ -158,6 +167,42 @@ def _dec(
             v.MandateRefusal.INVALID_FIELDS, f"{name} must be <= {upper}"
         )
     return number
+
+
+def _prereg(raw: PreRegistration) -> PreRegistration:
+    """A pre-registration that fits its columns exactly (NUMERIC(10,4), Integer)."""
+    if raw.metric is None:
+        return raw
+    effect = (
+        None
+        if raw.min_effect_pct is None
+        else _dec(
+            "min_effect_pct",
+            raw.min_effect_pct,
+            positive=True,
+            below=_NUMERIC_10_4,
+        )
+    )
+
+    def whole(name: str, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not (1 <= value <= _INT32_MAX)
+        ):
+            raise MandateError(
+                v.MandateRefusal.INVALID_FIELDS, f"{name} must be a whole number >= 1"
+            )
+        return value
+
+    return PreRegistration(
+        metric=_text("metric", raw.metric, 300),
+        min_effect_pct=effect,
+        horizon_sessions=whole("horizon_sessions", raw.horizon_sessions),
+        max_duration_days=whole("max_duration_days", raw.max_duration_days),
+    )
 
 
 def _is_sha(value: Any) -> bool:
@@ -553,18 +598,19 @@ async def create_terms_request(
         )
     budget = _dec("budget_cap", data.budget_cap)
     limit = _dec("loss_limit", data.loss_limit, positive=True)
+    prereg = _prereg(data.prereg)
     rows = await sleeve_store.history(session, sleeve_id)
     if not rows:
         raise MandateError(v.MandateRefusal.UNSUPPORTED, "the sleeve has no version")
     current = rows[-1]
-    if data.prereg != sleeve_store.prereg_of(current) and any(
+    if prereg != sleeve_store.prereg_of(current) and any(
         r.state == SleeveState.LIVE for r in rows
     ):
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS,
             "the pre-registration is frozen once the sleeve has been live",
         )
-    if not data.prereg.complete:
+    if not prereg.complete:
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS,
             "a live version needs its full pre-registration",
@@ -576,7 +622,7 @@ async def create_terms_request(
         state=SleeveState.LIVE.value,
         budget_cap=budget,
         loss_limit=limit,
-        prereg=data.prereg,
+        prereg=prereg,
     )
     request = MandateApprovalRequest(
         subject_kind="terms",
@@ -771,21 +817,23 @@ async def record_approval(
         # Every refusal that does not need the approval row comes first, so a
         # refusal leaves nothing written (MandateError's contract).
         await _precheck_approved(session, request, sleeve, realm, moment)
-    approval = MandateApproval(
-        request_id=request_id,
-        decision=decision,
-        subject_sha256=request.content_sha256,
-        principal=who,
-        nonce_digest=nonce_digest,
-        decided_at=moment,
-    )
-    session.add(approval)
-    await _flush(session)
-    if decision == "denied":
-        return ApprovalResult(approval)
-    if request.subject_kind == "terms":
-        return await _write_terms(session, request, approval, sleeve, who, moment)
-    return await _write_profile(session, request, approval)
+    # Savepoint: any failure after the first write undoes all of it.
+    async with session.begin_nested():
+        approval = MandateApproval(
+            request_id=request_id,
+            decision=decision,
+            subject_sha256=request.content_sha256,
+            principal=who,
+            nonce_digest=nonce_digest,
+            decided_at=moment,
+        )
+        session.add(approval)
+        await _flush(session)
+        if decision == "denied":
+            return ApprovalResult(approval)
+        if request.subject_kind == "terms":
+            return await _write_terms(session, request, approval, sleeve, who, moment)
+        return await _write_profile(session, request, approval)
 
 
 async def _precheck_approved(
@@ -889,10 +937,7 @@ async def _write_terms(
         hashing.content_sha256(terms_content_from_rows(terms, version))
         != terms.content_sha256
     ):
-        raise MandateError(
-            v.MandateRefusal.BINDING_BROKEN,
-            "the stored clause does not hash to the request",
-        )
+        raise MandateIntegrityError("the stored clause does not hash to the request")
     return ApprovalResult(approval, terms=terms, version=version)
 
 
@@ -920,10 +965,7 @@ async def _write_profile(
         hashing.content_sha256(profile_content_from_row(profile))
         != profile.content_sha256
     ):
-        raise MandateError(
-            v.MandateRefusal.BINDING_BROKEN,
-            "the stored profile does not hash to the request",
-        )
+        raise MandateIntegrityError("the stored profile does not hash to the request")
     return ApprovalResult(approval, profile=profile)
 
 
@@ -1134,10 +1176,12 @@ async def register_plan(
         terms_account_ref=terms.account_ref,
         plan_account_ref=account_ref,
         scope_account_refs=scope,
+        realm=realm,
     ):
         raise MandateError(
             v.MandateRefusal.ACCOUNT_MISMATCH,
-            "the plan account is not the clause account or not in its scope accounts",
+            "the plan account is not the clause account, or the scope is not exactly the "
+            "realm's holdings accounts (two live accounts, one mock account)",
         )
     planned = _dec("planned_amount", data.planned_amount, positive=True)
     adopted = _dec("adopted_amount", data.adopted_amount)
@@ -1365,6 +1409,15 @@ async def append_plan_event(
         raise MandateError(
             v.MandateRefusal.INVALID_TRANSITION, f"unknown event {event!r}"
         )
+    if fields.get("activation_profile_id") is not None:
+        profile = await session.get(
+            MandateActivationProfile, int(fields["activation_profile_id"])
+        )
+        if profile is None or profile.sleeve_id != plan.sleeve_id:
+            raise MandateError(
+                v.MandateRefusal.BINDING_MISMATCH,
+                "the fence cites another sleeve's activation profile",
+            )
     if fields.get("terms_id") is not None:
         terms = await session.get(MandateTerms, int(fields["terms_id"]))
         version = (

@@ -188,6 +188,7 @@ def test_i15_plan_account_is_the_clause_account_and_a_scope_account() -> None:
         "terms_account_ref": "t",
         "plan_account_ref": "t",
         "scope_account_refs": ["t", "k"],
+        "realm": "live",
     }
     assert account_binding_ok(**ok)
     assert not account_binding_ok(**{**ok, "plan_account_ref": "k"})
@@ -195,3 +196,17 @@ def test_i15_plan_account_is_the_clause_account_and_a_scope_account() -> None:
     assert not account_binding_ok(**{**ok, "scope_account_refs": []})
     assert not account_binding_ok(**{**ok, "scope_account_refs": ["t", "t"]})
     assert not account_binding_ok(**{**ok, "scope_account_refs": ["t", "k", "x"]})
+
+
+def test_i15_live_scope_is_both_real_accounts_and_mock_scope_is_one() -> None:
+    live = {
+        "terms_account_ref": "t",
+        "plan_account_ref": "t",
+        "scope_account_refs": ["t"],
+        "realm": "live",
+    }
+    assert not account_binding_ok(**live)  # one account leaves the other out
+    assert account_binding_ok(**{**live, "scope_account_refs": ["t", "k"]})
+    mock = {**live, "realm": "mock"}
+    assert account_binding_ok(**mock)
+    assert not account_binding_ok(**{**mock, "scope_account_refs": ["t", "k"]})

@@ -262,6 +262,12 @@ _ANY_UNCLOSED_FENCE = (
     "AND NOT EXISTS (SELECT 1 FROM {ev} t WHERE t.plan_id = f.plan_id "
     f"AND t.event IN ({_TERMINAL_IN}) AND t.proposal_id = f.proposal_id))"
 )
+_ANY_OPEN_PROPOSAL = (
+    "EXISTS (SELECT 1 FROM {ev} p WHERE p.plan_id = NEW.plan_id "
+    "AND p.event = 'tranche_proposed' "
+    "AND NOT EXISTS (SELECT 1 FROM {ev} t WHERE t.plan_id = p.plan_id "
+    f"AND t.event IN ({_TERMINAL_IN}) AND t.proposal_id = p.proposal_id))"
+)
 _ARMED = (
     "coalesce((SELECT max(a.seq) FROM {ev} a WHERE a.plan_id = NEW.plan_id "
     "AND a.event = 'tranche_armed' AND a.tranche_index = k), 0) > "
@@ -384,6 +390,11 @@ def _events_guard_ddl() -> str:
                 RAISE EXCEPTION 'a send fence is not closed'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            IF {_ANY_OPEN_PROPOSAL.format(ev=_EVENTS)}
+               AND NEW.event <> 'holdings_disposed' THEN
+                RAISE EXCEPTION 'a tranche proposal is still open'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             IF NEW.event = 'orders_settled' AND EXISTS (
                 SELECT 1 FROM {_EVENTS} x
                  WHERE x.plan_id = NEW.plan_id AND x.event = 'orders_settled') THEN
@@ -469,6 +480,13 @@ def _events_guard_ddl() -> str:
             END IF;
             IF NEW.account_ref <> pl.account_ref THEN
                 RAISE EXCEPTION 'the fence account is not the plan account'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            IF NEW.activation_profile_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM review.mandate_activation_profiles ap
+                 WHERE ap.id = NEW.activation_profile_id
+                   AND ap.sleeve_id = pl.sleeve_id) THEN
+                RAISE EXCEPTION 'the fence cites another sleeve activation profile'
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF NOT EXISTS (
@@ -738,6 +756,13 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'this sleeve cannot hold a mandate plan'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            IF cardinality(NEW.scope_account_refs) <>
+                   (CASE sl.realm WHEN 'live' THEN 2 ELSE 1 END)
+               OR (SELECT count(DISTINCT x) FROM unnest(NEW.scope_account_refs) AS x)
+                   <> cardinality(NEW.scope_account_refs) THEN
+                RAISE EXCEPTION 'a live plan scopes both real accounts, a mock plan its one account'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
@@ -777,6 +802,11 @@ def _guard_ddl() -> tuple[str, ...]:
             IF NOT FOUND OR pl.symbol <> NEW.symbol
                OR pl.realm IS DISTINCT FROM NEW.realm OR pl.market <> NEW.market THEN
                 RAISE EXCEPTION 'the reservation does not match its plan'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            IF EXISTS (SELECT 1 FROM review.mandate_plan_events e
+                        WHERE e.plan_id = NEW.plan_id AND e.event = 'released') THEN
+                RAISE EXCEPTION 'a released plan cannot take a reservation'
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF EXISTS (

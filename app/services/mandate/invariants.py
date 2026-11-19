@@ -231,19 +231,30 @@ def tranche_order_ok(state: PlanState, index: int) -> bool:
 
 
 # --- I15 (registration side) ---------------------------------------------------
+def scope_size(realm: str) -> int:
+    """A live plan's holdings scope is both real accounts, a mock plan's its one."""
+    return 2 if realm == "live" else 1
+
+
 def account_binding_ok(
     *,
     terms_account_ref: str,
     plan_account_ref: str,
     scope_account_refs: Sequence[str],
+    realm: str,
 ) -> bool:
-    """The plan's order account is the terms' account and one of its scope accounts."""
+    """The plan's order account is the clause account and one of its scope accounts.
+
+    The scope is exactly the realm's holdings range (§3.7): two distinct
+    accounts for a live plan, one for a mock plan. A shorter scope would leave
+    an account out of the adopted amount and of the zero-holdings proof.
+    """
     refs = tuple(scope_account_refs)
     return (
         bool(plan_account_ref)
         and plan_account_ref == terms_account_ref
         and plan_account_ref in refs
-        and 1 <= len(refs) <= 2
+        and len(refs) == scope_size(realm)
         and len(set(refs)) == len(refs)
         and all(refs)
     )

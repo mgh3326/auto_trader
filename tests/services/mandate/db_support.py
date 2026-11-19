@@ -130,7 +130,14 @@ class MandateSeed(SleeveSeed):
         scope: tuple[str, ...] | None = None,
         **over: Any,
     ) -> ms.PlanInput:
-        refs = list(scope or (terms.account_ref,))
+        refs = list(
+            scope
+            or (
+                (terms.account_ref, f"other-{uuid.uuid4().hex[:6]}")
+                if sleeve.account_mode != "kiwoom_mock"
+                else (terms.account_ref,)
+            )
+        )
         holdings = [
             {
                 "account_ref": r,

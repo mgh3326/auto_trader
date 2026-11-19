@@ -265,6 +265,11 @@ def _apply_cleanup_event(state: PlanState, event: PlanEvent) -> PlanState:
             v.MandateRefusal.TRANCHE_UNCERTAIN,
             "orders_settled needs every send fence closed",
         )
+        _require(
+            not any(t.open_proposals for t in state.tranches),
+            v.MandateRefusal.TRANCHE_UNCERTAIN,
+            "orders_settled needs every tranche proposal closed",
+        )
         return replace(state, cleanup="orders_clear")
     if name == "holdings_disposed":
         _require(
@@ -294,6 +299,11 @@ def _apply_cleanup_event(state: PlanState, event: PlanEvent) -> PlanState:
         not state.unclosed_fences,
         v.MandateRefusal.TRANCHE_UNCERTAIN,
         "released needs every send fence closed",
+    )
+    _require(
+        not any(t.open_proposals for t in state.tranches),
+        v.MandateRefusal.TRANCHE_UNCERTAIN,
+        "released needs every tranche proposal closed",
     )
     return replace(state, cleanup="released")
 

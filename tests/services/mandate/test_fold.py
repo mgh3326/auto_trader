@@ -388,3 +388,12 @@ def test_a_bad_resume_target_or_approval_mode_is_a_closed_refusal_not_an_assert(
             account_ref="a",
             attempt_id=uuid4(),
         )
+
+
+def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
+    s = Stream()
+    s.approve()
+    s.arm_and_propose(1)  # proposed, no fence, no terminal event
+    s.add("retired")
+    with refused(v.MandateRefusal.TRANCHE_UNCERTAIN):
+        s.add("orders_settled")

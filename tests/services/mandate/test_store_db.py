@@ -367,7 +367,7 @@ async def test_i15_the_plan_account_is_the_clause_account(db_session, seed) -> N
         "INSERT INTO review.mandate_plans (sleeve_id, symbol, approved_terms_id, account_ref, "
         "scope_account_refs, planned_amount, adopted_amount, adopted_evidence, thesis, "
         "invalidation_conditions, sector_key, created_by) VALUES (:s, :y, :t, 'other', "
-        "ARRAY['other'], 100, 0, '{}'::jsonb, 'x', ARRAY[]::text[], 'k', 'op')",
+        "ARRAY['other', 'second'], 100, 0, '{}'::jsonb, 'x', ARRAY[]::text[], 'k', 'op')",
         "does not bind",
         s=sleeve.id,
         y=sym,
@@ -458,7 +458,7 @@ async def test_i1_the_reservation_trigger_refuses_a_second_unreleased_claim(
                 "INSERT INTO review.mandate_plans (sleeve_id, symbol, approved_terms_id, "
                 "account_ref, scope_account_refs, planned_amount, adopted_amount, "
                 "adopted_evidence, thesis, invalidation_conditions, sector_key, created_by) "
-                "VALUES (:s, :y, :t, :a, ARRAY[:a], 100, 0, '{}'::jsonb, 'x', "
+                "VALUES (:s, :y, :t, :a, ARRAY[:a, 'second-acct'], 100, 0, '{}'::jsonb, 'x', "
                 "ARRAY[]::text[], 'k', 'op') RETURNING id"
             ),
             {"s": sleeve.id, "y": sym, "t": terms.id, "a": terms.account_ref},
@@ -1024,7 +1024,18 @@ async def test_i13_the_nine_tables_refuse_update_delete_and_truncate(
             db_session, f"UPDATE review.{table} SET {assignment}", "append-only"
         )
         await refused(db_session, f"DELETE FROM review.{table}", "append-only")
-        await refused(db_session, f"TRUNCATE review.{table}", "append-only")
+        # Postgres checks foreign-key references before BEFORE TRUNCATE triggers:
+        # a referenced table fails on the FK, the others reach the trigger.
+        unreferenced = table in (
+            "mandate_plan_events",
+            "mandate_plan_tranches",
+            "mandate_symbol_reservation_releases",
+        )
+        await refused(
+            db_session,
+            f"TRUNCATE review.{table}",
+            "append-only" if unreferenced else ("append-only", "cannot truncate"),
+        )
 
 
 # ------------------------------------------------------------------- proposals
@@ -1101,3 +1112,121 @@ async def test_events_orm_rows_round_trip_through_the_fold(db_session, seed) -> 
     assert [r.event for r in rows] == ["proposed", "approved"]
     assert isinstance(rows[0], MandatePlanEvent)
     assert ms.event_to_fold(rows[1]).effective_session == EFFECTIVE
+
+
+_PLAN_INSERT = (
+    "INSERT INTO review.mandate_plans (sleeve_id, symbol, approved_terms_id, account_ref, "
+    "scope_account_refs, planned_amount, adopted_amount, adopted_evidence, thesis, "
+    "invalidation_conditions, sector_key, created_by) VALUES (:s, :y, :t, :a, "
+    "CAST(:scope AS text[]), 100, 0, '{}'::jsonb, 'x', ARRAY[]::text[], 'k', 'op')"
+)
+
+
+async def test_i15_a_live_plan_scopes_both_real_accounts(db_session, seed) -> None:
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,))
+    with err(v.MandateRefusal.ACCOUNT_MISMATCH):
+        await ms.register_plan(
+            db_session,
+            seed.plan_input(sleeve, terms, sym, scope=(terms.account_ref,)),
+        )
+    await db_session.rollback()
+    params = {"s": sleeve.id, "y": sym, "t": terms.id, "a": terms.account_ref}
+    await refused(
+        db_session,
+        _PLAN_INSERT,
+        "scopes both real accounts",
+        scope="{" + terms.account_ref + "}",
+        **params,
+    )
+    await refused(
+        db_session,
+        _PLAN_INSERT,
+        "scopes both real accounts",
+        scope="{" + terms.account_ref + "," + terms.account_ref + "}",
+        **params,
+    )
+
+
+async def test_i19_an_open_tranche_proposal_blocks_settlement(db_session, seed) -> None:
+    sleeve, terms, plan = await _approved(seed, db_session)
+    for event, fields in (
+        ("tranche_armed", {"tranche_index": 1}),
+        ("tranche_proposed", {"tranche_index": 1, "proposal_id": uuid.uuid4()}),
+    ):
+        await ms.append_plan_event(
+            db_session, plan_id=plan.id, event=event, actor="o", **fields
+        )
+    await ms.append_plan_event(db_session, plan_id=plan.id, event="retired", actor="o")
+    await db_session.commit()
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor) "
+        "VALUES (:p, 6, 'orders_settled', 'o')",
+        "proposal is still open",
+        p=plan.id,
+    )
+
+
+async def test_i16_an_auto_fence_cannot_cite_another_sleeves_profile(
+    db_session, seed
+) -> None:
+    sleeve, terms, plan = await _approved(seed, db_session)
+    other_sleeve, other_terms = await seed.clause_sleeve(symbols=(new_symbol(),))
+    request = await ms.create_profile_request(
+        db_session,
+        sleeve_id=other_sleeve.id,
+        terms_id=other_terms.id,
+        max_tranche_index=1,
+        effective_session=EFFECTIVE,
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        approval_ref="hk:p",
+        requested_by="operator:test",
+    )
+    approved = await ms.record_approval(
+        db_session,
+        request_id=request.id,
+        decision="approved",
+        principal=PRINCIPAL,
+        nonce_digest=digest("p"),
+    )
+    profile_id = approved.profile.id
+    pid = uuid.uuid4()
+    for event, fields in (
+        ("tranche_armed", {"tranche_index": 1}),
+        ("tranche_proposed", {"tranche_index": 1, "proposal_id": pid}),
+    ):
+        await ms.append_plan_event(
+            db_session, plan_id=plan.id, event=event, actor="o", **fields
+        )
+    await db_session.commit()
+    with err(v.MandateRefusal.BINDING_MISMATCH):
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="tranche_send_fenced",
+            actor="o",
+            tranche_index=1,
+            proposal_id=pid,
+            notional=1,
+            kst_day=EFFECTIVE,
+            approval_mode="auto",
+            account_ref=plan.account_ref,
+            attempt_id=uuid.uuid4(),
+            activation_profile_id=profile_id,
+        )
+    await db_session.rollback()
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor, tranche_index, "
+        "proposal_id, notional, kst_day, approval_mode, account_ref, attempt_id, "
+        "activation_profile_id) VALUES (:p, 5, 'tranche_send_fenced', 'o', 1, :pid, 1, :day, "
+        "'auto', :a, :att, :prof)",
+        "another sleeve",
+        p=plan.id,
+        pid=pid,
+        day=EFFECTIVE,
+        a=plan.account_ref,
+        att=uuid.uuid4(),
+        prof=profile_id,
+    )
