@@ -1391,6 +1391,29 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     return None
 
 
+#: Columns of ``mandate_plan_events`` that are stored but not read by the fold.
+_PERSISTED_ONLY = frozenset({"batch_member_id"})
+
+
+def fold_candidate(
+    *,
+    event: str,
+    seq: int,
+    evidence: Mapping[str, Any],
+    actor: str,
+    fields: Mapping[str, Any],
+) -> PlanEvent:
+    """The fold's view of an event about to be written.
+
+    ``batch_member_id`` (the card an answer belongs to) is persisted on the row but is
+    not an input of the fold, so it is left out here and kept on the row.
+    """
+    folded = {k: val for k, val in fields.items() if k not in _PERSISTED_ONLY}
+    return PlanEvent(
+        event=event, seq=seq, evidence=dict(evidence), actor=actor, **folded
+    )
+
+
 async def append_plan_event(
     session: AsyncSession,
     *,
@@ -1484,12 +1507,12 @@ async def append_plan_event(
             v.MandateRefusal.ACCOUNT_MISMATCH, "the fence account is not the plan's"
         )
     state = await plan_state(session, plan_id)
-    candidate = PlanEvent(
+    candidate = fold_candidate(
         event=event,
         seq=state.last_seq + 1,
         evidence=clean_evidence,
         actor=who,
-        **fields,
+        fields=fields,
     )
     try:
         apply_event(state, candidate)

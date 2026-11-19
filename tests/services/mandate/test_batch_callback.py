@@ -771,3 +771,60 @@ async def test_the_expiry_clock_is_read_again_after_the_locks_are_held(world) ->
         resample=lambda: BEFORE_OPEN,
     )
     assert world.rec.moments == [AFTER_OPEN]
+
+
+# ------------------------- the real writer's fold step with a card id (review od-a379f60b50)
+def _answer_fields(event: str, **over):
+    fields = {
+        "batch_member_id": 7,
+        "terms_id": 21,
+        "terms_sha256": "a" * 64,
+        **over,
+    }
+    if event in ("approved", "terms_rebound"):
+        fields["effective_session"] = date(2026, 11, 23)
+    return fields
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "event"),
+    [
+        ("new_plan", "approve", "approved"),
+        ("new_plan", "reject", "rejected"),
+        ("reapproval", "approve", "terms_rebound"),
+        ("reapproval", "reject", "retired"),
+    ],
+)
+def test_every_answer_with_a_card_id_passes_the_writers_own_checks_and_the_fold(
+    kind, action, event
+) -> None:
+    """The unmocked parts of ``append_plan_event``: the field check, the fold
+    constructor and ``apply_event`` accept ``batch_member_id`` for all four answers."""
+    from app.services.mandate.fold import PlanEvent, apply_event, fold_plan_events
+
+    assert v.BATCH_ANSWER_EVENTS[kind][0 if action == "approve" else 1] == event
+    fields = _answer_fields(event)
+    assert ms._event_field_problem(event, fields) is None
+    history = [PlanEvent("proposed", seq=1, actor="op")]
+    if kind == "reapproval":
+        history.append(
+            PlanEvent(
+                "approved",
+                seq=2,
+                terms_id=20,
+                terms_sha256="b" * 64,
+                effective_session=date(2026, 11, 20),
+                actor="op",
+            )
+        )
+    state = fold_plan_events(history)
+    candidate = ms.fold_candidate(
+        event=event,
+        seq=state.last_seq + 1,
+        evidence={},
+        actor="operator:telegram:1",
+        fields=fields,
+    )
+    assert not hasattr(candidate, "batch_member_id")
+    after = apply_event(state, candidate)
+    assert after.last_seq == state.last_seq + 1
