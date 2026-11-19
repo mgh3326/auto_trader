@@ -460,7 +460,13 @@ def project(state: PlanState, facts: PlanFacts) -> ProjectionPlan:
                 detail="the ledger's fills for this plan differ from the recorded tranche fills",
             )
         )
-    holds.extend(h for h in blockers if h not in holds)
+    for blocker in blockers:
+        if not any(
+            h.code == blocker.code
+            and (blocker.proposal_id is None or h.proposal_id == blocker.proposal_id)
+            for h in holds
+        ):
+            holds.append(blocker)
     orders_settled = not blockers and not any(
         t.open_proposals for t in current.tranches
     )
