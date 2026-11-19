@@ -45,6 +45,12 @@ Revises: 20261116_hk4902_drop_unused
 Create Date: 2026-11-20
 """
 
+# The DDL below is raw SQL kept as module constants (the test schema bootstrap
+# installs the same statements), so the expand-contract lint cannot analyse this
+# file and it carries the file marker. What the upgrade does to existing tables:
+# adds nullable columns, drops NOT NULL on four execution_intents columns, and
+# replaces CHECKs with ones that hold the old bounds for every existing row.
+# expand-contract: contract-step 5441
 from __future__ import annotations
 
 from collections.abc import Sequence
