@@ -8,8 +8,10 @@ the price and volume it posts, and against a recording stand-in for
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -28,6 +30,7 @@ from app.services.execution_intent_gateway.upbit_live_forwarder import (
     UpbitLiveForwarder,
 )
 from app.services.kis_mock_runner.control import KillMode
+from app.services.strategy_sleeves.book import SleeveOrder, compute_sleeve_book
 from tests.services.execution_intent_gateway.support import FakeKillSwitch
 from tests.services.execution_intent_gateway.upbit_support import (
     ACCOUNT_REF,
@@ -38,7 +41,10 @@ from tests.services.execution_intent_gateway.upbit_support import (
     book,
     facts,
     mandate,
+    operator_exit,
+    sell_intent,
     submit,
+    symbol_view,
     upbit_intent,
     version,
 )
@@ -424,3 +430,163 @@ def test_the_mismatch_reason_is_one_the_journal_accepts() -> None:
     assert isinstance(
         ForwardResult(accepted=False, broker_order_id=None, result={}).shadowed, bool
     )
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+@pytest.mark.asyncio
+async def test_a_live_buy_carries_the_thesis_the_order_service_requires(
+    place: _RecordingPlace,
+) -> None:
+    """The real order service refuses a non-dry-run buy that has no thesis."""
+    from app.mcp_server.tooling.order_journal import (
+        _validate_buy_journal_requirements,
+    )
+
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+
+    await _forwarder(store).submit(intent, submit(intent), child_id=1)
+
+    [call] = place.calls
+    # The guard ``_place_order_impl`` runs on exactly these arguments.
+    _validate_buy_journal_requirements(
+        side=call["side"],
+        dry_run=call["dry_run"],
+        thesis=call.get("thesis"),
+        strategy=call.get("strategy"),
+    )
+    assert str(intent.decision_ref) in call["thesis"]
+    assert str(intent.intent_id) in call["thesis"]
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_judged_after_the_pre_send_reads(
+    place: _RecordingPlace,
+) -> None:
+    """The reads start before the intent expires and end after it: nothing posts."""
+    intent = upbit_intent(expires_at=NOW + timedelta(seconds=1))
+    store = MemoryUpbitStore(intent, facts=facts())
+    ticks = iter([NOW, NOW + timedelta(seconds=2)])
+    forwarder = UpbitLiveForwarder(
+        facts=store,
+        kill_switch=FakeKillSwitch(),
+        environment=LIVE_ENV,
+        clock=lambda: next(ticks, NOW + timedelta(seconds=2)),
+        account_ref=lambda: ACCOUNT_REF,
+    )
+
+    result = await forwarder.submit(intent, submit(intent), child_id=1)
+
+    assert place.posted is False
+    assert result.not_sent_reason == Refusal.AUTHORIZATION_EXPIRED.value
+
+
+@pytest.mark.asyncio
+async def test_every_pre_send_refusal_is_a_reason_the_journal_accepts(
+    place: _RecordingPlace,
+) -> None:
+    """An operator exit whose holdings cannot be read at the last look is not
+    sent, and the reason it carries is one ``not_sent`` may record."""
+    exit_id = UUID(int=9)
+    intent = sell_intent(
+        origin="operator_exit",
+        operator_exit_id=exit_id,
+        expires_at=NOW + timedelta(minutes=20),
+    )
+    store = MemoryUpbitStore(
+        intent,
+        facts=facts(
+            operator_exit=operator_exit(intent),
+            symbol=symbol_view(holdings=None),
+        ),
+    )
+
+    result = await _forwarder(store).submit(
+        intent, submit(intent, quantity_decimal="10"), child_id=1
+    )
+
+    assert place.posted is False
+    assert result.not_sent_reason == Refusal.SLEEVE_HOLDINGS_UNMEASURED.value
+    assert result.not_sent_reason in NOT_SENT_REASONS
+
+
+def test_a_reason_outside_the_closed_list_is_recorded_as_a_lower_guard_refusal() -> (
+    None
+):
+    from app.services.execution_intent_gateway.upbit_decisions import not_sent_reason
+
+    assert not_sent_reason("something_new") == Refusal.LOWER_GUARD_REFUSED.value
+    assert not_sent_reason(None) == Refusal.LOWER_GUARD_REFUSED.value
+    assert not_sent_reason("account_mismatch") == "account_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_o4_a_reserved_buy_is_not_sent_once_the_sleeve_is_unmeasured(
+    place: _RecordingPlace,
+) -> None:
+    """A card's send fence marked the sleeve after this buy was reserved."""
+    unproven = SleeveOrder(
+        proposal_pk=1,
+        rung_id=11,
+        symbol="KRW-BTC",
+        side="sell",
+        state="unverified",
+        quantity=Decimal("1"),
+        limit_price=None,
+        notional=None,
+        rung_filled_qty=None,
+        fill_unproven=True,
+    )
+    intent = upbit_intent()
+    store = MemoryUpbitStore(
+        intent,
+        facts=facts(
+            sleeve=SleeveView(
+                version=version(),
+                book=compute_sleeve_book(orders=[unproven], fills=[], marks={}),
+            )
+        ),
+    )
+
+    result = await _forwarder(store).submit(intent, submit(intent), child_id=1)
+
+    assert place.posted is False
+    assert result.not_sent_reason == Refusal.SLEEVE_PNL_UNMEASURED.value
+
+
+@pytest.mark.asyncio
+async def test_b12_a_live_cancel_goes_to_the_mandates_account_or_nowhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    calls: list[dict[str, Any]] = []
+
+    async def cancel_order_impl(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(orders_modify_cancel, "cancel_order_impl", cancel_order_impl)
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+    request = cancel_child(intent, "child-0001")
+
+    other = await _forwarder(store, account_ref="upbit:upbit:" + "c" * 64).cancel(
+        intent, request, broker_order_id="uuid-1"
+    )
+    unknown = await _forwarder(store, account_ref=None).cancel(
+        intent, request, broker_order_id="uuid-1"
+    )
+    assert calls == []
+    assert other.not_sent_reason == Refusal.ACCOUNT_MISMATCH.value
+    assert unknown.not_sent_reason == Refusal.ACCOUNT_MISMATCH.value
+
+    # The mandate's account: the cancel goes out, kill and revocation unread.
+    store.facts = facts(mandate=mandate(revoked=True))
+    sent = await _forwarder(store, kill=KillMode.GLOBAL_FREEZE).cancel(
+        intent, request, broker_order_id="uuid-1"
+    )
+    assert sent.accepted is True and sent.not_sent_reason is None
+    assert [call["order_id"] for call in calls] == ["uuid-1"]

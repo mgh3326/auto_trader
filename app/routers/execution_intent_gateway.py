@@ -31,7 +31,11 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.schemas.execution_intent import UPBIT_LIVE_ACCOUNT, parse_child_request
+from app.schemas.execution_intent import (
+    UPBIT_LIVE_ACCOUNT,
+    misshaped_submit_identity,
+    parse_child_request,
+)
 from app.services.execution_intent_gateway.account_control import (
     PostgresAccountControlStore,
 )
@@ -167,6 +171,33 @@ async def _read_bounded_json(request: Request) -> Any:
         raise HTTPException(status_code=422, detail="invalid_child_request") from exc
 
 
+async def _misshaped_upbit_submit(
+    request: Request, gateway: IntentGateway, payload: Any
+) -> JSONResponse | None:
+    """Design 5438 §3.3: common fields, then the intent, then the account's shape.
+
+    A submit with the kis_mock field set is validated against kis_mock limits,
+    so one meant for an ``upbit_live`` intent can be rejected before its account
+    is known. The executor holds on any non-200, so that request gets the
+    definite refusal the contract names instead.
+    """
+    identity = misshaped_submit_identity(payload)
+    if identity is None:
+        return None
+    confirm = hmac.compare_digest(
+        request.headers.get(CONFIRM_HEADER, "").encode(),
+        identity.idempotency_key.encode(),
+    )
+    try:
+        outcome = await gateway.refuse_misshaped_upbit_child(
+            identity.intent_id, confirm=confirm
+        )
+    except Exception as exc:  # noqa: BLE001 - fillwire treats any non-200 as unknown
+        logger.error("intent gateway handle raised: error_class=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="gateway_unavailable") from exc
+    return None if outcome is None else JSONResponse(dataclasses.asdict(outcome))
+
+
 @router.post("/children")
 async def post_child(
     request: Request,
@@ -177,6 +208,9 @@ async def post_child(
     try:
         child = parse_child_request(payload)
     except ValidationError as exc:
+        refused = await _misshaped_upbit_submit(request, gateway, payload)
+        if refused is not None:
+            return refused
         # The validation error can echo the body, so it never reaches the answer.
         raise HTTPException(status_code=422, detail="invalid_child_request") from exc
     confirm = hmac.compare_digest(

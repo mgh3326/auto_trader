@@ -25,16 +25,23 @@ States (a DB trigger refuses any other move)::
 
 **The send fence (O1, O3).** Before a claimed card may send,
 :func:`fence_card_send` commits ``send_attempts + 1`` in its own transaction,
-conditional on the handoff still being claimed by that card. The count therefore
+under the sleeve lock, conditional on the handoff still being claimed by that
+card **and on every earlier attempt being proven unsent**. The count therefore
 survives a rollback of the approval that raised it, which the proposal row does
 not: after an approval core that failed with an unknown outcome the proposal can
 read ``pending_approval`` with a valid nonce although the broker was reached. A
-card is *proven unsent* only when the proposal ended in a no-send state under
-its row lock, its nonce is dead, no rung ever got a broker id, **and** every
-counted attempt was proven not to have posted. A W5 pre-core dead letter changes
-nothing on the proposal, so it proves nothing here either: the handoff stays
-claimed, and no second card can be created while the first can still be
-approved.
+second click on that card reaches the fence and is refused, so one card posts at
+most once until somebody has looked. A card is *proven unsent* only when the
+proposal ended in a no-send state under its row lock, its nonce is dead, no rung
+ever got a broker id, **and** every counted attempt was proven not to have
+posted. A W5 pre-core dead letter changes nothing on the proposal, so it proves
+nothing here either: the handoff stays claimed, and no second card can be
+created while the first can still be approved.
+
+The same committed UPDATE sets ``fills_unmeasured`` (O4): from the moment a card
+may have posted, the whole sleeve is unmeasured. Only a proven non-send
+(:func:`record_card_proven_unsent`) or a settle that found the broker and the
+ledger equal clears it.
 
 **The fill proof (O2, O4).** A card that may have sent is settled only when the
 broker's order reading is final and its cumulative executed volume equals the
@@ -59,7 +66,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_mandates import ExecutionExitHandoff, ExecutionMandate
@@ -229,10 +236,15 @@ async def proven_holdings(
 async def _locked(
     session: AsyncSession, handoff_id: int
 ) -> ExecutionExitHandoff | None:
+    # ``populate_existing``: callers load the row once to learn its sleeve,
+    # then wait for the sleeve lock. Without it this SELECT would hand back the
+    # attributes read before the wait, and a send fence committed meanwhile
+    # would be invisible to the decision made under the lock.
     return await session.scalar(
         select(ExecutionExitHandoff)
         .where(ExecutionExitHandoff.id == handoff_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
@@ -379,11 +391,28 @@ async def fence_card_send(
     """Count a send attempt in its own committed transaction, or refuse.
 
     Call this before the card's rung may reach the broker. It raises unless the
-    handoff is still claimed by this card and the account matches. If the commit
-    itself fails the caller must not send: the count is what later tells a
-    possibly-sent card from a proven-unsent one.
+    handoff is still claimed by this card, the account matches, and no earlier
+    attempt of this card is still unexplained (O1, O3: an approval that reached
+    the broker and then rolled back leaves the card clickable; the count it
+    committed is what stops the second POST). If the commit itself fails the
+    caller must not send: the count is what later tells a possibly-sent card
+    from a proven-unsent one.
+
+    The same UPDATE marks the sleeve unmeasured (O4). It runs under the sleeve
+    lock, so it is ordered against every reservation on the sleeve: a buy
+    reserved after it sees the mark, and one reserved before it reads the mark
+    again in its pre-send check.
     """
     async with session_factory() as session:
+        first = await session.get(ExecutionExitHandoff, handoff_id)
+        if first is None:
+            await session.rollback()
+            raise ExitHandoffError("exit_handoff_claim_lost")
+        # The approval that calls this holds no sleeve lock. Should that ever
+        # change, waiting here would never end, so the wait is bounded: no lock,
+        # no count, no send.
+        await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+        await acquire_sleeve_lock(session, first.sleeve_id)
         handoff = await _locked(session, handoff_id)
         if (
             handoff is None
@@ -392,6 +421,9 @@ async def fence_card_send(
         ):
             await session.rollback()
             raise ExitHandoffError("exit_handoff_claim_lost")
+        if handoff.send_attempts != handoff.send_attempts_proven_unsent:
+            await session.rollback()
+            raise ExitHandoffError("exit_handoff_prior_attempt_unresolved")
         mandate = await session.get(ExecutionMandate, handoff.mandate_id)
         if not _account_matches(mandate, configured_account_ref):
             await session.rollback()
@@ -402,9 +434,13 @@ async def fence_card_send(
                 ExecutionExitHandoff.id == handoff_id,
                 ExecutionExitHandoff.state == "card_claimed",
                 ExecutionExitHandoff.proposal_id == proposal_id,
+                ExecutionExitHandoff.send_attempts
+                == ExecutionExitHandoff.send_attempts_proven_unsent,
             )
             .values(
-                send_attempts=ExecutionExitHandoff.send_attempts + 1, updated_at=now
+                send_attempts=ExecutionExitHandoff.send_attempts + 1,
+                fills_unmeasured=True,
+                updated_at=now,
             )
         )
         if (counted.rowcount or 0) != 1:
@@ -424,6 +460,7 @@ async def record_card_proven_unsent(
 
     Only the pre-send hook raising before the request proves that. A failure to
     record leaves the attempt counted as possibly sent, which is the safe side.
+    With every attempt explained again, the mark the fence set is cleared.
     """
     try:
         async with session_factory() as session:
@@ -439,6 +476,10 @@ async def record_card_proven_unsent(
                 .values(
                     send_attempts_proven_unsent=(
                         ExecutionExitHandoff.send_attempts_proven_unsent + 1
+                    ),
+                    fills_unmeasured=(
+                        ExecutionExitHandoff.send_attempts_proven_unsent + 1
+                        < ExecutionExitHandoff.send_attempts
                     ),
                     updated_at=now,
                 )
@@ -469,12 +510,23 @@ def card_proven_unsent(handoff: Any, group: Any, rungs: list[Any]) -> bool:
         return False
     if not rungs:
         return False
+    # With no attempt ever counted, the rung must look untouched. With counted
+    # attempts that the fence all proved unsent, the order layer was entered and
+    # stopped before the request: it may have left its idempotency key on the
+    # rung, and a rung it left ``unverified`` ends ``voided_local_stale``. The
+    # committed counters are the proof there, not the rung's appearance.
+    attempted = handoff.send_attempts > 0
+    allowed_states = (
+        _NO_SEND_RUNG_STATES | {"voided_local_stale"}
+        if attempted
+        else _NO_SEND_RUNG_STATES
+    )
     for rung in rungs:
         filled = rung.filled_qty
         if (
-            rung.state not in _NO_SEND_RUNG_STATES
+            rung.state not in allowed_states
             or rung.broker_order_id is not None
-            or rung.idempotency_key is not None
+            or (rung.idempotency_key is not None and not attempted)
             or (filled is not None and Decimal(str(filled)) != 0)
         ):
             return False

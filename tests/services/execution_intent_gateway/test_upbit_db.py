@@ -44,6 +44,7 @@ from app.services.execution_intent_gateway.account_control import (
     set_account_mode,
 )
 from app.services.execution_intent_gateway.decisions import ChildState
+from app.services.execution_intent_gateway.forward_result import ForwardResult
 from app.services.execution_intent_gateway.mandates import (
     MandateError,
     create_mandate,
@@ -60,7 +61,10 @@ from app.services.execution_intent_gateway.upbit_store import (
     IntentRefused,
     UpbitGatewayStore,
 )
-from app.services.kis_mock_runner.control import KillMode
+from app.services.kis_mock_runner.control import (
+    KillMode,
+    read_effective_kill_switch,
+)
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.service import RungInput
@@ -75,7 +79,10 @@ from app.services.strategy_sleeves.exit_handoffs import (
     settle_exit_handoff,
 )
 from tests._run_owned_database import validate_run_owned_database_url
-from tests.services.execution_intent_gateway.support import FakeKillSwitch
+from tests.services.execution_intent_gateway.support import (
+    FakeKillSwitch,
+    journal_tables_lock,
+)
 from tests.services.execution_intent_gateway.upbit_support import (
     LIVE_ENV,
     FakeLiveForwarder,
@@ -107,17 +114,24 @@ def _migration(name: str) -> Any:
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _account_control_row() -> None:
-    """The seed row of the kill table.
+async def _account_control_row() -> Any:
+    """The seed row of the kill table, under the journal tables' test lock.
 
     The guards themselves come from the test schema bootstrap, which installs
-    this revision's ``GUARD_DDL``. No DDL runs here: a per-test ``DROP TRIGGER``
-    on ``order_proposals`` would take locks other DB tests are waiting behind.
+    this revision's ``GUARD_DDL`` and the two journal triggers of 20261101. No
+    DDL runs here: a per-test ``DROP TRIGGER`` on ``order_proposals`` would take
+    locks other DB tests are waiting behind.
+
+    ``test_store_db`` truncates the journal tables after each of its tests, on
+    another xdist worker against this same database. The lock keeps that from
+    happening under a test here.
     """
     hk5441 = _migration("20261120_hk5441_upbit_intent_gateway.py")
-    async with engine.begin() as conn:
-        for statement in hk5441.SEED_DDL:
-            await conn.execute(text(statement))
+    async with journal_tables_lock():
+        async with engine.begin() as conn:
+            for statement in hk5441.SEED_DDL:
+                await conn.execute(text(statement))
+        yield
 
 
 def _now() -> datetime:
@@ -1014,6 +1028,18 @@ async def test_the_account_kill_row_is_read_fail_closed_and_cannot_be_deleted() 
         )
         await session.commit()
     assert (await control.read()).mode is KillMode.GLOBAL_FREEZE
+    # An ACTIVE row is read as ACTIVE, not as the freeze a failed read becomes.
+    for mode in ("ACTIVE", "GLOBAL_FREEZE"):
+        async with AsyncSessionLocal() as session:
+            await set_account_mode(
+                session,
+                account="upbit_live",
+                mode=mode,
+                reason="db test",
+                actor="test-operator",
+            )
+            await session.commit()
+        assert (await read_effective_kill_switch(control)).mode is KillMode(mode)
     async with AsyncSessionLocal() as session:
         with pytest.raises(DBAPIError):
             await session.execute(
@@ -1211,3 +1237,336 @@ async def test_o2_o4_an_unproven_sent_card_keeps_the_claim_and_is_unmeasured(
     # No second card while this one is unproven.
     with pytest.raises(OrderProposalError, match="exit_handoff_not_ready"):
         await _card(sleeve, handoff_id)
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+async def _claimed_card(sleeve: StrategySleeve, mandate: ExecutionMandate) -> Any:
+    handoff_id = await _handoff(sleeve, mandate)
+    await _set_state(handoff_id, "ready_for_card")
+    return handoff_id, await _card(sleeve, handoff_id)
+
+
+async def _fence(handoff_id: int, card: OrderProposal) -> None:
+    await fence_card_send(
+        AsyncSessionLocal,
+        handoff_id=handoff_id,
+        proposal_id=card.proposal_id,
+        configured_account_ref=ACCOUNT_REF,
+        now=_now(),
+    )
+
+
+async def _handoff_row(handoff_id: int) -> ExecutionExitHandoff:
+    async with AsyncSessionLocal() as session:
+        row = await session.get(ExecutionExitHandoff, handoff_id)
+        assert row is not None
+        return row
+
+
+@pytest.mark.asyncio
+async def test_o1_o3_a_second_click_cannot_post_while_the_first_attempt_is_unexplained(
+    proven: None,
+) -> None:
+    """An approval reached the POST and rolled back: the card is clickable again.
+    The committed count is what refuses the second request."""
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+
+    await _fence(handoff_id, card)
+    with pytest.raises(ExitHandoffError) as refused:
+        await _fence(handoff_id, card)
+
+    assert refused.value.code == "exit_handoff_prior_attempt_unresolved"
+    row = await _handoff_row(handoff_id)
+    assert row.send_attempts == 1 and row.send_attempts_proven_unsent == 0
+
+
+@pytest.mark.asyncio
+async def test_o1_an_attempt_proven_unsent_lets_the_card_try_again(
+    proven: None,
+) -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+
+    await _fence(handoff_id, card)
+    assert (await _handoff_row(handoff_id)).fills_unmeasured is True
+    recorded = await exit_handoffs.record_card_proven_unsent(
+        AsyncSessionLocal,
+        handoff_id=handoff_id,
+        proposal_id=card.proposal_id,
+        now=_now(),
+    )
+
+    assert recorded is True
+    row = await _handoff_row(handoff_id)
+    assert row.send_attempts == 1 and row.send_attempts_proven_unsent == 1
+    # Every attempt is explained again, so the sleeve is measured again.
+    assert row.fills_unmeasured is False
+    await _fence(handoff_id, card)
+    row = await _handoff_row(handoff_id)
+    assert row.send_attempts == 2 and row.fills_unmeasured is True
+
+
+@pytest.mark.asyncio
+async def test_o4_the_send_fence_unmeasures_the_sleeve_before_anybody_settles(
+    proven: None,
+) -> None:
+    """The card sold XRP, the ledger lags and no resolver has run. A BTC buy of
+    the same sleeve is refused from the moment the card may have posted."""
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    buy = _intent(
+        mandate,
+        symbol="KRW-BTC",
+        limit_price_krw=150_000_000,
+        max_quantity_decimal="0.001",
+    )
+    await store.store_intent(buy, now=_now(), reads=_reads())
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+
+    await _fence(handoff_id, card)
+
+    assert (await _handoff_row(handoff_id)).fills_unmeasured is True
+    async with AsyncSessionLocal() as session:
+        inputs = await sleeve_store.load_sleeve_inputs(session, sleeve)
+    book = compute_sleeve_book(orders=inputs.orders, fills=inputs.fills, marks={})
+    assert book.unproven_orders and book.net_pnl is None and book.used is None
+    path, _shadow, live = _path(store)
+    key = _key()
+    outcome = await path.handle(
+        UpbitSubmitChild(
+            action="submit",
+            intent_id=buy.intent_id,
+            idempotency_key=key,
+            quantity_decimal="0.001",
+            limit_price_krw=150_000_000,
+        )
+    )
+    assert outcome.status == "refused"
+    assert outcome.reason == "sleeve_pnl_unmeasured"
+    assert live.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_handoff_guard_refuses_a_send_attempt_over_an_unexplained_one(
+    proven: None,
+) -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+
+    async def bump(**values: Any) -> None:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(ExecutionExitHandoff)
+                .where(ExecutionExitHandoff.id == handoff_id)
+                .values(**values)
+            )
+            await session.commit()
+
+    # A first attempt that does not mark the sleeve unmeasured.
+    with pytest.raises(DBAPIError):
+        await bump(send_attempts=1)
+    # Two at once.
+    with pytest.raises(DBAPIError):
+        await bump(send_attempts=2, fills_unmeasured=True)
+    await _fence(handoff_id, card)
+    # A second attempt over the unexplained first, written by hand.
+    with pytest.raises(DBAPIError):
+        await bump(send_attempts=2, fills_unmeasured=True)
+    # More proven unsent than were ever attempted.
+    with pytest.raises(DBAPIError):
+        await bump(send_attempts_proven_unsent=2)
+    row = await _handoff_row(handoff_id)
+    assert row.send_attempts == 1 and row.send_attempts_proven_unsent == 0
+
+
+@pytest.mark.asyncio
+async def test_a_settle_decides_on_the_handoff_as_it_is_under_the_lock(
+    proven: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolver read the handoff with no send attempt, then waited for the
+    sleeve lock while an approval committed its fence and posted. The card then
+    expired. Releasing it as unsent would let a second card sell again."""
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+    await _expire(card)
+    real_lock = exit_handoffs.acquire_sleeve_lock
+    raced: list[bool] = []
+
+    async def lock_after_a_fence(session: Any, sleeve_id: int) -> None:
+        if not raced:
+            raced.append(True)
+            await _fence(handoff_id, card)
+        await real_lock(session, sleeve_id)
+
+    monkeypatch.setattr(exit_handoffs, "acquire_sleeve_lock", lock_after_a_fence)
+
+    result = await _settle(handoff_id)
+
+    assert raced == [True]
+    assert result.outcome is SettleOutcome.HELD_UNMEASURED
+    assert result.state == "card_claimed"
+    with pytest.raises(OrderProposalError, match="exit_handoff_not_ready"):
+        await _card(sleeve, handoff_id)
+
+
+@pytest.mark.asyncio
+async def test_s6_the_trigger_keeps_the_mandates_price_band_on_an_operator_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeve = await _sleeve("shadow")
+    mandate = await _mandate(sleeve, "shadow")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    async with AsyncSessionLocal() as session:
+        exit_row = await create_operator_exit(
+            session,
+            mandate_id=mandate.id,
+            symbol=SYMBOL,
+            max_quantity="10",
+            reason="db test exit",
+            actor="test-operator",
+            now=_now(),
+        )
+        await session.commit()
+
+    def exit_intent(**overrides: Any) -> ExecutionIntentV2:
+        return _intent(
+            mandate,
+            side="sell",
+            origin="operator_exit",
+            operator_exit_id=exit_row.id,
+            authorization_ref=f"operator-exit:{exit_row.id}",
+            max_quantity_decimal="10",
+            expires_at=exit_row.expires_at,
+            inventory=DecimalInventoryConstraint(
+                position_at_authorization="10",
+                min_position_after="0",
+                max_position_after="10",
+            ),
+            **overrides,
+        )
+
+    # The rule refuses a 31 bp exit under a 30 bp mandate ...
+    with pytest.raises(IntentRefused) as refused:
+        await store.store_intent(
+            exit_intent(max_slippage_bps=31), now=_now(), reads=_reads()
+        )
+    assert refused.value.refusal.value == "mandate_scope_mismatch"
+    # ... and so does the trigger, with the rule out of the way.
+    monkeypatch.setattr(
+        upbit_store_module, "check_storable", lambda *_a, **_k: UpbitDecision()
+    )
+    with pytest.raises(DBAPIError):
+        await store.store_intent(
+            exit_intent(max_slippage_bps=31), now=_now(), reads=_reads()
+        )
+    async with AsyncSessionLocal() as session:
+        stored = await session.scalar(
+            select(ExecutionIntent.id).where(
+                ExecutionIntent.operator_exit_id == exit_row.id
+            )
+        )
+    assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_b12_the_store_reads_the_account_a_cancel_must_go_to() -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+
+    assert await store.mandate_account_ref(intent.intent_id) == ACCOUNT_REF
+    assert await store.mandate_account_ref(uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_b3_the_ledger_row_is_recovered_before_the_final_evidence() -> None:
+    """Final evidence makes a child resolved, and a resolved child is never
+    looked at again. A ledger write that failed must leave it pending."""
+    from app.models.execution_mandates import ExecutionChildOrderEvidence
+    from scripts import execution_intent_upbit_resolve as resolver
+
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    path, _shadow, live = _path(store)
+    live.result = ForwardResult(
+        accepted=False, broker_order_id=None, result={"success": False}
+    )
+    key = _key()
+    assert (await path.handle(_submit(intent, key))).status == "uncertain"
+    child_id = (await _child(key)).id
+
+    async def reader(_order_uuid: str | None, identifier: str | None) -> Any:
+        if identifier != key:
+            return None
+        return {
+            "uuid": "uuid-recovered",
+            "state": "cancel",
+            "executed_volume": "0",
+            "remaining_volume": "10",
+        }
+
+    written: list[int] = []
+
+    async def failing(order: Any, _reading: Any) -> str:
+        raise RuntimeError("ledger down")
+
+    async def working(order: Any, _reading: Any) -> str:
+        written.append(order.child_id)
+        return "recorded"
+
+    async def run(writer: Any) -> dict[str, Any]:
+        report = await resolver._resolve_orders(
+            AsyncSessionLocal,
+            reader=reader,
+            commit=True,
+            now=_now(),
+            ledger_writer=writer,
+        )
+        return next(entry for entry in report if entry["child_id"] == child_id)
+
+    async def evidence() -> Any:
+        async with AsyncSessionLocal() as session:
+            return await session.get(ExecutionChildOrderEvidence, child_id)
+
+    first = await run(failing)
+    assert first["result"] == "unresolved"
+    assert first["detail"] == "live_order_ledger_not_written"
+    assert await evidence() is None
+
+    second = await run(working)
+    assert second["result"] == "inserted" and second["live_order_ledger"] == "recorded"
+    assert written == [child_id]
+    row = await evidence()
+    assert row is not None and row.broker_state == "cancel"
+
+
+@pytest.mark.asyncio
+async def test_the_mandate_list_reads_rows_that_exist() -> None:
+    from scripts import execution_mandates as mandates_cli
+
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    handoff_id = await _handoff(sleeve, mandate)
+
+    async with AsyncSessionLocal() as session:
+        listed = await mandates_cli._list(session, now=_now())
+
+    [row] = [m for m in listed["mandates"] if m["mandate_id"] == str(mandate.id)]
+    assert row["state"] == "active" and row["sleeve_id"] == sleeve.id
+    [handoff] = [
+        h for h in listed["open_exit_handoffs"] if h["handoff_id"] == handoff_id
+    ]
+    assert handoff["state"] == "open" and handoff["fills_unmeasured"] is False

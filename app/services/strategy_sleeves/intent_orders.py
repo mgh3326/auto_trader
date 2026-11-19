@@ -82,7 +82,14 @@ class IntentChildOrder:
 
     @property
     def is_shadow(self) -> bool:
-        return self.state == _SHADOW_ORDER_STATE
+        """A child of a shadow intent. The mode is immutable and decides this.
+
+        Its journal state does not: a shadow child whose ``shadowed`` outcome
+        was not recorded yet is still ``sending``, and it never reached a broker
+        either. It is counted as the assumed fill it is about to become, so its
+        notional is never missing from both the reservation and the book.
+        """
+        return self.execution_mode == "shadow"
 
     @property
     def order_uuid(self) -> str | None:

@@ -32,6 +32,7 @@ from pydantic import (
     StrictInt,
     StringConstraints,
     TypeAdapter,
+    ValidationError,
     model_validator,
 )
 
@@ -332,6 +333,36 @@ def parse_child_request(payload: object) -> AnyChild:
     if _is_upbit_submit(payload):
         return _UPBIT_SUBMIT_ADAPTER.validate_python(payload)
     return _CHILD_REQUEST_ADAPTER.validate_python(payload)
+
+
+class ChildIdentity(BaseModel):
+    """The fields every child has, whatever its account (design 5438 §3.3)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    action: Literal["submit", "amend", "cancel"]
+    intent_id: UUID
+    idempotency_key: IdempotencyKey
+
+
+def misshaped_submit_identity(payload: object) -> ChildIdentity | None:
+    """Who a rejected submit was for, when only its field set can be at fault.
+
+    A submit that carries the integer ``quantity``, or no ``quantity_decimal``,
+    is read as the kis_mock shape and judged by that shape's limits, so a
+    request meant for an ``upbit_live`` intent can fail validation before
+    anybody knew which account it was for. This returns its identity so the
+    gateway can look the intent up and answer the account-shape refusal the
+    contract promises. Any other rejected payload returns ``None``.
+    """
+    if not isinstance(payload, dict) or payload.get("action") != "submit":
+        return None
+    if "quantity" not in payload and "quantity_decimal" in payload:
+        return None
+    try:
+        return ChildIdentity.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 def child_quantity(child: Any) -> Decimal | None:

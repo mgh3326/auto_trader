@@ -248,6 +248,7 @@ tests/services/order_proposals/callback_inbox/test_crash_points.py
 tests/services/order_proposals/callback_inbox/test_data_minimization.py
 tests/services/order_proposals/callback_inbox/test_delivery_identity.py
 tests/services/order_proposals/callback_inbox/test_enqueue_deadline.py
+tests/services/order_proposals/callback_inbox/test_exit_handoff_card_dead_letter.py
 tests/services/order_proposals/callback_inbox/test_lock_authority.py
 tests/services/order_proposals/callback_inbox/test_lock_cleanup_cancellation.py
 tests/services/order_proposals/callback_inbox/test_lock_idle_transaction.py

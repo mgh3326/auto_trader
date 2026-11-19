@@ -285,6 +285,10 @@ class MemoryUpbitStore:
         intent = self.intents.get(intent_id)
         return None if intent is None else (intent, self.facts)
 
+    async def mandate_account_ref(self, intent_id: UUID) -> str | None:
+        mandate = self.facts.mandate
+        return None if mandate is None else mandate.account_ref
+
     async def reserve(
         self,
         request: AnyChild,

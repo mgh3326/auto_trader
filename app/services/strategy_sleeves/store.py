@@ -75,6 +75,8 @@ from app.services.execution_ledger.supersede import (
 from app.services.strategy_sleeves.book import SleeveFill, SleeveOrder
 from app.services.strategy_sleeves.gate import SleeveVersionView
 from app.services.strategy_sleeves.intent_orders import (
+    IntentChildOrder,
+    child_order_key,
     live_orders,
     load_intent_child_orders,
 )
@@ -702,9 +704,11 @@ async def load_sleeve_inputs(
                 )
             )
 
+    child_orders: list[IntentChildOrder] = []
     if getattr(sleeve, "execution_path", "card") == "go":
         orders = await _mark_unmeasured_handoff_cards(session, sleeve, orders)
-        for child in live_orders(await load_intent_child_orders(session, sleeve.id)):
+        child_orders = live_orders(await load_intent_child_orders(session, sleeve.id))
+        for child in child_orders:
             orders.append(
                 (
                     child.as_sleeve_order(),
@@ -755,12 +759,48 @@ async def load_sleeve_inputs(
             sleeve=sleeve,
         )
         diagnostics.update(skipped)
+    marked = mark_children_with_unbooked_fills(
+        [order for order, _created, _id in orders], child_orders, fills
+    )
     return SleeveInputs(
-        orders=tuple(order for order, _created, _id in orders),
+        orders=tuple(marked),
         fills=tuple(fills),
         diagnostics=dict(diagnostics),
         unattributed_rungs=tuple(sorted(unattributed)),
     )
+
+
+def mark_children_with_unbooked_fills(
+    orders: Sequence[SleeveOrder],
+    child_orders: Sequence[IntentChildOrder],
+    fills: Sequence[SleeveFill],
+) -> list[SleeveOrder]:
+    """Mark a broker-final child whose fills the ledger has not all booked. Pure.
+
+    The broker's final reading says how much the order traded; the lots are
+    built from ledger rows. While the two differ -- a reconcile that has not
+    caught up, a trade outside its window -- the position built from the ledger
+    is wrong by the difference: after a sell it still shows coins the sleeve no
+    longer owns, and on a shared account the next sell would take another
+    sleeve's. The order is marked, which makes the whole sleeve's holdings and
+    P&L unknown until the two quantities are equal.
+    """
+    final = {
+        child_order_key(child.child_id): child.filled_quantity
+        for child in child_orders
+        if child.filled_quantity is not None
+    }
+    if not final:
+        return list(orders)
+    booked: dict[int, Decimal] = defaultdict(lambda: ZERO)
+    for fill in fills:
+        booked[fill.rung_id] += fill.quantity
+    return [
+        replace(order, fill_unproven=True)
+        if order.rung_id in final and booked[order.rung_id] != final[order.rung_id]
+        else order
+        for order in orders
+    ]
 
 
 #: Book key of the placeholder order for an unmeasured handoff whose card has

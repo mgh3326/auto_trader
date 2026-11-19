@@ -256,6 +256,20 @@ class UpbitGatewayStore:
             await session.rollback()
             return account
 
+    async def mandate_account_ref(self, intent_id: UUID) -> str | None:
+        """The account fingerprint the intent's mandate was approved for (B12)."""
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            ref = await session.scalar(
+                select(ExecutionMandate.account_ref)
+                .join(
+                    ExecutionIntent, ExecutionIntent.mandate_id == ExecutionMandate.id
+                )
+                .where(ExecutionIntent.id == intent_id)
+            )
+            await session.rollback()
+            return ref
+
     async def read_intent(self, intent_id: UUID) -> IntentSnapshot | None:
         async with self._session_factory() as session:
             await session.execute(text("SET TRANSACTION READ ONLY"))

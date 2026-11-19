@@ -267,3 +267,33 @@ def test_o4_ledger_lag_and_a_failed_broker_read_refuse_a_buy_on_another_symbol()
 def test_o1_an_unsent_card_needs_no_broker_reading_at_all() -> None:
     # O1 comes first: a proven-unsent card returns without any reading (O2).
     assert card_proven_unsent(handoff(), group("expired"), [rung("expired")]) is True
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+@pytest.mark.parametrize(
+    "the_rung",
+    [
+        # The order layer was entered and the pre-send hook stopped it; the
+        # classifier could not look the identifier up and left the rung
+        # ``unverified``, which the audited void ends as ``voided_local_stale``.
+        rung("voided_local_stale", key="oprop-abc"),
+        rung("rejected", key="oprop-abc"),
+    ],
+)
+def test_o1_the_committed_fence_proves_a_pre_post_refusal(the_rung) -> None:
+    ended = group("voided", used_at=NOW)
+    assert card_proven_unsent(handoff(1, 1), ended, [the_rung]) is True
+    # Without a counted, proven attempt the same rung proves nothing.
+    assert card_proven_unsent(handoff(), ended, [the_rung]) is False
+    # And an attempt that is not proven unsent is never explained by the rung.
+    assert card_proven_unsent(handoff(2, 1), ended, [the_rung]) is False
+
+
+def test_o1_a_named_order_is_never_proven_unsent_by_the_counters() -> None:
+    ended = group("voided", used_at=NOW)
+    named = rung("voided_local_stale", key="oprop-abc", order_id="uuid-1")
+    filled = rung("voided_local_stale", key="oprop-abc", filled=Decimal("1"))
+    assert card_proven_unsent(handoff(1, 1), ended, [named]) is False
+    assert card_proven_unsent(handoff(1, 1), ended, [filled]) is False

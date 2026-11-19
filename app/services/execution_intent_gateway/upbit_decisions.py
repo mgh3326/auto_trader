@@ -80,10 +80,29 @@ NOT_SENT_REASONS: Final[frozenset[str]] = frozenset(
         Refusal.OPERATOR_EXIT_INVALID.value,
         Refusal.EXIT_HANDOFF_ACTIVE.value,
         Refusal.SLEEVE_NOT_LIVE.value,
+        Refusal.SLEEVE_NOT_SHADOW.value,
         Refusal.SLEEVE_UNREADABLE.value,
+        Refusal.SLEEVE_PNL_UNMEASURED.value,
+        Refusal.SLEEVE_USED_UNMEASURED.value,
+        Refusal.SLEEVE_HOLDINGS_UNMEASURED.value,
+        Refusal.OPEN_SELL_INTENT_EXISTS.value,
+        Refusal.INVENTORY_CONSTRAINT_EXCEEDED.value,
         Refusal.LOWER_GUARD_REFUSED.value,
     }
 )
+
+
+def not_sent_reason(reason: str | None) -> str:
+    """A reason the journal accepts for a proven non-send.
+
+    Every reason :func:`check_before_send` can return is in the closed list. A
+    reason outside it still proves the same thing -- the hook stopped before the
+    request -- so it is recorded as ``lower_guard_refused`` rather than left to
+    fail the journal write and strand the child in ``sending``.
+    """
+    if reason in NOT_SENT_REASONS:
+        return str(reason)
+    return Refusal.LOWER_GUARD_REFUSED.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,11 +332,18 @@ def evaluate_operator_exit(
         or quantity > exit_row.max_quantity
     ):
         return Refusal.OPERATOR_EXIT_INVALID
-    # The mandate still names the account, sleeve and mode; only its time
-    # limits and its revocation are set aside.
+    # The mandate still names the account, sleeve and mode, and its price band
+    # and intent lifetime still bind. S6 sets aside exactly two things: the
+    # mandate's own expiry and its revocation.
     if mandate is None or mandate.mandate_id != intent.mandate_id:
         return Refusal.MANDATE_MISSING
     if _identity_mismatch(intent, mandate):
+        return Refusal.MANDATE_SCOPE_MISMATCH
+    if (
+        intent.max_slippage_bps > mandate.price_band_bps
+        or intent.created_at is None
+        or intent.expires_at > intent.created_at + mandate.max_intent_ttl
+    ):
         return Refusal.MANDATE_SCOPE_MISMATCH
     if reads.kill_mode is not KillMode.ACTIVE:
         return Refusal.SUBMISSIONS_KILLED
@@ -395,6 +421,18 @@ def _sleeve_state_refusal(intent: IntentSnapshot, sleeve: SleeveView) -> Refusal
             None if version.state == SleeveState.SHADOW else Refusal.SLEEVE_NOT_SHADOW
         )
     return Refusal.SLEEVE_UNREADABLE
+
+
+def _unmeasured_sleeve_refusal(sleeve: SleeveView) -> Refusal | None:
+    """Whether the sleeve's P&L or cash used cannot be measured right now."""
+    book = sleeve.book
+    if book is None:
+        return Refusal.SLEEVE_UNREADABLE
+    if book.loss is None:
+        return Refusal.SLEEVE_PNL_UNMEASURED
+    if book.used is None:
+        return Refusal.SLEEVE_USED_UNMEASURED
+    return None
 
 
 def _buy_sleeve_verdict(
@@ -676,6 +714,10 @@ def check_before_send(
             refusal = Refusal.EXIT_HANDOFF_ACTIVE
         if refusal is None:
             refusal = _sleeve_state_refusal(intent, facts.sleeve)
+        if refusal is None and intent.side == "buy":
+            # O4: a buy reserved before the sleeve became unmeasured (a card
+            # that may have sent, an order with unproven fills) is not sent.
+            refusal = _unmeasured_sleeve_refusal(facts.sleeve)
     if refusal is not None:
         return refusal
     # B12: the order goes to the account the mandate was approved for, or nowhere.

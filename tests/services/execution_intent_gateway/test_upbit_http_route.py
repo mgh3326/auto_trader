@@ -11,6 +11,7 @@ import json
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -282,3 +283,60 @@ def test_the_list_route_has_no_write_method() -> None:
         for method in getattr(item, "methods", set())
     }
     assert methods == {"GET"}
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+def _kis_shaped(h: Harness, **overrides: Any) -> dict[str, Any]:
+    body = h.upbit_body(**overrides)
+    body.pop("quantity_decimal")
+    body.setdefault("quantity", 1)
+    return body
+
+
+def test_a_kis_shaped_child_above_the_kis_price_ceiling_is_still_the_shape_refusal() -> (
+    None
+):
+    """Design §3.3: common fields, then the intent, then the account's field set.
+
+    150,000,000 KRW is a valid Upbit BTC price and above the kis_mock ceiling.
+    The executor holds on any non-200, so this must be the definite refusal.
+    """
+    h = Harness()
+    answer = h.post(_kis_shaped(h, limit_price_krw=150_000_000))
+
+    assert answer.status_code == 200
+    assert answer.json()["status"] == "refused"
+    assert answer.json()["reason"] == "child_shape_invalid_for_account"
+    assert answer.json()["child_id"] is None
+    assert h.upbit_store.children == [] and h.live.calls == []
+
+
+def test_the_same_invalid_body_for_a_kis_intent_or_no_intent_is_422_as_before() -> None:
+    h = Harness()
+    for intent_id in (str(h.kis_intent.intent_id), str(uuid4())):
+        answer = h.post(
+            _kis_shaped(h, intent_id=intent_id, limit_price_krw=150_000_000)
+        )
+        assert answer.status_code == 422
+        assert answer.json() == {"detail": "invalid_child_request"}
+    assert h.kis_store.children == [] and h.kis_broker.calls == []
+
+
+def test_a_misshaped_child_reads_nothing_without_the_confirm_header() -> None:
+    h = Harness()
+    read: list[Any] = []
+    account_of = h.upbit_store.account_of
+
+    async def counting(intent_id: Any) -> str | None:
+        read.append(intent_id)
+        return await account_of(intent_id)
+
+    h.upbit_store.account_of = counting  # type: ignore[method-assign]
+    answer = h.client.post(
+        CHILDREN,
+        content=json.dumps(_kis_shaped(h, limit_price_krw=150_000_000)),
+        headers=h.headers("another-key"),
+    )
+    assert answer.status_code == 422 and read == []

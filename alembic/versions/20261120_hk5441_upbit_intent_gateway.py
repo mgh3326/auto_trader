@@ -67,15 +67,21 @@ NOT_SENT_REASONS: tuple[str, ...] = (
     "account_mismatch",
     "authorization_expired",
     "exit_handoff_active",
+    "inventory_constraint_exceeded",
     "lower_guard_refused",
     "mandate_expired",
     "mandate_missing",
     "mandate_revoked",
     "mandate_scope_mismatch",
+    "open_sell_intent_exists",
     "operator_exit_invalid",
     "price_normalization_mismatch",
+    "sleeve_holdings_unmeasured",
     "sleeve_not_live",
+    "sleeve_not_shadow",
+    "sleeve_pnl_unmeasured",
     "sleeve_unreadable",
+    "sleeve_used_unmeasured",
     "submissions_killed",
     "upbit_live_disabled",
 )
@@ -490,6 +496,13 @@ GUARD_DDL: tuple[str, ...] = (
                         RAISE EXCEPTION 'review.execution_intents operator exit intent is outside its exit row'
                             {_RESTRICT};
                     END IF;
+                    -- S6 sets aside the mandate's expiry and revocation only:
+                    -- its price band and intent lifetime still bind.
+                    IF NEW.expires_at > now() + m.max_intent_ttl
+                       OR NEW.max_slippage_bps > m.price_band_bps THEN
+                        RAISE EXCEPTION 'review.execution_intents operator exit intent exceeds its mandate'
+                            {_RESTRICT};
+                    END IF;
                 ELSE
                     IF EXISTS (
                            SELECT 1 FROM review.execution_mandate_revocations r
@@ -770,8 +783,19 @@ GUARD_DDL: tuple[str, ...] = (
                OR NEW.reserved_quantity IS DISTINCT FROM OLD.reserved_quantity
                OR NEW.claim_count <> OLD.claim_count
                OR NEW.send_attempts < OLD.send_attempts
-               OR NEW.send_attempts_proven_unsent < OLD.send_attempts_proven_unsent THEN
+               OR NEW.send_attempts_proven_unsent < OLD.send_attempts_proven_unsent
+               OR NEW.send_attempts_proven_unsent > NEW.send_attempts THEN
                 RAISE EXCEPTION 'review.execution_exit_handoffs a claim cannot change under its card'
+                    {_RESTRICT};
+            END IF;
+            -- O1, O3, O4: one attempt at a time. A new attempt is counted only
+            -- when every earlier one was proven unsent, and it marks the
+            -- sleeve unmeasured in the same row change.
+            IF NEW.send_attempts <> OLD.send_attempts
+               AND (NEW.send_attempts <> OLD.send_attempts + 1
+                    OR OLD.send_attempts <> OLD.send_attempts_proven_unsent
+                    OR NOT NEW.fills_unmeasured) THEN
+                RAISE EXCEPTION 'review.execution_exit_handoffs a send attempt needs every earlier one proven unsent'
                     {_RESTRICT};
             END IF;
         ELSIF NEW.claim_count <> OLD.claim_count THEN

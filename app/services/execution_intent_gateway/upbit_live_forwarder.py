@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final, Protocol
@@ -38,6 +39,7 @@ from app.services.execution_intent_gateway.upbit_decisions import (
     AccountReads,
     UpbitFacts,
     check_before_send,
+    not_sent_reason,
 )
 from app.services.kis_mock_runner.control import (
     KillSwitchStore,
@@ -59,6 +61,21 @@ class SendFacts(Protocol):
     async def facts_before_send(
         self, intent_id: UUID, *, now: datetime, exclude_child_id: int | None = None
     ) -> tuple[IntentSnapshot, UpbitFacts] | None: ...
+
+    async def mandate_account_ref(self, intent_id: UUID) -> str | None: ...
+
+
+def buy_thesis(intent: IntentSnapshot) -> str:
+    """The journal thesis of an intent's order.
+
+    The order service refuses a real buy without one. A mechanical strategy's
+    reason for a trade is its decision row, which the intent already names
+    (design §6.4), so the thesis is that reference and nothing invented here.
+    """
+    return (
+        f"intent {intent.intent_id}: strategy {intent.strategy} "
+        f"decision {intent.decision_ref}"
+    )
 
 
 def _text_or_none(value: Any) -> str | None:
@@ -102,6 +119,10 @@ class _PreSendGate:
         if loaded is None:
             return Refusal.MANDATE_MISSING
         intent, facts = loaded
+        # The reads above waited on the database. Expiry is judged against the
+        # clock as it is now, immediately before the request, not as it was
+        # when they started.
+        facts = replace(facts, now=self._clock())
         return check_before_send(
             intent,
             quantity=self._quantity,
@@ -129,7 +150,7 @@ class _PreSendGate:
 
 def _not_sent_reason(gate: _PreSendGate, result: Mapping[str, Any] | None) -> str:
     if gate.refusal is not None:
-        return gate.refusal.value
+        return not_sent_reason(gate.refusal.value)
     if result is not None and result.get("pre_send_blocked") is True:
         for code in result.get("reason_codes") or ():
             if code in NOT_SENT_REASONS:
@@ -190,6 +211,7 @@ class UpbitLiveForwarder:
                 price=float(request.limit_price_krw),
                 dry_run=False,
                 reason=f"intent_gateway:{intent.intent_id}",
+                thesis=buy_thesis(intent),
                 strategy=intent.strategy,
                 client_order_id=request.idempotency_key,
                 pre_send_hook=gate,
@@ -235,6 +257,17 @@ class UpbitLiveForwarder:
                 result={"success": False},
                 not_sent_reason=Refusal.UPBIT_LIVE_DISABLED.value,
             )
+        # B12 for a cancel: the DELETE goes to the account the mandate was
+        # approved for, or nowhere. Kill, expiry and revocation are not read --
+        # a cancel passes all three -- only whose account this is.
+        mismatch = await self._cancel_account_refusal(intent)
+        if mismatch is not None:
+            return ForwardResult(
+                accepted=False,
+                broker_order_id=None,
+                result={"success": False},
+                not_sent_reason=mismatch,
+            )
         result = await cancel_order_impl(
             order_id=broker_order_id, symbol=intent.symbol, market=_MARKET
         )
@@ -243,3 +276,17 @@ class UpbitLiveForwarder:
             broker_order_id=broker_order_id,
             result=result,
         )
+
+    async def _cancel_account_refusal(self, intent: IntentSnapshot) -> str | None:
+        try:
+            approved = await self._facts.mandate_account_ref(intent.intent_id)
+            configured = self._account_ref()
+        except Exception as exc:  # noqa: BLE001 - an unreadable check sends nothing
+            logger.error(
+                "intent gateway upbit cancel account check raised: error_class=%s",
+                type(exc).__name__,
+            )
+            return Refusal.ACCOUNT_MISMATCH.value
+        if not approved or not configured or approved != configured:
+            return Refusal.ACCOUNT_MISMATCH.value
+        return None

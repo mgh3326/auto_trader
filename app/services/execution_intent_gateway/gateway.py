@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from uuid import UUID
 
 from app.schemas.execution_intent import (
     UPBIT_LIVE_ACCOUNT,
@@ -143,6 +144,24 @@ class IntentGateway:
         self._kill_switch = kill_switch
         self._environment = os.environ if environment is None else environment
         self._clock = clock
+
+    async def refuse_misshaped_upbit_child(
+        self, intent_id: UUID, *, confirm: bool
+    ) -> GatewayOutcome | None:
+        """Design 5438 §3.3: a submit of the wrong field set for an ``upbit_live``
+        intent is ``refused/child_shape_invalid_for_account`` with no journal row.
+
+        The transport calls this for a submit it could not validate. ``None``
+        means the request is simply invalid, as before: the gateway is off or
+        unconfirmed (nothing is read then), or the intent is not an upbit one.
+        """
+        if self._environment.get(GATEWAY_ENABLED_ENV) != "true" or confirm is not True:
+            return None
+        if self._upbit is None:
+            return None
+        if await self._upbit.account_of(intent_id) != UPBIT_LIVE_ACCOUNT:
+            return None
+        return _refused(Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT)
 
     async def handle(
         self, request: AnyChild, *, confirm: bool = False

@@ -201,6 +201,21 @@ class UpbitGatewayPath:
         if child is None:
             raise RuntimeError("gateway store returned no child row")
         if not reservation.is_new:
+            if (
+                child.state is ChildState.SENDING
+                and intent is not None
+                and intent.execution_mode == "shadow"
+                and isinstance(request, UpbitSubmitChild)
+            ):
+                # A shadow child never reaches a broker, so a row left
+                # ``sending`` by a crash or a failed write has nothing unknown
+                # about it: the same key finishes it now. A live row in that
+                # state is never touched here (I5).
+                outcome = await self._forward_and_record(
+                    request, intent, child, UpbitDecision()
+                )
+                if not outcome.outcome_not_recorded:
+                    return outcome
             return _replay(child)
         decision = reservation.decision
         if decision is None or reservation.intent is None:

@@ -12,15 +12,17 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.services.execution_intent_gateway.upbit_store import sleeve_symbol_views
-from app.services.strategy_sleeves.book import compute_sleeve_book
+from app.services.strategy_sleeves.book import SleeveFill, compute_sleeve_book
 from app.services.strategy_sleeves.intent_orders import (
     ChildOrderEvidence,
     IntentChildOrder,
     build_child_orders,
     child_order_key,
+    live_orders,
     shadow_book_inputs,
     unresolved_orders,
 )
+from app.services.strategy_sleeves.store import mark_children_with_unbooked_fills
 
 pytestmark = pytest.mark.unit
 
@@ -40,6 +42,7 @@ def order(
     evidence: tuple[str, str, str] | None = None,
     intent_id: UUID = INTENT,
     at: datetime = NOW,
+    mode: str | None = None,
 ) -> IntentChildOrder:
     return IntentChildOrder(
         child_id=child_id,
@@ -47,7 +50,7 @@ def order(
         idempotency_key=f"child-{child_id:04d}",
         symbol=symbol,
         side=side,
-        execution_mode="shadow" if state == "shadowed" else "live",
+        execution_mode=mode or ("shadow" if state == "shadowed" else "live"),
         decision_ref="decision-1",
         state=state,
         quantity=Decimal(quantity),
@@ -368,3 +371,77 @@ async def test_a_go_sleeve_reads_its_intent_orders(
     # The live order is in the book; the shadow one never is.
     assert [o.rung_id for o in inputs.orders] == [child_order_key(1)]
     assert inputs.orders[0].state == "filled"
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+def test_a_shadow_child_still_sending_is_shadow_and_is_counted_in_the_book() -> None:
+    """Between the reservation and the recorded ``shadowed`` outcome the child
+    is ``sending``. It must be in the book then, or its notional is in neither
+    the intent's reservation nor the book and two buys overrun the budget."""
+    pending = order(1, state="sending", mode="shadow", uuid=None, quantity="20")
+
+    assert pending.is_shadow is True and pending.resolved is True
+    # Never a live order: it blocks nothing and nobody looks it up at the broker.
+    assert unresolved_orders([pending], symbol="KRW-XRP") == []
+    assert live_orders([pending]) == []
+    book_orders, fills = shadow_book_inputs([pending])
+    book = compute_sleeve_book(orders=book_orders, fills=fills, marks={})
+    assert book.held_cost_basis == Decimal("60000")
+
+
+def test_a_live_child_still_sending_is_never_shadow() -> None:
+    pending = order(1, state="sending", uuid=None)
+    assert pending.is_shadow is False and pending.resolved is False
+    assert unresolved_orders([pending], symbol="KRW-XRP") == [pending]
+    assert shadow_book_inputs([pending]) == ([], [])
+
+
+def _fill(child_id: int, quantity: str, side: str = "sell") -> SleeveFill:
+    return SleeveFill(
+        ledger_id=child_id * 10,
+        rung_id=child_order_key(child_id),
+        symbol="KRW-XRP",
+        side=side,
+        quantity=Decimal(quantity),
+        price=Decimal("3000"),
+        fee=Decimal("0"),
+        filled_at=NOW,
+    )
+
+
+def test_a_broker_final_child_with_unbooked_fills_makes_holdings_unknown() -> None:
+    """The broker says the sell traded 4; the ledger has booked none of it.
+
+    The lots still show the 10 the sleeve held, so the next sell could take 10
+    while the sleeve owns 6 -- on a shared account, somebody else's coins.
+    """
+    bought = order(1, side="buy", evidence=("uuid-1", "done", "10"))
+    sold = order(2, side="sell", uuid="uuid-2", evidence=("uuid-2", "cancel", "4"))
+    orders = [bought.as_sleeve_order(), sold.as_sleeve_order()]
+    booked_buy = [_fill(1, "10", side="buy")]
+
+    lagging = mark_children_with_unbooked_fills(orders, [bought, sold], booked_buy)
+    book = compute_sleeve_book(orders=lagging, fills=booked_buy, marks={})
+    assert [o.fill_unproven for o in lagging] == [False, True]
+    assert book.unproven_orders == (child_order_key(2),)
+    assert book.net_pnl is None and book.used is None
+
+    # A partly booked sell is still unproven; the full amount proves it.
+    partly = [*booked_buy, _fill(2, "3")]
+    assert mark_children_with_unbooked_fills(orders, [bought, sold], partly)[
+        1
+    ].fill_unproven
+    caught_up = [*booked_buy, _fill(2, "4")]
+    proven = mark_children_with_unbooked_fills(orders, [bought, sold], caught_up)
+    assert [o.fill_unproven for o in proven] == [False, False]
+    assert compute_sleeve_book(orders=proven, fills=caught_up, marks={}).positions[
+        0
+    ].quantity == Decimal("6")
+
+
+def test_an_order_the_broker_has_not_ended_is_not_marked_by_the_fill_check() -> None:
+    resting = order(3, side="sell", uuid="uuid-3")
+    orders = [resting.as_sleeve_order()]
+    assert mark_children_with_unbooked_fills(orders, [resting], []) == orders

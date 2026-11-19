@@ -442,8 +442,9 @@ async def _list(session: AsyncSession, *, now: datetime) -> dict[str, Any]:
             .order_by(ExecutionExitHandoff.id)
         )
     ).all()
-    await session.rollback()
-    return {
+    # Plain values first: the rollback below expires the loaded rows, and
+    # reading one afterwards would need a query this call can no longer make.
+    listed = {
         "mandates": [
             {
                 "mandate_id": str(row.id),
@@ -477,6 +478,8 @@ async def _list(session: AsyncSession, *, now: datetime) -> dict[str, Any]:
             for row in handoffs
         ],
     }
+    await session.rollback()
+    return listed
 
 
 async def run(

@@ -146,8 +146,17 @@ async def _ensure_ledger_row(order: IntentChildOrder, reading: OrderReading) -> 
     return "recorded"
 
 
+#: Writes the missing ``live_order_ledger`` row of a recovered order.
+LedgerWriter = Callable[[IntentChildOrder, OrderReading], Awaitable[str]]
+
+
 async def _resolve_orders(
-    session_factory: Any, *, reader: OrderReader, commit: bool, now: datetime
+    session_factory: Any,
+    *,
+    reader: OrderReader,
+    commit: bool,
+    now: datetime,
+    ledger_writer: LedgerWriter,
 ) -> list[dict[str, Any]]:
     async with session_factory() as session:
         sleeves = (
@@ -188,6 +197,19 @@ async def _resolve_orders(
             entry["result"] = "would_record"
             report.append(entry)
             continue
+        if order.broker_order_id is None:
+            # B3: the ledger row first. Final evidence makes the child resolved,
+            # and a resolved child is never looked at again -- so if the row is
+            # missing and cannot be written now, no evidence is recorded and the
+            # next run finds this child still pending and tries both again.
+            try:
+                entry["live_order_ledger"] = await ledger_writer(order, reading)
+            except Exception as exc:  # noqa: BLE001 - retried by the next run
+                entry["live_order_ledger"] = f"failed:{type(exc).__name__}"
+                entry["result"] = "unresolved"
+                entry["detail"] = "live_order_ledger_not_written"
+                report.append(entry)
+                continue
         async with session_factory() as session:
             entry["result"] = await record_child_order_evidence(
                 session,
@@ -197,11 +219,6 @@ async def _resolve_orders(
                 recorded_by=RECORDED_BY,
             )
             await session.commit()
-        if order.broker_order_id is None:
-            try:
-                entry["live_order_ledger"] = await _ensure_ledger_row(order, reading)
-            except Exception as exc:  # noqa: BLE001 - the evidence row is recorded
-                entry["live_order_ledger"] = f"failed:{type(exc).__name__}"
         report.append(entry)
     return report
 
@@ -270,6 +287,7 @@ async def run(
     session_factory: Any | None = None,
     reader: OrderReader = read_upbit_order,
     now: datetime | None = None,
+    ledger_writer: LedgerWriter | None = None,
 ) -> dict[str, Any]:
     if session_factory is None:
         from app.core.db import AsyncSessionLocal
@@ -277,7 +295,11 @@ async def run(
         session_factory = AsyncSessionLocal
     moment = now or datetime.now(UTC)
     orders = await _resolve_orders(
-        session_factory, reader=reader, commit=commit, now=moment
+        session_factory,
+        reader=reader,
+        commit=commit,
+        now=moment,
+        ledger_writer=ledger_writer or _ensure_ledger_row,
     )
     handoffs = await _move_handoffs(
         session_factory, reader=reader, commit=commit, now=moment

@@ -1062,3 +1062,146 @@ def test_a_key_too_long_for_an_upbit_identifier_leaves_no_row() -> None:
     decision = _decide(intent, submit(intent, "k" * 41))
     assert decision.refusal is Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT
     assert decision.journal is False
+
+
+# ------------------------------------------------- review round 1 (PR 2486)
+
+
+@pytest.mark.parametrize(
+    "intent_overrides",
+    [
+        # 50 bp against a mandate that allows 30.
+        {"max_slippage_bps": 50},
+        # Longer than the mandate lets an intent live.
+        {"created_at": NOW - timedelta(hours=13)},
+        {"created_at": None},
+    ],
+)
+def test_s6_an_operator_exit_keeps_the_mandates_price_band_and_intent_ttl(
+    intent_overrides,
+) -> None:
+    """S6 sets aside the mandate's expiry and revocation, nothing else."""
+    intent = _exit_intent(**intent_overrides)
+    the_facts = _exit_facts(intent, mandate=mandate(revoked=True))
+
+    assert (
+        check_storable(intent, facts=the_facts, reads=reads()).refusal
+        is Refusal.MANDATE_SCOPE_MISMATCH
+    )
+    assert (
+        _decide(intent, submit(intent), facts=the_facts).refusal
+        is Refusal.MANDATE_SCOPE_MISMATCH
+    )
+    assert (
+        check_before_send(
+            intent,
+            quantity=Decimal("10"),
+            facts=the_facts,
+            reads=reads(),
+            configured_account_ref=ACCOUNT_REF,
+        )
+        is Refusal.MANDATE_SCOPE_MISMATCH
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_child_left_sending_is_finished_by_the_same_key() -> None:
+    """A failed journal write must not stop the shadow exercise for the symbol."""
+    intent = upbit_intent(execution_mode="shadow")
+    store = MemoryUpbitStore(
+        intent,
+        facts=facts(
+            mandate=mandate(mode="shadow"),
+            sleeve=SleeveView(version=version("shadow"), book=book()),
+        ),
+    )
+    path, shadow, live = _path(store)
+
+    store.finish_fails = True
+    first = await path.handle(submit(intent))
+    assert first.status == "sending" and first.outcome_not_recorded is True
+    assert store.child("child-0001").state is ChildState.SENDING
+
+    store.finish_fails = False
+    again = await path.handle(submit(intent))
+
+    assert again.status == "shadowed"
+    assert store.child("child-0001").state is ChildState.SHADOWED
+    assert store.child("child-0001").broker_order_id is None
+    assert live.calls == []
+    # Once recorded, the key replays the recorded answer and forwards nothing.
+    replay = await path.handle(submit(intent))
+    assert replay.status == "shadowed" and replay.replayed is True
+    assert shadow.calls == ["child-0001", "child-0001"]
+
+
+@pytest.mark.asyncio
+async def test_i5_a_live_child_left_sending_is_never_forwarded_again() -> None:
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+    path, _shadow, live = _path(store)
+
+    store.finish_fails = True
+    await path.handle(submit(intent))
+    store.finish_fails = False
+    again = await path.handle(submit(intent))
+
+    assert again.status == "sending" and again.replayed is True
+    assert live.calls == [("submit", "child-0001")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ACTIVE", "ENTRY_HALT", "GLOBAL_FREEZE"])
+async def test_i7_the_kill_row_is_read_as_what_it_says_through_a_real_session(
+    mode: str,
+) -> None:
+    """A real SQLAlchemy session expires a loaded row on rollback. Reading the
+    row after that raised, and the raise was read as a freeze -- so an ACTIVE
+    account refused every submit. SQLite stands in for the session semantics;
+    ``test_upbit_db`` reads the same store on PostgreSQL."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from app.services.execution_intent_gateway.account_control import (
+        PostgresAccountControlStore,
+    )
+    from app.services.kis_mock_runner.control import (
+        KillMode,
+        read_effective_kill_switch,
+    )
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        execution_options={"schema_translate_map": {"review": None}},
+    )
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "CREATE TABLE execution_account_control (account TEXT PRIMARY KEY,"
+                    " mode TEXT, reason TEXT, updated_by TEXT, updated_at TIMESTAMP)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO execution_account_control VALUES"
+                    " ('upbit_live', :mode, 'r', 'operator', '2026-11-20 00:00:00')"
+                ),
+                {"mode": mode},
+            )
+        sessions = async_sessionmaker(engine, class_=AsyncSession)
+        control = PostgresAccountControlStore("upbit_live", sessions)
+
+        assert (await control.read()).mode is KillMode(mode)
+        assert (await read_effective_kill_switch(control)).mode is KillMode(mode)
+        # No row is still a freeze.
+        missing = PostgresAccountControlStore("another", sessions)
+        assert (
+            await read_effective_kill_switch(missing)
+        ).mode is KillMode.GLOBAL_FREEZE
+    finally:
+        await engine.dispose()
