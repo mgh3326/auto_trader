@@ -35,7 +35,7 @@ while (($#)); do
     *) [[ -z "$IMAGE" ]] || { usage; exit 2; }; IMAGE="$1"; shift ;;
   esac
 done
-[[ "$IMAGE" =~ ^${IMAGE_REPOSITORY}@sha256:[0-9a-f]{64}$ ]] || { usage; printf 'image must be %s@sha256:<64 hex>\n' "$IMAGE_REPOSITORY" >&2; exit 2; }
+[[ "$IMAGE" =~ ^${IMAGE_REPOSITORY}@sha256:[0-9a-f]{64}$ ]] || { usage; printf 'image must be %s@sha256:<64hex>\n' "$IMAGE_REPOSITORY" >&2; exit 2; }
 
 SINGLETONS=(at-worker at-upbit-ws)
 log_pattern() {
@@ -46,8 +46,8 @@ log_pattern() {
 }
 run_command() {
   case "$1" in
-    at-worker) printf '%s\n' /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1 ;;
-    at-upbit-ws) printf '%s\n' /app/.venv/bin/python websocket_monitor.py --mode upbit ;;
+    at-worker) printf '%s\n' '/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1' ;;
+    at-upbit-ws) printf '%s\n' '/app/.venv/bin/python websocket_monitor.py --mode upbit' ;;
   esac
 }
 

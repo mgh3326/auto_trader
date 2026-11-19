@@ -7,7 +7,7 @@
 #   3. swap-singletons.sh                : at-worker, at-upbit-ws 를 같은 digest 로 교체.
 #   4. /root/at-run/deployed-digest 갱신 : 1~3 이 모두 성공한 뒤 한 번만.
 # 실패 시 멈추고 상태를 출력한다. 이미 끝난 앞 단계를 자동으로 되돌리지는 않는다(런북 §5 롤백).
-# 스케줄러·shiftgate follow 타이머는 등록하지 않는다. 수동 실행만.
+# 스케줄러·follow 타이머는 등록하지 않는다. 수동 실행만.
 set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
@@ -22,7 +22,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: deploy.sh [--allow-unverified REASON] <tag>
   <tag>  ghcr.io/mgh3326/auto_trader 의 태그(예: main). 게이트가 그 태그를 불변 digest 로 고정한다.
-         digest 를 직접 받지 않는다: deploy_ci_gate.py --image 는 태그만 받아 SHA 를 확인한다.
+         digest 를 직접 받지 않는다: 게이트는 태그만 받아 이미지의 SHA 를 확인한다.
   --allow-unverified REASON  CI 증거만 면제하는 기록되는 우회(이미지 고정은 그대로).
   환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR
 USAGE
@@ -42,7 +42,10 @@ done
 
 gate_script() {
   local candidate
-  if [[ -n "${AT_DEPLOY_GATE_SCRIPT:-}" ]]; then printf '%s\n' "$AT_DEPLOY_GATE_SCRIPT"; return 0; fi
+  if [[ -n "${AT_DEPLOY_GATE_SCRIPT:-}" ]]; then
+    [[ -r "$AT_DEPLOY_GATE_SCRIPT" ]] && { printf '%s\n' "$AT_DEPLOY_GATE_SCRIPT"; return 0; }
+    return 1
+  fi
   # 호스트에는 deploy_ci_gate.py 를 이 스크립트 옆에 설치하고, 레포 안에서 실행하면 scripts/ 의 것을 쓴다.
   for candidate in "${SCRIPT_DIRECTORY}/deploy_ci_gate.py" "${SCRIPT_DIRECTORY}/../../../scripts/deploy_ci_gate.py"; do
     [[ -r "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
