@@ -1,4 +1,13 @@
-"""Scheduleless KIS US reconciliation; preview unless explicitly applied."""
+"""Scheduleless KIS US reconciliation; preview unless explicitly applied.
+
+Exit codes:
+    0  - run completed, no row needs a person
+    2  - activation gate refused, no run
+    3  - run completed, but rows need a person (deferred fill booking,
+         manual-review or unconfirmed rows, dry-run would_* previews)
+    4  - run failed or is incomplete (kernel error, truncated scan, sweep or
+         projection repair failure, batch build error, or a row with error)
+"""
 
 import argparse
 import asyncio
@@ -6,6 +15,34 @@ import json
 
 from app.core.config import settings
 from app.mcp_server.tooling.live_order_ledger import live_reconcile_orders_impl
+
+
+def _failure_conditions(result: dict) -> list[str]:
+    conditions: list[str] = []
+    if not result.get("success"):
+        conditions.append("success_false")
+    if result.get("error") is not None:
+        conditions.append("kernel_error")
+    if (result.get("candidate_scan") or {}).get("truncated"):
+        conditions.append("candidate_scan_truncated")
+    if (result.get("proposal_rung_sweep") or {}).get("error") is not None:
+        conditions.append("proposal_rung_sweep_error")
+    if (result.get("proposal_projection_repair") or {}).get("failed", 0) > 0:
+        conditions.append("projection_repair_failed")
+    if result.get("batch_build_error") is not None:
+        conditions.append("batch_build_error")
+    if any(row.get("error") is not None for row in result.get("reconciled", [])):
+        conditions.append("row_error")
+    return conditions
+
+
+def _clean(row: dict, *, apply: bool) -> bool:
+    action = row.get("action", "")
+    if row.get("requires_manual_review") or row.get("reason_code") == "not_found":
+        return False
+    return action in {"noop_pending", "noop_terminal"} or (
+        apply and (action.startswith("marked_") or action == "booked")
+    )
 
 
 async def _run(*, apply: bool, terminal_only: bool) -> int:
@@ -16,29 +53,11 @@ async def _run(*, apply: bool, terminal_only: bool) -> int:
         scope="terminal_only" if terminal_only else "full",
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    rows = result.get("reconciled", [])
-
-    def clean(row: dict) -> bool:
-        action = row.get("action", "")
-        if (
-            row.get("error") is not None
-            or row.get("requires_manual_review")
-            or row.get("reason_code") == "not_found"
-        ):
-            return False
-        return action in {"noop_pending", "noop_terminal"} or (
-            apply and action.startswith("marked_")
-        )
-
-    if (
-        not result.get("success")
-        or result.get("error") is not None
-        or result.get("candidate_scan", {}).get("truncated")
-        or result.get("proposal_rung_sweep", {}).get("error") is not None
-        or result.get("proposal_projection_repair", {}).get("failed", 0) > 0
-        or result.get("batch_build_error") is not None
-        or not all(clean(row) for row in rows)
-    ):
+    conditions = _failure_conditions(result)
+    if conditions:
+        print(f"실패: 대사 실행이 완료되지 않았다 (조건: {', '.join(conditions)})")
+        return 4
+    if not all(_clean(row, apply=apply) for row in result.get("reconciled", [])):
         print("WARNING: reconciliation requires attention")
         return 3
     return 0

@@ -7,10 +7,12 @@ pass --apply to book fills/journals. Reuses the ROB-395 evidence-gated kernel �
 no new mutation path. Prints the counts/summary; never prints secrets.
 
 Exit codes:
-    0  - success
-    1  - kernel reported success=False
-    2  - activation gate blocked
-    3  - success but reconciliation work remains
+    0  - run completed, no row needs a person
+    2  - activation gate blocked, no run
+    3  - run completed, but rows need a person (deferred fill booking in
+         terminal-only, manual-review or not_found rows, dry-run would_* previews)
+    4  - run failed or is incomplete (kernel error, truncated scan, sweep or
+         projection repair failure, or a row with error)
 
 Usage:
     uv run python -m scripts.kis_live_auto_reconcile            # dry-run
@@ -28,6 +30,37 @@ from app.core.config import settings
 from app.mcp_server.tooling.kis_live_ledger import kis_live_reconcile_orders_impl
 
 
+def _failure_conditions(result: dict) -> list[str]:
+    conditions: list[str] = []
+    if not result.get("success"):
+        conditions.append("success_false")
+    if result.get("error") is not None:
+        conditions.append("kernel_error")
+    if (result.get("candidate_scan") or {}).get("truncated"):
+        conditions.append("candidate_scan_truncated")
+    if (result.get("proposal_rung_sweep") or {}).get("error") is not None:
+        conditions.append("proposal_rung_sweep_error")
+    if (result.get("proposal_projection_repair") or {}).get("failed", 0) > 0:
+        conditions.append("projection_repair_failed")
+    if result.get("batch_build_error") is not None:
+        conditions.append("batch_build_error")
+    if any(row.get("error") is not None for row in result.get("reconciled", [])):
+        conditions.append("row_error")
+    return conditions
+
+
+def _needs_attention(result: dict, *, dry_run: bool, terminal_only: bool) -> bool:
+    for row in result.get("reconciled", []):
+        action = row.get("action", "")
+        if row.get("requires_manual_review") or row.get("reason_code") == "not_found":
+            return True
+        if terminal_only and action == "deferred_fill_booking":
+            return True
+        if dry_run and action.startswith("would_"):
+            return True
+    return False
+
+
 async def _run(*, dry_run: bool, terminal_only: bool = False) -> int:
     if terminal_only:
         result = await kis_live_reconcile_orders_impl(
@@ -36,12 +69,12 @@ async def _run(*, dry_run: bool, terminal_only: bool = False) -> int:
     else:
         result = await kis_live_reconcile_orders_impl(dry_run=dry_run)
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
-    if not result.get("success"):
-        return 1
-    actions = (row.get("action", "") for row in result.get("reconciled", []))
-    if terminal_only and any(action == "deferred_fill_booking" for action in actions):
-        return 3
-    if dry_run and any(action.startswith("would_") for action in actions):
+    conditions = _failure_conditions(result)
+    if conditions:
+        print(f"실패: 대사 실행이 완료되지 않았다 (조건: {', '.join(conditions)})")
+        return 4
+    if _needs_attention(result, dry_run=dry_run, terminal_only=terminal_only):
+        print("WARNING: reconciliation requires attention")
         return 3
     return 0
 
