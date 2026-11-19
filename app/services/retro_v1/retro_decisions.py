@@ -793,6 +793,18 @@ def _matching_fills(
     return out
 
 
+def _session_day(market_key: str, moment: datetime) -> date:
+    """The session day a moment belongs to for the MFE/MAE horizon count.
+
+    Crypto sessions are consecutive UTC days, so its fills and bars take the UTC
+    date (a 00:00-08:59 KST fill belongs to the previous UTC day). Equities keep
+    the KST day the rest of the reader uses.
+    """
+    if market_key == "crypto":
+        return moment.astimezone(UTC).date()
+    return kst_day(moment)
+
+
 def _excursion_body(excursion: Excursion) -> dict[str, Any]:
     body: dict[str, Any] = {
         "amount": dec(excursion.amount),
@@ -1054,11 +1066,14 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
         elif data.bars[key] is None:
             excursion_reason = "source_mixed"
         else:
-            entry_session = kst_day(
-                max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
+            entry_session = _session_day(
+                info.key, max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
             )
             exit_session = (
-                kst_day(min(exit_fills, key=lambda f: (f.filled_at, f.id)).filled_at)
+                _session_day(
+                    info.key,
+                    min(exit_fills, key=lambda f: (f.filled_at, f.id)).filled_at,
+                )
                 if exit_fills
                 else None
             )
@@ -1067,7 +1082,7 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
             # bar (horizon_sessions.excursion_pair).
             by_session: dict[date, list[daily_bars.Bar]] = defaultdict(list)
             for bar in data.bars[key]:
-                by_session[kst_day(bar.time)].append(bar)
+                by_session[_session_day(info.key, bar.time)].append(bar)
             risk_per_unit = (
                 risk_amount / planned_quantity
                 if risk_amount is not None
