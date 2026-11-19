@@ -63,6 +63,29 @@ review.execution_intents  (Python store_intent 만 씀, 불변)
 | 채점 | 기존 sleeve report + 4885 §7 | 에피소드 결과 | 없음(읽기) | — |
 | 운영(pi) | hk 5442 | 프로세스 기동·감시·킬 | 런북, Dagu 정의(등록은 승인 후) | 코드 |
 
+### 1.3 계좌 이름 대응
+
+| 표면 | 값 |
+|---|---|
+| 게이트웨이 intent `account` | `upbit_live` (새 값) |
+| sleeve `(account_mode, market)` | `("upbit","crypto")` (`SLEEVE_ACCOUNT_MARKETS`, 4885 §2.2-5) |
+| 원장 식별 `(broker, account_mode)` | `("upbit","live")` (`vocabulary.LEDGER_IDENTITY`) |
+| 주문 원장 | `review.live_order_ledger` (US·crypto live, ROB-407) |
+
+5441은 이 대응을 `app/services/execution_intent_gateway/` 안 상수 하나로 두고 세 표면 모두 그 상수에서 읽는다.
+
+### 1.4 sleeve 귀속 (선행 변경) [사실 → 요구]
+
+[사실] sleeve 장부는 체결을 **sleeve 자기 제안 rung의 브로커 주문번호**로만 귀속한다(`app/services/strategy_sleeves/store.py:15-25`). 직접 주문은 sleeve를 받지 않는다(승인·shadow 계약 "전략 슬리브"). 그래서 게이트웨이 주문은 지금 그대로는 sleeve 장부·손실 한도·예산·채점에 **보이지 않는다**.
+
+요구(5441 소유): sleeve 귀속에 두 번째 출처를 더한다 — `review.execution_child_requests`에서 `intent.sleeve_id`가 그 sleeve인 submit child의 `broker_order_id`(Upbit 주문 UUID)와 일치하는 in-effect `execution_ledger` 행(`("upbit","live")`, 같은 심볼·side, intent 저장 이후). 에피소드 root는 rung lineage 대신 intent의 `decision_ref`다. 기존 rung 귀속은 바이트 동일하게 남는다. 이 변경이 들어가기 전에는 I4·I8·I9와 4885 §7 채점이 성립하지 않으므로 live 전환 불가다. 또 sleeve 생성 자체가 4885 Q7의 `CANARY_RULES` 규칙 id 추가 PR(별도, 5440 선행)에 막혀 있다.
+
+### 1.5 Upbit 체결 증거
+
+- `filled_qty`(E1 `/intents/<id>` `view`)와 `/fills`는 `upbit_live` intent에 대해 in-effect `execution_ledger` 행 중 `broker='upbit'`, `account_mode='live'`, `broker_order_id`가 저널의 submit child 번호와 같은 것만 센다. Upbit 주문번호는 UUID라 날짜 identity가 없다(ROB-1379 supersede 규칙 그대로).
+- `uncertain`/`sending` 해소: 기존 `live_reconcile_orders`(ROB-407)가 쓰는 `live_order_ledger` 행과 위 체결 행만 증거다. 게이트웨이 질의는 지금처럼 브로커를 부르지 않는다. Upbit `identifier`(= child 키)로 찾은 주문은 존재 증거이고, 못 찾은 것은 부재 증거가 아니다.
+- **지연**: Upbit `execution_ledger` 대사는 Dagu 30분 주기다(`deploy/dagu/at-batch2`, hk 4896). fillwire가 Upbit 체결을 실시간 ingest하는지는 확인하지 않았다 [추정 — 없다고 가정]. 그래서 실행기는 체결 확인을 기다리며 추격하지 않는다(§5 R4).
+
 **Claude 세션 단계적 축소 조건:** 4885 실험이 이 경로로 실주문(live)을 시작하고 §9.2의 실주문 첫 2주 점검을 통과하면, Upbit 네 코인에 대한 정기 매매 세션의 제안 생성을 중단한다(세션은 연구·감시로 남는다). 다른 시장의 세션은 각 시장이 같은 경로에 올라올 때 같은 조건으로 줄인다.
 
 ## 2. T3 불변식 표
@@ -79,7 +102,7 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | I6 | **shadow는 아무것도 보내지 않고 live와 증명 가능하게 구분** | intent `execution_mode`(불변), 위임장 `mode` | shadow intent → `UpbitShadowForwarder`만 선택 가능, 결과 상태 `shadowed`(브로커 번호 NULL) | forwarder 선택표(`gateway.__init__`), shadow 모듈 정적 import 가드 테스트, DB CHECK `execution_mode='shadow' ⇒ broker_order_id IS NULL`, intent·위임장 mode 일치 트리거 | §3 wire, §4 위임장 | 저널 `state='shadowed'`, `live_order_ledger` 행 0 |
 | I7 | **kill switch** — 세 단계 | (a) env `EXECUTION_INTENT_GATEWAY_ENABLED`, (b) 계좌 kill 행 `review.execution_account_control(account='upbit_live')`, (c) 위임장 철회, (d) 실행기 로컬 kill | (a) 꺼짐 → DB 접근 전 전부 거부; (b) `ACTIVE` 아님/읽기 실패 → submit·amend 거부(cancel 허용); (c) → 새 intent·submit·amend 거부; (d) → 실행기가 child를 만들지 않음 | 기존 env 게이트, `decisions`의 kill 읽기를 계좌별로 일반화, I1, fillwire `DoneKilled` | E1 계약 Cancel rules | `gateway_disabled`·`submissions_killed`·`mandate_revoked` |
 | I8 | **sleeve 손실 한도 도달 → 새 intent 중단** | sleeve 장부 손실, `loss_limit` | 손실 ≥ 한도 → sleeve `stopped` 버전(기존 `system:sleeve_loss_gate`), 이후 `store_intent`·submit·amend 거부; 청산(sell) intent는 허용 | `store_intent` + 예약 직전 sleeve 판정 | ROB-1470 `dispatch_gate` 동작 재사용 | `sleeve_loss_limit_reached`, sleeve 버전 행 |
-| I9 | **매도는 보유 이상 못 함(현물 롱 전용)** | intent `inventory`(소수), sleeve 귀속 보유 | `min_position_after < 0` 불가; 매도 intent 수량 ≤ sleeve 귀속 보유 | 스키마(기존 inventory 규칙의 소수판), `store_intent`가 sleeve 장부 대조 | sleeve 장부 귀속 | 저장 거부 `inventory_constraint_exceeded` |
+| I9 | **매도는 보유 이상 못 함(현물 롱 전용)** | intent `inventory`(소수), sleeve 귀속 보유 | `min_position_after < 0` 불가; 매도 intent 수량 ≤ 보유(live = sleeve 귀속 보유, shadow = §3.6 shadow 장부) | 스키마(기존 inventory 규칙의 소수판), `store_intent`가 장부 대조 | §1.4 sleeve 귀속, §3.7 | 저장 거부 `inventory_constraint_exceeded` |
 | I10 | **손실매도 가드·8일 쿨다운·loss_cut은 완화하지 않는다** | 계정 평단(`avg_buy_price`), 쿨다운(Redis), 매도 지정가 | 매도 지정가 < 평단×1.01 → 게이트웨이는 보내지 않고 `refused/loss_sell_requires_card`, 전략 잡이 loss_cut 카드 제안 생성(§2.1 권고 A); 매수 심볼이 쿨다운 → `refused/cooldown_active` | 게이트웨이 예약 전 사전검사(읽기만) + 하위 `place_order` 가드(그대로, 2차) | 기존 `order_validation.py:191-200`, `order_execution.py` 쿨다운 | 저널 `refused` + 카드 경로 이관 기록 |
 | I11 | **Go는 브로커·DB에 닿지 않는다** | — | — | fillwire 정적 테스트(기존 `internal/upbit/noorder_test.go` 패턴), 루프백 URL 검사(`e1.checkURL`) | E1 계약 Roles | 테스트 |
 | I12 | **결정 시각당 intent 1개(멱등)** | 전략 버전, 심볼, 결정 시각, 동작 | 같은 입력 → 같은 `intent_id`(uuid5) → `store_intent` no-op | 전략 잡(§6.3) + 기존 `IntentConflict` | E1 intent 불변 | 재실행 시 행 수 불변 |
@@ -152,7 +175,15 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 
 기존 `accepted`/`uncertain`/`sending`/`refused`/`conflict`에 **`shadowed`** 하나를 더한다: shadow 모드에서 게이트웨이가 모든 검사를 통과시켜 저널에 기록했고, 아무것도 보내지 않았다. `broker_order_id`는 항상 비어 있다. 실행기는 `shadowed`를 "가상 접수"로 다루고(§5.6), 절대 `accepted`로 바꾸지 않는다. 저널 트리거는 `sending → shadowed`를 허용하되 그 행의 intent가 `execution_mode='shadow'`일 때만이다(DB CHECK/트리거, I6).
 
-### 3.6 fillwire E1 클라이언트 호환 (5439 요구사항)
+### 3.6 shadow 장부
+
+shadow는 원장 행이 없으므로 Python 쪽에 가상 보유가 필요하다. 그렇지 않으면 전략 잡이 "롱" 상태를 영영 보지 못해 손절 점검·청산이 검증되지 않는다.
+
+- 정의: `shadowed` submit child 하나 = 그 child의 `quantity_decimal`이 그 child의 `limit_price_krw`에 저널 기록 시각에 전량 체결된 것으로 본다(taker 지정가라는 가정). shadow 보유 = intent의 sleeve·심볼별 `Σ buy − Σ sell`, 진입가 = 그 매수 child들의 가중 평균.
+- 소유: 5441이 읽기 함수(`shadow_positions(sleeve_id)`, 저널만 SELECT)를 제공하고, 5440은 `execution_mode='shadow'`일 때 sleeve 장부 대신 이것을 읽는다. 쓰기 없음.
+- 한계: 가상 체결은 체결률·슬리피지를 과대평가한다. shadow 단계는 경로 검증이지 성과 판정이 아니며 4885 §7 채점에 넣지 않는다. 실행기의 R9 가상 체결은 교차 확인용이다.
+
+### 3.7 fillwire E1 클라이언트 호환 (5439 요구사항)
 
 - `Config.Account`에 `UpbitLiveAccount = "upbit_live"`를 추가한다. 모드 판정은 기존과 같고, `upbit_live` + `Send`는 추가 플래그 `UpbitSendEnabled`가 있어야 한다(없으면 `DryRun`보다 약한 `Off`).
 - `Child`에 `QtyDecimal string \`json:"quantity_decimal,omitempty"\``를 더한다. kis_mock child 직렬화는 바이트 동일(기존 contract test가 고정).
@@ -215,7 +246,7 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | R1 | 호가 공급원은 `internal/upbit/reader.go`의 공개 웹소켓 `orderbook` 스트림을 재사용한다(무인증). 주문용 private 웹소켓·REST 키를 쓰지 않는다 |
 | R2 | **진입(buy)**: submit 지정가 = 최우선 매도호가(taker, 4885 §4.3·Q10). 그 가격이 intent 경계(`limit_price_krw × (1+bps)`)를 넘으면 보내지 않고 기다린다. 수량 = min(intent 잔량, floor(남은 명목 / 가격, 8자리)) |
 | R3 | **청산(sell)**: 지정가 = 최우선 매수호가. 경계(`limit × (1−bps)`) 아래면 보내지 않는다. 평단×1.01 미만 청산은 게이트웨이가 거부하므로(I10) 실행기는 `loss_sell_requires_card`를 받으면 그 intent를 `DoneRefused`로 끝내고 재시도하지 않는다 |
-| R4 | **추격**: 접수 후 `ChaseAfter`(권고 30초) 동안 체결이 없거나 잔량이 남고 호가가 불리하게 움직였으면 cancel → 새 키로 submit(Upbit에 amend 없음). 한 intent의 cancel+재submit은 최대 `MaxChases`(권고 5회). 넘으면 cancel 후 `DoneCap` |
+| R4 | **추격 없음(1단계)**: intent당 submit 1회. E1 상한 규칙상 cancel은 노출을 풀지 않고(E1 "How caps count"), 체결 증거는 최대 30분 늦으므로(§1.5) 같은 intent 안의 재submit은 상한에 막힌다. 접수 후 `CancelAfter`(권고 120초)에 잔량이 있을 수 있으면 cancel 하고 `DoneDeadline`으로 끝낸다. 남은 몫은 다음 슬롯의 새 intent다. 추격(취소 확인 증거로 노출 해제)은 §10 D11 |
 | R5 | **만료**: intent `expires_at` − `ExpiryMargin`(권고 60초)에 새 submit 금지, 열린 주문은 cancel. 만료 후 남은 잔량은 다음 결정 시각의 새 intent 몫이다 |
 | R6 | **신선도**: 호가가 `StaleAfter`(2초, 기존 기본값)보다 오래됐거나 미래 시각이거나 bid/ask가 비면 새 submit 없음(기존 `machine.go:426`). 웹소켓 끊김 동안 새 submit 없음, cancel은 허용 |
 | R7 | **재연결**: 끊기면 지수 백오프로 재연결(기존 reader 동작). 재연결 직후 첫 호가가 동기화될 때까지 새 submit 없음. 재시작 시 로컬 저널을 재생하고, `sending`/`uncertain` child가 있으면 E1 `/intents/<id>` 질의가 `reconciled=true`를 줄 때까지 그 intent에서 아무것도 하지 않는다(E1 계약 Query) |
@@ -251,7 +282,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 ### 6.4 결정 로그
 
-4885 §4의 "레포 밖 운영자 파일" 대신 결정 행을 DB에 둔다: 기존 `review.decision_evidence`(hk 4182, `DecisionEvidenceService`만 쓰기)에 결정 시각마다 종목별 한 행(신호값, σ̂, 크기, 동작 또는 no-op 사유, 생성한 intent id). intent `decision_ref`가 그 행을 가리킨다. no-op도 행이 있어야 분모가 생긴다.
+4885 §4의 "레포 밖 운영자 파일" 대신 결정 행을 DB에 둔다: 기존 `review.decision_evidence`(hk 4182, `DecisionEvidenceService`만 쓰기)에 결정 시각마다 종목별 한 행 — 동작이 있으면 `decision_kind='direct_order'`, no-op이면 `declined`로 둔다 [추정 — `decision_kind`가 `proposal`/`direct_order`/`declined` 셋뿐(`app/services/decision_evidence.py:22`)이고 intent 경로 전용 값이 없다. 의미가 맞지 않으면 5440이 추가형으로 값을 더한다](신호값, σ̂, 크기, 동작 또는 no-op 사유, 생성한 intent id). intent `decision_ref`가 그 행을 가리킨다. no-op도 행이 있어야 분모가 생긴다.
 
 ### 6.5 손절 점검이 매도 intent가 되는 방식
 
@@ -273,7 +304,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 ### 8.1 hk 5440 — 전략 잡 (auto_trader)
 
-범위: `app/services/upbit_trend/`(신호·크기·결정·intent 작성), `scripts/upbit_trend_job.py`(`decide`/`stop-check`, preview 기본), Dagu 사본 2개(미등록). 5441의 스키마 v2·위임장 검사에 의존.
+선행: 4885 Q7 `CANARY_RULES` 규칙 id PR, 5441 병합. 범위: `app/services/upbit_trend/`(신호·크기·결정·intent 작성), `scripts/upbit_trend_job.py`(`decide`/`stop-check`, preview 기본), Dagu 사본 2개(미등록). 5441의 스키마 v2·위임장 검사에 의존.
 
 1. 4885 §3.3~3.5 규칙을 순수 함수로 구현하고, 경계값(NO_SIGNAL, 바닥 50,000, σ̂ 스케일, 8자리 내림) 테스트가 있다.
 2. `decide`·`stop-check`는 기본 preview(쓰기 0)이고 `--commit`일 때만 `store_intent`·결정 행을 쓴다.
@@ -295,7 +326,8 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
+8. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
+9. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
 ### 8.3 hk 5442 — pi 운영 (런북·배치)
 
@@ -308,9 +340,9 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 ### 8.4 fillwire hk 5439 — Upbit 실행기 (요구사항만)
 
-1. §3.6 호환 변경: kis_mock child 직렬화·기존 골든 무변경, `quantity_decimal`·`shadowed`·`upbit_live` 지원.
+1. §3.7 호환 변경: kis_mock child 직렬화·기존 골든 무변경, `quantity_decimal`·`shadowed`·`upbit_live` 지원.
 2. 수량 고정소수(1e-8) 일반화가 kis_mock 배율 1에서 기존 테스트를 바꾸지 않는다.
-3. §5 R1~R12 각각에 테스트가 있다(R4 추격 상한, R5 만료 margin, R6 신선도, R7 재연결·재시작 보류, R8 무재전송).
+3. §5 R1~R12 각각에 테스트가 있다(R4 intent당 submit 1회, R5 만료 margin, R6 신선도, R7 재연결·재시작 보류, R8 무재전송).
 4. 새 `cmd/execupbit`는 기본 `Off`, `upbit_live` 전송은 별도 플래그가 있어야 하고, 브로커 API·DB를 import하지 않는다(정적 테스트).
 5. Upbit 호가표 Go 구현이 auto_trader 공유 픽스처와 일치한다.
 6. shadow 가상 체결 출력 파일 형식이 문서화된다.
@@ -352,6 +384,9 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 | D8 | Dagu 결정·점검 잡 등록 | **shadow 단계 시작 때 등록 승인 요청**(shadow도 잡이 필요) | 하드룰 6 |
 | D9 | 위임장 상한 값 | `per_intent_max_notional_krw`=480,000, `max_open_intents`=4, `daily_max_buy_notional_krw`=1,950,000, `price_band_bps`=30, `max_intent_ttl`=12h, `expires_at`=시작+91일 | 4885 §3.5·§11, 3795 30bp 시험값 |
 | D10 | Claude 정기 매매 세션 축소 시점 | §1.2의 조건(live 첫 2주 통과) | at-go-executor 4 |
+| D11 | 같은 intent 안의 추격(cancel 후 재submit) | **1단계는 없음**(R4). 필요해지면 브로커 확인 cancel + 체결 수량 증거로 노출을 푸는 E1 규칙 변경을 별도 설계 | E1 cap 규칙, §1.5 지연 |
+| D12 | shadow 위임장을 운영자 CLI `--commit`만으로 만드는 것 | **예** — shadow는 전송이 불가능(I6) | §4.3 |
+| D13 | 실행기 상수 | `CancelAfter` 120초, `ExpiryMargin` 60초, `StaleAfter` 2초(기존), `PollEvery` 15초, child 1회/초 | §5 |
 
 ## 11. 알았지만 건드리지 않은 것
 
@@ -359,3 +394,4 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 - 3795 바구니·회차 계획·낙폭 동결 — 최소판에 넣지 않았다.
 - Upbit 계정 평단을 sleeve 단위로 분리하는 것 — 가드의 입력을 바꾸는 일이라 범위 밖(D4 근거).
 - 키움 모의 KR을 같은 경로에 올리는 것 — at-go-executor 2의 다음 단계, 별도 설계.
+- 4885 §1.3(하드룰 6 "세션의 수동 작업")·§5.2("스케줄러가 없으므로")·§10(시작 순서)는 Dagu 잡·의도 경로를 전제로 하지 않는다. brief가 4885는 §4·§9만 고치라고 했으므로 그대로 두었다 — 5438 §7 안내 줄이 우선한다.
