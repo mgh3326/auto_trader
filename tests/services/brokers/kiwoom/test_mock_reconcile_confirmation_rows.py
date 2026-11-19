@@ -223,7 +223,7 @@ def test_kr_modify_confirmation_is_reported_not_closed_as_a_cancel() -> None:
     assert verdict.requires_manual_review is True
 
 
-def test_kr_cancel_and_modify_text_together_is_ambiguous() -> None:
+def test_kr_cancel_and_modify_text_together_is_unresolved() -> None:
     verdict = _kr_verdict(
         detail=[
             _kr_detail(),
@@ -232,7 +232,33 @@ def test_kr_cancel_and_modify_text_together_is_ambiguous() -> None:
             ),
         ]
     )
-    assert verdict.reason == "ambiguous_marker_text"
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+@pytest.mark.parametrize("child_text", ["거부", "만료", "취소/만료"])
+def test_kr_rejected_or_expired_child_operation_is_not_the_originals_marker(
+    child_text: str,
+) -> None:
+    verdict = _kr_verdict(
+        detail=[
+            _kr_detail(),
+            _kr_detail(ord_no=KR_CONFIRM, ori_ord=KR_ORIGINAL, mdfy_cncl=child_text),
+        ],
+        own_cancel=True,
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_kr_child_reject_does_not_hide_the_originals_own_terminal_marker() -> None:
+    verdict = _kr_verdict(
+        detail=[
+            _kr_detail(mdfy_cncl="만료"),
+            _kr_detail(ord_no=KR_CONFIRM, ori_ord=KR_ORIGINAL, mdfy_cncl="거부"),
+        ]
+    )
+    assert verdict.verdict == "expired"
 
 
 def test_kr_conflicting_confirmation_markers_are_unknown() -> None:
@@ -346,6 +372,29 @@ def test_us_modify_confirmation_is_reported_not_closed() -> None:
     verdict = _us_verdict([_us_row(), modify])
     assert verdict.verdict == "unknown"
     assert verdict.reason == "replaced_by_modification"
+
+
+def test_us_invalid_cancel_request_does_not_reject_the_original() -> None:
+    """A rejected cancel (무효주문) is the child failing, not the original ending."""
+    invalid_cancel = _us_row(
+        ord_no=US_CONFIRM,
+        orig_ord_no=US_ORIGINAL,
+        ord_stat="무효주문",
+        ord_cntr_tp="12",
+    )
+    for own_cancel in (True, False):
+        verdict = _us_verdict([_us_row(), invalid_cancel], own_cancel=own_cancel)
+        assert verdict.verdict == "unknown"
+        assert verdict.reason == "child_operation_unresolved"
+
+
+def test_us_expired_child_row_does_not_expire_the_original() -> None:
+    child = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=US_ORIGINAL, ord_stat="만료", ord_cntr_tp="12"
+    )
+    verdict = _us_verdict([_us_row(), child])
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
 
 
 # --- US 무효주문 -----------------------------------------------------------

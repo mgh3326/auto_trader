@@ -94,6 +94,67 @@ async def test_mock_us_client_applies_rate_limit_at_api_dispatch() -> None:
     ]
 
 
+def _identity(app_key: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(app_key.encode("utf-8")).hexdigest()
+
+
+def _client(app_key: str, handler) -> KiwoomMockClient:
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key=app_key,
+        app_secret="SK",
+        account_no="ACCOUNT",
+    )
+    client.set_transport_for_test(httpx.MockTransport(handler), token="TKN")
+    return client
+
+
+@pytest.mark.asyncio
+async def test_pacing_is_shared_by_separately_constructed_clients_per_app_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Handlers build a fresh client per tool call; pacing must outlive it."""
+    from app.services.brokers.kiwoom import client as client_mod
+
+    clock = FakeMonotonicClock()
+    dispatch_times: list[tuple[str, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        dispatch_times.append((request.headers[constants.HEADER_API_ID], clock.now))
+        return httpx.Response(200, json={"return_code": 0})
+
+    for key in ("KEY-A", "KEY-B"):
+        monkeypatch.setitem(
+            client_mod._SHARED_TR_LIMITERS,
+            _identity(key),
+            _PerTrRateLimiter(clock=clock, sleep=clock.sleep),
+        )
+
+    await _client("KEY-A", handler).post_api(api_id="kt00007", path="/p", body={})
+    await _client("KEY-A", handler).post_api(api_id="kt00007", path="/p", body={})
+    # A different api-id and a different app key never wait on KEY-A/kt00007.
+    await _client("KEY-A", handler).post_api(api_id="kt00009", path="/p", body={})
+    await _client("KEY-B", handler).post_api(api_id="kt00007", path="/p", body={})
+
+    assert dispatch_times == [
+        ("kt00007", 0.0),
+        ("kt00007", pytest.approx(1.2)),
+        ("kt00009", pytest.approx(1.2)),
+        ("kt00007", pytest.approx(1.2)),
+    ]
+
+
+def test_clients_without_injected_clock_use_the_shared_limiter() -> None:
+    first = _client("KEY-C", lambda r: httpx.Response(200, json={"return_code": 0}))
+    second = _client("KEY-C", lambda r: httpx.Response(200, json={"return_code": 0}))
+    other = _client("KEY-D", lambda r: httpx.Response(200, json={"return_code": 0}))
+
+    assert first._tr_rate_limiter is second._tr_rate_limiter
+    assert first._tr_rate_limiter is not other._tr_rate_limiter
+
+
 def test_tr_interval_is_1_2_seconds() -> None:
     assert INTERVAL == 1.2
 

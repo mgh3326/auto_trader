@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Self
 
@@ -28,8 +26,8 @@ class KiwoomMockUsClient(KiwoomMockClient):
         timeout: float = constants.DEFAULT_TIMEOUT,
         redis_client: Any | None = None,
         redis_settings: Any | None = None,
-        rate_limit_clock: Callable[[], float] = time.monotonic,
-        rate_limit_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        rate_limit_clock: Callable[[], float] | None = None,
+        rate_limit_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(
             base_url=base_url,

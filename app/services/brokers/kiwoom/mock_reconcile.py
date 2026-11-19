@@ -633,19 +633,49 @@ def _terminal_marker(
     status_row: BrokerRow | None,
     confirmations: tuple[BrokerRow, ...],
 ) -> tuple[str | None, str | None]:
-    """The single terminal marker class over the order's own rows *and* the
-    confirmation rows that name it, or the reason it cannot be trusted."""
-    rows = [row for row in (detail_row, status_row, *confirmations) if row is not None]
-    if any(row.marker_ambiguous for row in rows):
+    """The single terminal marker class for the order, or why it is not trusted.
+
+    The order's own rows carry their marker as is. A confirmation row (another
+    order number naming this one) is evidence only when it is a clean, positive
+    *cancel* confirmation: a rejected, invalid, expired or ambiguous child
+    operation says the child failed, not that the original ended, so it never
+    lends its marker to the original. It only blocks a verdict that the
+    original's own rows do not already prove (``child_operation_unresolved``).
+    """
+    own_rows = [row for row in (detail_row, status_row) if row is not None]
+    if any(row.marker_ambiguous for row in own_rows):
         return None, "ambiguous_marker_text"
-    marker, conflict = _terminal_marker_class(*rows)
+    own_marker, conflict = _terminal_marker_class(*own_rows)
     if conflict is not None:
         return None, conflict
-    if marker is None and any(row.modify_text for row in confirmations):
+    markers = {own_marker} if own_marker is not None else set()
+    cancel_confirmed = any(_is_clean_cancel_confirmation(row) for row in confirmations)
+    if cancel_confirmed:
+        markers.add("cancel")
+    if len(markers) > 1:
+        return None, "conflicting_terminal_markers"
+    if markers:
+        return next(iter(markers)), None
+    if any(
+        not _is_clean_cancel_confirmation(row)
+        and (row.marker is not None or row.marker_ambiguous or row.invalid_order)
+        for row in confirmations
+    ):
+        return None, "child_operation_unresolved"
+    if any(row.modify_text for row in confirmations):
         # The original was replaced by a modified order: not a cancel, not an
         # expiry, and the ledger has no terminal verdict for it.
         return None, "replaced_by_modification"
-    return marker, None
+    return None, None
+
+
+def _is_clean_cancel_confirmation(row: BrokerRow) -> bool:
+    return (
+        row.marker == "cancel"
+        and not row.marker_ambiguous
+        and not row.invalid_order
+        and not row.modify_text
+    )
 
 
 def _classify_uncertain(
@@ -735,7 +765,7 @@ def classify_verdict(
     if detail_row is None:
         if status_row is None:
             return _unknown("no_exact_row")
-        if any(row.marker_ambiguous for row in (status_row, *confirmations)):
+        if status_row.marker_ambiguous:
             # Ambiguous terminal text must never be collapsed into a marker.
             return _unknown("ambiguous_marker_text")
         # kt00009 cannot price a fill, but a fill it reports is still broker

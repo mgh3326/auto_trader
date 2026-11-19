@@ -750,3 +750,31 @@ async def test_us_ust21510_list_key_shapes(
     if expect_verdict == "unknown":
         assert outcome["reason"] == "us_today_orders_unparseable"
         assert result["unresolved_count"] == 1
+
+
+async def test_us_invalid_cancel_request_never_closes_the_original(
+    monkeypatch: pytest.MonkeyPatch, fake_service: type[FakeService]
+) -> None:
+    monkeypatch.setenv(US_TERMINAL_GATE_ENV, "true")
+    fake_service.rows = [_row(1, broker_order_id="000000063")]
+    fake_service.total = 1
+    reader = FakeUsReader(
+        today_pages=[
+            _payload(
+                _us_row(ord_remnq="0"),
+                _us_row(
+                    ord_no="000000064",
+                    orig_ord_no="000000063",
+                    ord_cntr_tp="12",
+                    ord_stat="무효주문",
+                    ord_remnq="0",
+                ),
+            )
+        ]
+    )
+
+    result = await _run(reader, dry_run=False, terminal_only=True)
+
+    assert result["reconciled"][0]["verdict"] == "unknown"
+    assert result["reconciled"][0]["reason"] == "child_operation_unresolved"
+    assert not [c for c in fake_service.sink if c[0] == "mark_terminal"]

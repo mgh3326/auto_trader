@@ -10,9 +10,11 @@ so callers cannot smuggle in the live host. The token is fetched via
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
@@ -160,14 +162,19 @@ class _PerTrRateLimiter:
         self._clock = clock
         self._sleep = sleep
         self._interval_seconds = interval_seconds
-        self._locks: dict[str, asyncio.Lock] = {}
+        # asyncio locks bind to the loop that contends them, and a shared
+        # limiter can outlive a loop (scripts, tests): one lock set per loop.
+        self._locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
         self._last_dispatch: dict[str, float] = {}
 
     async def wait(self, api_id: str) -> None:
-        lock = self._locks.get(api_id)
+        loop_locks = self._locks.setdefault(asyncio.get_running_loop(), {})
+        lock = loop_locks.get(api_id)
         if lock is None:
             lock = asyncio.Lock()
-            self._locks[api_id] = lock
+            loop_locks[api_id] = lock
         async with lock:
             now = self._clock()
             last_dispatch = self._last_dispatch.get(api_id)
@@ -176,6 +183,23 @@ class _PerTrRateLimiter:
                 if remaining > 0:
                     await self._sleep(remaining)
             self._last_dispatch[api_id] = self._clock()
+
+
+#: One limiter per Kiwoom app key for the whole process. The broker limit is per
+#: key and request, but handlers build a fresh client per tool call, so pacing
+#: kept on the client instance would never see the previous call. KR and US use
+#: distinct app keys (``assert_distinct_kr_us_identities``), so they stay
+#: independent; different api-ids never wait on each other.
+_SHARED_TR_LIMITERS: dict[str, _PerTrRateLimiter] = {}
+
+
+def _shared_tr_limiter(app_key: str) -> _PerTrRateLimiter:
+    identity = hashlib.sha256(app_key.encode("utf-8")).hexdigest()
+    limiter = _SHARED_TR_LIMITERS.get(identity)
+    if limiter is None:
+        limiter = _PerTrRateLimiter()
+        _SHARED_TR_LIMITERS[identity] = limiter
+    return limiter
 
 
 class KiwoomMockClient:
@@ -189,8 +213,8 @@ class KiwoomMockClient:
         timeout: float = constants.DEFAULT_TIMEOUT,
         redis_client: Any | None = None,
         redis_settings: Any | None = None,
-        rate_limit_clock: Callable[[], float] = time.monotonic,
-        rate_limit_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        rate_limit_clock: Callable[[], float] | None = None,
+        rate_limit_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if str(base_url).rstrip("/") != constants.MOCK_BASE_URL:
             raise KiwoomEndpointError(
@@ -213,10 +237,14 @@ class KiwoomMockClient:
             redis_settings=redis_settings,
         )
         self._token_override: str | None = None
-        self._tr_rate_limiter = _PerTrRateLimiter(
-            clock=rate_limit_clock,
-            sleep=rate_limit_sleep,
-        )
+        if rate_limit_clock is None and rate_limit_sleep is None:
+            self._tr_rate_limiter = _shared_tr_limiter(app_key)
+        else:
+            # Injected clock/sleep (tests) get a private limiter.
+            self._tr_rate_limiter = _PerTrRateLimiter(
+                clock=rate_limit_clock or time.monotonic,
+                sleep=rate_limit_sleep or asyncio.sleep,
+            )
 
     @classmethod
     def from_app_settings(cls) -> KiwoomMockClient:
