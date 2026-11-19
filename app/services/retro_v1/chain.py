@@ -79,6 +79,11 @@ from app.services.retro_v1.market import MarketInfo
 from app.services.trade_journal.negative_class import NEGATIVE_CLASS_BUCKET
 
 LIVE_PROPOSAL_ACCOUNT_MODES: Final = ("kis_live", "toss_live", "upbit")
+#: Live order ledger filters. ``funnel_scope`` reads these same constants, so the
+#: broker a stage reports is the broker its statements filter on.
+KIS_ORDER_ACCOUNT_MODE: Final = "kis_live"
+TOSS_ORDER_ACCOUNT_MODE: Final = "toss_live"
+LIVE_ORDER_SCOPES: Final = ("kis_live", "upbit_live")
 MARKOUT_SESSIONS: Final = 20
 #: Lot history needs a position's whole FIFO past, so its cap is higher.
 MAX_LEDGER_ROWS: Final = 20000
@@ -387,18 +392,18 @@ async def load_chain(
             stmt = stmt.where(*_symbol_filter(model.symbol, symbols))
             if model is KISLiveOrderLedger:
                 stmt = stmt.where(
-                    model.account_mode == "kis_live",
+                    model.account_mode == KIS_ORDER_ACCOUNT_MODE,
                     model.instrument_type == market.instrument_type,
                 )
             elif model is LiveOrderLedger:
                 stmt = stmt.where(
                     model.market == market.key,
-                    model.account_scope.in_(("kis_live", "upbit_live")),
+                    model.account_scope.in_(LIVE_ORDER_SCOPES),
                 )
             else:
                 stmt = stmt.where(
                     model.market == market.key,
-                    model.account_mode == "toss_live",
+                    model.account_mode == TOSS_ORDER_ACCOUNT_MODE,
                     model.operation_kind == "place",
                 )
             stmt = stmt.order_by(model.trade_date, model.id).limit(MAX_SOURCE_ROWS)
