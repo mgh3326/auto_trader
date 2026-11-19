@@ -126,8 +126,6 @@ async def test_all_succeeded_marks_day_loaded(db_session: AsyncSession) -> None:
     for src, cat, mkt, count in (
         ("finnhub", "earnings", "us", 12),
         ("dart", "disclosure", "kr", 4),
-        ("forexfactory", "economic", "global", 3),
-        ("wisefn", "earnings", "kr", 2),
     ):
         _add_partition(
             db_session,
@@ -155,8 +153,6 @@ async def test_all_zero_event_count_marks_day_empty(db_session: AsyncSession) ->
     for src, cat, mkt in (
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
-        ("forexfactory", "economic", "global"),
-        ("wisefn", "earnings", "kr"),
     ):
         _add_partition(
             db_session,
@@ -235,8 +231,6 @@ async def test_stale_when_finished_at_older_than_window(
     for src, cat, mkt in (
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
-        ("forexfactory", "economic", "global"),
-        ("wisefn", "earnings", "kr"),
     ):
         _add_partition(
             db_session,

@@ -249,6 +249,29 @@ async def test_an_expected_market_event_source_with_no_partitions_is_missing() -
     response = await read_data_gaps(session)
     rows = by_dataset(response)
     assert rows["market_events.finnhub.earnings.us"]["missing_reason"] == "missing_data"
+    assert rows["market_events.dart.disclosure.kr"]["missing_reason"] == "missing_data"
+
+
+@pytest.mark.asyncio
+async def test_manual_only_market_event_sources_are_never_reported_missing() -> None:
+    # forexfactory (economic/global) and wisefn (earnings/kr) have no scheduled
+    # ingestion, so an empty partition table must not report them as missing.
+    # The "FROM market_events" route is cleared too: the shared fixture feeds
+    # event rows for every source, which a real empty database would not.
+    session = gap_session(
+        **{"FROM market_event_ingestion_partitions": [], "FROM market_events": []}
+    )
+    response = await read_data_gaps(session)
+    missing = {
+        row["dataset"]
+        for row in response["data"]
+        if row["dataset"].startswith("market_events.")
+        and row.get("missing_reason") == "missing_data"
+    }
+    assert missing == {
+        "market_events.finnhub.earnings.us",
+        "market_events.dart.disclosure.kr",
+    }
 
 
 # --------------------------------------------------------------------------
