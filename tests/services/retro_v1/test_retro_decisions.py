@@ -205,6 +205,41 @@ async def test_mfe_mae_come_from_closed_sessions_only() -> None:
     assert row["excursion_basis"] == "inference"
 
 
+def _kr_bars(skip_days: tuple[int, ...] = ()) -> list[dict]:
+    """Entry-session bar plus one bar per calendar day from Jan 6, minus skips."""
+    rows = [bar_row("005930", datetime(2026, 1, 5, tzinfo=UTC), "71000")]
+    for i in range(25):
+        day = datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i)
+        if day.day in skip_days:
+            continue
+        rows.append(bar_row("005930", day, str(72000 + i * 100)))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_horizon_counts_exchange_sessions_not_stored_bars() -> None:
+    # Jan 9 (a KRX session, Fri) has no bar. The fifth KRX session after the
+    # Jan 5 entry is Jan 12. Counting stored bars would shift that horizon onto
+    # Jan 10/11/12 and report a value, so the horizon must be unknown instead.
+    response = await read_retro_decisions(
+        linked_session(**{"FROM public.kr_candles_1d": _kr_bars(skip_days=(9,))}),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["mfe"]["1"]["status"] == "complete"
+    assert row["mfe"]["5"] == {
+        "amount": None,
+        "pct": None,
+        "r": None,
+        "status": "unknown",
+        "reason": "missing_data",
+    }
+    assert row["mae"]["5"]["status"] == "unknown"
+    assert row["mae"]["5"]["reason"] == "missing_data"
+
+
 @pytest.mark.asyncio
 async def test_declined_decision_has_no_risk_and_no_orders() -> None:
     declined = decision(
