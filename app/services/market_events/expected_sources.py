@@ -5,7 +5,7 @@ Pure function — no DB, no I/O. Used by the freshness service to distinguish
 
 Session handling (weekend + holiday aware as of ROB-371):
 * US sources (finnhub) are gated on the NYSE (XNYS) trading calendar and KR
-  sources (dart, wisefn) on the KRX (XKRX) calendar via
+  sources (dart) on the KRX (XKRX) calendar via
   :mod:`app.services.market_events.session_calendar`. Both weekends AND observed
   exchange holidays are excluded — on a holiday those sources are simply "not
   expected" (no false "missing" signal). This closes the prior follow-up that
@@ -15,27 +15,25 @@ Session handling (weekend + holiday aware as of ROB-371):
   Berkshire weekend release) but for "expected" purposes we follow the exchange
   calendar. Fail-closed: a day the calendar cannot confirm open is treated as
   closed, so a source is never claimed expected on a non-session day.
-* ForexFactory publishes a "this week" XML that always contains the upcoming
-  five business days; we treat it as expected every day (not session-gated).
-* WiseFn KR earnings (ROB-171) is a forward-looking schedule source; we expect
-  it on KR weekdays only, matching DART. The default fetcher raises
-  NotImplementedError until the upstream contract is confirmed, so freshness
-  for `(wisefn, earnings, kr)` will surface "expected but failed" until the
-  helper is wired and `WISEFN_EARNINGS_ENABLED=true` is set.
+* ForexFactory (economic, global) and WiseFn (earnings, kr) are manual-only
+  sources: no scheduled ingestion produces their partitions. They are therefore
+  NOT expected sources, so freshness and retro data_gaps never report them as
+  missing (operator decision 2026-11-20, `at-mock-uncertain-and-data-gaps`
+  item 2(c)). Their manual ingest path (`scripts/ingest_market_events.py`, the
+  normalizers and the taxonomy) is unchanged.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-# All triples we currently know how to ingest (mirrors `SUPPORTED` in
-# `scripts/ingest_market_events.py`).
+# Triples with a scheduled ingestion that is expected to produce partitions.
+# Narrower than `SUPPORTED` in `scripts/ingest_market_events.py`: forexfactory
+# and wisefn stay manual-only (see the module docstring).
 EXPECTED_SOURCES: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
-        ("forexfactory", "economic", "global"),
-        ("wisefn", "earnings", "kr"),
     }
 )
 
@@ -45,15 +43,13 @@ def expected_sources_for_date(target_date: date) -> frozenset[tuple[str, str, st
 
     Session-aware (ROB-371): US sources are gated on the XNYS trading calendar
     and KR sources on the XKRX calendar — both weekend- and holiday-aware.
-    ForexFactory is expected every day. Fail-closed: a day the calendar cannot
-    confirm open is treated as closed.
+    Fail-closed: a day the calendar cannot confirm open is treated as closed.
     """
     from app.services.market_events.session_calendar import is_trading_session
 
-    triples: set[tuple[str, str, str]] = {("forexfactory", "economic", "global")}
+    triples: set[tuple[str, str, str]] = set()
     if is_trading_session("us", target_date):
         triples.add(("finnhub", "earnings", "us"))
     if is_trading_session("kr", target_date):
         triples.add(("dart", "disclosure", "kr"))
-        triples.add(("wisefn", "earnings", "kr"))
     return frozenset(triples)
