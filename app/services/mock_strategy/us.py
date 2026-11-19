@@ -408,6 +408,32 @@ class UsPaperStrategy:
             )
         return verdicts
 
+    async def _due_outcome(
+        self,
+        entry: MockStrategyOrder,
+        asof: date,
+        change: dict | None,
+        *,
+        dispatch: bool,
+    ) -> dict:
+        try:
+            entry = await self._refresh(entry)
+            qty = Decimal(entry.meta.get("filled_qty", "0"))
+            if (
+                entry.status not in {"filled", "partially_filled"}
+                or not entry.meta.get("broker_terminal")
+                or qty <= 0
+                or entry.entry_price is None
+            ):
+                return {**projection(entry), "reason": "entry_not_terminal_with_fill"}
+            return await self._close_entry(entry, qty, asof, change, dispatch=dispatch)
+        except Exception as exc:
+            return {
+                **projection(entry),
+                "episode_status": "unresolved",
+                "error_class": type(exc).__name__,
+            }
+
     async def close_due(
         self,
         *,
@@ -430,47 +456,21 @@ class UsPaperStrategy:
                 else {}
             )
             for entry in due:
-                mark = len(outcomes)
                 verdict = verdicts.get(entry.symbol)
                 change = verdict if verdict and verdict["applied"] else None
-                try:
-                    entry = await self._refresh(entry)
-                    qty = Decimal(entry.meta.get("filled_qty", "0"))
-                    if (
-                        entry.status not in {"filled", "partially_filled"}
-                        or not entry.meta.get("broker_terminal")
-                        or qty <= 0
-                        or entry.entry_price is None
-                    ):
-                        outcomes.append(
-                            {
-                                **projection(entry),
-                                "reason": "entry_not_terminal_with_fill",
-                            }
-                        )
-                        continue
-                    outcomes.append(
-                        await self._close_entry(
-                            entry,
-                            qty,
-                            asof,
-                            change,
-                            # A declared but unproven mapping may reconcile what was
-                            # already sent, but must never create or send a leg.
-                            dispatch=not (verdict and change is None),
-                        )
-                    )
-                except Exception as exc:
-                    outcomes.append(
-                        {
-                            **projection(entry),
-                            "episode_status": "unresolved",
-                            "error_class": type(exc).__name__,
-                        }
-                    )
+                outcome = await self._due_outcome(
+                    entry,
+                    asof,
+                    change,
+                    # A declared but unproven mapping may reconcile what was
+                    # already sent, but must never create or send a leg.
+                    dispatch=not (verdict and change is None),
+                )
                 if verdict:
-                    for outcome in outcomes[mark:]:
-                        outcome["symbol_change"] = _verdict_view(verdict)
+                    # The order's own `symbol_change` is the journaled mapping;
+                    # this invocation's decision is reported beside it.
+                    outcome["symbol_change_verdict"] = _verdict_view(verdict)
+                outcomes.append(outcome)
         result = {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
         if verdicts:
             result["symbol_changes"] = [_verdict_view(v) for v in verdicts.values()]

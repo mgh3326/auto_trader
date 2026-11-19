@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -13,9 +14,13 @@ from app.models.mock_strategy import MockStrategyOrder
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
 from app.services.brokers.alpaca.schemas import Order
 from app.services.mock_strategy import us_broker
-from app.services.mock_strategy.us import UsPaperStrategy, order_request
+from app.services.mock_strategy.us import UsPaperStrategy, order_request, strategy_id
 from app.services.mock_strategy.us_broker import PreDispatchRefusal, UsPaperBroker
-from app.services.mock_strategy.us_signals import Candidate, UsSelection
+from app.services.mock_strategy.us_signals import (
+    Candidate,
+    UsSelection,
+    client_order_id,
+)
 from app.services.mock_strategy.us_symbol_change import (
     open_quantity,
     parse_symbol_changes,
@@ -160,7 +165,7 @@ async def test_unmet_broker_condition_sends_nothing_and_keeps_legs_planned(refus
         {"from": "BKH", "to": "HZN", "applied": False, "reason": refusal}
     ]
     bkh = [o for o in result["orders"] if o["symbol"] == "BKH"]
-    assert bkh and all(o["symbol_change"]["reason"] == refusal for o in bkh)
+    assert bkh and all(o["symbol_change_verdict"]["reason"] == refusal for o in bkh)
 
 
 @pytest.mark.asyncio
@@ -633,11 +638,37 @@ async def test_refused_mapping_never_falls_back_to_an_old_symbol_close(refusal):
     refused = [o for o in result["orders"] if o["symbol"] == "BKH"]
     assert refused and all(
         o["reason"] == "symbol_change_refused"
-        and o["symbol_change"]["reason"] == refusal
+        and o["symbol_change_verdict"]["reason"] == refusal
         for o in refused
     )
     # NVDA (not mapped) still closes normally.
     assert any(side == "cover" for side, _ in broker.posts)
+
+
+async def cli_exit_code(result):
+    import asyncio
+
+    from scripts import mock_strategy
+
+    async def execute(args):
+        return result
+
+    original = mock_strategy.execute
+    mock_strategy.execute = execute
+    try:
+        return await asyncio.to_thread(
+            mock_strategy.main,
+            [
+                "close-due",
+                "--venue",
+                "alpaca_paper",
+                "--asof",
+                "2026-11-09",
+                "--confirm",
+            ],
+        )
+    finally:
+        mock_strategy.execute = original
 
 
 def fill_exit_legs(broker, recorder):
@@ -670,6 +701,11 @@ async def test_refused_rerun_still_reconciles_sent_mapped_legs_with_zero_posts(l
     pending = [o for o in result["orders"] if o["symbol"] == "BKH"]
     assert len(broker.posts) == sent
     assert all(o["status"] in {"uncertain", "accepted", "sending"} for o in pending)
+    assert {o["client_order_id"] for o in pending} == {
+        leg.client_order_id for leg in legs
+    }
+    if lost == "response_lost":  # an unconfirmed send keeps the CLI nonzero
+        assert await cli_exit_code(result) == 1
     # Alpaca now shows the fill: the refused-by-open-quantity rerun books it.
     fill_exit_legs(broker, recorder)
     result = await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
@@ -681,3 +717,247 @@ async def test_refused_rerun_still_reconciles_sent_mapped_legs_with_zero_posts(l
     ]
     assert {r.status for r in entries_} == {"closed"}
     assert all(r.realized_pnl == Decimal("500") for r in entries_)
+
+
+@pytest.mark.asyncio
+async def test_conflicting_declaration_keeps_the_journaled_ticker_on_the_booked_order():
+    recorder, broker, strategy = await stranded()
+    broker.fail_submit = True
+    await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    broker.fail_submit = False
+    sent = len(broker.posts)
+    fill_exit_legs(broker, recorder)
+    result = await strategy.close_due(
+        asof=DUE, confirm=True, symbol_changes={"BKH": "QQQ"}
+    )
+    assert len(broker.posts) == sent
+    booked = [o for o in result["orders"] if o["symbol"] == "BKH"]
+    assert {o["episode_status"] for o in booked} == {"closed"}
+    for order in booked:
+        assert order["symbol_change"]["to"] == "HZN"  # what actually traded
+        assert order["symbol_change_verdict"] == {
+            "from": "BKH",
+            "to": "QQQ",
+            "applied": False,
+            "reason": "exit_leg_unresolved",
+        }
+
+
+@pytest.mark.asyncio
+async def test_still_accepted_entry_carries_the_refusal_on_its_own_order():
+    recorder, broker = ChangeRecorder(), ChangeBroker()
+    broker.accept_only = True
+    strategy = await entries(recorder, broker)
+    result = await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    bkh = [o for o in result["orders"] if o["symbol"] == "BKH"]
+    assert bkh and all(
+        o["reason"] == "entry_not_terminal_with_fill"
+        and o["symbol_change_verdict"]["reason"] == "entry_fill_unresolved"
+        for o in bkh
+    )
+    assert not sells(broker)
+
+
+# ---- the observed incident, end to end through the real broker -------------
+
+ENTRY_QTY = {
+    3: Decimal("4.670052539"),
+    5: Decimal("4.658087807"),
+    10: Decimal("4.653210795"),
+}
+ACCOUNT = "alpaca_paper:" + hashlib.sha256(b"fixture-paper-id").hexdigest()[:24]
+INCIDENT_DAY = date(2026, 11, 2)
+
+
+class IncidentTransport(SwapTransport):
+    """HZN holds exactly the three BKH buys (hk 5485); fills decrement it."""
+
+    def __init__(self):
+        super().__init__()
+        total = sum(ENTRY_QTY.values())
+        self.positions = {
+            "HZN": {"qty": str(total), "qty_available": str(total), "side": "long"}
+        }
+        self.orders = {}
+        self.posts = []
+
+    async def request(self, method, path, **kwargs):
+        import httpx
+
+        if method == "POST" and path == "/v2/orders":
+            self.calls.append((method, path, kwargs))
+            body = kwargs["json"]
+            self.posts.append(body)
+            held = Decimal(self.positions[body["symbol"]]["qty"])
+            qty = Decimal(body["qty"])
+            assert body["side"] == "sell" and held >= qty
+            self.positions[body["symbol"]] = {
+                "qty": str(held - qty),
+                "qty_available": str(held - qty),
+                "side": "long",
+            }
+            order = body | {
+                "id": f"exit-{len(self.posts)}",
+                "status": "filled",
+                "filled_qty": body["qty"],
+                "filled_avg_price": "105",
+                "filled_at": NOW_ISO,
+            }
+            self.orders[body["client_order_id"]] = order
+            return httpx.Response(200, json=order)
+        if path == "/v2/orders:by_client_order_id":
+            self.calls.append((method, path, kwargs))
+            found = self.orders.get(kwargs["params"]["client_order_id"])
+            if found is None:
+                return httpx.Response(404, json={})
+            return httpx.Response(200, json=found)
+        return await super().request(method, path, **kwargs)
+
+
+NOW_ISO = "2026-11-02T15:00:00+00:00"
+
+
+def seed_incident(transport):
+    recorder = ChangeRecorder()
+    exit_ids = {}
+    for horizon, qty in ENTRY_QTY.items():
+        sid = strategy_id(horizon)
+        asof = date(2026, 10, 26)
+        coid = client_order_id(sid, asof, "BKH", "buy", horizon)
+        due = datetime(
+            2026,
+            11 if horizon == 10 else 10,
+            12 if horizon == 10 else 29,
+            14,
+            30,
+            tzinfo=UTC,
+        )
+        entry = MockStrategyOrder(
+            id=len(recorder.rows) + 1,
+            strategy_id=sid,
+            venue="alpaca_paper",
+            account_ref=ACCOUNT,
+            episode_id=coid,
+            symbol="BKH",
+            side="buy",
+            qty=None,
+            notional=Decimal("10000"),
+            client_order_id=coid,
+            exit_due_at=due,
+            status="filled",
+            broker_order_id=f"entry-{horizon}",
+            opened_at=datetime(2026, 10, 26, 15, tzinfo=UTC),
+            closed_at=None,
+            entry_price=Decimal("85.8"),
+            exit_price=None,
+            realized_pnl=None,
+            meta={
+                "asof": asof.isoformat(),
+                "horizon": horizon,
+                "role": "entry",
+                "filled_qty": str(qty),
+                "broker_status": "filled",
+                "broker_terminal": True,
+            },
+        )
+        recorder.rows[coid] = entry
+        transport.orders[coid] = {
+            "id": f"entry-{horizon}",
+            "client_order_id": coid,
+            "symbol": "BKH",
+            "notional": "10000",
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "status": "filled",
+            "filled_qty": str(qty),
+            "filled_avg_price": "85.8",
+            "filled_at": "2026-10-26T15:00:00+00:00",
+        }
+        if horizon == 10:
+            continue  # open but not due
+        leg_id = UsPaperStrategy._exit_id(entry, "sell", 0)
+        exit_ids[horizon] = leg_id
+        recorder.rows[leg_id] = MockStrategyOrder(
+            id=len(recorder.rows) + 1,
+            strategy_id=sid,
+            venue="alpaca_paper",
+            account_ref=ACCOUNT,
+            episode_id=coid,
+            symbol="BKH",
+            side="sell",
+            qty=qty,
+            notional=None,
+            client_order_id=leg_id,
+            exit_due_at=None,
+            status="planned",
+            broker_order_id=None,
+            opened_at=None,
+            closed_at=None,
+            entry_price=None,
+            exit_price=None,
+            realized_pnl=None,
+            meta={
+                "asof": asof.isoformat(),
+                "horizon": horizon,
+                "role": "exit",
+                "entry_client_order_id": coid,
+                "exit_leg": 0,
+            },
+        )
+    return recorder, exit_ids
+
+
+@pytest.mark.asyncio
+async def test_observed_bkh_hzn_incident_sends_the_exact_fractional_quantities(
+    enabled,
+):
+    transport = IncidentTransport()
+    recorder, exit_ids = seed_incident(transport)
+    broker = make(transport)
+    strategy = UsPaperStrategy(recorder, broker)
+    result = await strategy.close_due(
+        asof=INCIDENT_DAY, confirm=True, symbol_changes=CHANGES
+    )
+    assert [(b["symbol"], b["qty"], b["client_order_id"]) for b in transport.posts] == [
+        ("HZN", "4.670052539", exit_ids[3]),
+        ("HZN", "4.658087807", exit_ids[5]),
+    ]
+    assert transport.positions["HZN"]["qty"] == "4.653210795"  # the h10 share
+    for horizon in (3, 5):
+        leg = recorder.rows[exit_ids[horizon]]
+        assert leg.symbol == "BKH" and leg.qty == ENTRY_QTY[horizon]
+        assert leg.meta["symbol_change"]["from"] == "BKH"
+        assert leg.meta["symbol_change"]["to"] == "HZN"
+        assert leg.meta["symbol_change"]["evidence"]["required_qty"] == ("13.981351141")
+        assert leg.status == "closed"
+        entry = recorder.rows[leg.meta["entry_client_order_id"]]
+        assert entry.status == "closed"
+        assert (
+            entry.realized_pnl
+            == (Decimal("105") - Decimal("85.8")) * ENTRY_QTY[horizon]
+        )
+    assert (
+        recorder.rows[
+            next(k for k, r in recorder.rows.items() if r.meta.get("horizon") == 10)
+        ].status
+        == "filled"
+    )
+    assert result["symbol_changes"] == [{"from": "BKH", "to": "HZN", "applied": True}]
+    await strategy.close_due(asof=INCIDENT_DAY, confirm=True, symbol_changes=CHANGES)
+    assert len(transport.posts) == 2  # rerun sends nothing more
+
+
+@pytest.mark.asyncio
+async def test_incident_with_a_short_position_sends_nothing(enabled):
+    transport = IncidentTransport()
+    recorder, exit_ids = seed_incident(transport)
+    transport.positions["HZN"]["qty"] = "13.98"  # below 13.981351141
+    result = await UsPaperStrategy(recorder, make(transport)).close_due(
+        asof=INCIDENT_DAY, confirm=True, symbol_changes=CHANGES
+    )
+    assert not transport.posts
+    assert result["symbol_changes"][0]["reason"] == (
+        "new symbol position below open episode quantity"
+    )
+    assert {recorder.rows[i].status for i in exit_ids.values()} == {"planned"}
