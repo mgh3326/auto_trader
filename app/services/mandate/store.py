@@ -1058,7 +1058,7 @@ async def _open_loss_cut(session: AsyncSession, market: str, symbol: str) -> boo
     return any(sleeve_store.sleeve_symbol(r[0], market) == symbol for r in rows)
 
 
-async def _unreleased_plan_amounts(
+async def unreleased_plan_amounts(
     session: AsyncSession,
     *,
     sleeve_id: int | None = None,
@@ -1228,13 +1228,13 @@ async def register_plan(
         new = PlanAmounts(planned, adopted, sector_key)
         sleeve_budget_check(
             new,
-            await _unreleased_plan_amounts(session, sleeve_id=data.sleeve_id),
+            await unreleased_plan_amounts(session, sleeve_id=data.sleeve_id),
             Decimal(str(version.budget_cap)),
         )
         view = await basket_view(session, realm, terms.basket_key)
         sector_cap_check(
             new,
-            await _unreleased_plan_amounts(
+            await unreleased_plan_amounts(
                 session, realm=realm, basket_key=terms.basket_key
             ),
             view.constituent_budget_caps,

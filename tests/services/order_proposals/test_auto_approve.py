@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.config import Settings
+from app.services.mandate.proposal_gate import proposal_account_allowed
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
@@ -251,6 +253,17 @@ def test_i23_mandate_buy_below_market_requires_human_approval():
 
     assert decision.eligible is False
     assert decision.reason == "mandate_not_eligible"
+
+
+def test_mandate_proposal_accounts_default_closed_and_only_accept_kiwoom_mock():
+    default = Settings.model_fields["MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES"].default
+    assert default == ""
+    assert not proposal_account_allowed("kiwoom_mock", default)
+    configured = "kiwoom_mock,kiwoom_mock_us,kis_live,toss_live"
+    assert proposal_account_allowed("kiwoom_mock", configured)
+    assert not proposal_account_allowed("kiwoom_mock_us", configured)
+    assert not proposal_account_allowed("kis_live", configured)
+    assert not proposal_account_allowed("toss_live", configured)
 
 
 @pytest.mark.asyncio
@@ -2647,3 +2660,160 @@ async def test_record_auto_approve_rejections_persists_message_in_jsonb(
     rungs = stored_group.source_asof["auto_approve_rejections"][0]["rungs"]
     assert rungs[0]["reason_code"] == "price_or_quantity_missing"
     assert rungs[0]["inputs"]["price_context_message"] == _PRICE_CONTEXT_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.services.order_proposals import dispatch
+
+    now = datetime.now(UTC)
+    group = _group(
+        symbol="005930",
+        account_mode="kiwoom_mock",
+        mandate_plan_id=42,
+        mandate_tranche_index=1,
+        sleeve_id=1,
+        side="buy",
+    )
+    rung = _rung(state="pending_approval")
+    session = MagicMock()
+    session.__aenter__.return_value = session
+    session.commit = AsyncMock()
+    service = AsyncMock()
+    service.get_proposal.return_value = (group, [rung])
+    mandate = MagicMock()
+    monkeypatch.setattr(dispatch.settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(dispatch, "OrderProposalsService", lambda _: service)
+    monkeypatch.setattr(dispatch, "limits_for_market", lambda _: _EXPANDED)
+    monkeypatch.setattr(
+        dispatch,
+        "evaluate_approval_window_boundary",
+        AsyncMock(return_value=SimpleNamespace(allowed=True, observed_at=now)),
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "evaluate_sleeve_for_dispatch",
+        AsyncMock(return_value=SimpleNamespace(allowed=True)),
+    )
+    monkeypatch.setattr(
+        dispatch.proposal_gate, "lock_plan_proposal", AsyncMock(return_value=mandate)
+    )
+    monkeypatch.setattr(
+        dispatch.proposal_gate,
+        "check_dispatch",
+        AsyncMock(return_value=("mandate_send_boundary_pending", {})),
+    )
+    card = AsyncMock()
+    monkeypatch.setattr(dispatch, "send_proposal_for_approval", card)
+    revalidate = AsyncMock(side_effect=AssertionError("unexpected revalidation"))
+
+    result = await dispatch.dispatch_proposal(
+        uuid.uuid4(),
+        notifier=MagicMock(),
+        now=now,
+        service_factory=lambda: session,
+        revalidate_fn=revalidate,
+    )
+
+    assert result is card.return_value
+    revalidate.assert_not_called()
+    card.assert_awaited_once()
+    service.record_auto_approval.assert_not_called()
+    decisions = service.record_auto_approve_rejections.await_args.kwargs["decisions"]
+    assert [decision["reason"] for decision in decisions] == [
+        "mandate_not_eligible",
+        "mandate_send_boundary_pending",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mandate_create_binds_plan_and_appends_events(monkeypatch):
+    from app.services.mandate import proposal_gate
+    from app.services.mandate.fold import PlanState
+    from app.services.order_proposals import service as service_module
+
+    now = datetime(2026, 11, 20, 1, tzinfo=UTC)
+    session = AsyncMock()
+    service = OrderProposalsService(session)
+    repository = AsyncMock()
+    service._repo = repository
+    monkeypatch.setattr(service, "_validate_sleeve_binding", AsyncMock())
+    monkeypatch.setattr(service, "_validate_exit_binding", AsyncMock())
+    monkeypatch.setattr(service_module, "record_proposal_decision", AsyncMock())
+    monkeypatch.setattr(
+        service_module.settings, "MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES", "kiwoom_mock"
+    )
+    state = PlanState(authority="approved", effective_session=now.date())
+    context = proposal_gate.PlanProposalContext(
+        plan=SimpleNamespace(
+            symbol="005930",
+            account_ref="ref",
+            scope_account_refs=["ref"],
+            thesis="plan thesis",
+            planned_amount=Decimal(100),
+            adopted_amount=Decimal(0),
+        ),
+        sleeve=SimpleNamespace(id=1, market="equity_kr", account_mode="kiwoom_mock"),
+        state=state,
+        terms=SimpleNamespace(account_ref="ref", entry_max_premium_bps=Decimal(0)),
+        tranche=SimpleNamespace(tranche_index=1, amount=Decimal(100)),
+    )
+    monkeypatch.setattr(
+        proposal_gate, "lock_plan_proposal", AsyncMock(return_value=context)
+    )
+    monkeypatch.setattr(
+        proposal_gate,
+        "load_proposal_quote",
+        AsyncMock(
+            return_value=proposal_gate.ProposalQuote(
+                current_price=Decimal(100),
+                best_ask=Decimal(100),
+                ask_observed_at=now,
+                tick_size=Decimal(1),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        proposal_gate,
+        "buy_freeze_state",
+        AsyncMock(
+            return_value=proposal_gate.FreezeVerdict(
+                frozen=False,
+                reason="fixture",
+                evidence={},
+                valid_until=now + timedelta(minutes=1),
+            )
+        ),
+    )
+    append = AsyncMock()
+    monkeypatch.setattr(proposal_gate.store, "append_plan_event", append)
+
+    result = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kiwoom_mock",
+        side="buy",
+        order_type="limit",
+        proposer="test",
+        rungs=[RungInput(0, "buy", Decimal(1), Decimal(90), None)],
+        mandate_plan_id=42,
+        tranche_index=1,
+        decision_price_text="100",
+        now=now,
+    )
+
+    assert result is repository.insert_group.return_value
+    inserted = repository.insert_group.await_args.kwargs
+    assert (inserted["mandate_plan_id"], inserted["mandate_tranche_index"]) == (42, 1)
+    assert (
+        inserted["sleeve_id"],
+        inserted["broker_account_id"],
+        inserted["thesis"],
+    ) == (1, "ref", "plan thesis")
+    assert [call.kwargs["event"] for call in append.await_args_list] == [
+        "tranche_armed",
+        "tranche_proposed",
+    ]
+    assert append.await_args.kwargs["proposal_id"] == inserted["proposal_id"]

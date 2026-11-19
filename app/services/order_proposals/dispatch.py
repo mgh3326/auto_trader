@@ -32,6 +32,8 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.fill_notification import resolve_display_name_db
+from app.services.mandate import proposal_gate
+from app.services.mandate.store import MandateError
 from app.services.mechanical_loss_cut.gate import (
     POLICY_MARKET,
     MechanicalLossCutBinding,
@@ -1172,7 +1174,24 @@ async def dispatch_proposal(
                 )
             )
             limits = None
-        if limits is not None and getattr(group, "sleeve_id", None) is not None:
+        mandate_context = None
+        mandate_reason = None
+        mandate_detail: dict[str, str] = {}
+        if getattr(group, "mandate_plan_id", None) is not None:
+            try:
+                async with session.begin_nested():
+                    mandate_context = await proposal_gate.lock_plan_proposal(
+                        session, group.mandate_plan_id, group.mandate_tranche_index
+                    )
+            except MandateError as exc:
+                mandate_reason = exc.code.value
+            except Exception:  # noqa: BLE001 - plan evidence is fail-closed
+                mandate_reason = "mandate_unreadable"
+        if (
+            limits is not None
+            and mandate_reason is None
+            and getattr(group, "sleeve_id", None) is not None
+        ):
             # ROB-1470: a sleeve-tagged proposal is auto-approvable only while
             # its sleeve is live, under its loss limit and inside its budget.
             # Measured before revalidation (before any broker call), under the
@@ -1191,6 +1210,45 @@ async def dispatch_proposal(
                     )
                 )
                 limits = None
+        if getattr(group, "mandate_plan_id", None) is not None:
+            if mandate_context is not None:
+                try:
+                    async with session.begin_nested():
+                        mandate_context.check_binding(
+                            symbol=group.symbol,
+                            market=group.market,
+                            account_mode=group.account_mode,
+                        )
+                        (
+                            mandate_reason,
+                            mandate_detail,
+                        ) = await proposal_gate.check_dispatch(
+                            session,
+                            mandate_context,
+                            proposal_id=proposal_id,
+                            broker_account_id=group.broker_account_id,
+                            now=gate_now,
+                        )
+                except MandateError as exc:
+                    mandate_reason = exc.code.value
+                except Exception:  # noqa: BLE001 - plan evidence is fail-closed
+                    mandate_reason = "mandate_unreadable"
+            fallback_decisions.extend(
+                _manual_fallback_decisions(
+                    rungs=initial_rungs,
+                    reason="mandate_not_eligible",
+                    policy_version=limits.policy_version if limits is not None else "",
+                )
+            )
+            fallback_decisions.extend(
+                _manual_fallback_decisions(
+                    rungs=initial_rungs,
+                    reason=mandate_reason or "mandate_unreadable",
+                    policy_version=limits.policy_version if limits is not None else "",
+                    **mandate_detail,
+                )
+            )
+            limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
             cash_funding_shortfall: Decimal | None = None

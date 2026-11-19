@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from sqlalchemy import literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.timezone import KST
 from app.models.order_proposals import (
     OrderProposal,
@@ -32,6 +33,8 @@ from app.models.order_proposals import (
     OrderProposalRung,
 )
 from app.models.review import TossLiveOrderLedger
+from app.services.mandate import proposal_gate
+from app.services.mandate import store as mandate_store
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
@@ -877,6 +880,8 @@ class OrderProposalsService:
         sleeve_id: int | None = None,
         candidate_ref: dict[str, Any] | None = None,
         decision_price_text: str | None = None,
+        mandate_plan_id: int | None = None,
+        tranche_index: int | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
@@ -912,6 +917,68 @@ class OrderProposalsService:
             merged_source_asof[CREATOR_AGENT_ID_KEY] = normalized_creator
         now = now or datetime.now(UTC)
         self._require_timezone_aware(now)
+        mandate = None
+        if mandate_plan_id is not None or tranche_index is not None:
+            if mandate_plan_id is None or tranche_index is None:
+                raise OrderProposalError("mandate_binding_mismatch")
+            if not proposal_gate.proposal_account_allowed(
+                account_mode, settings.MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES
+            ):
+                raise OrderProposalError("mandate_account_not_enabled")
+            if broker_account_id is not None:
+                raise OrderProposalError("mandate_account_mismatch")
+            if (
+                normalized_action != "place"
+                or side != "buy"
+                or order_type != "limit"
+                or len(rungs) != 1
+                or rungs[0].side != "buy"
+                or exit_intent is not None
+                or supersedes_proposal_id is not None
+            ):
+                raise OrderProposalError("mandate_binding_mismatch")
+            mandate = await proposal_gate.lock_plan_proposal(
+                self._session, mandate_plan_id, tranche_index
+            )
+            mandate.check_binding(
+                symbol=symbol, market=market, account_mode=account_mode
+            )
+            if sleeve_id is not None and sleeve_id != mandate.sleeve.id:
+                raise OrderProposalError("mandate_binding_mismatch")
+            limit = rungs[0].limit_price
+            quantity = rungs[0].quantity
+            if (
+                limit is None
+                or not limit.is_finite()
+                or limit <= 0
+                or not quantity.is_finite()
+                or quantity <= 0
+            ):
+                raise OrderProposalError("mandate_price_unavailable")
+            quote = await proposal_gate.load_proposal_quote(mandate)
+            if quote is None:
+                raise OrderProposalError("mandate_ask_unavailable")
+            if not quote.current_price.is_finite() or quote.current_price <= 0:
+                raise OrderProposalError("mandate_price_unavailable")
+            band_refusal = proposal_gate.check_near_ask(
+                limit_price=limit,
+                best_ask=quote.best_ask,
+                observed_at=quote.ask_observed_at,
+                tick_size=quote.tick_size,
+                premium_bps=mandate.terms.entry_max_premium_bps,
+                now=now,
+            )
+            if band_refusal is not None:
+                raise OrderProposalError(band_refusal[0])
+            await proposal_gate.check_proposal_creation(
+                self._session,
+                mandate,
+                notional=max(limit, quote.current_price) * quantity,
+                now=now,
+            )
+            sleeve_id = mandate.sleeve.id
+            broker_account_id = mandate.plan.account_ref
+            thesis = mandate.plan.thesis
         defensive_floor = (
             resolve_defensive_valid_until(market, now)
             if exit_intent in DEFENSIVE_EXIT_INTENTS
@@ -961,6 +1028,8 @@ class OrderProposalsService:
             )
             if superseded_group is None:
                 raise OrderProposalNotFound(str(supersedes_proposal_id))
+            if getattr(superseded_group, "mandate_plan_id", None) is not None:
+                raise OrderProposalError("mandate_binding_mismatch")
             root_id = superseded_group.root_proposal_id
             # ROB-1470: a revision stays in its sleeve. Omitting sleeve_id
             # inherits it; naming another sleeve (or dropping out of one by
@@ -1042,6 +1111,8 @@ class OrderProposalsService:
             approval_issue_id=approval_issue_id,
             sleeve_id=sleeve_id,
             decision_id=decision_id,
+            mandate_plan_id=mandate_plan_id,
+            mandate_tranche_index=tranche_index,
             lifecycle_state="proposed",
             correlation_id=correlation_id,
             valid_until=valid_until,
@@ -1056,6 +1127,24 @@ class OrderProposalsService:
                 limit_price=r.limit_price,
                 notional=r.notional,
                 state="pending_approval",
+            )
+        if mandate is not None:
+            assert mandate_plan_id is not None and tranche_index is not None
+            if not mandate.state.tranche(tranche_index).armed:
+                await mandate_store.append_plan_event(
+                    self._session,
+                    plan_id=mandate_plan_id,
+                    event="tranche_armed",
+                    actor=proposer,
+                    tranche_index=tranche_index,
+                )
+            await mandate_store.append_plan_event(
+                self._session,
+                plan_id=mandate_plan_id,
+                event="tranche_proposed",
+                actor=proposer,
+                tranche_index=tranche_index,
+                proposal_id=proposal_id,
             )
         if superseded_group is not None:
             superseded_rungs = await self._repo.list_rungs(superseded_group.id)

@@ -1036,6 +1036,7 @@ class Settings(BaseSettings):
     # ROB-871 — master gate for resting-class automatic submission. Telegram
     # approvals remain the fallback whenever this is off or eligibility fails.
     ORDER_PROPOSALS_AUTO_APPROVE: bool = False
+    MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES: str = ""
     # AUTO-APPROVE-EXPAND (§40차) — selects which eligibility classification
     # `evaluate_auto_approve_eligibility` applies. Subordinate to
     # ORDER_PROPOSALS_AUTO_APPROVE: with that master gate off, nothing here runs.
