@@ -8,13 +8,19 @@ for that with a child request. The design and wire contract are in
 v1 is KRX cash only, so quantity and price are whole shares and whole won. Exact
 integers leave nothing for a broker layer to truncate and keep the cap arithmetic
 exact.
+
+v2 (hk 5441, ``docs/design/5438-go-execution-path.md`` §3) is the Upbit KRW
+market. The account decides the field set: a v1 intent and its children are
+unchanged byte for byte, and a v2 intent carries decimal quantities as strings
+(at most eight places) so nothing is rounded on the way.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated, Final, Literal
+from decimal import Decimal
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -29,9 +35,12 @@ from pydantic import (
     model_validator,
 )
 
+from app.core.upbit_tick import is_on_upbit_krw_tick, upbit_krw_tick
 from app.services.kis_mock_attribution import InvalidStrategy, validate_strategy
 
 SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION_V2: Final = 2
+UPBIT_LIVE_ACCOUNT: Final = "upbit_live"
 
 #: Equal to ``LOCKED_ENVELOPE.max_single_notional_krw``; a test pins the two.
 #: One intent can never authorize more than one locked single-order notional.
@@ -164,9 +173,173 @@ _CHILD_REQUEST_ADAPTER: Final[TypeAdapter[SubmitChild | AmendChild | CancelChild
 )
 
 
-def parse_child_request(payload: object) -> SubmitChild | AmendChild | CancelChild:
-    """Validate one child request at the transport boundary."""
+#: Upbit caps (design §3.2). A sell has no notional cap of its own (B7), so the
+#: schema bound is only a sanity limit; a buy is bounded by its mandate.
+MAX_UPBIT_QUANTITY: Final = Decimal("1000000")
+MAX_UPBIT_LIMIT_PRICE_KRW: Final = 10_000_000_000
+MIN_UPBIT_NOTIONAL_KRW: Final = 5_000
+MAX_UPBIT_NOTIONAL_KRW: Final = 1_000_000_000_000
+#: ``_place_order_impl`` refuses a client order id above 40 characters, and the
+#: child key is the Upbit ``identifier``.
+MAX_UPBIT_IDEMPOTENCY_KEY_LENGTH: Final = 40
+_DECIMAL_PATTERN: Final = r"^[0-9]+(\.[0-9]{1,8})?$"
+
+
+class PriceOffTick(ValueError):
+    """The price is not a multiple of its Upbit KRW price unit."""
+
+
+class PriceTickUnsupported(ValueError):
+    """The price range uses a unit below 1 KRW, which a whole-KRW field cannot hold."""
+
+
+def check_upbit_limit_price(price_krw: int) -> None:
+    """Design §3.4. Raises :class:`PriceTickUnsupported` or :class:`PriceOffTick`."""
+    price = Decimal(price_krw)
+    if upbit_krw_tick(price) < 1:
+        raise PriceTickUnsupported("price range uses a unit below 1 KRW")
+    if not is_on_upbit_krw_tick(price):
+        raise PriceOffTick("price is not on its Upbit KRW price unit")
+
+
+def _positive_upbit_quantity(value: str) -> str:
+    quantity = Decimal(value)
+    if quantity <= 0 or quantity > MAX_UPBIT_QUANTITY:
+        raise ValueError("quantity is outside the allowed range")
+    return value
+
+
+def _upbit_position(value: str) -> str:
+    if Decimal(value) > MAX_UPBIT_QUANTITY * 1000:
+        raise ValueError("position is outside the allowed range")
+    return value
+
+
+def _upbit_price_on_tick(value: int) -> int:
+    check_upbit_limit_price(value)
+    return value
+
+
+_DecimalText = Annotated[str, StringConstraints(strict=True, pattern=_DECIMAL_PATTERN)]
+UpbitQuantity = Annotated[_DecimalText, AfterValidator(_positive_upbit_quantity)]
+_UpbitPosition = Annotated[_DecimalText, AfterValidator(_upbit_position)]
+_UpbitPriceKrw = Annotated[StrictInt, Field(ge=1, le=MAX_UPBIT_LIMIT_PRICE_KRW)]
+_UpbitSymbol = Annotated[
+    str, StringConstraints(strict=True, pattern=r"^KRW-[A-Z0-9]{2,10}$")
+]
+_CodeSha = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{40}$")]
+
+
+class DecimalInventoryConstraint(_Contract):
+    """The v2 form of :class:`InventoryConstraint`: exact decimal strings."""
+
+    position_at_authorization: _UpbitPosition
+    min_position_after: _UpbitPosition
+    max_position_after: _UpbitPosition
+
+    @model_validator(mode="after")
+    def _range_is_ordered(self) -> DecimalInventoryConstraint:
+        if Decimal(self.min_position_after) > Decimal(self.max_position_after):
+            raise ValueError("min_position_after exceeds max_position_after")
+        return self
+
+
+class ExecutionIntentV2(_Contract):
+    """An Upbit KRW intent. It exists only under a mandate (I1) and a sleeve.
+
+    ``execution_mode`` has no default and never changes: a shadow intent can
+    only ever reach the shadow forwarder (I6). ``origin='operator_exit'`` is the
+    S6 operator exit and must name its exit row; every other intent comes from
+    the strategy job.
+    """
+
+    schema_version: Literal[2]
+    intent_id: UUID
+    strategy: _Strategy
+    account: Literal["upbit_live"]
+    venue: Literal["upbit"]
+    execution_mode: Literal["shadow", "live"]
+    mandate_id: UUID
+    sleeve_id: Annotated[StrictInt, Field(ge=1)]
+    symbol: _UpbitSymbol
+    side: Literal["buy", "sell"]
+    max_quantity_decimal: UpbitQuantity
+    max_notional_krw: Annotated[
+        StrictInt, Field(ge=MIN_UPBIT_NOTIONAL_KRW, le=MAX_UPBIT_NOTIONAL_KRW)
+    ]
+    strategy_code_sha: _CodeSha
+    limit_price_krw: Annotated[_UpbitPriceKrw, AfterValidator(_upbit_price_on_tick)]
+    max_slippage_bps: Annotated[StrictInt, Field(ge=0, le=MAX_SLIPPAGE_BPS)]
+    expires_at: AwareDatetime
+    inventory: DecimalInventoryConstraint
+    policy_version: _Reference
+    model_version: _Reference | None = None
+    authorization_ref: _Reference
+    decision_ref: _Reference
+    origin: Literal["strategy", "operator_exit"] = "strategy"
+    operator_exit_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _origin_is_consistent(self) -> ExecutionIntentV2:
+        if self.origin == "operator_exit":
+            if self.operator_exit_id is None or self.side != "sell":
+                raise ValueError("an operator exit is a sell that names its exit row")
+            expected = f"operator-exit:{self.operator_exit_id}"
+        else:
+            if self.operator_exit_id is not None:
+                raise ValueError("only an operator exit names an exit row")
+            expected = f"mandate:{self.mandate_id}"
+        if self.authorization_ref != expected:
+            raise ValueError("authorization_ref does not name the authorization")
+        return self
+
+
+class UpbitSubmitChild(_Contract):
+    """A submit against an ``upbit_live`` intent. ``quantity`` (integer) is not a
+    field here, and ``quantity_decimal`` is not a field of :class:`SubmitChild`:
+    the gateway refuses a child whose shape does not match its intent's account.
+    """
+
+    action: Literal["submit"]
+    intent_id: UUID
+    idempotency_key: IdempotencyKey
+    quantity_decimal: UpbitQuantity
+    limit_price_krw: _UpbitPriceKrw
+
+
+_UPBIT_SUBMIT_ADAPTER: Final[TypeAdapter[UpbitSubmitChild]] = TypeAdapter(
+    UpbitSubmitChild
+)
+
+AnyChild = SubmitChild | AmendChild | CancelChild | UpbitSubmitChild
+
+
+def _is_upbit_submit(payload: object) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("action") == "submit"
+        and "quantity_decimal" in payload
+    )
+
+
+def parse_child_request(payload: object) -> AnyChild:
+    """Validate one child request at the transport boundary.
+
+    Only a submit that carries ``quantity_decimal`` is read as the Upbit shape.
+    Every other payload takes the v1 path it always took, so a kis_mock request
+    is validated, refused and digested exactly as before.
+    """
+    if _is_upbit_submit(payload):
+        return _UPBIT_SUBMIT_ADAPTER.validate_python(payload)
     return _CHILD_REQUEST_ADAPTER.validate_python(payload)
+
+
+def child_quantity(child: Any) -> Decimal | None:
+    """The quantity a child asks for, exact, whichever shape it has."""
+    if isinstance(child, UpbitSubmitChild):
+        return Decimal(child.quantity_decimal)
+    quantity = getattr(child, "quantity", None)
+    return None if quantity is None else Decimal(quantity)
 
 
 def contract_digest(contract: BaseModel) -> str:
