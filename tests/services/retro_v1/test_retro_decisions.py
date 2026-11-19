@@ -205,6 +205,123 @@ async def test_mfe_mae_come_from_closed_sessions_only() -> None:
     assert row["excursion_basis"] == "inference"
 
 
+def _kr_bars(skip_days: tuple[int, ...] = ()) -> list[dict]:
+    """Entry-session bar plus one bar per calendar day from Jan 6, minus skips."""
+    rows = [bar_row("005930", datetime(2026, 1, 5, tzinfo=UTC), "71000")]
+    for i in range(25):
+        day = datetime(2026, 1, 6, tzinfo=UTC) + timedelta(days=i)
+        if day.day in skip_days:
+            continue
+        rows.append(bar_row("005930", day, str(72000 + i * 100)))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_horizon_counts_exchange_sessions_not_stored_bars() -> None:
+    # Jan 9 (a KRX session, Fri) has no bar. The fifth KRX session after the
+    # Jan 5 entry is Jan 12. Counting stored bars would shift that horizon onto
+    # Jan 10/11/12 and report a value, so the horizon must be unknown instead.
+    response = await read_retro_decisions(
+        linked_session(**{"FROM public.kr_candles_1d": _kr_bars(skip_days=(9,))}),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["mfe"]["1"]["status"] == "complete"
+    assert row["mfe"]["5"] == {
+        "amount": None,
+        "pct": None,
+        "r": None,
+        "status": "unknown",
+        "reason": "missing_data",
+    }
+    assert row["mae"]["5"]["status"] == "unknown"
+    assert row["mae"]["5"]["reason"] == "missing_data"
+
+
+@pytest.mark.asyncio
+async def test_crypto_horizon_uses_utc_days_for_a_kst_morning_fill() -> None:
+    # Fill 2026-01-05 16:00 UTC is 2026-01-06 01:00 KST. Crypto sessions are UTC
+    # days, so the entry session is Jan 5 and the first horizon session is Jan 6
+    # (high 73000 → MFE 3000). Keying the entry by KST day would start at Jan 7
+    # (high 72000 → MFE 2000).
+    fill_at = datetime(2026, 1, 5, 16, 0, tzinfo=UTC)
+    src = session(
+        [decision(1, market="crypto", account_mode="upbit_live", symbol="KRW-BTC")],
+        **{
+            "FROM review.decision_evidence_rungs": [decision_rung()],
+            "FROM review.decision_reference_prices": [ref_price()],
+            "FROM review.order_proposals ": [
+                proposal(
+                    10,
+                    "KRW-BTC",
+                    datetime(2026, 1, 5, 15, 0, tzinfo=UTC),
+                    proposal_id=PROPOSAL_A,
+                    decision_id=DECISION_A,
+                    market="crypto",
+                    account_mode="upbit_live",
+                )
+            ],
+            "FROM review.order_proposal_rungs": [rung(100, 10)],
+            "FROM review.decision_order_links": [
+                ns(
+                    attempt_id=UUID(int=1),
+                    decision_id=DECISION_A,
+                    account_scope="upbit_live",
+                    send_key=SEND_KEY,
+                    proposal_id=PROPOSAL_A,
+                    rung_index=0,
+                )
+            ],
+            "FROM review.decision_order_link_outcomes": [
+                ns(attempt_id=UUID(int=1), outcome="sent")
+            ],
+            "FROM review.live_order_ledger": [
+                live_order(
+                    100,
+                    fill_at,
+                    idempotency_key=SEND_KEY,
+                    status="filled",
+                    broker="upbit",
+                    symbol="KRW-BTC",
+                    currency="KRW",
+                )
+            ],
+            "FROM review.execution_ledger": [
+                ledger(
+                    1000,
+                    fill_at,
+                    broker="upbit",
+                    venue="upbit",
+                    instrument_type="crypto",
+                    symbol="KRW-BTC",
+                    raw_symbol="KRW-BTC",
+                    currency="KRW",
+                    broker_order_id="0000123456",
+                )
+            ],
+            "FROM public.crypto_candles_1d": [
+                bar_row(
+                    "KRW-BTC", datetime(2026, 1, 5, tzinfo=UTC), "70000", venue="UPBIT"
+                ),
+                bar_row(
+                    "KRW-BTC", datetime(2026, 1, 6, tzinfo=UTC), "73000", venue="UPBIT"
+                ),
+                bar_row(
+                    "KRW-BTC", datetime(2026, 1, 7, tzinfo=UTC), "72000", venue="UPBIT"
+                ),
+            ],
+        },
+    )
+    response = await read_retro_decisions(src, from_="2026-01-01", to="2026-01-31")
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["entry_avg_price"] == "70000"
+    assert row["mfe"]["1"]["status"] == "complete"
+    assert row["mfe"]["1"]["amount"] == "3000"
+
+
 @pytest.mark.asyncio
 async def test_declined_decision_has_no_risk_and_no_orders() -> None:
     declined = decision(

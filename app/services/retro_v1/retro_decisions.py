@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final, Literal
 
@@ -68,6 +68,7 @@ from app.services.retro_v1.envelope import (
     resolve_from,
     safe_code,
 )
+from app.services.retro_v1.horizon_sessions import excursion_pair
 from app.services.retro_v1.links import (
     DECISION_LINKS,
     LINK_BASES,
@@ -84,10 +85,8 @@ from app.services.retro_v1.market import (
     normalize_symbol,
 )
 from app.services.retro_v1.metrics import (
-    DailyBar,
     Excursion,
     RiskRung,
-    calculate_mfe_mae,
     calculate_risk_amount,
 )
 from app.services.retro_v1.trade_evidence import (
@@ -794,6 +793,18 @@ def _matching_fills(
     return out
 
 
+def _session_day(market_key: str, moment: datetime) -> date:
+    """The session day a moment belongs to for the MFE/MAE horizon count.
+
+    Crypto sessions are consecutive UTC days, so its fills and bars take the UTC
+    date (a 00:00-08:59 KST fill belongs to the previous UTC day). Equities keep
+    the KST day the rest of the reader uses.
+    """
+    if market_key == "crypto":
+        return moment.astimezone(UTC).date()
+    return kst_day(moment)
+
+
 def _excursion_body(excursion: Excursion) -> dict[str, Any]:
     body: dict[str, Any] = {
         "amount": dec(excursion.amount),
@@ -807,7 +818,7 @@ def _excursion_body(excursion: Excursion) -> dict[str, Any]:
     return body
 
 
-def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
+def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
     info = _MARKET_BY_INSTRUMENT.get(decision.market)
     rungs = [r for r in data.rungs if r.decision_id == decision.decision_id]
     ref_prices = [p for p in data.ref_prices if p.decision_id == decision.decision_id]
@@ -1055,32 +1066,23 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
         elif data.bars[key] is None:
             excursion_reason = "source_mixed"
         else:
-            entry_session = kst_day(
-                max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
+            entry_session = _session_day(
+                info.key, max(buy_fills, key=lambda f: (f.filled_at, f.id)).filled_at
             )
             exit_session = (
-                kst_day(min(exit_fills, key=lambda f: (f.filled_at, f.id)).filled_at)
+                _session_day(
+                    info.key,
+                    min(exit_fills, key=lambda f: (f.filled_at, f.id)).filled_at,
+                )
                 if exit_fills
                 else None
             )
-            # Bars keep their order: dropping a null-extreme bar would shift
-            # the horizon count onto later sessions, so a missing extreme in
-            # the measured span makes that horizon unknown instead.
-            raw_window = [
-                bar
-                for bar in data.bars[key]
-                if entry_session < kst_day(bar.time)
-                and (exit_session is None or kst_day(bar.time) <= exit_session)
-            ]
-            series = [
-                DailyBar(
-                    session=kst_day(bar.time),
-                    high=bar.high,
-                    low=bar.low,
-                )
-                for bar in raw_window
-                if bar.high is not None and bar.low is not None
-            ]
+            # Horizons count exchange sessions, not stored bars: a session with
+            # no single bar makes that horizon unknown, never a later session's
+            # bar (horizon_sessions.excursion_pair).
+            by_session: dict[date, list[daily_bars.Bar]] = defaultdict(list)
+            for bar in data.bars[key]:
+                by_session[_session_day(info.key, bar.time)].append(bar)
             risk_per_unit = (
                 risk_amount / planned_quantity
                 if risk_amount is not None
@@ -1090,26 +1092,14 @@ def _row(decision: Any, data: DecisionData) -> dict[str, Any]:
             )
             for horizon in _HORIZONS:
                 label = str(horizon)
-                span = (
-                    raw_window if horizon == "to_exit" else raw_window[: int(horizon)]
-                )
-                if any(b.high is None or b.low is None for b in span):
-                    body = {
-                        "amount": None,
-                        "pct": None,
-                        "r": None,
-                        "status": "unknown",
-                        "reason": "missing_data",
-                    }
-                    mfe_out[label] = dict(body)
-                    mae_out[label] = dict(body)
-                    continue
-                pair = calculate_mfe_mae(
+                pair = excursion_pair(
+                    market=info.key,
                     entry_price=entry_avg,
                     entry_session=entry_session,
-                    bars=series,
                     exit_session=exit_session,
-                    horizon_sessions=horizon,
+                    horizon=horizon,
+                    bars_by_session=by_session,
+                    as_of=as_of,
                     risk_per_unit=risk_per_unit,
                 )
                 mfe_out[label] = _excursion_body(pair.mfe)
@@ -1379,7 +1369,7 @@ async def read_retro_decisions(
     complete = "decision_evidence" not in data.incomplete
     rows = []
     for decision in data.decisions:
-        row = _row(decision, data)
+        row = _row(decision, data, as_of)
         rows.append((row, _hints(row)))
     times: list[datetime | None] = [d.decided_at for d in data.decisions]
     times += [o.trade_date for _, o in data.orders]
