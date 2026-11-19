@@ -309,13 +309,14 @@ def _us_verdict(
     open_: list[dict[str, Any]] | None = None,
     *,
     own_cancel: bool = True,
+    quantity: int = 1,
 ):
     return classify_verdict(
         ledger=LedgerOrder(
             client_order_id="kwoomus-1",
             status="accepted",
             broker_order_id=US_ORIGINAL,
-            quantity=1,
+            quantity=quantity,
             symbol="NVDA",
         ),
         evidence=us_evidence_from_payloads(
@@ -486,6 +487,117 @@ def test_us_child_cancel_closes_a_status_only_original_with_zero_remainder() -> 
         open_=[_us_row(ord_remnq="0")],
     )
     assert verdict.verdict == "cancelled"
+
+
+# --- hk 5419 r3: every child view, unresolved siblings, remainder agreement --
+
+
+def test_us_completed_view_does_not_outrank_a_request_view_of_the_same_child() -> None:
+    request = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=US_ORIGINAL, ord_stat="접수", ord_cntr_tp="12"
+    )
+    verdict = _us_verdict([_us_row(), _us_cancel_confirm()], open_=[request])
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_kr_completed_view_does_not_outrank_a_modification_view_of_the_same_child() -> (
+    None
+):
+    verdict = _kr_verdict(
+        detail=[_kr_detail(), _kr_cancel_confirm_detail()],
+        status=[
+            _kr_status(),
+            _kr_status(
+                ord_no=KR_CONFIRM, orig_ord_no=KR_ORIGINAL, mdfy_cncl_tp="정정주문"
+            ),
+        ],
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_a_clean_child_does_not_outrank_an_unresolved_sibling() -> None:
+    sibling_request = _us_row(
+        ord_no="000000065", orig_ord_no=US_ORIGINAL, ord_stat="접수", ord_cntr_tp="12"
+    )
+    verdict = _us_verdict([_us_row(), _us_cancel_confirm(), sibling_request])
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_a_consistent_modification_alone_stays_replaced() -> None:
+    modify = _us_row(
+        ord_no=US_CONFIRM,
+        orig_ord_no=US_ORIGINAL,
+        ord_stat="정정완료",
+        ord_cntr_tp="11",
+    )
+    verdict = _us_verdict([_us_row(), modify], open_=[modify])
+    assert verdict.reason == "replaced_by_modification"
+
+
+def test_us_two_original_views_that_disagree_on_remainder_fail_closed() -> None:
+    """ust21510 says 0 left, ust21050 says 1 still working."""
+    verdict = _us_verdict(
+        [_us_row(), _us_cancel_confirm()], open_=[_us_row(ord_remnq="1")]
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "original_remainder_unproven"
+
+
+def test_us_unreadable_status_remainder_fails_closed() -> None:
+    open_row = _us_row()
+    del open_row["ord_remnq"]
+    verdict = _us_verdict([_us_row(), _us_cancel_confirm()], open_=[open_row])
+    assert verdict.reason == "original_remainder_unproven"
+
+
+def test_us_partial_fill_close_also_needs_the_remainder_agreement() -> None:
+    filled = {"ord_qty": "2", "cntr_qty": "1", "cntr_uv": "155.2600"}
+    today = [_us_row(**filled), _us_cancel_confirm()]
+    disagreeing = _us_verdict(
+        today, open_=[_us_row(**filled, ord_remnq="1")], quantity=2
+    )
+    assert disagreeing.verdict == "unknown"
+    assert disagreeing.reason == "original_remainder_unproven"
+
+    agreeing = _us_verdict(today, open_=[_us_row(**filled)], quantity=2)
+    assert agreeing.verdict == "cancelled"
+    assert agreeing.filled_quantity == 1
+    assert agreeing.average_price == Decimal("155.2600")
+
+
+def test_us_partial_fill_close_needs_the_acknowledged_cancel() -> None:
+    filled = {"ord_qty": "2", "cntr_qty": "1", "cntr_uv": "155.2600"}
+    verdict = _us_verdict(
+        [_us_row(**filled), _us_cancel_confirm()], quantity=2, own_cancel=False
+    )
+    assert verdict.reason == "cancel_without_own_acknowledged_request"
+
+
+def test_kr_derived_status_remainder_is_neutral_next_to_a_proven_detail_zero() -> None:
+    """kt00009 derives its remainder (ordered - filled); it never contradicts."""
+    verdict = _kr_verdict(
+        detail=[_kr_detail(), _kr_cancel_confirm_detail()],
+        status=[_kr_status()],
+    )
+    assert verdict.verdict == "cancelled"
+
+
+def test_kr_detail_remainder_positive_never_closes_via_a_child() -> None:
+    verdict = _kr_verdict(
+        detail=[_kr_detail(ord_remnq="1"), _kr_cancel_confirm_detail()]
+    )
+    assert verdict.verdict == "pending"
+
+
+def test_original_own_terminal_evidence_stands_despite_an_unresolved_child() -> None:
+    request = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=US_ORIGINAL, ord_stat="접수", ord_cntr_tp="12"
+    )
+    verdict = _us_verdict([_us_row(ord_stat="만료"), request])
+    assert verdict.verdict == "expired"
 
 
 # --- US 무효주문 -----------------------------------------------------------

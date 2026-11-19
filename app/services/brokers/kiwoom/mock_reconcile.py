@@ -138,6 +138,10 @@ class BrokerRow:
     #: ``ori_ord``, kt00009/ust21050/ust21510 ``orig_ord_no``), or ``None`` when
     #: the broker reports no original order (empty / all-zero).
     original_order_id: str | None = None
+    #: ``remaining_quantity`` is the broker's own ``ord_remnq``. kt00009 does not
+    #: report one (it is derived from ordered/filled quantity), so a derived
+    #: value can neither prove nor contradict "nothing left working".
+    remainder_reported: bool = True
     #: The row is a *completed* cancel confirmation (kt00007 ``취소확인``, a
     #: kt00009 cancel row with a positive ``cnfm_qty``, US ``취소완료``). A row that
     #: only says the cancel *request* was received (``취소주문``/``접수``) is not.
@@ -352,6 +356,7 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
                 original_order_id=original,
                 modify_text=modify,
                 cancel_completed=completed,
+                remainder_reported=False,
             )
         )
     return tuple(rows)
@@ -657,53 +662,98 @@ def _terminal_marker(
     detail_row: BrokerRow | None,
     status_row: BrokerRow | None,
     confirmations: tuple[BrokerRow, ...],
-) -> tuple[str | None, str | None]:
-    """The single terminal marker class for the order, or why it is not trusted.
+) -> tuple[str | None, str | None, bool]:
+    """``(marker, unknown_reason, child_derived)`` for the order.
 
-    The order's own rows carry their marker as is. A confirmation row (another
-    order number naming this one) lends a ``cancel`` marker only when its child
-    order is a *completed* cancel confirmation in every view it appears in. A
-    request-only row (``취소주문``/``접수``), a rejected, invalid, expired or
-    ambiguous child, or a child whose listings disagree says the child failed or
-    is unproven, not that the original ended: it blocks a verdict the original's
-    own rows do not already prove (``child_operation_unresolved``).
+    The order's own rows carry their marker as is and are independently
+    sufficient. A confirmation row (another order number naming this one) lends
+    a ``cancel`` marker only when **every** observed view of that child order
+    positively proves a completed cancel (kt00007 ``취소확인``, kt00009 cancel
+    row with a positive ``cnfm_qty``, US ``취소완료``). A request-only,
+    rejected, invalid, expired, ambiguous or cancel/modify-mixed child, or a
+    child whose listings disagree, says the child failed or is unproven, not
+    that the original ended. When child evidence is what would close the
+    original, one unresolved child outweighs a clean sibling
+    (``child_operation_unresolved``). ``child_derived`` tells the caller the
+    cancel came only from a child, which needs the remainder proof.
     """
     own_rows = [row for row in (detail_row, status_row) if row is not None]
     if any(row.marker_ambiguous for row in own_rows):
-        return None, "ambiguous_marker_text"
+        return None, "ambiguous_marker_text", False
     own_marker, conflict = _terminal_marker_class(*own_rows)
     if conflict is not None:
-        return None, conflict
-    markers = {own_marker} if own_marker is not None else set()
+        return None, conflict, False
     children: dict[str, list[BrokerRow]] = {}
     for row in confirmations:
         children.setdefault(row.order_id, []).append(row)
+    confirmed = False
     unresolved = False
+    modified = False
     for child_rows in children.values():
-        contradictory = any(
-            (row.marker not in (None, "cancel"))
-            or row.marker_ambiguous
-            or row.invalid_order
-            for row in child_rows
-        )
-        cancel_rows = [row for row in child_rows if row.marker == "cancel"]
-        if contradictory:
+        if all(_is_clean_cancel_confirmation(row) for row in child_rows):
+            confirmed = True
+        elif all(_is_modify_only(row) for row in child_rows):
+            modified = True
+        else:
             unresolved = True
-        elif cancel_rows and any(row.cancel_completed for row in cancel_rows):
-            markers.add("cancel")
-        elif cancel_rows:
-            unresolved = True  # the cancel request was only received
-    if len(markers) > 1:
-        return None, "conflicting_terminal_markers"
-    if markers:
-        return next(iter(markers)), None
+    if own_marker is not None:
+        if confirmed and own_marker != "cancel":
+            return None, "conflicting_terminal_markers", False
+        return own_marker, None, False
     if unresolved:
-        return None, "child_operation_unresolved"
-    if any(row.modify_text for row in confirmations):
+        return None, "child_operation_unresolved", False
+    if confirmed:
+        return (
+            ("cancel", None, True)
+            if not modified
+            else (
+                None,
+                "child_operation_unresolved",
+                False,
+            )
+        )
+    if modified:
         # The original was replaced by a modified order: not a cancel, not an
         # expiry, and the ledger has no terminal verdict for it.
-        return None, "replaced_by_modification"
-    return None, None
+        return None, "replaced_by_modification", False
+    return None, None, False
+
+
+def _is_clean_cancel_confirmation(row: BrokerRow) -> bool:
+    return (
+        row.marker == "cancel"
+        and row.cancel_completed
+        and not row.marker_ambiguous
+        and not row.invalid_order
+        and not row.modify_text
+    )
+
+
+def _is_modify_only(row: BrokerRow) -> bool:
+    return (
+        row.modify_text
+        and row.marker is None
+        and not row.marker_ambiguous
+        and not row.invalid_order
+    )
+
+
+def _child_cancel_remainder_proven(
+    detail_row: BrokerRow | None, status_row: BrokerRow | None
+) -> bool:
+    """Positive proof the original has nothing left working.
+
+    Needs at least one exact original row that *reports* its remainder, and
+    every such row must report zero: a positive, missing or unreadable remainder
+    in any present view that reports one defeats the proof. A row whose
+    remainder is only derived (kt00009) is neutral, never proof.
+    """
+    reported = [
+        row
+        for row in (detail_row, status_row)
+        if row is not None and row.remainder_reported
+    ]
+    return bool(reported) and all(row.remaining_quantity == 0 for row in reported)
 
 
 def _classify_uncertain(
@@ -800,16 +850,13 @@ def classify_verdict(
         # evidence: closing now would strand it outside every T-P4 booking read.
         if (status_row.filled_quantity or 0) > 0:
             return _unknown("status_listing_reports_fill")
-        status_marker, marker_unknown = _terminal_marker(
+        status_marker, marker_unknown, child_derived = _terminal_marker(
             None, status_row, confirmations
         )
         if marker_unknown is not None:
             return _unknown(marker_unknown)
-        if status_marker == "cancel" and status_row.marker != "cancel":
-            # The cancel comes from a child row, not from this listing's own row:
-            # the original must positively report nothing left working.
-            if status_row.remaining_quantity != 0:
-                return _unknown("original_remainder_unproven")
+        if child_derived and not _child_cancel_remainder_proven(None, status_row):
+            return _unknown("original_remainder_unproven")
         if status_marker == "cancel":
             # The cancel pair needs our own acknowledged request (design §3.2).
             if not own_cancel_acknowledged:
@@ -872,11 +919,15 @@ def classify_verdict(
             if ledger.recorded_filled_quantity > filled:
                 # The ledger claims more than the broker ever filled.
                 return _unknown("recorded_fill_contradicts_broker")
-            marker, marker_unknown = _terminal_marker(
+            marker, marker_unknown, child_derived = _terminal_marker(
                 detail_row, status_row, confirmations
             )
             if marker_unknown is not None:
                 return _unknown(marker_unknown)
+            if child_derived and not _child_cancel_remainder_proven(
+                detail_row, status_row
+            ):
+                return _unknown("original_remainder_unproven")
             if marker == "reject":
                 return Verdict(
                     verdict="rejected",
@@ -927,9 +978,13 @@ def classify_verdict(
         # A booked fill cannot coexist with a broker no-fill close; closing would
         # strand the fill outside every T-P4 booking reader.
         return _unknown("recorded_fill_contradicts_broker")
-    marker, marker_unknown = _terminal_marker(detail_row, status_row, confirmations)
+    marker, marker_unknown, child_derived = _terminal_marker(
+        detail_row, status_row, confirmations
+    )
     if marker_unknown is not None:
         return _unknown(marker_unknown)
+    if child_derived and not _child_cancel_remainder_proven(detail_row, status_row):
+        return _unknown("original_remainder_unproven")
     if marker == "cancel":
         if not own_cancel_acknowledged:
             # A cancel we cannot tie to our own acknowledged request is not
