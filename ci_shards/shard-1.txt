@@ -21,6 +21,7 @@ tests/contracts/test_retro_v1_contract.py
 tests/core/test_cli.py
 tests/core/test_invest_deep_links.py
 tests/core/test_market_aliases.py
+tests/core/test_upbit_tick.py
 tests/integration/test_paper_positions_market_filter.py
 tests/jobs/test_kis_market_adapters.py
 tests/mcp_server/test_alpaca_paper_no_size_caps.py

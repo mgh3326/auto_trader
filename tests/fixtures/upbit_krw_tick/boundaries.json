@@ -1,0 +1,234 @@
+{
+  "description": "Upbit KRW market order price unit: range boundaries. price and tick are exact decimal strings; on_tick says whether price is a multiple of tick.",
+  "source": "https://docs.upbit.com/kr/docs/krw-market-info",
+  "source_page_updated": "2026-05-04",
+  "source_read": "2026-11-20",
+  "table_in_force_since": "2025-07-31",
+  "cases": [
+    {
+      "price": "150000000",
+      "tick": "1000",
+      "on_tick": true
+    },
+    {
+      "price": "150000500",
+      "tick": "1000",
+      "on_tick": false
+    },
+    {
+      "price": "2000000",
+      "tick": "1000",
+      "on_tick": true
+    },
+    {
+      "price": "1999000",
+      "tick": "1000",
+      "on_tick": true
+    },
+    {
+      "price": "1999500",
+      "tick": "1000",
+      "on_tick": false
+    },
+    {
+      "price": "1000000",
+      "tick": "1000",
+      "on_tick": true
+    },
+    {
+      "price": "999500",
+      "tick": "500",
+      "on_tick": true
+    },
+    {
+      "price": "999900",
+      "tick": "500",
+      "on_tick": false
+    },
+    {
+      "price": "500000",
+      "tick": "500",
+      "on_tick": true
+    },
+    {
+      "price": "499900",
+      "tick": "100",
+      "on_tick": true
+    },
+    {
+      "price": "499950",
+      "tick": "100",
+      "on_tick": false
+    },
+    {
+      "price": "100000",
+      "tick": "100",
+      "on_tick": true
+    },
+    {
+      "price": "99950",
+      "tick": "50",
+      "on_tick": true
+    },
+    {
+      "price": "99990",
+      "tick": "50",
+      "on_tick": false
+    },
+    {
+      "price": "50000",
+      "tick": "50",
+      "on_tick": true
+    },
+    {
+      "price": "49990",
+      "tick": "10",
+      "on_tick": true
+    },
+    {
+      "price": "49995",
+      "tick": "10",
+      "on_tick": false
+    },
+    {
+      "price": "10000",
+      "tick": "10",
+      "on_tick": true
+    },
+    {
+      "price": "9995",
+      "tick": "5",
+      "on_tick": true
+    },
+    {
+      "price": "9999",
+      "tick": "5",
+      "on_tick": false
+    },
+    {
+      "price": "5000",
+      "tick": "5",
+      "on_tick": true
+    },
+    {
+      "price": "4999",
+      "tick": "1",
+      "on_tick": true
+    },
+    {
+      "price": "4999.5",
+      "tick": "1",
+      "on_tick": false
+    },
+    {
+      "price": "1000",
+      "tick": "1",
+      "on_tick": true
+    },
+    {
+      "price": "999",
+      "tick": "1",
+      "on_tick": true
+    },
+    {
+      "price": "999.5",
+      "tick": "1",
+      "on_tick": false
+    },
+    {
+      "price": "100",
+      "tick": "1",
+      "on_tick": true
+    },
+    {
+      "price": "99.9",
+      "tick": "0.1",
+      "on_tick": true
+    },
+    {
+      "price": "99.95",
+      "tick": "0.1",
+      "on_tick": false
+    },
+    {
+      "price": "10",
+      "tick": "0.1",
+      "on_tick": true
+    },
+    {
+      "price": "9.99",
+      "tick": "0.01",
+      "on_tick": true
+    },
+    {
+      "price": "9.995",
+      "tick": "0.01",
+      "on_tick": false
+    },
+    {
+      "price": "1",
+      "tick": "0.01",
+      "on_tick": true
+    },
+    {
+      "price": "0.999",
+      "tick": "0.001",
+      "on_tick": true
+    },
+    {
+      "price": "0.1",
+      "tick": "0.001",
+      "on_tick": true
+    },
+    {
+      "price": "0.0999",
+      "tick": "0.0001",
+      "on_tick": true
+    },
+    {
+      "price": "0.01",
+      "tick": "0.0001",
+      "on_tick": true
+    },
+    {
+      "price": "0.00999",
+      "tick": "0.00001",
+      "on_tick": true
+    },
+    {
+      "price": "0.001",
+      "tick": "0.00001",
+      "on_tick": true
+    },
+    {
+      "price": "0.000999",
+      "tick": "0.000001",
+      "on_tick": true
+    },
+    {
+      "price": "0.0001",
+      "tick": "0.000001",
+      "on_tick": true
+    },
+    {
+      "price": "0.0000999",
+      "tick": "0.0000001",
+      "on_tick": true
+    },
+    {
+      "price": "0.00001",
+      "tick": "0.0000001",
+      "on_tick": true
+    },
+    {
+      "price": "0.00000999",
+      "tick": "0.00000001",
+      "on_tick": true
+    },
+    {
+      "price": "0.00000001",
+      "tick": "0.00000001",
+      "on_tick": true
+    }
+  ]
+}
