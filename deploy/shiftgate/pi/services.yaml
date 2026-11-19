@@ -1,0 +1,63 @@
+# pi (Debian 12, aarch64) 용 shiftgate services.yaml 사본 (hk 5617).
+# 호스트에서는 /etc/shiftgate/services.yaml 로 설치한다 (docs/runbooks/pi-shiftgate-deploy.md §1).
+# 이 파일에는 비밀 값이 없다: env 파일은 경로로만 참조하고 shiftgate 는 열지 않는다.
+# 레포는 스케줄을 등록하지 않는다 — shiftgate follow/check/prune 타이머 금지, 수동 배포만.
+#
+# 현재 at-swap(/root/at-run/at-swap-<날짜>.sh) 정본과의 대응:
+#   at-api  : uvicorn app.main:app --host 127.0.0.1 --port 8000      -> 색 포트 {port}, HAProxy 가 127.0.0.1:8000 을 바인드
+#   at-mcp  : MCP_HOST=100.90.137.33 MCP_PORT=8765 ...               -> 앱은 127.0.0.1:{port}, HAProxy 가 100.90.137.33:8765 를 바인드
+#   (의도된 차이는 이 두 줄뿐: 포트/호스트, AUTO_TRADER_COLOR/하트비트 파일 이름의 색 전개)
+state_dir: /var/lib/shiftgate
+keep_digests: 3
+# 지금 at-swap 은 로그 드라이버를 지정하지 않는다(데몬 기본값). 그대로 유지한다.
+log: {driver: daemon}
+haproxy:
+  config: /etc/haproxy/haproxy.cfg
+  socket: /run/haproxy/admin.sock
+  check: ["haproxy", "-c", "-f", "{config}"]
+  reload: ["systemctl", "reload", "haproxy"]
+  # 프런트엔드가 바인드할 수 있는 주소는 이 둘뿐이다. 와일드카드(0.0.0.0, ::)는 허용하지 않는다.
+  allowed_binds: ["127.0.0.1", "100.90.137.33"]
+  allow_wildcard_bind: false
+  log: stdout format raw local0
+  # MCP streamable-http 는 장기 연결(SSE 스트림)을 쓴다. server/tunnel 타임아웃이 1분이면
+  # 조용한 스트림이 프록시에서 끊긴다. 클라이언트·서버·터널 모두 1h, 요청 헤더만 10s.
+  timeouts: {connect: 5s, client: 1h, server: 1h, tunnel: 1h, http_request: 10s}
+services:
+  - name: at-api
+    mode: http
+    image: ghcr.io/mgh3326/auto_trader
+    binds: ["127.0.0.1:8000"]
+    ports: {blue: 18000, green: 28000}
+    network: host
+    # 두 번째 파일이 이긴다 (at-swap 과 같은 순서).
+    env_files: [/srv/at/secrets/.env.api, /srv/at/secrets/.env.scheduler]
+    args: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "{port}"]
+    health: {http: /healthz, timeout: 60s, interval: 2s}
+    check: {inter: 5s, fall: 2, rise: 1}
+    drain_timeout: 120s
+  - name: at-mcp
+    mode: http
+    image: ghcr.io/mgh3326/auto_trader
+    binds: ["100.90.137.33:8765"]
+    ports: {blue: 18765, green: 28765}
+    network: host
+    env_files: [/srv/at/secrets/.env.api, /srv/at/secrets/.env.scheduler]
+    env:
+      MCP_PROFILE: default            # 명시 유지 (#1189: 빈 값·누락이면 기동 거부)
+      MCP_HOST: 127.0.0.1             # 색 포트는 루프백. tailnet 노출은 HAProxy 바인드가 맡는다
+      MCP_PORT: "{port}"
+      MCP_TYPE: streamable-http
+      MCP_PATH: /mcp
+      MCP_USER_ID: "1"
+      AUTO_TRADER_COLOR: "{color}"
+      MCP_HEARTBEAT_PATH: /var/run/auto-trader/mcp-heartbeat/mcp-{color}.json
+    # -v/-e 중 -e 는 env 블록으로 옮겼다. 볼륨 둘은 run_args (-v 는 금지 플래그가 아니다).
+    run_args: ["-v", "/root/at-run/mcp-heartbeat:/var/run/auto-trader/mcp-heartbeat", "-v", "/etc/machine-id:/etc/machine-id:ro"]
+    args: ["python", "-m", "app.mcp_server.main"]
+    # 인증 없는 GET /health (app/mcp_server/lifecycle.py): DB·Redis 를 건드리지 않는 이벤트 루프 생존 확인.
+    # /mcp 는 토큰이 필요하므로 헬스 경로로 쓸 수 없다. POST 가 필요한 MCP 스트림은 HAProxy 가 점검하지 않는다.
+    health: {http: /health, timeout: 60s, interval: 2s}
+    check: {inter: 5s, fall: 2, rise: 1}
+    # 드레인은 서비스 잠금을 잡은 채 이 시간까지 CLI 를 막는다(shiftgate docs/design.md). 5분 = 도구 호출 한 건의 상한보다 길게.
+    drain_timeout: 300s
