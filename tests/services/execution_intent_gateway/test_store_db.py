@@ -65,7 +65,15 @@ def _load_hk5441_guards() -> tuple[str, ...]:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return tuple(module.GUARD_DDL)
+    # Only the two functions this fixture's 20261101 statements just replaced:
+    # no trigger of another table is dropped or created from a test fixture.
+    return tuple(
+        statement
+        for statement in module.GUARD_DDL
+        if "CREATE OR REPLACE FUNCTION review.execution_intents_guard()" in statement
+        or "CREATE OR REPLACE FUNCTION review.execution_child_requests_guard()"
+        in statement
+    )
 
 
 def _now() -> datetime:

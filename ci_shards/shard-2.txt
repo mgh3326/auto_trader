@@ -196,6 +196,7 @@ tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/dots_history_export/test_leak_check.py
 tests/services/execution_intent_gateway/test_gateway.py
 tests/services/execution_intent_gateway/test_http_route.py
+tests/services/execution_intent_gateway/test_upbit_invariants.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_kis_lots_db.py
 tests/services/execution_ledger/test_kis_lots_sell_evidence_db.py
@@ -259,6 +260,7 @@ tests/services/order_proposals/test_approval_window.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_batch_health.py
 tests/services/order_proposals/test_buying_power.py
+tests/services/order_proposals/test_exit_handoff_card.py
 tests/services/order_proposals/test_kis_leftover_inference.py
 tests/services/order_proposals/test_payload.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
