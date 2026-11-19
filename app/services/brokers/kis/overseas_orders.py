@@ -688,6 +688,8 @@ class OverseasOrderClient:
         max_pages: int = 100,
         inter_page_delay: float = 0.1,
         stop_when_no_new_rows: bool = False,
+        *,
+        allow_partial_on_transient_exhausted: bool = False,
     ) -> list[dict]:
         """
         해외주식 일별 체결조회 (주문 히스토리)
@@ -710,9 +712,19 @@ class OverseasOrderClient:
                 동일 행을 중복 반환하는 경우가 있어(runaway 100페이지) 표시 경로 비용을
                 증폭시킨다. 이 시점에는 이미 모든 고유 행을 수집했으므로 증거 손실이 없다.
                 기본 False(현행 exhaustive pagination 유지) — reconcile 경로는 기본값 유지.
+            allow_partial_on_transient_exhausted: True면 재시도 가능한(msg_cd) 오류가
+                RETRYABLE_MAX_ATTEMPTS를 소진했더라도 이미 누적된 행을 반환한다. 기본
+                False — 누적 행이 있어도 RuntimeError로 실패한다(부분 목록을 완전한
+                목록처럼 돌려주지 않는다). 이 키워드는 표시(display) 전용 호출자만
+                넘긴다. reconcile/fill-evidence·정정취소 주문 조회는 부분 목록을
+                증거로 쓰면 주문 부재를 잘못 단정하므로 기본값을 유지한다.
 
         Returns:
             체결 주문 목록 (list of dict)
+
+        Raises:
+            RuntimeError: 페이지가 max_pages에 닿았거나(truncated), 재시도 가능한 오류가
+                한 페이지에서 소진된 경우. 두 경우 모두 반환된 목록은 완전하지 않다.
         """
         await self._parent._ensure_token()
 
@@ -805,7 +817,7 @@ class OverseasOrderClient:
                         )
                         continue
 
-                    if all_orders:
+                    if all_orders and allow_partial_on_transient_exhausted:
                         logging.warning(
                             "해외주식 체결조회 연속조회 중 transient 에러가 반복되어 "
                             "누적 %d건을 반환합니다 (page=%d): %s",
@@ -814,6 +826,15 @@ class OverseasOrderClient:
                             error_msg,
                         )
                         break
+
+                    incomplete_msg = (
+                        "KIS overseas daily order history incomplete: retryable "
+                        f"errors exhausted at page={page} "
+                        f"(accumulated={len(all_orders)}, "
+                        f"msg_cd={js.get('msg_cd')}) for {start_date}~{end_date}"
+                    )
+                    logging.error(incomplete_msg)
+                    raise RuntimeError(incomplete_msg)
 
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(f"해외주식 체결조회 실패: {error_msg}")

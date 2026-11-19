@@ -589,6 +589,8 @@ class KISClient(BaseKISClient):
         max_pages: int = 100,
         inter_page_delay: float = 0.1,
         stop_when_no_new_rows: bool = False,
+        *,
+        allow_partial_on_transient_exhausted: bool = False,
     ) -> list[dict[str, Any]]:
         return await self._overseas_orders.inquire_daily_order_overseas(
             start_date,
@@ -601,6 +603,7 @@ class KISClient(BaseKISClient):
             max_pages,
             inter_page_delay=inter_page_delay,
             stop_when_no_new_rows=stop_when_no_new_rows,
+            allow_partial_on_transient_exhausted=(allow_partial_on_transient_exhausted),
         )
 
     async def modify_overseas_order(

@@ -352,3 +352,59 @@ async def test_us_adapter_preserves_partial_fill_when_expired_row_has_fill_evide
 
     assert evidence.verdict == FillVerdict.PARTIAL
     assert evidence.filled_qty == Decimal("1")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_us_reconcile_keeps_row_open_when_history_reports_incomplete() -> None:
+    """hk 5342: 불완전 이력 raise는 원장 행을 닫지 않는다.
+
+    ``inquire_daily_order_overseas`` 는 재시도 소진 뒤 부분 목록을 돌려주는 대신
+    RuntimeError 를 던진다. 이 테스트는 그 raise 가 evidence 어댑터를 지나
+    reconcile 커널에서 종결 전이(marked_expired/marked_cancelled/booked)가 아니라
+    ``noop_pending`` 으로 끝나고 행이 열린 채 남는 것을 고정한다.
+    """
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        id = 501
+        broker = "kis"
+        market = "us"
+        symbol = "GOOGL"
+        exchange = "NASD"
+        order_no = "US-INCOMPLETE-1"
+        trade_date = None
+        created_at = None
+
+    fake_kis = SimpleNamespace(
+        inquire_daily_order_overseas=AsyncMock(
+            side_effect=RuntimeError(
+                "KIS overseas daily order history incomplete: retryable errors "
+                "exhausted at page=2 (accumulated=20, msg_cd=SYDB0050)"
+            )
+        )
+    )
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+    ):
+        evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row())
+
+    assert evidence.verdict == FillVerdict.PENDING
+    assert evidence.reason_code == "not_found"
+
+    with patch.object(
+        ll, "get_evidence_adapter", return_value=ev.UsOverseasEvidenceAdapter()
+    ):
+        decision = await ll._reconcile_one_live_row(_Row(), dry_run=False)
+
+    # 상태/lifecycle 전이 없음 — 행은 open 으로 남아 다음 scan 대상이다.
+    assert decision["action"] == "noop_pending"
+    assert decision["reason_code"] == "not_found"
+    assert decision["requires_manual_review"] is True
