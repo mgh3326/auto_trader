@@ -18,6 +18,10 @@ from app.services.mock_strategy.us_signals import (
     client_order_id,
     session_times,
 )
+from app.services.mock_strategy.us_symbol_change import (
+    effective_symbol,
+    open_quantity,
+)
 
 VENUE = "alpaca_paper"
 BROKER_TERMINAL = {"filled", "canceled", "expired", "rejected"}
@@ -142,7 +146,7 @@ def plan_orders(
 
 def order_request(row: OrderIntent | MockStrategyOrder) -> OrderRequest:
     return OrderRequest(
-        symbol=row.symbol,
+        symbol=effective_symbol(row),
         qty=row.qty,
         notional=row.notional,
         side="sell" if row.side in {"short", "sell"} else "buy",
@@ -166,7 +170,19 @@ def projection(row: OrderIntent | MockStrategyOrder) -> dict:
         "status": getattr(row, "status", "dry_run"),
         "broker_status": row.meta.get("broker_status"),
         "filled_qty": row.meta.get("filled_qty"),
+        # Only a journaled ticker change adds a key; other rows are unchanged.
+        **(
+            {"symbol_change": row.meta["symbol_change"]}
+            if "symbol_change" in row.meta
+            else {}
+        ),
     }
+
+
+def _verdict_view(verdict: dict) -> dict:
+    """Operator-facing mapping outcome (no evidence blob when refused)."""
+    keys = ("from", "to", "applied", "reason")
+    return {k: verdict[k] for k in keys if k in verdict}
 
 
 class UsPaperStrategy:
@@ -239,7 +255,7 @@ class UsPaperStrategy:
         request = order_request(row)
         if (
             order.client_order_id != row.client_order_id
-            or to_db_symbol(order.symbol).upper() != row.symbol
+            or to_db_symbol(order.symbol).upper() != request.symbol
             or order.side != request.side
             or order.type != "market"
             or order.time_in_force != "day"
@@ -295,9 +311,24 @@ class UsPaperStrategy:
             },
         )
 
-    async def _execute(self, row: MockStrategyOrder, asof: date) -> dict:
+    async def _execute(
+        self, row: MockStrategyOrder, asof: date, change: dict | None = None
+    ) -> dict:
         if row.status != "planned":
             return projection(await self._refresh(row))
+        if row.side in {"sell", "cover"}:
+            # A journaled mapping is only honored when this run re-verified it.
+            journaled = row.meta.get("symbol_change")
+            if change is not None and journaled is None:
+                await self.recorder.record_symbol_change(row.client_order_id, change)
+                row = await self.recorder.get(row.client_order_id)
+                assert row is not None
+            elif journaled is not None and (
+                change is None
+                or (journaled.get("from"), journaled.get("to"))
+                != (change["from"], change["to"])
+            ):
+                return {**projection(row), "reason": "symbol_change_not_verified"}
         request = order_request(row)
         try:
             await self.broker.prepare(request, side=row.side, asof=asof, confirm=True)
@@ -345,16 +376,63 @@ class UsPaperStrategy:
         except Exception:
             return await self.recorder.update(row.client_order_id, status="uncertain")
 
-    async def close_due(self, *, asof: date, confirm: bool = False) -> dict:
+    async def _verify_symbol_changes(
+        self, account: str, due: list[MockStrategyOrder], changes: dict[str, str]
+    ) -> dict[str, dict]:
+        """Per declared OLD=NEW with a due episode: broker proof or a refusal."""
+        rows = await self.recorder.list_orders(venue=VENUE, account_ref=account)
+        verdicts = {}
+        for old, new in changes.items():
+            verdict = {"from": old, "to": new, "applied": False}
+            verdicts[old] = verdict
+            if old not in {entry.symbol for entry in due}:
+                verdict["reason"] = "no_due_episode"
+                continue
+            quantity = open_quantity(rows, old)
+            if isinstance(quantity, str):
+                verdict["reason"] = quantity
+                continue
+            side, required = quantity
+            try:
+                evidence = await self.broker.verify_symbol_change(
+                    old, new, side, required
+                )
+            except PreDispatchRefusal as exc:
+                verdict["reason"] = str(exc)
+                continue
+            verdict.update(
+                applied=True,
+                basis="operator_declared_broker_verified",
+                verified_at=datetime.now(UTC).isoformat(),
+                evidence=evidence,
+            )
+        return verdicts
+
+    async def close_due(
+        self,
+        *,
+        asof: date,
+        confirm: bool = False,
+        symbol_changes: dict[str, str] | None = None,
+    ) -> dict:
         if confirm is not True:
             raise ValueError("confirm=True required")
         account = await self.broker.preflight(asof)
         start, _, _ = session_times(asof)
         outcomes = []
         async with self.recorder.account_lock(venue=VENUE, account_ref=account):
-            for entry in await self.recorder.list_due(
+            due = await self.recorder.list_due(
                 venue=VENUE, account_ref=account, asof=start
-            ):
+            )
+            verdicts = (
+                await self._verify_symbol_changes(account, due, symbol_changes)
+                if symbol_changes
+                else {}
+            )
+            for entry in due:
+                mark = len(outcomes)
+                verdict = verdicts.get(entry.symbol)
+                change = verdict if verdict and verdict["applied"] else None
                 try:
                     entry = await self._refresh(entry)
                     qty = Decimal(entry.meta.get("filled_qty", "0"))
@@ -371,7 +449,7 @@ class UsPaperStrategy:
                             }
                         )
                         continue
-                    outcomes.append(await self._close_entry(entry, qty, asof))
+                    outcomes.append(await self._close_entry(entry, qty, asof, change))
                 except Exception as exc:
                     outcomes.append(
                         {
@@ -380,7 +458,13 @@ class UsPaperStrategy:
                             "error_class": type(exc).__name__,
                         }
                     )
-        return {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
+                if verdict:
+                    for outcome in outcomes[mark:]:
+                        outcome["symbol_change"] = _verdict_view(verdict)
+        result = {"venue": VENUE, "asof": asof.isoformat(), "orders": outcomes}
+        if verdicts:
+            result["symbol_changes"] = [_verdict_view(v) for v in verdicts.values()]
+        return result
 
     @staticmethod
     def _exit_id(entry: MockStrategyOrder, side: str, leg: int) -> str:
@@ -424,7 +508,11 @@ class UsPaperStrategy:
         return qty, qty * leg.exit_price
 
     async def _close_entry(
-        self, entry: MockStrategyOrder, qty: Decimal, asof: date
+        self,
+        entry: MockStrategyOrder,
+        qty: Decimal,
+        asof: date,
+        change: dict | None = None,
     ) -> dict:
         side = "sell" if entry.side == "buy" else "cover"
         legs = [
@@ -478,7 +566,7 @@ class UsPaperStrategy:
                         "episode_status": "awaiting_close_evidence",
                         "reason": "exit_sequence_invalid",
                     }
-                outcome = await self._execute(leg, asof)
+                outcome = await self._execute(leg, asof, change)
                 submitted = True
                 leg = await self.recorder.get(leg.client_order_id)
                 assert leg is not None
@@ -516,7 +604,7 @@ class UsPaperStrategy:
                 )
             )
             legs.append(leg)
-            outcome = await self._execute(leg, asof)
+            outcome = await self._execute(leg, asof, change)
             leg = await self.recorder.get(leg.client_order_id)
             assert leg is not None
             evidence = self._exit_fill(leg)

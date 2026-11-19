@@ -84,6 +84,12 @@ Alpaca의 `done_for_day`/`stopped`/`suspended`/`pending_replace`/`pending_cancel
 귀속 불일치·누적 fill 감소는 uncertain으로 남긴다.
 별도 paper 전략 어댑터의 own journal은 공매도와 cover를 지원하며 기존 수동 MCP의
 보유 매도 전용 coordinator를 완화하지 않는다. 스케줄·배포 없음.
+US 종목 전환(hk 5518): `close-due`/`status`의 반복 가능한 `--symbol-change OLD=NEW`는
+운영자 선언이며 기업행위 자동 추론은 없다. 옛 자산 부재/비활성·옛 포지션 없음·새 자산
+active·같은 방향 새 포지션 ≥ 미청산 에피소드 잔량 합을 브로커 읽기로 증명할 때만 청산
+leg를 새 심볼로 보내고(echo 검증 포함) 저널 `meta.symbol_change`에 원래 심볼과 매핑을
+남긴다. 하나라도 불충분하면 전송 0·planned 유지이며 sending/uncertain leg는 매핑과
+무관하게 재전송하지 않는다. 플래그 없는 출력은 불변이다.
 런북: `docs/runbooks/rob1474-us-paper-strategy.md`. DB round trip/동시 claim은 CI에서 검증한다.
 
 ### Binance Demo Order Ledger (ROB-298)

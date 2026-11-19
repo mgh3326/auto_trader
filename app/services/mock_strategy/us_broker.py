@@ -7,8 +7,10 @@ import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from app.core.symbol import to_db_symbol
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
 from app.services.brokers.alpaca.endpoints import PAPER_TRADING_BASE_URL
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import Asset, Order, OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.mock_strategy.us_signals import session_times
@@ -137,6 +139,61 @@ class UsPaperBroker:
                 or position.qty_available < qty
             ):
                 raise PreDispatchRefusal("close exceeds available paper quantity")
+
+    async def verify_symbol_change(
+        self, old: str, new: str, side: str, required: Decimal
+    ) -> dict:
+        """Read-only broker proof of an operator-declared ``old`` → ``new`` swap.
+
+        ``side`` is the exit side (``sell`` closes a long, ``cover`` a short).
+        Every condition must hold; the first miss raises PreDispatchRefusal.
+        """
+        try:
+            return await self._verify_symbol_change(old, new, side, required)
+        except PreDispatchRefusal:
+            raise
+        except Exception:
+            raise PreDispatchRefusal("symbol change pre-dispatch read failed") from None
+
+    async def _verify_symbol_change(
+        self, old: str, new: str, side: str, required: Decimal
+    ) -> dict:
+        require_enabled()
+        if side not in {"sell", "cover"} or not required.is_finite() or required <= 0:
+            raise PreDispatchRefusal("symbol change needs a positive exit quantity")
+        try:
+            old_asset = await self._service.get_asset(old)
+        except AlpacaPaperRequestError as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+            old_state = "not_found"
+        else:
+            if old_asset.status == "active" and old_asset.tradable:
+                raise PreDispatchRefusal("old symbol is still an active tradable asset")
+            old_state = "inactive" if old_asset.status != "active" else "not_tradable"
+        old_position = await self._service.get_position(old)
+        if old_position is not None and old_position.qty != 0:
+            raise PreDispatchRefusal("old symbol still has an account position")
+        asset = await self._service.get_asset(new)
+        if (
+            to_db_symbol(asset.symbol).upper() != new
+            or asset.asset_class != "us_equity"
+            or asset.status != "active"
+            or not asset.tradable
+        ):
+            raise PreDispatchRefusal("new symbol is not an active tradable US equity")
+        position = await self._service.get_position(new)
+        held = position.qty if position is not None else Decimal(0)
+        if (side == "sell" and held <= 0) or (side == "cover" and held >= 0):
+            raise PreDispatchRefusal("new symbol position direction differs")
+        if abs(held) < required:
+            raise PreDispatchRefusal("new symbol position below open episode quantity")
+        return {
+            "old_asset": old_state,
+            "old_position_qty": "0",
+            "new_position_qty": str(held),
+            "required_qty": str(required),
+        }
 
     async def _prepare(
         self, request: OrderRequest, *, side: str, asof: date, confirm: bool = False
