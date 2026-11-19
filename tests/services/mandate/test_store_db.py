@@ -109,7 +109,13 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
     )
     # a denied approval does not open a clause
     await refused(
-        db_session, insert, "approved approval", v=version_id, a=denied, h="a" * 64
+        db_session,
+        insert,
+        "approved approval",
+        v=version_id,
+        a=denied,
+        h="a" * 64,
+        tr=TRANCHE_JSON,
     )
     # a different content hash does not either
     approved_req = (
@@ -133,7 +139,13 @@ async def test_i21_terms_row_needs_an_approved_approval_of_the_same_content(
     ).scalar_one()
     await db_session.commit()
     await refused(
-        db_session, insert, "approved approval", v=version_id, a=approved, h="c" * 64
+        db_session,
+        insert,
+        "approved approval",
+        v=version_id,
+        a=approved,
+        h="c" * 64,
+        tr=TRANCHE_JSON,
     )
 
 
@@ -165,7 +177,8 @@ async def test_i21_approval_writes_a_live_version_and_a_clause_that_rehash(
     db_session, seed
 ) -> None:
     sym = new_symbol()
-    sleeve, terms = await seed.clause_sleeve(symbols=(sym,))
+    sleeve, terms_snap = await seed.clause_sleeve(symbols=(sym,))
+    terms = await db_session.get(ms.MandateTerms, terms_snap.id)
     version = await db_session.get(ms.StrategySleeveVersion, terms.sleeve_version_id)
     assert version.state == "live" and version.version == 2
     assert version.set_by == f"operator:telegram:{PRINCIPAL}"
@@ -761,6 +774,7 @@ async def test_i9_an_unclosed_fence_blocks_a_second_fence_and_a_release_closes_i
         **fence,
     )
     await db_session.commit()
+    fence_seq = row.seq
     with err(v.MandateRefusal.TRANCHE_UNCERTAIN):
         await ms.append_plan_event(
             db_session,
@@ -789,7 +803,7 @@ async def test_i9_an_unclosed_fence_blocks_a_second_fence_and_a_release_closes_i
         event="tranche_send_released",
         actor="o",
         tranche_index=1,
-        fenced_seq=row.seq,
+        fenced_seq=fence_seq,
     )
     await db_session.commit()
     assert (await ms.plan_state(db_session, plan.id)).unclosed_fences == ()
@@ -853,7 +867,9 @@ async def _retire_and_dispose(
         db,
         plan_id=plan_id,
         event="holdings_disposed",
-        actor="system:mandate_projection",
+        actor="operator:test"
+        if kind == "kept_outside_basket"
+        else "system:mandate_projection",
         evidence=evidence,
     )
 
@@ -871,7 +887,7 @@ async def test_i19_release_needs_settled_orders_disposed_holdings_and_frees_the_
     await refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor) "
-        "VALUES (:p, 5, 'released', 'o')",
+        "VALUES (:p, 4, 'released', 'o')",
         "released needs",
         p=plan.id,
     )
@@ -885,7 +901,7 @@ async def test_i19_release_needs_settled_orders_disposed_holdings_and_frees_the_
     await refused(
         db_session,
         "INSERT INTO review.mandate_plan_events (plan_id, seq, event, actor) "
-        "VALUES (:p, 4, 'released', 'o')",
+        "VALUES (:p, 5, 'released', 'o')",
         "released needs",
         p=plan.id,
     )
@@ -1037,17 +1053,18 @@ async def test_i15_the_binding_is_set_once(db_session, seed) -> None:
     sleeve, terms, plan = await _approved(seed, db_session)
     row = await seed.bound_proposal(plan=plan, sleeve=sleeve)
     await db_session.commit()
+    row_id = row.id
     await refused(
         db_session,
         "UPDATE review.order_proposals SET mandate_tranche_index = 2 WHERE id = :i",
         "cannot change",
-        i=row.id,
+        i=row_id,
     )
     # an update that leaves the binding alone is not touched by the trigger
     await raw(
         db_session,
         "UPDATE review.order_proposals SET thesis = 't' WHERE id = :i",
-        i=row.id,
+        i=row_id,
     )
     await db_session.commit()
 

@@ -360,15 +360,23 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     "DROP COLUMN mandate_plan_id, DROP COLUMN mandate_tranche_index"
                 )
             )
-            await connection.execute(text("DROP TABLE review.mandate_symbol_reservation_releases"))
-            await connection.execute(text("DROP TABLE review.mandate_symbol_reservations"))
+            await connection.execute(
+                text("DROP TABLE review.mandate_symbol_reservation_releases")
+            )
+            await connection.execute(
+                text("DROP TABLE review.mandate_symbol_reservations")
+            )
             await connection.execute(text("DROP TABLE review.mandate_plan_events"))
             await connection.execute(text("DROP TABLE review.mandate_plan_tranches"))
             await connection.execute(text("DROP TABLE review.mandate_plans"))
-            await connection.execute(text("DROP TABLE review.mandate_activation_profiles"))
+            await connection.execute(
+                text("DROP TABLE review.mandate_activation_profiles")
+            )
             await connection.execute(text("DROP TABLE review.mandate_terms"))
             await connection.execute(text("DROP TABLE review.mandate_approvals"))
-            await connection.execute(text("DROP TABLE review.mandate_approval_requests"))
+            await connection.execute(
+                text("DROP TABLE review.mandate_approval_requests")
+            )
             # ROB-1470 sleeves are later too: the tag column (its FK goes with
             # it) before the tables it references.
             await connection.execute(
