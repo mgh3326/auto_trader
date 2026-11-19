@@ -59,6 +59,15 @@ def _load_migration() -> Any:
     return module
 
 
+def _load_hk5441_guards() -> tuple[str, ...]:
+    path = _MIGRATION.with_name("20261120_hk5441_upbit_intent_gateway.py")
+    spec = importlib.util.spec_from_file_location("hk5441_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.GUARD_DDL)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -103,6 +112,9 @@ async def _schema_and_cleanup() -> Any:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all, tables=_TABLES, checkfirst=True)
         for statement in _load_migration().GUARD_DDL:
+            await conn.execute(text(statement))
+        # hk 5441 replaced both guard functions; leave the current ones in place.
+        for statement in _load_hk5441_guards():
             await conn.execute(text(statement))
     yield
     # The row guards refuse DELETE by design.

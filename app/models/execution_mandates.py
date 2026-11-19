@@ -317,15 +317,10 @@ class ExecutionChildOrderEvidence(Base):
         {"schema": "review"},
     )
 
-    child_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey(
-            "review.execution_child_requests.id",
-            ondelete="RESTRICT",
-            name="fk_execution_child_order_evidence_child",
-        ),
-        primary_key=True,
-    )
+    #: ``review.execution_child_requests.id``. Not a foreign key: the journal's
+    #: own tests clear it with TRUNCATE, which a referencing table would block.
+    #: The one writer only records a child it just read from the journal.
+    child_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     order_uuid: Mapped[str] = mapped_column(Text, nullable=False)
     broker_state: Mapped[str] = mapped_column(Text, nullable=False)
     executed_volume: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False)

@@ -170,7 +170,14 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # review.execution_ledger_reconcile_runs.broker admit 'kiwoom' (additive
 # migration 20261115_hk4734_kiwoom_broker). The mirror below widens a persistent
 # test DB whose execution_ledger predates the change.
-SCHEMA_BOOTSTRAP_VERSION = 71
+# v72 (hk 5441): review.execution_mandates / execution_mandate_revocations /
+# execution_operator_exits / execution_exit_handoffs / execution_account_control
+# / execution_child_order_evidence (new ORM tables), the v2 columns on
+# review.execution_intents, execution_child_requests.quantity_decimal,
+# strategy_sleeves.execution_path, order_proposals.exit_handoff_id, and the
+# guard triggers, all loaded from the production migration
+# 20261120_hk5441_upbit_gw so the DB tests run its exact DDL.
+SCHEMA_BOOTSTRAP_VERSION = 72
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2520,6 +2527,35 @@ def _binance_trend_guard_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _binance_trend_guard_ddl()
+
+
+def _hk5441_upbit_gateway_ddl() -> tuple[str, ...]:
+    """hk 5441 DDL, read from the production migration (one source).
+
+    ``create_all`` already built the new tables and columns from the models, so
+    the table and column statements are no-ops on a fresh database and bring a
+    persistent one up to date. The guard statements install the triggers.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261120_hk5441_upbit_intent_gateway.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk5441_upbit_gw_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (
+        *module.TABLE_DDL,
+        *module.ALTER_DDL,
+        *module.GUARD_DDL,
+        *module.SEED_DDL,
+    )
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _hk5441_upbit_gateway_ddl()
 
 
 # --------------------------------------------------------------------------- #

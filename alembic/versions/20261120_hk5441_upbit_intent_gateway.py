@@ -297,9 +297,6 @@ TABLE_DDL: tuple[str, ...] = (
         observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
         recorded_by TEXT NOT NULL,
         CONSTRAINT pk_execution_child_order_evidence PRIMARY KEY (child_id),
-        CONSTRAINT fk_execution_child_order_evidence_child
-            FOREIGN KEY (child_id) REFERENCES review.execution_child_requests (id)
-            ON DELETE RESTRICT,
         CONSTRAINT ck_execution_child_order_evidence_broker_state
             CHECK (broker_state IN ('wait', 'watch', 'done', 'cancel')),
         CONSTRAINT ck_execution_child_order_evidence_volumes

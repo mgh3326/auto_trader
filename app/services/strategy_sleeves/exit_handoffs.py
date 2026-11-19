@@ -481,6 +481,30 @@ def card_proven_unsent(handoff: Any, group: Any, rungs: list[Any]) -> bool:
     return True
 
 
+def sent_card_problem(
+    *,
+    order_uuid: str | None,
+    reading: BrokerOrderReading | None,
+    ledger_attributed: Decimal | None,
+) -> str | None:
+    """O2, O4: why a card that may have sent is not proven, or ``None``. Pure.
+
+    Proven means all of: the card's order is named, the broker's reading of that
+    order is final, the ledger's attributed total could be read, and the two
+    quantities are equal. Anything unread counts as not proven; a missing value
+    is never treated as zero.
+    """
+    if order_uuid is None:
+        return "card_order_not_named"
+    if reading is None or not reading.final or reading.order_uuid != order_uuid:
+        return "broker_reading_unavailable"
+    if ledger_attributed is None:
+        return "ledger_unreadable"
+    if ledger_attributed != reading.executed_volume:
+        return "ledger_total_differs_from_broker"
+    return None
+
+
 def _client_identifier(proposal_id: uuid.UUID, rung_index: int) -> str:
     from app.services.order_proposals.revalidation import _proposal_client_order_id
 
@@ -600,40 +624,27 @@ async def settle_exit_handoff(
         return SettleResult(SettleOutcome.HELD, handoff.state, "card_not_ended")
 
     # O2, O4: a card that may have sent needs the broker and the ledger to agree.
-    if rung is None or order_uuid is None:
-        return await _hold_unmeasured(
-            session, handoff, now=now, detail="card_order_not_named"
-        )
-    if reading is None or not reading.final or reading.order_uuid != order_uuid:
-        return await _hold_unmeasured(
-            session, handoff, now=now, detail="broker_reading_unavailable"
-        )
     sleeve = await session.get(StrategySleeve, handoff.sleeve_id)
-    if sleeve is None:
-        return await _hold_unmeasured(
-            session, handoff, now=now, detail="sleeve_unreadable"
-        )
-    try:
-        async with session.begin_nested():
-            inputs = await load_sleeve_inputs(session, sleeve)
-    except Exception as exc:  # noqa: BLE001 - an unreadable ledger proves nothing
-        logger.warning(
-            "exit_handoff.ledger_unreadable",
-            extra={"handoff_id": handoff_id, "exception_type": type(exc).__name__},
-        )
-        return await _hold_unmeasured(
-            session, handoff, now=now, detail="ledger_unreadable"
-        )
-    if rung.id in inputs.unattributed_rungs:
-        return await _hold_unmeasured(
-            session, handoff, now=now, detail="ledger_unattributed"
-        )
-    attributed = sum(
-        (fill.quantity for fill in inputs.fills if fill.rung_id == rung.id), ZERO
+    attributed: Decimal | None = None
+    if sleeve is not None and rung is not None:
+        try:
+            async with session.begin_nested():
+                inputs = await load_sleeve_inputs(session, sleeve)
+            if rung.id not in inputs.unattributed_rungs:
+                attributed = sum(
+                    (f.quantity for f in inputs.fills if f.rung_id == rung.id), ZERO
+                )
+        except Exception as exc:  # noqa: BLE001 - an unreadable ledger proves nothing
+            logger.warning(
+                "exit_handoff.ledger_unreadable",
+                extra={"handoff_id": handoff_id, "exception_type": type(exc).__name__},
+            )
+    problem = sent_card_problem(
+        order_uuid=order_uuid, reading=reading, ledger_attributed=attributed
     )
-    if attributed != reading.executed_volume:
+    if problem is not None or sleeve is None:
         return await _hold_unmeasured(
-            session, handoff, now=now, detail="ledger_total_differs_from_broker"
+            session, handoff, now=now, detail=problem or "sleeve_unreadable"
         )
 
     # Proven. The card's own order no longer makes the sleeve unmeasured.
