@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -56,6 +56,32 @@ class OrderIntent:
                 raise ValueError("size must be a positive finite Decimal")
         if self.exit_due_at is not None and self.exit_due_at.utcoffset() is None:
             raise ValueError("exit_due_at must be timezone aware")
+
+
+def record_alpaca_absence(row: MockStrategyOrder) -> bool:
+    if (
+        row.venue != "alpaca_paper"
+        or row.status not in {"sending", "uncertain"}
+        or row.broker_order_id is not None
+        or row.opened_at is not None
+        or row.entry_price is not None
+        or row.exit_price is not None
+    ):
+        return False
+    try:
+        if Decimal(row.meta.get("filled_qty", "0")) != 0:
+            return False
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    row.status = "rejected"
+    row.meta = {
+        **row.meta,
+        "filled_qty": "0",
+        "broker_terminal": True,
+        "no_order_proven": True,
+        "broker_status": "broker_confirmed_absent",
+    }
+    return True
 
 
 class MockStrategyRecorder:
@@ -200,6 +226,27 @@ class MockStrategyRecorder:
                 return
             row.meta = {**row.meta, "symbol_change": event}
             await session.flush()
+
+    async def confirm_alpaca_absence(
+        self, client_order_id: str, *, account_ref: str
+    ) -> MockStrategyOrder:
+        """Record exact paper lookup absence only while its send is unresolved."""
+        async with self._sessions() as session, session.begin():
+            row = (
+                await session.scalars(
+                    select(MockStrategyOrder)
+                    .where(
+                        MockStrategyOrder.client_order_id == client_order_id,
+                        MockStrategyOrder.venue == "alpaca_paper",
+                        MockStrategyOrder.account_ref == account_ref,
+                    )
+                    .with_for_update()
+                )
+            ).one()
+            if record_alpaca_absence(row):
+                await session.flush()
+            session.expunge(row)
+            return row
 
     async def update(
         self,

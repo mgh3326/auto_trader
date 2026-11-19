@@ -84,6 +84,17 @@ from .kiwoom_coordination_lifecycle import KiwoomCoordinationLifecycle
 from .kr_stock_warnings import KRStockWarning
 from .kr_symbol_universe import KRSymbolUniverse
 from .krx_after_market_eligibility import KrxAfterMarketEligibility
+from .mandate import (
+    MandateActivationProfile,
+    MandateApproval,
+    MandateApprovalRequest,
+    MandatePlan,
+    MandatePlanEvent,
+    MandatePlanTranche,
+    MandateSymbolReservation,
+    MandateSymbolReservationRelease,
+    MandateTerms,
+)
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -244,6 +255,15 @@ __all__ = [
     "ExecutionMandate",
     "ExecutionMandateRevocation",
     "ExecutionOperatorExit",
+    "MandateActivationProfile",
+    "MandateApproval",
+    "MandateApprovalRequest",
+    "MandatePlan",
+    "MandatePlanEvent",
+    "MandatePlanTranche",
+    "MandateSymbolReservation",
+    "MandateSymbolReservationRelease",
+    "MandateTerms",
     "StrategySleeve",
     "StrategySleeveVersion",
     "ExecutionLedger",

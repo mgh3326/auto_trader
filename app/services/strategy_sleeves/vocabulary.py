@@ -122,6 +122,18 @@ CANARY_RULES: dict[str, CanaryRule] = {
             ),
             horizon="60 crypto sessions or 30 completed round trips",
         ),
+        # hk 3795 (basket 1, 3792 decision item 4): KR and US new buys open only
+        # through basket 1 plans. The metric and horizon are reference text only:
+        # the binding pre-registration (metric, minimum effect, H, maximum
+        # duration) is set by the operator on every sleeve version, never here.
+        CanaryRule(
+            rule_id="at3795.basket1_value_split_entry",
+            design_section="docs/design/3795-mandate.md §1.4",
+            title="Basket 1 split entry: value + averaging-down new buys by plan",
+            markets=frozenset({"equity_kr", "equity_us"}),
+            metric="reference only; pre-registered by the operator per sleeve version",
+            horizon="reference only; pre-registered by the operator per sleeve version",
+        ),
     )
 }
 

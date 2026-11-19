@@ -41,7 +41,7 @@ Dropping them would forget which keys were used and which positions are handed
 off.
 
 Revision ID: 20261120_hk5441_upbit_gw
-Revises: 20261116_hk4902_drop_unused
+Revises: 20261120_hk5528_mandate
 Create Date: 2026-11-20
 """
 
@@ -58,7 +58,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20261120_hk5441_upbit_gw"
-down_revision: str | Sequence[str] | None = "20261116_hk4902_drop_unused"
+down_revision: str | Sequence[str] | None = "20261120_hk5528_mandate"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

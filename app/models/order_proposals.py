@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
@@ -97,6 +98,7 @@ class OrderProposal(Base):
             name="order_proposals_exit_handoff_needs_sleeve",
         ),
         Index("ix_order_proposals_exit_handoff_id", "exit_handoff_id"),
+        Index("ix_order_proposals_mandate_plan_id", "mandate_plan_id"),
         Index("ix_order_proposals_decision_id", "decision_id"),
         {"schema": "review"},
     )
@@ -142,6 +144,14 @@ class OrderProposal(Base):
         BigInteger,
         ForeignKey("review.execution_exit_handoffs.id", ondelete="RESTRICT"),
     )
+    # hk 3795 T1: the mandate plan and tranche this proposal is bound to. NULL
+    # for every existing flow. Set once at INSERT; DB triggers refuse a change and
+    # compare the binding with the plan (I15).
+    mandate_plan_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("review.mandate_plans.id", ondelete="RESTRICT"),
+    )
+    mandate_tranche_index: Mapped[int | None] = mapped_column(SmallInteger)
     rationale: Mapped[dict | None] = mapped_column(JSONB)
     broker_account_id: Mapped[str | None] = mapped_column(Text)
     lot_context: Mapped[dict | None] = mapped_column(JSONB)
