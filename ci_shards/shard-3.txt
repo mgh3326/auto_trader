@@ -254,6 +254,8 @@ tests/services/mandate/test_fold.py
 tests/services/mandate/test_hashing.py
 tests/services/mandate/test_invariants.py
 tests/services/mandate/test_migration_shape.py
+tests/services/mandate/test_projection_cli.py
+tests/services/mandate/test_projection_rules.py
 tests/services/mandate/test_static_boundary.py
 tests/services/mandate/test_store_inputs.py
 tests/services/market_close_digest/test_calendar.py
