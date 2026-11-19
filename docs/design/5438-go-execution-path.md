@@ -165,6 +165,14 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | B33 | **읽기 표면의 전이 import.** `app.services.brokers.upbit` 패키지 초기화가 `orders`를 import하므로 잡은 그 패키지를 import하지 않는다. 5440이 계좌·호가 읽기만 하는 모듈을 패키지 밖에 두거나 5441이 패키지 초기화를 분리하고, 정적 테스트는 직접 import가 아니라 **전이 import 폐쇄**에서 주문 모듈 부재를 확인한다(retro/v1 가드와 같은 방식) | B19, §8.1-6 | 5440 |
 | B34 | **소수 체결가.** B20 보완: `upbit_live` 체결가는 decimal 문자열이고 fillwire는 계좌별로 정수(kis_mock, `IsInt` 유지)와 정확한 유리수/고정소수(Upbit, 1e-8)를 고른다. 명목 = 수량 × 가격을 정확히 계산한다. kis_mock 계약·골든은 그대로 | B20 | 5439, 5441 |
 
+### 2.4 경계 규칙 (리뷰 3회차 반영, 운영자 설계 세션 결정 A)
+
+| # | 규칙 | 대체·보완 | 소유 |
+|---|---|---|---|
+| B35 | **기존 rung 귀속도 계좌 대조 대상.** B24 보완: sleeve의 귀속(게이트웨이 child **및** 기존 제안 rung, `strategy_sleeves/store.py:561-627`)은 실계좌 참조 없이 `(upbit, live)`로만 결합된다. 따라서 위임장을 만들 때 그 sleeve에 귀속이 하나라도 있고 그 귀속의 브로커 계좌가 위임장 `account_ref`와 같음을 증명할 수 없으면 위임장 생성을 거부한다(`sleeve_attribution_account_unproven`) — 위임장은 **귀속이 없는 새 빈 sleeve**에만 붙는다. 위임장이 붙은 뒤에는 그 sleeve의 rung 귀속도 위임장 계좌로 예약된 주문만 인정한다(카드 경로 주문은 그 sleeve에 태그하지 않는다) | B24 | 5441 |
+| B36 | **일별 상한은 예약일과 다음 UTC일 양쪽에 산입.** B26 보완: pre-send hook 시각은 전송일의 증거가 아니다(hook 이후 HTTP POST까지 자정을 넘을 수 있다). 그래서 B6의 일별 누계는 UTC일 D에 대해 "D에 예약된 매수 child + D−1에 예약됐고 아직 확정되지 않은(`sending`·`uncertain`, 또는 전송 시각 증거 없는 `accepted`) 매수 child"의 high-water 합으로 계산한다. 즉 미확정 예약은 예약일과 다음 UTC일 모두의 한도를 쓴다. 브로커 응답의 주문 생성 시각(`created_at`)이 저널에 기록되면 그 child는 그 날짜 하나에만 산입된다. B26의 날짜 불일치 중단은 그대로 유지한다(추가 방어) | B6, B26 | 5441 |
+
+
 ## 3. Upbit child wire 계약 변경
 
 ### 3.1 원칙
@@ -374,7 +382,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. §2.2·§2.3 B2~B12·B17·B18·B20·B22~B24·B26·B28~B30·B34 각각에 실패 방향 테스트가 있다.
+8. §2.2~§2.4 B2~B12·B17·B18·B20·B22~B24·B26·B28~B30·B34~B36 각각에 실패 방향 테스트가 있다.
 9. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
 10. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
