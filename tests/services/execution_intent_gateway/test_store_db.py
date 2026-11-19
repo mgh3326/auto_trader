@@ -38,6 +38,7 @@ from tests.services.execution_intent_gateway.support import (
     ENABLED,
     FakeBroker,
     FakeKillSwitch,
+    journal_tables_lock,
 )
 
 validate_run_owned_database_url(engine.url)
@@ -117,20 +118,27 @@ def _submit(intent: ExecutionIntentV1, key: str, quantity: int = 1) -> SubmitChi
 
 @pytest_asyncio.fixture(autouse=True)
 async def _schema_and_cleanup() -> Any:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all, tables=_TABLES, checkfirst=True)
-        for statement in _load_migration().GUARD_DDL:
-            await conn.execute(text(statement))
-        # hk 5441 replaced both guard functions; leave the current ones in place.
-        for statement in _load_hk5441_guards():
-            await conn.execute(text(statement))
-    yield
-    # The row guards refuse DELETE by design.
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            text("TRUNCATE review.execution_child_requests, review.execution_intents")
-        )
-        await session.commit()
+    # hk 5441: another file now writes these two tables on another xdist
+    # worker; the TRUNCATE below must not run under one of its tests.
+    async with journal_tables_lock():
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                Base.metadata.create_all, tables=_TABLES, checkfirst=True
+            )
+            for statement in _load_migration().GUARD_DDL:
+                await conn.execute(text(statement))
+            # hk 5441 replaced both guard functions; leave the current ones.
+            for statement in _load_hk5441_guards():
+                await conn.execute(text(statement))
+        yield
+        # The row guards refuse DELETE by design.
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                text(
+                    "TRUNCATE review.execution_child_requests, review.execution_intents"
+                )
+            )
+            await session.commit()
 
 
 @pytest.fixture

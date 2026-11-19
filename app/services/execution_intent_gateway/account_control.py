@@ -47,25 +47,32 @@ class PostgresAccountControlStore:
     async def read(self) -> KillSwitchState:
         try:
             async with self._session_factory() as session:
-                row = await session.scalar(
-                    select(ExecutionAccountControl).where(
-                        ExecutionAccountControl.account == self._account
+                # Plain columns, not the ORM row: a rollback expires a loaded
+                # row, and reading it afterwards would raise and be read as a
+                # freeze even for an ACTIVE account.
+                found = (
+                    await session.execute(
+                        select(
+                            ExecutionAccountControl.mode,
+                            ExecutionAccountControl.reason,
+                            ExecutionAccountControl.updated_by,
+                            ExecutionAccountControl.updated_at,
+                        ).where(ExecutionAccountControl.account == self._account)
                     )
-                )
+                ).first()
+                values = None if found is None else tuple(found)
                 await session.rollback()
         except Exception as exc:  # noqa: BLE001 - any read failure is a freeze
             raise KillSwitchReadError("account control read failed") from exc
-        if row is None:
+        if values is None:
             raise KillSwitchReadError("account control row is missing")
+        raw_mode, reason, updated_by, updated_at = values
         try:
-            mode = KillMode(row.mode)
+            mode = KillMode(raw_mode)
         except ValueError as exc:
             raise KillSwitchReadError("account control mode is unknown") from exc
         return KillSwitchState(
-            mode=mode,
-            reason=row.reason,
-            updated_by=row.updated_by,
-            updated_at=row.updated_at,
+            mode=mode, reason=reason, updated_by=updated_by, updated_at=updated_at
         )
 
     async def set_mode(

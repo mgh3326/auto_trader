@@ -2551,8 +2551,35 @@ def _hk5441_upbit_gateway_ddl() -> tuple[str, ...]:
         *module.TABLE_DDL,
         *module.ALTER_DDL,
         *module.GUARD_DDL,
+        *_rob1440_journal_triggers(
+            path.with_name("20261101_rob1440_intent_gateway.py")
+        ),
         *module.SEED_DDL,
     )
+
+
+def _rob1440_journal_triggers(path) -> tuple[str, ...]:
+    """The two journal triggers 20261101 created, attached to today's functions.
+
+    hk 5441 replaces the bodies of ``execution_intents_guard`` and
+    ``execution_child_requests_guard`` and leaves the triggers that call them
+    alone, because production already has them. This database is built from the
+    models, so nothing had created those triggers here: a test that ran before
+    ``test_store_db`` installed them met no guard at all.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rob1440_gw_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    triggers = tuple(
+        statement
+        for statement in module.GUARD_DDL
+        if "CREATE OR REPLACE FUNCTION" not in statement
+    )
+    assert len(triggers) == 4, "20261101 has a DROP and a CREATE for two triggers"
+    return triggers
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _hk5441_upbit_gateway_ddl()
