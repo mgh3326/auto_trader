@@ -160,4 +160,4 @@ uv run python -m scripts.correct_journal_exit_fields --database-url-env DATABASE
   --commit --expect-digest <preview 의 plan_digest>
 ```
 
-`--ids` 는 쉼표로 나눈 정확한 양의 정수(최대 20개)이며 범위·패턴·중복은 DB 연결 전에 거부된다. 종료 코드: 0 preview 적격/커밋/no-op, 1 입력·DB 오류, 2 배치 거부 또는 preview 이후 사실 변경. 같은 값·감사 메모가 이미 있는 저널은 no-op 이라 두 번째 `--commit` 은 무변경이다.
+`--ids` 는 쉼표로 나눈 정확한 양의 정수(최대 20개)이며 범위·패턴·중복은 DB 연결 전에 거부된다. 종료 코드: 0 preview 적격/커밋/no-op, 1 입력·DB 오류, 2 배치 거부 또는 preview 이후 사실 변경. `--commit` 은 트랜잭션 동안 `execution_ledger` 에 SHARE 잠금(5초 `lock_timeout`)을 잡아 원장 쓰기 작업을 기다리게 하고, 그 뒤에 사실을 다시 읽는다 — 잠금을 못 얻으면 쓰지 않고 실패한다. 같은 값·감사 메모가 이미 있는 저널은 no-op 이라 두 번째 `--commit`(같은 digest 로 재시도해도)은 무변경이다.

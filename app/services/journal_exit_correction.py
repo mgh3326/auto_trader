@@ -46,10 +46,15 @@ MAX_IDS = 20
 MAX_REASON_CHARS = 500
 MAX_ACTOR_CHARS = 100
 #: How long before the recorded ``exit_date`` the closing fill may sit. The
-#: three known rows were booked about a day after the fill.
-FILL_WINDOW = timedelta(days=7)
+#: three known rows were booked about a day after the fill. Any other
+#: authoritative sell of the same account and symbol inside this window makes the
+#: attribution unprovable (a larger fill may have closed this lot with others).
+FILL_WINDOW = timedelta(days=3)
+#: ``commit`` waits at most this long for ledger writers before giving up.
+LOCK_TIMEOUT_MS = 5000
 #: journal ``account`` -> ledger ``broker``
 BROKER_BY_ACCOUNT = {"kis": "kis", "toss": "toss"}
+LEDGER_TABLE = ExecutionLedger.__table__.fullname  # schema-qualified, never user input
 
 _MONEY = Decimal("0.0001")
 _ID = re.compile(r"[1-9][0-9]*")
@@ -211,8 +216,8 @@ def plan_journal(journal: Any, candidates: Iterable[LedgerRowLike]) -> JournalPl
 
     quantity = Decimal(journal.quantity)
     exit_price = _q(Decimal(journal.exit_price))
-    low = journal.exit_date - FILL_WINDOW
-    matches = [
+    low = max(journal.exit_date - FILL_WINDOW, journal.created_at)
+    in_window = [
         row
         for row in candidates
         if row.quarantined_at is None
@@ -222,14 +227,23 @@ def plan_journal(journal: Any, candidates: Iterable[LedgerRowLike]) -> JournalPl
         and row.instrument_type == InstrumentType.equity_kr
         and row.symbol == journal.symbol
         and row.side == "sell"
-        and Decimal(row.filled_qty) == quantity
+        and low <= row.filled_at <= journal.exit_date
+    ]
+    matches = [
+        row
+        for row in in_window
+        if Decimal(row.filled_qty) == quantity
         and _q(Decimal(row.filled_price)) == exit_price
-        and max(low, journal.created_at) <= row.filled_at <= journal.exit_date
     ]
     if not matches:
         return _ineligible(jid, "no_matching_ledger_row", journal)
     if len(matches) > 1:
         return _ineligible(jid, "ambiguous_ledger_rows", journal)
+    if len(in_window) > 1:
+        # A fill can close several FIFO lots, so its quantity need not equal this
+        # lot's. A unique quantity/price match is proof only when nothing else
+        # sold in the window could have closed the lot.
+        return _ineligible(jid, "other_sells_in_window", journal)
     [row] = matches
 
     entry_price = Decimal(journal.entry_price)
@@ -357,6 +371,19 @@ async def load_candidates(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def lock_ledger_writers(session: AsyncSession) -> None:
+    """Hold off every ledger writer until this transaction ends.
+
+    SHARE mode conflicts with the row-exclusive lock that inserts and updates of
+    ``execution_ledger`` take, so after this returns no writer is in flight and
+    none can change a selected fill or add a matching one before the commit.
+    Readers are not affected. Taken before the journal row locks: ledger writers
+    go ledger-then-journal, so the same order cannot deadlock with them.
+    """
+    await session.execute(text(f"SET LOCAL lock_timeout = {int(LOCK_TIMEOUT_MS)}"))
+    await session.execute(text(f"LOCK TABLE {LEDGER_TABLE} IN SHARE MODE"))
+
+
 async def _build_plan(
     session: AsyncSession, ids: Sequence[int], *, lock: bool
 ) -> tuple[BatchPlan, dict[int, TradeJournal]]:
@@ -434,16 +461,20 @@ async def commit(
 ) -> BatchResult:
     """Lock the journals, recompute the plan, write only if it equals the preview."""
     try:
+        await lock_ledger_writers(session)
         plan, journals = await _build_plan(session, ids, lock=True)
         if plan.status == "refused":
             await session.rollback()
             return BatchResult("refused", plan)
+        if plan.status == "noop":
+            # Every journal already holds the corrected values and its audit
+            # note, so there is nothing to write whatever digest was given. An
+            # identical retry after a lost response lands here.
+            await session.rollback()
+            return BatchResult("noop", plan)
         if plan.digest != expected_digest:
             await session.rollback()
             return BatchResult("plan_changed", plan)
-        if plan.status == "noop":
-            await session.rollback()
-            return BatchResult("noop", plan)
         written: list[int] = []
         for item in plan.plans:
             if item.status != "eligible":

@@ -204,13 +204,26 @@ def _refused(rows: list[SimpleNamespace], **journal_over: Any) -> jec.JournalPla
             [ledger(1, filled_at=BOOKED + timedelta(minutes=1))],
             "no_matching_ledger_row",
         ),
-        ([ledger(1, filled_at=BOOKED - timedelta(days=8))], "no_matching_ledger_row"),
+        ([ledger(1, filled_at=BOOKED - timedelta(days=4))], "no_matching_ledger_row"),
         ([ledger(1, filled_at=CREATED - timedelta(days=1))], "no_matching_ledger_row"),
     ],
 )
 def test_candidate_rules(rows, reason) -> None:
     plan = _refused(rows)
     assert (plan.status, plan.reason) == ("ineligible", reason)
+
+
+def test_a_bigger_fill_in_the_window_makes_the_attribution_unprovable() -> None:
+    """A 10-share sell can close a 2-share lot; an unrelated 2-share sell must not win."""
+    unrelated = ledger(1, filled_at=FILLED - timedelta(hours=20))
+    bigger = ledger(2, filled_qty=Decimal("10"))
+    plan = _refused([unrelated, bigger])
+    assert (plan.status, plan.reason) == ("ineligible", "other_sells_in_window")
+    # the same unrelated row alone is still the unique candidate
+    assert _refused([unrelated]).status == "eligible"
+    # a sell of another account or symbol is not in the way
+    assert _refused([ledger(1), ledger(2, symbol="005930")]).status == "eligible"
+    assert _refused([ledger(1), ledger(2, broker="toss")]).status == "eligible"
 
 
 @pytest.mark.parametrize(
@@ -359,6 +372,11 @@ async def test_commit_writes_the_corrected_fields_and_an_audit_note(world) -> No
     assert result.written == (243, 244, 245)
     assert session.calls.count("commit") == 1
     assert "load_journals:lock=True" in session.calls
+    lock = next(i for i, c in enumerate(session.calls) if "LOCK TABLE" in c)
+    assert "review.execution_ledger IN SHARE MODE" in session.calls[lock]
+    assert "lock_timeout" in session.calls[lock - 1]
+    # ledger writers are held off before the journals are locked and read
+    assert lock < session.calls.index("load_journals:lock=True")
 
     j = world.journals[245]
     assert j.exit_date == FILLED
@@ -428,6 +446,34 @@ async def test_second_commit_changes_nothing(world) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_the_identical_retry_after_a_lost_response_is_a_noop(world) -> None:
+    prev = await jec.preview(FakeSession(), [243, 244, 245])
+    first = await jec.commit(
+        FakeSession(),
+        [243, 244, 245],
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert first.status == "committed"
+    after_first = snapshot(world.journals)
+
+    session = FakeSession()
+    retry = await jec.commit(
+        session,
+        [243, 244, 245],
+        expected_digest=prev.plan.digest,  # the original preview digest, no new preview
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert retry.status == "noop"
+    assert retry.written == ()
+    assert snapshot(world.journals) == after_first
+    assert "commit" not in session.calls
+
+
+@pytest.mark.asyncio
 async def test_same_values_without_the_audit_note_still_get_the_note(world) -> None:
     world.journals[245].exit_date = FILLED
     world.journals[245].total_pnl_krw = Decimal("17600")
@@ -489,9 +535,11 @@ _WRITE_SQL = re.compile(
 def test_no_direct_sql_write(rel) -> None:
     source = (_ROOT / rel).read_text("utf-8")
     assert _WRITE_SQL.findall(source) == []
-    # The one raw statement is the read-only transaction guard.
-    assert re.findall(r"\btext\(\s*\"([^\"]+)\"", source) in (
-        [],
-        ["SET TRANSACTION READ ONLY"],
-    )
+    # The only raw statements are the read-only guard and the ledger-writer lock.
+    statements = set(re.findall(r"\btext\(\s*f?\"([^\"]+)\"", source))
+    assert statements <= {
+        "SET TRANSACTION READ ONLY",
+        "SET LOCAL lock_timeout = {int(LOCK_TIMEOUT_MS)}",
+        "LOCK TABLE {LEDGER_TABLE} IN SHARE MODE",
+    }
     assert "session.add(" not in source and ".delete(" not in source
