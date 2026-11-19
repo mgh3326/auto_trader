@@ -150,8 +150,10 @@ already committed `sending`. Under
 Alpaca paper's `GET /v2/orders:by_client_order_id` for that leg's exact client ID
 lets the recorder mark an unbound, unfilled `sending` or `uncertain` leg
 `rejected` with zero fill and `broker_confirmed_absent`. A failed lookup, timeout,
-5xx or 200 response preserves those unbound legs and their reservations. Existing
-broker-bound orders still use the regular fill evidence checks. Once all preceding
+5xx, empty response or mismatched order echo preserves pending legs and their
+reservations. Per design escalation answer 591964, a matching HTTP 200 order
+restores its binding and fill evidence. The episode can send a new leg on a later
+invocation. Once all preceding
 legs have proven terminal outcomes, `close-due` can create one indexed leg with
 a fresh client ID for
 the entry fill quantity minus their proven fills. Canceled, expired or rejected

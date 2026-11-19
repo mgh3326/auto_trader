@@ -373,7 +373,7 @@ class UsPaperStrategy:
         unbound = pending and row.broker_order_id is None
         try:
             order = await self.broker.lookup(row.client_order_id)
-            if order is None or unbound:
+            if order is None:
                 return row
             return await self._observe(row, order)
         except AlpacaPaperOrderNotFound:
@@ -386,6 +386,18 @@ class UsPaperStrategy:
             if pending:
                 return row
             return await self.recorder.update(row.client_order_id, status="uncertain")
+
+    async def _refresh_before_close(
+        self, row: MockStrategyOrder
+    ) -> tuple[MockStrategyOrder, bool]:
+        was_pending = row.status in {"sending", "uncertain"}
+        current = await self._refresh(row)
+        recovered_order = (
+            was_pending
+            and current.broker_order_id is not None
+            and current.status not in {"sending", "uncertain"}
+        )
+        return current, recovered_order
 
     async def _verify_symbol_changes(
         self, account: str, due: list[MockStrategyOrder], changes: dict[str, str]
@@ -428,7 +440,9 @@ class UsPaperStrategy:
         dispatch: bool,
     ) -> dict:
         try:
-            entry = await self._refresh(entry)
+            entry, recovered = await self._refresh_before_close(entry)
+            if recovered:
+                return {**projection(entry), "reason": "order_recovered_this_run"}
             qty = Decimal(entry.meta.get("filled_qty", "0"))
             if (
                 entry.status not in {"filled", "partially_filled"}
@@ -573,6 +587,7 @@ class UsPaperStrategy:
             }
         filled, proceeds = Decimal(0), Decimal(0)
         submitted = False
+        recovered_order = False
         outcome = projection(entry)
         for index, leg in enumerate(legs):
             if leg.qty != qty - filled or leg.notional is not None:
@@ -588,6 +603,12 @@ class UsPaperStrategy:
                         "episode_status": "awaiting_close_evidence",
                         "reason": "exit_sequence_invalid",
                     }
+                if recovered_order:
+                    return {
+                        **projection(leg),
+                        "episode_status": "awaiting_close_evidence",
+                        "reason": "order_recovered_this_run",
+                    }
                 if not dispatch:
                     return {
                         **projection(leg),
@@ -599,8 +620,9 @@ class UsPaperStrategy:
                 leg = await self.recorder.get(leg.client_order_id)
                 assert leg is not None
             else:
-                leg = await self._refresh(leg)
+                leg, recovered = await self._refresh_before_close(leg)
                 outcome = projection(leg)
+                recovered_order |= recovered
             evidence = self._exit_fill(leg)
             if evidence is None:
                 return {**outcome, "episode_status": "awaiting_close_evidence"}
@@ -608,11 +630,15 @@ class UsPaperStrategy:
             proceeds += evidence[1]
         # At most one planned/new leg is attempted per entry per invocation.
         # Every prior leg must first have terminal, positive evidence.
-        if filled < qty and not submitted and not dispatch:
+        if filled < qty and not submitted and (recovered_order or not dispatch):
             return {
                 **outcome,
                 "episode_status": "awaiting_close_evidence",
-                "reason": "symbol_change_refused",
+                "reason": (
+                    "order_recovered_this_run"
+                    if recovered_order
+                    else "symbol_change_refused"
+                ),
             }
         if filled < qty and not submitted:
             index = len(legs)

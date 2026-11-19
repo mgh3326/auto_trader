@@ -131,6 +131,7 @@ async def test_migration_trigger_preserves_the_send_fence(db_session, recorder):
     assert (await recorder.get(coid)).meta == absent.meta
     assert not await recorder.claim(coid)
 
+
 async def test_symbol_change_journals_on_a_planned_exit_leg_only(db_session, recorder):
     coid = f"r1474-sc-{uuid4().hex}"
     leg = replace(intent(client_order_id=coid), symbol="BKH", side="sell")

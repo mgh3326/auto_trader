@@ -97,6 +97,7 @@ class AlpacaPaperBrokerService:
     ) -> Any:
         skip_identity = bool(kwargs.pop("_skip_identity", False))
         lookup_order = kwargs.pop("_lookup_order", False)
+        strict_lookup = kwargs.pop("_strict_lookup", False)
         if (
             not skip_identity
             and not self._identity_verified
@@ -119,6 +120,9 @@ class AlpacaPaperBrokerService:
                 f"HTTP {response.status_code}: {response.text}",
                 status_code=response.status_code,
             )
+
+        if strict_lookup and response.status_code != 200:
+            return None
 
         if response.status_code == 204 or not response.content:
             return None
@@ -260,6 +264,7 @@ class AlpacaPaperBrokerService:
             "/v2/orders:by_client_order_id",
             params={"client_order_id": client_order_id},
             _lookup_order=True,
+            _strict_lookup=report_not_found,
         )
         if data is _ORDER_NOT_FOUND:
             if report_not_found:

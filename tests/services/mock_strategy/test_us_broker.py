@@ -406,6 +406,12 @@ async def test_errors_after_post_boundary_are_always_uncertain(
         ("sending", "timeout", None, False),
         ("uncertain", "500", None, False),
         ("uncertain", "found", None, False),
+        ("sending", "found", None, False),
+        ("uncertain", "wrong_symbol", None, False),
+        ("uncertain", "unexpected_201", None, False),
+        ("uncertain", "wrong_id", None, False),
+        ("uncertain", "wrong_side", None, False),
+        ("uncertain", "wrong_qty", None, False),
         ("uncertain", "empty", None, False),
         ("uncertain", "malformed", None, False),
         ("uncertain", "404", "10", False),
@@ -454,18 +460,27 @@ async def test_lnth_exit_absence_requires_exact_404(
                     raise httpx.ConnectError("fixture connection error")
                 if response == "timeout":
                     raise httpx.ReadTimeout("fixture read timeout")
-                if response == "found":
+                if response in {"found", "unexpected_201"} or response.startswith(
+                    "wrong_"
+                ):
                     order = next(
                         order for side, order in broker.posts if side == "sell"
                     )
                     return httpx.Response(
-                        200,
+                        201 if response == "unexpected_201" else 200,
                         json=order.model_dump(mode="json")
                         | {
                             "id": "existing-order",
                             "status": "canceled",
-                            "filled_qty": "0",
-                        },
+                            "filled_qty": "40",
+                            "filled_avg_price": "105",
+                        }
+                        | {
+                            "wrong_symbol": {"symbol": "OTHER"},
+                            "wrong_id": {"client_order_id": "other-order"},
+                            "wrong_side": {"side": "buy"},
+                            "wrong_qty": {"qty": "101"},
+                        }.get(response, {}),
                     )
                 if response == "empty":
                     return httpx.Response(200, json={})
@@ -486,6 +501,19 @@ async def test_lnth_exit_absence_requires_exact_404(
     broker.lookup = lookup_exit
     broker.fail_submit = False
     await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    if response == "found":
+        assert original.broker_order_id == "existing-order"
+        assert original.status == "partially_filled"
+        assert original.meta["filled_qty"] == "40"
+        assert original.exit_price == Decimal("105")
+        assert len([order for side, order in broker.posts if side == "sell"]) == 1
+        assert attempts == [original.client_order_id]
+        await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+        sells = [order for side, order in broker.posts if side == "sell"]
+        assert len(sells) == 2
+        assert sells[-1].qty == Decimal("60")
+        assert sells[-1].client_order_id != original.client_order_id
+        return
     await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
     sells = [order for side, order in broker.posts if side == "sell"]
     if not resolves:
