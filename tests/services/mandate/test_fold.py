@@ -17,7 +17,7 @@ from app.services.mandate.fold import (
     apply_event,
     fold_plan_events,
 )
-from tests.services.mandate.support import D, SESSION, Stream, ev
+from tests.services.mandate.support import SESSION, D, Stream, ev
 
 pytestmark = pytest.mark.unit
 
@@ -186,7 +186,10 @@ def test_design_example_partial_then_filled_then_first_tranche_settled() -> None
     )
     t1 = s.state.tranche(1)
     assert t1.completed and t1.settled_on == date(2026, 11, 24)
-    assert (s.state.first_fill_amount, s.state.first_fill_quantity) == (D("888600"), D("9"))
+    assert (s.state.first_fill_amount, s.state.first_fill_quantity) == (
+        D("888600"),
+        D("9"),
+    )
     s.add("first_tranche_settled")
     assert s.state.authority == "active"
 

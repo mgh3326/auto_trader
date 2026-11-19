@@ -60,7 +60,9 @@ def test_the_service_import_closure_reaches_no_broker_or_order_module() -> None:
     ``app.core`` are not followed) and refuse a broker or order module anywhere."""
     seen: set[str] = set()
     pending = [
-        f"app.services.mandate.{p.stem}" for p in PACKAGE.glob("*.py") if p.stem != "__init__"
+        f"app.services.mandate.{p.stem}"
+        for p in PACKAGE.glob("*.py")
+        if p.stem != "__init__"
     ]
     offenders: list[str] = []
     while pending:

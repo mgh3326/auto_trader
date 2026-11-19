@@ -30,9 +30,14 @@ def test_event_field_matrix_requires_and_forbids_columns() -> None:
     ok = {"terms_id": 1, "terms_sha256": "a" * 64, "effective_session": "2026-11-23"}
     assert ms._event_field_problem("approved", ok) is None
     assert ms._event_field_problem("suspended", ok) is not None  # takes no terms
-    assert ms._event_field_problem("tranche_armed", {}) is not None  # needs tranche_index
+    assert (
+        ms._event_field_problem("tranche_armed", {}) is not None
+    )  # needs tranche_index
     assert ms._event_field_problem("tranche_armed", {"tranche_index": 1}) is None
-    assert ms._event_field_problem("retired", {"terms_id": 1, "terms_sha256": "a" * 64}) is None
+    assert (
+        ms._event_field_problem("retired", {"terms_id": 1, "terms_sha256": "a" * 64})
+        is None
+    )
 
 
 def test_fence_and_profile_columns_travel_together() -> None:
@@ -45,24 +50,40 @@ def test_fence_and_profile_columns_travel_together() -> None:
         "account_ref": "a",
         "attempt_id": uuid4(),
     }
-    assert "activation_profile_id" in ms._event_field_problem("tranche_send_fenced", fence)
-    assert ms._event_field_problem("tranche_send_fenced", {**fence, "activation_profile_id": 3}) is None
+    assert "activation_profile_id" in ms._event_field_problem(
+        "tranche_send_fenced", fence
+    )
+    assert (
+        ms._event_field_problem(
+            "tranche_send_fenced", {**fence, "activation_profile_id": 3}
+        )
+        is None
+    )
     human = {**fence, "approval_mode": "human"}
     assert ms._event_field_problem("tranche_send_fenced", human) is None
-    assert ms._event_field_problem("tranche_send_fenced", {**human, "activation_profile_id": 3})
+    assert ms._event_field_problem(
+        "tranche_send_fenced", {**human, "activation_profile_id": 3}
+    )
 
 
 def test_first_fill_belongs_to_the_first_tranche_completion_only() -> None:
-    base = {"tranche_index": 2, "proposal_id": uuid4(), "fill_amount": D("1"), "fill_quantity": D("1")}
+    base = {
+        "tranche_index": 2,
+        "proposal_id": uuid4(),
+        "fill_amount": D("1"),
+        "fill_quantity": D("1"),
+    }
     assert ms._event_field_problem("tranche_filled", base) is None
     assert ms._event_field_problem(
-        "tranche_filled", {**base, "first_fill_amount": D("1"), "first_fill_quantity": D("1")}
+        "tranche_filled",
+        {**base, "first_fill_amount": D("1"), "first_fill_quantity": D("1")},
     )
     first = {**base, "tranche_index": 1}
     assert ms._event_field_problem("tranche_filled", first)
     assert (
         ms._event_field_problem(
-            "tranche_filled", {**first, "first_fill_amount": D("1"), "first_fill_quantity": D("1")}
+            "tranche_filled",
+            {**first, "first_fill_amount": D("1"), "first_fill_quantity": D("1")},
         )
         is None
     )
@@ -125,7 +146,9 @@ def _evidence(**over):
 
 
 def test_adopted_evidence_lists_every_scope_account_even_at_zero() -> None:
-    assert ms._check_adopted_evidence(_evidence(), SCOPE, D("150000"))["price"] == "15000"
+    assert (
+        ms._check_adopted_evidence(_evidence(), SCOPE, D("150000"))["price"] == "15000"
+    )
     with raises(v.MandateRefusal.SCOPE_UNKNOWN):
         ms._check_adopted_evidence(
             _evidence(holdings=_evidence()["holdings"][:1]), SCOPE, D("150000")
@@ -148,7 +171,9 @@ def test_i19_zero_holdings_must_read_the_registered_scope_accounts() -> None:
         "holdings_account_refs": ["acct-toss", "acct-kis"],
         "holdings_quantity": "0",
     }
-    ms.validate_holdings_evidence(ok, scope_account_refs=SCOPE, actor="system:mandate_projection")
+    ms.validate_holdings_evidence(
+        ok, scope_account_refs=SCOPE, actor="system:mandate_projection"
+    )
     # the configured KIS account changed after registration: refs differ
     with raises(v.MandateRefusal.SCOPE_UNKNOWN):
         ms.validate_holdings_evidence(
@@ -172,32 +197,36 @@ def test_i19_kept_outside_basket_is_an_operator_record() -> None:
     kept = {"holdings_disposition": "kept_outside_basket"}
     ms.validate_holdings_evidence(kept, scope_account_refs=SCOPE, actor="operator:cli")
     with raises(v.MandateRefusal.INVALID_FIELDS):
-        ms.validate_holdings_evidence(kept, scope_account_refs=SCOPE, actor="system:mandate_projection")
+        ms.validate_holdings_evidence(
+            kept, scope_account_refs=SCOPE, actor="system:mandate_projection"
+        )
 
 
 # --------------------------------------------------------------------- terms input
 def _sleeve(account_mode="kis_live", market="equity_kr"):
-    return SimpleNamespace(id=1, account_mode=account_mode, market=market, currency="KRW")
+    return SimpleNamespace(
+        id=1, account_mode=account_mode, market=market, currency="KRW"
+    )
 
 
 def _data(**over):
-    base = dict(
-        basket_key="basket-1",
-        account_ref="acct-kis",
-        universe_rule="rule",
-        allowed_symbols=["005930", "000270"],
-        entry_max_premium_bps="30",
-        per_order_cap="2000000",
-        daily_cap="5000000",
-        sector_cap_pct="35",
-        basket_drawdown_freeze_pct="25",
-        account_drawdown_freeze_pct="25",
-        tranche_rule=GOOD_RULE,
-        expires_at=datetime(2026, 12, 1, tzinfo=UTC),
-        budget_cap="9750000",
-        loss_limit="500000",
-        prereg=PreRegistration("m", D("1"), 20, 90),
-    )
+    base = {
+        "basket_key": "basket-1",
+        "account_ref": "acct-kis",
+        "universe_rule": "rule",
+        "allowed_symbols": ["005930", "000270"],
+        "entry_max_premium_bps": "30",
+        "per_order_cap": "2000000",
+        "daily_cap": "5000000",
+        "sector_cap_pct": "35",
+        "basket_drawdown_freeze_pct": "25",
+        "account_drawdown_freeze_pct": "25",
+        "tranche_rule": GOOD_RULE,
+        "expires_at": datetime(2026, 12, 1, tzinfo=UTC),
+        "budget_cap": "9750000",
+        "loss_limit": "500000",
+        "prereg": PreRegistration("m", D("1"), 20, 90),
+    }
     base.update(over)
     return ms.TermsInput(**base)
 
@@ -205,7 +234,9 @@ def _data(**over):
 def test_i17_parking_symbols_cannot_be_in_a_clause() -> None:
     with raises(v.MandateRefusal.PARKING_SYMBOL):
         ms._terms_columns(_sleeve(), _data(allowed_symbols=["005930", "459580"]))
-    cols = ms._terms_columns(_sleeve("kis_live", "equity_us"), _data(allowed_symbols=["brk-b", "AAPL"]))
+    cols = ms._terms_columns(
+        _sleeve("kis_live", "equity_us"), _data(allowed_symbols=["brk-b", "AAPL"])
+    )
     assert cols["allowed_symbols"] == ["AAPL", "BRK.B"]
 
 
@@ -214,7 +245,10 @@ def test_a_sleeve_without_a_mandate_realm_or_market_is_refused() -> None:
         ms._terms_columns(_sleeve("upbit", "crypto"), _data())
     with raises(v.MandateRefusal.UNSUPPORTED):
         ms.realm_and_market(_sleeve("kis_live", "crypto"))
-    assert ms.realm_and_market(_sleeve("kiwoom_mock", "equity_kr")) == ("mock", "equity_kr")
+    assert ms.realm_and_market(_sleeve("kiwoom_mock", "equity_kr")) == (
+        "mock",
+        "equity_kr",
+    )
 
 
 def test_clause_amounts_are_checked_and_decimals_canonical() -> None:
@@ -235,7 +269,12 @@ def test_i21_hash_recomputed_from_row_values_equals_the_request_hash() -> None:
     cols = ms._terms_columns(_sleeve(), _data())
     prereg = PreRegistration("m", D("1"), 20, 90)
     content = ms._content_from_terms(
-        1, cols, state="live", budget_cap=D("9750000"), loss_limit=D("500000"), prereg=prereg
+        1,
+        cols,
+        state="live",
+        budget_cap=D("9750000"),
+        loss_limit=D("500000"),
+        prereg=prereg,
     )
     terms = SimpleNamespace(
         terms_version=cols["terms_version"],
@@ -283,18 +322,25 @@ def _db_error(message: str) -> DBAPIError:
 
 def test_database_refusals_get_a_closed_code() -> None:
     assert (
-        ms.map_db_error(_db_error("this symbol already has an unreleased plan in this realm")).code
+        ms.map_db_error(
+            _db_error("this symbol already has an unreleased plan in this realm")
+        ).code
         is v.MandateRefusal.SYMBOL_RESERVED
     )
     assert (
-        ms.map_db_error(_db_error("the plan does not hold sending authority (retired)")).code
+        ms.map_db_error(
+            _db_error("the plan does not hold sending authority (retired)")
+        ).code
         is v.MandateRefusal.PLAN_NOT_ACTIVE
     )
     assert (
         ms.map_db_error(_db_error("the proposal does not match its mandate plan")).code
         is v.MandateRefusal.BINDING_MISMATCH
     )
-    assert ms.map_db_error(_db_error("anything else")).code is v.MandateRefusal.INVALID_TRANSITION
+    assert (
+        ms.map_db_error(_db_error("anything else")).code
+        is v.MandateRefusal.INVALID_TRANSITION
+    )
 
 
 def test_the_system_loss_gate_actor_is_not_an_operator() -> None:

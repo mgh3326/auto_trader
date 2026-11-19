@@ -52,7 +52,11 @@ def _render(fn: str) -> str:
     buffer = io.StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
-        opts={"as_sql": True, "output_buffer": buffer, "target_metadata": Base.metadata},
+        opts={
+            "as_sql": True,
+            "output_buffer": buffer,
+            "target_metadata": Base.metadata,
+        },
     )
     with Operations.context(context):
         getattr(module, fn)()
@@ -81,8 +85,14 @@ def test_upgrade_is_additive_only() -> None:
 def test_i13_every_table_has_update_delete_and_truncate_triggers() -> None:
     ddl = _norm("\n".join(_load().GUARD_DDL))
     for table in TABLES:
-        assert f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON review.{table}" in ddl
-        assert f"CREATE TRIGGER trg_{table}_truncate BEFORE TRUNCATE ON review.{table}" in ddl
+        assert (
+            f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON review.{table}"
+            in ddl
+        )
+        assert (
+            f"CREATE TRIGGER trg_{table}_truncate BEFORE TRUNCATE ON review.{table}"
+            in ddl
+        )
 
 
 def test_hard_rule_18_app_role_gets_select_and_insert_only() -> None:
@@ -108,7 +118,10 @@ def test_order_proposal_triggers_do_not_run_for_untagged_writes() -> None:
     ddl = _norm("\n".join(_load().GUARD_DDL))
     insert = ddl[ddl.index("CREATE TRIGGER trg_order_proposals_mandate_insert") :]
     insert = insert[: insert.index("EXECUTE FUNCTION")]
-    assert "WHEN (NEW.mandate_plan_id IS NOT NULL OR NEW.mandate_tranche_index IS NOT NULL)" in insert
+    assert (
+        "WHEN (NEW.mandate_plan_id IS NOT NULL OR NEW.mandate_tranche_index IS NOT NULL)"
+        in insert
+    )
     update = ddl[ddl.index("CREATE TRIGGER trg_order_proposals_mandate_update") :]
     update = update[: update.index("EXECUTE FUNCTION")]
     assert "BEFORE UPDATE OF mandate_plan_id, mandate_tranche_index" in update
@@ -158,13 +171,13 @@ def test_orm_and_migration_agree_on_columns_and_unique_constraints() -> None:
         block = sql[start : sql.index(";", start)]
         for column in orm.columns:
             assert re.search(rf"^\s+{column.name} ", block, re.M), (table, column.name)
-            null_sql = "NOT NULL" if not column.nullable else ""
             line = next(
-                l for l in block.splitlines() if re.match(rf"^\s+{column.name} ", l)
+                ln for ln in block.splitlines() if re.match(rf"^\s+{column.name} ", ln)
             )
             assert ("NOT NULL" in line) == (not column.nullable), (table, column.name)
-            del null_sql
-        for uq in (c for c in orm.constraints if c.__class__.__name__ == "UniqueConstraint"):
+        for uq in (
+            c for c in orm.constraints if c.__class__.__name__ == "UniqueConstraint"
+        ):
             assert f"CONSTRAINT {uq.name} UNIQUE" in block, uq.name
     for idx_name in (
         "uq_mandate_plan_events_terminal_proposal",
@@ -211,8 +224,14 @@ def test_i1_symbol_lock_key_is_the_same_string_in_sql_and_python() -> None:
     ddl = _norm("\n".join(_load().GUARD_DDL))
     key_sql = "'mandate_symbol:' || NEW.realm || ':' || NEW.market || ':' || NEW.symbol"
     assert key_sql in ddl
-    assert "'mandate_symbol:' || res.realm || ':' || res.market || ':' || res.symbol" in ddl
-    assert locks.symbol_lock_key("live", "equity_kr", "005930") == "mandate_symbol:live:equity_kr:005930"
+    assert (
+        "'mandate_symbol:' || res.realm || ':' || res.market || ':' || res.symbol"
+        in ddl
+    )
+    assert (
+        locks.symbol_lock_key("live", "equity_kr", "005930")
+        == "mandate_symbol:live:equity_kr:005930"
+    )
     assert locks.basket_lock_key("mock", "basket-1") == "mandate_basket:mock:basket-1"
     assert "hashtextextended(" in ddl
     assert "READ COMMITTED" not in ddl or "read committed" in ddl
@@ -225,7 +244,9 @@ def test_lock_order_is_symbol_then_basket_then_sleeve() -> None:
 
 def test_realm_helper_function_matches_the_python_map() -> None:
     ddl = _norm("\n".join(_load().GUARD_DDL))
-    arms = " ".join(f"WHEN '{m}' THEN '{r}'" for m, r in v.REALM_BY_ACCOUNT_MODE.items())
+    arms = " ".join(
+        f"WHEN '{m}' THEN '{r}'" for m, r in v.REALM_BY_ACCOUNT_MODE.items()
+    )
     assert f"CASE p_account_mode {arms} END" in ddl
     assert v.realm_of("kis_live") == "live" and v.realm_of("kiwoom_mock") == "mock"
     for unsupported in ("upbit", "kis_mock", "db_simulated"):
@@ -235,7 +256,10 @@ def test_realm_helper_function_matches_the_python_map() -> None:
 
 def test_release_row_is_written_by_the_released_event_itself() -> None:
     ddl = _norm("\n".join(_load().GUARD_DDL))
-    assert "AFTER INSERT ON review.mandate_plan_events FOR EACH ROW WHEN (NEW.event = 'released')" in ddl
+    assert (
+        "AFTER INSERT ON review.mandate_plan_events FOR EACH ROW WHEN (NEW.event = 'released')"
+        in ddl
+    )
     assert "a reservation is released only with the plan released event" in ddl
 
 

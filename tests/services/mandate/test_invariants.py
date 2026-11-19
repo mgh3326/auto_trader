@@ -47,9 +47,7 @@ def man(n: str) -> Decimal:
     ],
 )
 def test_i5_trigger_boundary_is_division_free_and_inclusive(price, pct, met) -> None:
-    assert (
-        tranche_trigger_met(D(price), D("888600"), D("9"), D(pct)) is met
-    )
+    assert tranche_trigger_met(D(price), D("888600"), D("9"), D(pct)) is met
 
 
 def test_i5_no_trigger_without_a_first_fill_or_a_price() -> None:
@@ -186,7 +184,11 @@ def test_i2_symbol_must_be_listed() -> None:
 
 
 def test_i15_plan_account_is_the_clause_account_and_a_scope_account() -> None:
-    ok = dict(terms_account_ref="t", plan_account_ref="t", scope_account_refs=["t", "k"])
+    ok = {
+        "terms_account_ref": "t",
+        "plan_account_ref": "t",
+        "scope_account_refs": ["t", "k"],
+    }
     assert account_binding_ok(**ok)
     assert not account_binding_ok(**{**ok, "plan_account_ref": "k"})
     assert not account_binding_ok(**{**ok, "scope_account_refs": ["k"]})

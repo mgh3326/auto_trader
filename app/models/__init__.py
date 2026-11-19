@@ -76,6 +76,17 @@ from .kiwoom_coordination_lifecycle import KiwoomCoordinationLifecycle
 from .kr_stock_warnings import KRStockWarning
 from .kr_symbol_universe import KRSymbolUniverse
 from .krx_after_market_eligibility import KrxAfterMarketEligibility
+from .mandate import (
+    MandateActivationProfile,
+    MandateApproval,
+    MandateApprovalRequest,
+    MandatePlan,
+    MandatePlanEvent,
+    MandatePlanTranche,
+    MandateSymbolReservation,
+    MandateSymbolReservationRelease,
+    MandateTerms,
+)
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -164,17 +175,6 @@ from .screener_pick_log import ScreenerPickLog
 from .sell_condition import SellCondition
 from .session_context import OperatorSessionContext
 from .strategy_learning_event import ResearchStrategyLearningEvent
-from .mandate import (
-    MandateActivationProfile,
-    MandateApproval,
-    MandateApprovalRequest,
-    MandatePlan,
-    MandatePlanEvent,
-    MandatePlanTranche,
-    MandateSymbolReservation,
-    MandateSymbolReservationRelease,
-    MandateTerms,
-)
 from .strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from .symbol_news_relevance import SymbolNewsRelevance
 from .symbol_sectors import SymbolSector

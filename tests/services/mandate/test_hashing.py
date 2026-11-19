@@ -14,34 +14,34 @@ D = Decimal
 
 
 def _terms(**over):
-    base = dict(
-        sleeve_id=3,
-        terms_version="mandate-terms/v1",
-        basket_key="basket-1",
-        account_ref="acct",
-        universe_rule="rule",
-        allowed_symbols=["005930", "000270"],
-        entry_max_premium_bps="30",
-        per_order_cap="2000000",
-        daily_cap="5000000",
-        sector_cap_pct="35",
-        basket_drawdown_freeze_pct="25",
-        account_drawdown_freeze_pct="25",
-        tranche_rule={
+    base = {
+        "sleeve_id": 3,
+        "terms_version": "mandate-terms/v1",
+        "basket_key": "basket-1",
+        "account_ref": "acct",
+        "universe_rule": "rule",
+        "allowed_symbols": ["005930", "000270"],
+        "entry_max_premium_bps": "30",
+        "per_order_cap": "2000000",
+        "daily_cap": "5000000",
+        "sector_cap_pct": "35",
+        "basket_drawdown_freeze_pct": "25",
+        "account_drawdown_freeze_pct": "25",
+        "tranche_rule": {
             "weights": ["0.4", "0.3", "0.3"],
             "triggers_pct_from_first": ["0", "-15", "-30"],
             "min_gap_sessions": 20,
         },
-        loss_sell_mode="human_card",
-        expires_at=datetime(2026, 12, 1, 0, 0, tzinfo=UTC),
-        sleeve_state="live",
-        budget_cap="9750000",
-        loss_limit="500000",
-        prereg_metric="m",
-        prereg_min_effect_pct="1",
-        prereg_horizon_sessions=20,
-        prereg_max_duration_days=90,
-    )
+        "loss_sell_mode": "human_card",
+        "expires_at": datetime(2026, 12, 1, 0, 0, tzinfo=UTC),
+        "sleeve_state": "live",
+        "budget_cap": "9750000",
+        "loss_limit": "500000",
+        "prereg_metric": "m",
+        "prereg_min_effect_pct": "1",
+        "prereg_horizon_sessions": 20,
+        "prereg_max_duration_days": 90,
+    }
     base.update(over)
     return hashing.terms_content(**base)
 
@@ -67,7 +67,9 @@ def test_symbol_order_does_not_change_the_hash_but_a_value_does() -> None:
 
 def test_timestamps_hash_in_utc_regardless_of_offset() -> None:
     kst = timezone(timedelta(hours=9))
-    a = hashing.content_sha256(_terms(expires_at=datetime(2026, 12, 1, 9, 0, tzinfo=kst)))
+    a = hashing.content_sha256(
+        _terms(expires_at=datetime(2026, 12, 1, 9, 0, tzinfo=kst))
+    )
     assert a == hashing.content_sha256(_terms())
     with pytest.raises(ValueError):
         _terms(expires_at=datetime(2026, 12, 1))
@@ -88,4 +90,6 @@ def test_profile_content_is_stable() -> None:
         expires_at=datetime(2026, 12, 1, tzinfo=UTC),
     )
     assert p["effective_session"] == "2026-11-23"
-    assert hashing.content_sha256(p) == hashing.content_sha256(dict(reversed(list(p.items()))))
+    assert hashing.content_sha256(p) == hashing.content_sha256(
+        dict(reversed(list(p.items())))
+    )

@@ -42,15 +42,15 @@ class Stream:
 
     def fence(self, k: int, pid: UUID, *, mode: str = "human", day: date = SESSION):
         attempt = uuid4()
-        kwargs = dict(
-            tranche_index=k,
-            proposal_id=pid,
-            notional=D("940000"),
-            kst_day=day,
-            approval_mode=mode,
-            account_ref="acct-1",
-            attempt_id=attempt,
-        )
+        kwargs = {
+            "tranche_index": k,
+            "proposal_id": pid,
+            "notional": D("940000"),
+            "kst_day": day,
+            "approval_mode": mode,
+            "account_ref": "acct-1",
+            "attempt_id": attempt,
+        }
         if mode == "auto":
             kwargs["activation_profile_id"] = 7
         self.add("tranche_send_fenced", **kwargs)
