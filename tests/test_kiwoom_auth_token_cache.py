@@ -130,7 +130,8 @@ def mock_token_transport() -> httpx.MockTransport:
             json={
                 "token": f"tkn-{calls['count']}",
                 "expires_dt": (
-                    dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(seconds=300)
+                    dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+                    + dt.timedelta(seconds=300)
                 ).strftime("%Y%m%d%H%M%S"),
                 "token_type": "Bearer",
                 "return_code": 0,

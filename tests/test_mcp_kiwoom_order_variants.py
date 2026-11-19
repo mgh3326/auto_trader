@@ -3082,7 +3082,9 @@ async def test_confirmed_place_cold_cache_token_issued_once():
     )
     from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
 
-    expires = (dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+    expires = (
+        dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(days=1)
+    ).strftime("%Y%m%d%H%M%S")
     mint_count = 0
 
     def oauth_handler(request):  # noqa: ARG001
@@ -3321,7 +3323,9 @@ def _patch_real_confirmed_sell_client(monkeypatch, mod, *, stage: str | None = N
             )
         raise AssertionError(f"unexpected api_id={api_id!r}")
 
-    expires = (dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+    expires = (
+        dt.datetime.now(dt.timezone(dt.timedelta(hours=9))) + dt.timedelta(days=1)
+    ).strftime("%Y%m%d%H%M%S")
 
     def oauth_handler(_request: httpx.Request) -> httpx.Response:
         token_mint_calls["count"] += 1
