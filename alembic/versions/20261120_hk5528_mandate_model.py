@@ -35,6 +35,7 @@ Revises: 20261116_hk4902_drop_unused
 Create Date: 2026-11-20
 """
 
+# expand-contract: contract-step 5528
 from __future__ import annotations
 
 from collections.abc import Sequence
