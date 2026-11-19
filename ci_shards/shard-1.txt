@@ -245,6 +245,7 @@ tests/services/mock_integration/test_coordination.py
 tests/services/mock_strategy/test_crypto.py
 tests/services/mock_strategy/test_us.py
 tests/services/mock_strategy/test_us_broker.py
+tests/services/mock_strategy/test_us_symbol_change.py
 tests/services/nhplug_mock/test_adversarial_db.py
 tests/services/nhplug_mock/test_dispatch_state_machine.py
 tests/services/nhplug_mock/test_lease_host.py
