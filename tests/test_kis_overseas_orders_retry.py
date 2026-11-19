@@ -78,9 +78,16 @@ class TestOverseasOrdersTransientRetry:
             )
 
     @pytest.mark.asyncio
-    async def test_returns_accumulated_rows_when_continuation_sydb0050_persists(
+    async def test_raises_when_continuation_sydb0050_persists(
         self, _mock_overseas_orders
     ):
+        """hk 5342: 재시도 소진 시 누적 행이 있어도 부분 목록을 반환하지 않는다.
+
+        이 테스트는 이전에 "누적 행을 반환"을 고정했으나, 그 동작이 reconcile
+        호출자에게 부분 목록을 완전한 목록처럼 보이게 했다. 표시 전용 opt-in
+        (``allow_partial_on_transient_exhausted``) 경로는
+        ``tests/test_kis_overseas_incomplete_history_hk5342.py`` 가 고정한다.
+        """
         instance, parent = _mock_overseas_orders
 
         first_page = {
@@ -103,11 +110,15 @@ class TestOverseasOrdersTransientRetry:
             ]
         )
 
-        result = await instance.inquire_daily_order_overseas(
-            start_date="20260317", end_date="20260317"
-        )
+        with pytest.raises(RuntimeError) as excinfo:
+            await instance.inquire_daily_order_overseas(
+                start_date="20260317", end_date="20260317"
+            )
 
-        assert result == [{"odno": "001", "pdno": "AAPL"}]
+        message = str(excinfo.value)
+        assert "page=2" in message
+        assert "accumulated=1" in message
+        assert "SYDB0050" in message
         assert parent._request_with_rate_limit.call_count == 4
 
     @pytest.mark.asyncio

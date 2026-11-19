@@ -305,6 +305,9 @@ async def _fetch_us_orders(
             # Reconcile/fill-evidence paths keep the broker defaults.
             inter_page_delay=0.0,
             stop_when_no_new_rows=True,
+            # hk 5342: 주문 이력 표시 전용 경로. 재시도 오류가 소진되어도 수집한
+            # 행을 보여준다 — 이 툴은 주문 존재/부재의 증거가 아니다.
+            allow_partial_on_transient_exhausted=True,
         )
         fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
 
