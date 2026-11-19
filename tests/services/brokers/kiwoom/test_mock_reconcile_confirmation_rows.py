@@ -135,7 +135,10 @@ def test_kr_cancel_confirmation_row_closes_the_original_via_kt00009() -> None:
         status=[
             _kr_status(),
             _kr_status(
-                ord_no=KR_CONFIRM, orig_ord_no=KR_ORIGINAL, mdfy_cncl_tp="취소주문"
+                ord_no=KR_CONFIRM,
+                orig_ord_no=KR_ORIGINAL,
+                mdfy_cncl_tp="취소주문",
+                cnfm_qty="1",
             ),
         ],
     )
@@ -395,6 +398,94 @@ def test_us_expired_child_row_does_not_expire_the_original() -> None:
     verdict = _us_verdict([_us_row(), child])
     assert verdict.verdict == "unknown"
     assert verdict.reason == "child_operation_unresolved"
+
+
+# --- hk 5419 r2: request-only rows, disagreeing views, open remainder -------
+
+
+def test_kr_cancel_request_row_is_not_a_confirmation() -> None:
+    """kt00009 ``취소주문`` with no confirmed quantity only says "received"."""
+    verdict = _kr_verdict(
+        detail=[_kr_detail()],
+        status=[
+            _kr_status(),
+            _kr_status(
+                ord_no=KR_CONFIRM,
+                orig_ord_no=KR_ORIGINAL,
+                mdfy_cncl_tp="취소주문",
+                cnfm_qty="0",
+            ),
+        ],
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_kr_detail_cancel_text_without_confirmation_is_not_a_confirmation() -> None:
+    verdict = _kr_verdict(
+        detail=[
+            _kr_detail(),
+            _kr_detail(ord_no=KR_CONFIRM, ori_ord=KR_ORIGINAL, mdfy_cncl="취소주문"),
+        ]
+    )
+    assert verdict.reason == "child_operation_unresolved"
+
+
+@pytest.mark.parametrize("status_text", ["거부", "취소/만료", "만료"])
+def test_kr_child_views_that_disagree_fail_closed(status_text: str) -> None:
+    """detail says 취소확인, status says the same child was rejected/expired."""
+    verdict = _kr_verdict(
+        detail=[_kr_detail(), _kr_cancel_confirm_detail()],
+        status=[
+            _kr_status(),
+            _kr_status(
+                ord_no=KR_CONFIRM,
+                orig_ord_no=KR_ORIGINAL,
+                mdfy_cncl_tp=status_text,
+                cnfm_qty="1",
+            ),
+        ],
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_us_cancel_request_row_is_not_a_confirmation() -> None:
+    request_only = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=US_ORIGINAL, ord_stat="접수", ord_cntr_tp="12"
+    )
+    for own_cancel in (True, False):
+        verdict = _us_verdict([_us_row(), request_only], own_cancel=own_cancel)
+        assert verdict.verdict == "unknown"
+        assert verdict.reason == "child_operation_unresolved"
+
+
+def test_us_child_views_that_disagree_fail_closed() -> None:
+    done = _us_cancel_confirm()
+    rejected = _us_row(
+        ord_no=US_CONFIRM, orig_ord_no=US_ORIGINAL, ord_stat="거부", ord_cntr_tp="12"
+    )
+    verdict = _us_verdict([_us_row(), done], open_=[rejected])
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "child_operation_unresolved"
+
+
+def test_us_child_cancel_does_not_close_a_status_only_original_with_remainder() -> None:
+    """ust21050 shows the original still open; the today listing lacks it."""
+    verdict = _us_verdict(
+        [_us_cancel_confirm()],
+        open_=[_us_row(ord_remnq="1")],
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.reason == "original_remainder_unproven"
+
+
+def test_us_child_cancel_closes_a_status_only_original_with_zero_remainder() -> None:
+    verdict = _us_verdict(
+        [_us_cancel_confirm()],
+        open_=[_us_row(ord_remnq="0")],
+    )
+    assert verdict.verdict == "cancelled"
 
 
 # --- US 무효주문 -----------------------------------------------------------

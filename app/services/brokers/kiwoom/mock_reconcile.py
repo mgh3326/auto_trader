@@ -138,6 +138,10 @@ class BrokerRow:
     #: ``ori_ord``, kt00009/ust21050/ust21510 ``orig_ord_no``), or ``None`` when
     #: the broker reports no original order (empty / all-zero).
     original_order_id: str | None = None
+    #: The row is a *completed* cancel confirmation (kt00007 ``취소확인``, a
+    #: kt00009 cancel row with a positive ``cnfm_qty``, US ``취소완료``). A row that
+    #: only says the cancel *request* was received (``취소주문``/``접수``) is not.
+    cancel_completed: bool = False
     #: A confirmation row whose text says it replaced (modified) the original.
     #: A modify closes the original into a *new* order number, which the ledger
     #: cannot record as a terminal verdict, so it is reported, not guessed.
@@ -236,6 +240,14 @@ def _modify_text(text: str) -> bool:
     return "정정" in text or "modify" in text.lower()
 
 
+def _optional_raw_int(row: Mapping[str, Any], key: str) -> int | None:
+    """An optional kt00009 integer: absent/blank is ``None``, junk is unparseable."""
+    raw = row.get(key)
+    if raw is None or not str(raw).strip():
+        return None
+    return _raw_int(row, key)
+
+
 def _raw_int(row: Mapping[str, Any], key: str) -> int:
     """Parse a raw kt00009 integer with the normalizer's rules."""
     raw = row.get(key)
@@ -263,6 +275,7 @@ def _rows_from_detail(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
         matched = _matched_markers(text)
         original = _original_order_id(raw, "ori_ord")
         modify = original is not None and _modify_text(text)
+        completed = original is not None and "취소확인" in text.replace(" ", "")
         rows.append(
             BrokerRow(
                 order_id=str(row["order_id"]),
@@ -278,6 +291,7 @@ def _rows_from_detail(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
                 marker_ambiguous=len(matched) > 1 or (modify and bool(matched)),
                 original_order_id=original,
                 modify_text=modify,
+                cancel_completed=completed,
             )
         )
     return tuple(rows)
@@ -302,6 +316,15 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
         matched = _matched_markers(text)
         original = _original_order_id(raw, "orig_ord_no")
         modify = original is not None and _modify_text(text)
+        # A kt00009 cancel row is a confirmed cancel only with a positive
+        # confirmed quantity (``cnfm_qty``); ``취소주문`` alone is the request.
+        confirmed_qty = _optional_raw_int(raw, "cnfm_qty")
+        completed = (
+            original is not None
+            and "취소" in text
+            and confirmed_qty is not None
+            and confirmed_qty > 0
+        )
         # ``normalize_orders`` maps only cancels; reject/expiry text is kept so
         # the closed marker vocabulary applies to both listings. An ambiguous
         # text never falls back to the normalizer's coarse "cancelled" status.
@@ -328,6 +351,7 @@ def _rows_from_status(payload: Mapping[str, Any]) -> tuple[BrokerRow, ...]:
                 marker_ambiguous=len(matched) > 1 or (modify and bool(matched)),
                 original_order_id=original,
                 modify_text=modify,
+                cancel_completed=completed,
             )
         )
     return tuple(rows)
@@ -515,6 +539,7 @@ def _us_rows(
                 original_order_id=original,
                 modify_text=modify,
                 invalid_order=invalid,
+                cancel_completed=original is not None and "취소완료" in text,
             )
         )
     return tuple(rows)
@@ -636,11 +661,12 @@ def _terminal_marker(
     """The single terminal marker class for the order, or why it is not trusted.
 
     The order's own rows carry their marker as is. A confirmation row (another
-    order number naming this one) is evidence only when it is a clean, positive
-    *cancel* confirmation: a rejected, invalid, expired or ambiguous child
-    operation says the child failed, not that the original ended, so it never
-    lends its marker to the original. It only blocks a verdict that the
-    original's own rows do not already prove (``child_operation_unresolved``).
+    order number naming this one) lends a ``cancel`` marker only when its child
+    order is a *completed* cancel confirmation in every view it appears in. A
+    request-only row (``취소주문``/``접수``), a rejected, invalid, expired or
+    ambiguous child, or a child whose listings disagree says the child failed or
+    is unproven, not that the original ended: it blocks a verdict the original's
+    own rows do not already prove (``child_operation_unresolved``).
     """
     own_rows = [row for row in (detail_row, status_row) if row is not None]
     if any(row.marker_ambiguous for row in own_rows):
@@ -649,33 +675,35 @@ def _terminal_marker(
     if conflict is not None:
         return None, conflict
     markers = {own_marker} if own_marker is not None else set()
-    cancel_confirmed = any(_is_clean_cancel_confirmation(row) for row in confirmations)
-    if cancel_confirmed:
-        markers.add("cancel")
+    children: dict[str, list[BrokerRow]] = {}
+    for row in confirmations:
+        children.setdefault(row.order_id, []).append(row)
+    unresolved = False
+    for child_rows in children.values():
+        contradictory = any(
+            (row.marker not in (None, "cancel"))
+            or row.marker_ambiguous
+            or row.invalid_order
+            for row in child_rows
+        )
+        cancel_rows = [row for row in child_rows if row.marker == "cancel"]
+        if contradictory:
+            unresolved = True
+        elif cancel_rows and any(row.cancel_completed for row in cancel_rows):
+            markers.add("cancel")
+        elif cancel_rows:
+            unresolved = True  # the cancel request was only received
     if len(markers) > 1:
         return None, "conflicting_terminal_markers"
     if markers:
         return next(iter(markers)), None
-    if any(
-        not _is_clean_cancel_confirmation(row)
-        and (row.marker is not None or row.marker_ambiguous or row.invalid_order)
-        for row in confirmations
-    ):
+    if unresolved:
         return None, "child_operation_unresolved"
     if any(row.modify_text for row in confirmations):
         # The original was replaced by a modified order: not a cancel, not an
         # expiry, and the ledger has no terminal verdict for it.
         return None, "replaced_by_modification"
     return None, None
-
-
-def _is_clean_cancel_confirmation(row: BrokerRow) -> bool:
-    return (
-        row.marker == "cancel"
-        and not row.marker_ambiguous
-        and not row.invalid_order
-        and not row.modify_text
-    )
 
 
 def _classify_uncertain(
@@ -777,6 +805,11 @@ def classify_verdict(
         )
         if marker_unknown is not None:
             return _unknown(marker_unknown)
+        if status_marker == "cancel" and status_row.marker != "cancel":
+            # The cancel comes from a child row, not from this listing's own row:
+            # the original must positively report nothing left working.
+            if status_row.remaining_quantity != 0:
+                return _unknown("original_remainder_unproven")
         if status_marker == "cancel":
             # The cancel pair needs our own acknowledged request (design §3.2).
             if not own_cancel_acknowledged:
