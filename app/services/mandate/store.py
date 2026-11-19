@@ -809,12 +809,12 @@ async def record_approval(
         await acquire_basket_lock(session, realm, basket_key)
     await acquire_sleeve_lock(session, request.sleeve_id)
 
+    version = await sleeve_store.current_version(session, request.sleeve_id)
+    if version is None or version.version != request.base_sleeve_version:
+        raise MandateError(
+            v.MandateRefusal.REQUEST_STALE, "the sleeve changed after the request"
+        )
     if decision == "approved":
-        version = await sleeve_store.current_version(session, request.sleeve_id)
-        if version is None or version.version != request.base_sleeve_version:
-            raise MandateError(
-                v.MandateRefusal.REQUEST_STALE, "the sleeve changed after the request"
-            )
         # Every refusal that does not need the approval row comes first, so a
         # refusal leaves nothing written (MandateError's contract).
         await _precheck_approved(session, request, sleeve, realm, moment)

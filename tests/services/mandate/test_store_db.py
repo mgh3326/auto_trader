@@ -225,8 +225,9 @@ async def test_i21_denied_request_writes_no_clause_and_a_request_decides_once(
     await db_session.rollback()
 
 
+@pytest.mark.parametrize("decision", ["approved", "denied"])
 async def test_i21_a_request_goes_stale_when_the_sleeve_moves_on(
-    db_session, seed
+    db_session, seed, decision
 ) -> None:
     sleeve = await seed.sleeve(state="shadow")
     request = await ms.create_terms_request(
@@ -247,7 +248,7 @@ async def test_i21_a_request_goes_stale_when_the_sleeve_moves_on(
         await ms.record_approval(
             db_session,
             request_id=request_id,
-            decision="approved",
+            decision=decision,
             principal=PRINCIPAL,
             nonce_digest=digest("n"),
         )
