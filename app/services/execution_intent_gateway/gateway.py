@@ -146,7 +146,7 @@ class IntentGateway:
         self._clock = clock
 
     async def refuse_misshaped_upbit_child(
-        self, intent_id: UUID, *, confirm: bool
+        self, intent_id: UUID, *, idempotency_key: str, confirm: bool
     ) -> GatewayOutcome | None:
         """Design 5438 §3.3: a submit of the wrong field set for an ``upbit_live``
         intent is ``refused/child_shape_invalid_for_account`` with no journal row.
@@ -161,6 +161,11 @@ class IntentGateway:
             return None
         if await self._upbit.account_of(intent_id) != UPBIT_LIVE_ACCOUNT:
             return None
+        if await self._upbit.key_is_journaled(idempotency_key):
+            # The key already names a child, perhaps a working order. A changed
+            # body under it is a conflict, exactly as in ``handle``: a refusal
+            # would tell the executor nothing was sent under this key.
+            return GatewayOutcome(status="conflict", reason="idempotency_key_reused")
         return _refused(Refusal.CHILD_SHAPE_INVALID_FOR_ACCOUNT)
 
     async def handle(

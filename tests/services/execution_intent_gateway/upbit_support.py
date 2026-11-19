@@ -276,6 +276,9 @@ class MemoryUpbitStore:
         intent = self.intents.get(intent_id)
         return None if intent is None else intent.account
 
+    async def key_is_journaled(self, idempotency_key: str) -> bool:
+        return any(row.idempotency_key == idempotency_key for row in self.children)
+
     async def read_intent(self, intent_id: UUID) -> IntentSnapshot | None:
         return self.intents.get(intent_id)
 

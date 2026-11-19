@@ -387,10 +387,11 @@ def test_s6_the_exit_intent_is_a_sell_bound_to_its_exit_row() -> None:
         mode="live",
         sleeve_id=7,
         strategy_code_sha=SHA,
+        max_intent_ttl=timedelta(hours=12),
     )
     args = SimpleNamespace(limit_price_krw="3000", max_slippage_bps="30")
 
-    intent = cli._exit_intent(exit_row, mandate, args)
+    intent = cli._exit_intent(exit_row, mandate, args, now=NOW)
 
     assert isinstance(intent, ExecutionIntentV2)
     assert (intent.side, intent.origin) == ("sell", "operator_exit")
@@ -399,7 +400,72 @@ def test_s6_the_exit_intent_is_a_sell_bound_to_its_exit_row() -> None:
     assert intent.max_quantity_decimal == "12.5"
     assert intent.expires_at == exit_row.expires_at
     # One exit row, one intent id, however often the command is run.
-    assert cli._exit_intent(exit_row, mandate, args).intent_id == intent.intent_id
+    assert (
+        cli._exit_intent(exit_row, mandate, args, now=NOW).intent_id == intent.intent_id
+    )
+
+
+def test_s6_the_exit_intent_lives_no_longer_than_the_mandate_lets_an_intent_live() -> (
+    None
+):
+    """PR 2486 review: a 15-minute mandate must still get a usable exit intent.
+
+    The exit row lasts an hour. Copying that into the intent made every exit of
+    a short-TTL mandate ``mandate_scope_mismatch`` after its row was committed.
+    """
+    from app.services.execution_intent_gateway.upbit_decisions import (
+        evaluate_operator_exit,
+    )
+    from tests.services.execution_intent_gateway import upbit_support as support
+
+    ttl = timedelta(minutes=15)
+    exit_row = SimpleNamespace(
+        id=uuid4(),
+        symbol=support.SYMBOL,
+        max_quantity=Decimal("10"),
+        expires_at=support.NOW + timedelta(hours=1),
+    )
+    the_mandate = support.mandate(max_intent_ttl=ttl, revoked=True)
+    row = SimpleNamespace(
+        id=the_mandate.mandate_id,
+        strategy=the_mandate.strategy,
+        mode=the_mandate.mode,
+        sleeve_id=the_mandate.sleeve_id,
+        strategy_code_sha=the_mandate.strategy_code_sha,
+        max_intent_ttl=ttl,
+    )
+    args = SimpleNamespace(limit_price_krw="3000", max_slippage_bps="30")
+
+    intent = cli._exit_intent(exit_row, row, args, now=support.NOW)
+
+    assert intent.expires_at == support.NOW + ttl
+    snapshot = support.sell_intent(
+        intent_id=intent.intent_id,
+        origin="operator_exit",
+        operator_exit_id=exit_row.id,
+        expires_at=intent.expires_at,
+        max_quantity_decimal=Decimal(intent.max_quantity_decimal),
+        created_at=support.NOW,
+    )
+    refusal = evaluate_operator_exit(
+        snapshot,
+        quantity=Decimal("10"),
+        facts=support.facts(
+            mandate=the_mandate,
+            operator_exit=support.operator_exit(
+                snapshot, max_quantity=Decimal("10"), expires_at=exit_row.expires_at
+            ),
+            symbol=support.symbol_view(holdings=Decimal("10")),
+        ),
+        reads=support.reads(),
+    )
+    assert refusal is None
+    # A longer mandate TTL leaves the exit row's own deadline in charge.
+    row.max_intent_ttl = timedelta(hours=12)
+    assert (
+        cli._exit_intent(exit_row, row, args, now=support.NOW).expires_at
+        == exit_row.expires_at
+    )
 
 
 def test_the_database_url_is_never_echoed(

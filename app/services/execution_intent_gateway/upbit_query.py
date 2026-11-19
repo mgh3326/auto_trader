@@ -102,6 +102,14 @@ def build_upbit_reconciliation(
             unresolved.append(_unresolved(child, UnresolvedReason.NO_LEDGER_EVIDENCE))
             continue
         if order.is_shadow:
+            if not order.shadow_recorded:
+                # Reserved, outcome not recorded: the same key finishes it.
+                # Until then the query says what the journal says, not what the
+                # book assumes.
+                unresolved.append(
+                    _unresolved(child, UnresolvedReason.NO_LEDGER_EVIDENCE)
+                )
+                continue
             filled_total += order.quantity
             continue
         uuid = order.order_uuid

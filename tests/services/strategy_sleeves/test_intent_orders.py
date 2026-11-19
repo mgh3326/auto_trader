@@ -445,3 +445,32 @@ def test_an_order_the_broker_has_not_ended_is_not_marked_by_the_fill_check() -> 
     resting = order(3, side="sell", uuid="uuid-3")
     orders = [resting.as_sleeve_order()]
     assert mark_children_with_unbooked_fills(orders, [resting], []) == orders
+
+
+def test_a_shadow_fill_keeps_its_place_in_the_fifo_when_it_is_recorded_late() -> None:
+    """PR 2486 review: a shadow buy whose outcome write failed is ``sending``,
+    a later shadow sell of that position is recorded first, and then the buy is
+    finished by its key. The buy's virtual fill must not move behind the sell."""
+    t0 = NOW
+    sell_at = NOW + timedelta(minutes=1)
+    recorded_late = NOW + timedelta(minutes=5)
+
+    def book_of(buy: IntentChildOrder):
+        sell = order(2, state="shadowed", side="sell", uuid=None, at=sell_at)
+        orders, fills = shadow_book_inputs([buy, sell])
+        return compute_sleeve_book(orders=orders, fills=fills, marks={})
+
+    pending = order(1, state="sending", mode="shadow", uuid=None, at=t0)
+    finished = IntentChildOrder(
+        **{
+            **{f: getattr(pending, f) for f in pending.__dataclass_fields__},
+            "state": "shadowed",
+            "finished_at": recorded_late,
+        }
+    )
+
+    for buy in (pending, finished):
+        book = book_of(buy)
+        assert book.positions == ()
+        assert book.unmatched_sell_quantity == Decimal("0")
+        assert book.realized_pnl == Decimal("0")

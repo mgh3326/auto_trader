@@ -92,6 +92,16 @@ class IntentChildOrder:
         return self.execution_mode == "shadow"
 
     @property
+    def shadow_recorded(self) -> bool:
+        """A shadow child whose ``shadowed`` outcome is in the journal.
+
+        The book counts a shadow child from its reservation on. A reader that
+        reports what was *recorded* -- the intent query -- asks this instead:
+        a shadow child still ``sending`` has not been answered yet.
+        """
+        return self.is_shadow and self.state == _SHADOW_ORDER_STATE
+
+    @property
     def order_uuid(self) -> str | None:
         """The Upbit order this child is bound to, when exactly one is named.
 
@@ -188,7 +198,11 @@ def shadow_book_inputs(
                 quantity=order.quantity,
                 price=order.limit_price,
                 fee=ZERO,
-                filled_at=order.finished_at or order.created_at,
+                # The reservation time, never the time the outcome was
+                # recorded: it is committed before anything can depend on the
+                # fill and does not move when a row left ``sending`` is
+                # finished later, so the FIFO order of virtual fills is fixed.
+                filled_at=order.created_at,
             )
         )
     return book_orders, fills

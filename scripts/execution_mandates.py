@@ -317,9 +317,13 @@ def _whole(raw: Any, name: str) -> int:
 
 
 def _exit_intent(
-    exit_row: Any, mandate: ExecutionMandate, args: argparse.Namespace
+    exit_row: Any, mandate: ExecutionMandate, args: argparse.Namespace, *, now: datetime
 ) -> ExecutionIntentV2:
     quantity = format(Decimal(str(exit_row.max_quantity)).normalize(), "f")
+    # The intent lives no longer than its exit row, and no longer than the
+    # mandate lets any intent live: an operator exit keeps that term (S6), so a
+    # mandate with a short TTL gets a shorter exit intent, not a refused one.
+    expires_at = min(exit_row.expires_at, now + mandate.max_intent_ttl)
     return ExecutionIntentV2(
         schema_version=2,
         intent_id=uuid.uuid5(_OPERATOR_EXIT_NAMESPACE, str(exit_row.id)),
@@ -337,7 +341,7 @@ def _exit_intent(
         strategy_code_sha=mandate.strategy_code_sha,
         limit_price_krw=_whole(args.limit_price_krw, "--limit-price-krw"),
         max_slippage_bps=_whole(args.max_slippage_bps, "--max-slippage-bps"),
-        expires_at=exit_row.expires_at,
+        expires_at=expires_at,
         inventory=DecimalInventoryConstraint(
             position_at_authorization=quantity,
             min_position_after="0",
@@ -372,7 +376,7 @@ async def _exit(
     mandate = await session.get(ExecutionMandate, mandate_id)
     if mandate is None:  # pragma: no cover - create_operator_exit checked it
         raise MandateError("mandate does not exist")
-    intent = _exit_intent(exit_row, mandate, args)
+    intent = _exit_intent(exit_row, mandate, args, now=now)
     payload: dict[str, Any] = {
         "mode": _mode(args),
         "operator_exit": {

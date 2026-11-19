@@ -37,6 +37,7 @@ def order(
     uuid: str | None = "uuid-1",
     quantity: str = "10",
     evidence: tuple[str, str] | None = None,
+    mode: str | None = None,
 ) -> IntentChildOrder:
     return IntentChildOrder(
         child_id=child_id,
@@ -44,7 +45,7 @@ def order(
         idempotency_key=key,
         symbol="KRW-XRP",
         side="buy",
-        execution_mode="shadow" if state == "shadowed" else "live",
+        execution_mode=mode or ("shadow" if state == "shadowed" else "live"),
         decision_ref="d",
         state=state,
         quantity=Decimal(quantity),
@@ -251,3 +252,23 @@ def test_a_quarantined_row_and_a_shadow_order_are_not_listed() -> None:
         [quarantined],
     )
     assert entry["cumulative_qty"] == "0" and entry["fills"] == []
+
+
+def test_a_shadow_child_still_sending_is_not_reported_as_reconciled() -> None:
+    """PR 2486 review: the book counts a shadow child from its reservation, but
+    the query reports what the journal recorded. A ``sending`` shadow submit is
+    unresolved until the same key finishes it."""
+    pending = child_row("k1", state=ChildState.SENDING, broker_order_id=None)
+    answer = build_upbit_reconciliation(
+        [pending], [order("k1", state="sending", uuid=None, mode="shadow")], {}
+    )
+    assert answer.reconciled is False and answer.order is None
+    assert [(item.reason.value) for item in answer.unresolved] == ["no_ledger_evidence"]
+    body = upbit_reconciliation_json(INTENT, [pending], answer)
+    assert body["view"] is None
+
+    recorded = child_row("k1", state=ChildState.SHADOWED, broker_order_id=None)
+    done = build_upbit_reconciliation(
+        [recorded], [order("k1", state="shadowed", uuid=None)], {}
+    )
+    assert done.reconciled is True and done.filled_qty == Decimal("10")

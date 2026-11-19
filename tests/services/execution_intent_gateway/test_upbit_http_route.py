@@ -340,3 +340,20 @@ def test_a_misshaped_child_reads_nothing_without_the_confirm_header() -> None:
         headers=h.headers("another-key"),
     )
     assert answer.status_code == 422 and read == []
+
+
+def test_a_misshaped_retry_under_a_key_that_already_names_a_child_is_a_conflict() -> (
+    None
+):
+    """PR 2486 review (round 2): the key already names a working order. A
+    refusal would say nothing was sent under it; the answer is the conflict."""
+    h = Harness()
+    assert h.post(h.upbit_body()).json()["status"] == "accepted"
+
+    answer = h.post(_kis_shaped(h, limit_price_krw=150_000_000))
+
+    assert answer.status_code == 200
+    assert answer.json()["status"] == "conflict"
+    assert answer.json()["reason"] == "idempotency_key_reused"
+    assert h.live.calls == [("submit", "child-0001")]
+    assert len(h.upbit_store.children) == 1

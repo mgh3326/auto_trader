@@ -39,7 +39,10 @@ nothing here either: the handoff stays claimed, and no second card can be
 created while the first can still be approved.
 
 The same committed UPDATE sets ``fills_unmeasured`` (O4): from the moment a card
-may have posted, the whole sleeve is unmeasured. Only a proven non-send
+may have posted, the whole sleeve is unmeasured. The fence is refused while a
+live buy of the sleeve is reserved and unanswered (``exit_handoff_buy_in_flight``),
+so no buy that was judged on the measured sleeve is still on its way out when
+the card posts. Only a proven non-send
 (:func:`record_card_proven_unsent`) or a settle that found the broker and the
 ledger equal clears it.
 
@@ -69,7 +72,12 @@ from typing import Any, Final
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution_mandates import ExecutionExitHandoff, ExecutionMandate
+from app.models.execution_intent import ExecutionChildRequest, ExecutionIntent
+from app.models.execution_mandates import (
+    ExecutionChildOrderEvidence,
+    ExecutionExitHandoff,
+    ExecutionMandate,
+)
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.strategy_sleeves import StrategySleeve
 from app.services.strategy_sleeves.book import compute_sleeve_book
@@ -424,6 +432,9 @@ async def fence_card_send(
         if handoff.send_attempts != handoff.send_attempts_proven_unsent:
             await session.rollback()
             raise ExitHandoffError("exit_handoff_prior_attempt_unresolved")
+        if await _live_buy_in_flight(session, handoff.sleeve_id):
+            await session.rollback()
+            raise ExitHandoffError("exit_handoff_buy_in_flight")
         mandate = await session.get(ExecutionMandate, handoff.mandate_id)
         if not _account_matches(mandate, configured_account_ref):
             await session.rollback()
@@ -447,6 +458,47 @@ async def fence_card_send(
             await session.rollback()
             raise ExitHandoffError("exit_handoff_claim_lost")
         await session.commit()
+
+
+async def _live_buy_in_flight(session: AsyncSession, sleeve_id: int) -> bool:
+    """Whether a live buy of the sleeve is reserved and not yet answered (O4).
+
+    Such a buy was judged on a measured sleeve and is between its last look and
+    its request. It reads the sleeve again before it posts, but without the
+    sleeve lock, so a fence committed during that read would go unseen. The
+    fence therefore waits for it instead: under the sleeve lock a buy is either
+    reserved before the fence, and seen here, or after it, and then it finds
+    the sleeve unmeasured and is refused. The card is not sent now and can be
+    approved again once the buy has an outcome.
+
+    A journal row is never rewritten, so a buy whose answer was lost stays
+    ``sending`` for good. It stops counting here once the broker's final reading
+    of its order is on record: that order was sent and has ended, so nothing is
+    on its way out any more. With no such reading it keeps the card back, which
+    is what an order of unknown fate already does to the claim itself.
+    """
+    ended = (
+        select(ExecutionChildOrderEvidence.child_id)
+        .where(
+            ExecutionChildOrderEvidence.child_id == ExecutionChildRequest.id,
+            ExecutionChildOrderEvidence.broker_state.in_(sorted(FINAL_BROKER_STATES)),
+        )
+        .exists()
+    )
+    found = await session.scalar(
+        select(ExecutionChildRequest.id)
+        .join(ExecutionIntent, ExecutionIntent.id == ExecutionChildRequest.intent_id)
+        .where(
+            ExecutionIntent.sleeve_id == sleeve_id,
+            ExecutionIntent.execution_mode == "live",
+            ExecutionIntent.side == "buy",
+            ExecutionChildRequest.action == "submit",
+            ExecutionChildRequest.state == "sending",
+            ~ended,
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def record_card_proven_unsent(

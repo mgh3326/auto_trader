@@ -1570,3 +1570,104 @@ async def test_the_mandate_list_reads_rows_that_exist() -> None:
         h for h in listed["open_exit_handoffs"] if h["handoff_id"] == handoff_id
     ]
     assert handoff["state"] == "open" and handoff["fills_unmeasured"] is False
+
+
+# ------------------------------------------------- review round 2 (PR 2486)
+
+
+async def _reserved_live_buy(mandate: ExecutionMandate) -> tuple[Any, int]:
+    """A live buy that passed its checks and has no outcome yet (``sending``)."""
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    reservation = await store.reserve(
+        _submit(intent, _key(), quantity="1"),
+        request_digest="digest",
+        decide=lambda *_a: UpbitDecision(),
+        now_fn=_now,
+    )
+    assert reservation.child is not None
+    return store, reservation.child.child_id
+
+
+@pytest.mark.asyncio
+async def test_o4_the_card_fence_waits_for_a_live_buy_that_is_on_its_way_out(
+    proven: None,
+) -> None:
+    """The buy read a measured sleeve and is between its last look and its
+    request. A card that posted now would make that look stale, so the card is
+    not sent until the buy has an outcome."""
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store, child_id = await _reserved_live_buy(mandate)
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+
+    with pytest.raises(ExitHandoffError) as refused:
+        await _fence(handoff_id, card)
+
+    assert refused.value.code == "exit_handoff_buy_in_flight"
+    row = await _handoff_row(handoff_id)
+    assert row.send_attempts == 0 and row.fills_unmeasured is False
+
+    assert await store.finish(
+        child_id,
+        state=ChildState.ACCEPTED,
+        broker_order_id="uuid-buy",
+        result={},
+        now=_now(),
+    )
+    await _fence(handoff_id, card)
+    assert (await _handoff_row(handoff_id)).send_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_o4_a_buy_whose_order_the_broker_ended_no_longer_holds_the_card_back(
+    proven: None,
+) -> None:
+    """A journal row is never rewritten: a buy whose answer was lost stays
+    ``sending``. The broker's final reading of its order is what ends the wait."""
+    from app.services.execution_intent_gateway.order_evidence import (
+        OrderReading,
+        record_child_order_evidence,
+    )
+
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    _store, child_id = await _reserved_live_buy(mandate)
+    handoff_id, card = await _claimed_card(sleeve, mandate)
+    with pytest.raises(ExitHandoffError):
+        await _fence(handoff_id, card)
+
+    async with AsyncSessionLocal() as session:
+        recorded = await record_child_order_evidence(
+            session,
+            child_id=child_id,
+            reading=OrderReading(
+                order_uuid="uuid-lost-answer",
+                state="cancel",
+                executed_volume=Decimal("0"),
+                remaining_volume=Decimal("1"),
+            ),
+            observed_at=_now(),
+            recorded_by="test",
+        )
+        await session.commit()
+    assert recorded == "inserted"
+
+    await _fence(handoff_id, card)
+    assert (await _handoff_row(handoff_id)).send_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reused_key_is_found_before_a_shape_refusal() -> None:
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    key = _key()
+    assert await store.key_is_journaled(key) is False
+    path, _shadow, _live = _path(store)
+    assert (await path.handle(_submit(intent, key))).status == "accepted"
+
+    assert await store.key_is_journaled(key) is True

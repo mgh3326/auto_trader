@@ -256,6 +256,18 @@ class UpbitGatewayStore:
             await session.rollback()
             return account
 
+    async def key_is_journaled(self, idempotency_key: str) -> bool:
+        """Whether any child, of any intent, already holds this key."""
+        async with self._session_factory() as session:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            found = await session.scalar(
+                select(ExecutionChildRequest.id).where(
+                    ExecutionChildRequest.idempotency_key == idempotency_key
+                )
+            )
+            await session.rollback()
+            return found is not None
+
     async def mandate_account_ref(self, intent_id: UUID) -> str | None:
         """The account fingerprint the intent's mandate was approved for (B12)."""
         async with self._session_factory() as session:

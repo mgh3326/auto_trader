@@ -190,7 +190,9 @@ async def _misshaped_upbit_submit(
     )
     try:
         outcome = await gateway.refuse_misshaped_upbit_child(
-            identity.intent_id, confirm=confirm
+            identity.intent_id,
+            idempotency_key=identity.idempotency_key,
+            confirm=confirm,
         )
     except Exception as exc:  # noqa: BLE001 - fillwire treats any non-200 as unknown
         logger.error("intent gateway handle raised: error_class=%s", type(exc).__name__)

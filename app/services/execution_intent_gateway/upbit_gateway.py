@@ -71,6 +71,8 @@ CooldownReader = Callable[[str], Awaitable[bool]]
 class UpbitJournal(Protocol):
     async def account_of(self, intent_id: UUID) -> str | None: ...
 
+    async def key_is_journaled(self, idempotency_key: str) -> bool: ...
+
     async def read_intent(self, intent_id: UUID) -> IntentSnapshot | None: ...
 
     async def reserve(
@@ -132,6 +134,9 @@ class UpbitGatewayPath:
 
     async def account_of(self, intent_id: UUID) -> str | None:
         return await self._store.account_of(intent_id)
+
+    async def key_is_journaled(self, idempotency_key: str) -> bool:
+        return await self._store.key_is_journaled(idempotency_key)
 
     async def _account_reads(
         self, request: AnyChild, intent: IntentSnapshot | None
