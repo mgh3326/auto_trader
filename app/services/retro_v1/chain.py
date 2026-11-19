@@ -27,6 +27,7 @@ Optional link fields are left out of a row when they have no value.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -102,6 +103,51 @@ STAGE_ORDER: Final = (
 )
 
 
+#: Weakest last: a trade is only as precise as its least precise fill.
+_TIME_BASIS_RANK: Final = {
+    "broker_fill_time": 0,
+    "broker_order_time": 1,
+    "observed_at": 2,
+}
+
+
+def fill_time_basis(fill: Any) -> str | None:
+    """A fill's time basis; a pre-L5 row is read by ``(broker, source)`` (§6.2-4).
+
+    Only a KIS reconciler row has a known meaning (the order time stands in for
+    the fill time); any other row without the column is unknown.
+    """
+    if fill.filled_at_basis in _TIME_BASIS_RANK:
+        return fill.filled_at_basis
+    if (
+        fill.filled_at_basis is None
+        and fill.broker == "kis"
+        and fill.source == "reconciler"
+    ):
+        return "broker_order_time"
+    return None
+
+
+def covered_broker_fill_time(
+    authority: Sequence[Any], taps: Sequence[Any]
+) -> datetime | None:
+    """Latest broker timestamp when the same order's taps cover its booked quantity."""
+    if (
+        not authority
+        or not taps
+        or any(tap.filled_at_basis != "broker_fill_time" for tap in taps)
+    ):
+        return None
+    # ROB-1379: fillwire and the in-app monitor can record the same fill
+    # with different fill_seq values. Count identical executions once.
+    executions = {(tap.filled_at, tap.filled_qty, tap.filled_price) for tap in taps}
+    if sum((qty for _, qty, _ in executions), Decimal(0)) != sum(
+        (row.filled_qty for row in authority), Decimal(0)
+    ):
+        return None
+    return max(at for at, _, _ in executions)
+
+
 @dataclass(slots=True)
 class ChainData:
     candidates: list[Any] = field(default_factory=list)
@@ -123,11 +169,36 @@ class ChainData:
     ref_candidates: list[Any] = field(default_factory=list)
     evidence_fills: list[Any] = field(default_factory=list)
     fills: list[Any] = field(default_factory=list)
+    broker_fill_times: dict[int, datetime] = field(default_factory=dict)
     history: list[Any] = field(default_factory=list)
     bars: list[daily_bars.Bar] = field(default_factory=list)
     superseded: int = 0
     #: sources whose read failed or hit its cap: the population is incomplete.
     incomplete: set[str] = field(default_factory=set)
+
+    def fill_at(self, row: Any) -> datetime:
+        return self.broker_fill_times.get(row.id, row.filled_at)
+
+
+def _broker_fill_times(rows: list[Any]) -> dict[int, datetime]:
+    authority: dict[OrderIdentity, list[Any]] = defaultdict(list)
+    taps: dict[OrderIdentity, list[Any]] = defaultdict(list)
+    for row in rows:
+        if is_opening_seed(row):
+            continue
+        if row.source in AUTHORITATIVE_SOURCES:
+            authority[order_identity(row)].append(row)
+        elif row.source == "websocket":
+            taps[order_identity(row)].append(row)
+    times: dict[int, datetime] = {}
+    for key, booked in authority.items():
+        # An order aggregate maps to one completion time. Multiple booked
+        # executions have no per-row mapping to the websocket executions.
+        if len(booked) == 1:
+            at = covered_broker_fill_time(booked, taps.get(key, []))
+            if at is not None:
+                times[booked[0].id] = at
+    return times
 
 
 def _symbol_filter(column: Any, symbols: list[str] | None) -> list[Any]:
@@ -620,6 +691,8 @@ async def load_chain(
     if ok:
         kept, dropped = supersede_provisional(fills)
         data.superseded = dropped
+        if "fills" not in data.incomplete:
+            data.broker_fill_times = _broker_fill_times(fills)
         data.evidence_fills = [r for r in kept if not is_opening_seed(r)]
         data.fills = [
             r for r in kept if lo <= r.filled_at < hi and not is_opening_seed(r)
@@ -638,8 +711,8 @@ async def load_chain(
 
     if include_lots and data.fills:
         bar_symbols = sorted({r.symbol.upper() for r in data.fills})
-        first = min(r.filled_at for r in data.fills)
-        last = max(r.filled_at for r in data.fills)
+        first = min(data.fill_at(r) for r in data.fills)
+        last = max(data.fill_at(r) for r in data.fills)
 
         async def read_bars() -> list[daily_bars.Bar]:
             return await daily_bars.load_bars(
@@ -700,6 +773,7 @@ def _row(
     basis: str = "inference",
     hints: dict[str, str] | None = None,
     links: RowLinks | None = None,
+    fill_time_basis: str | None = None,
 ) -> Row:
     values = {
         "symbol": symbol,
@@ -719,6 +793,8 @@ def _row(
         # Optional fields: present only with a value, so a row without link
         # evidence is exactly the pre-hk-4188 row.
         values.update({k: v for k, v in links.fields().items() if v is not None})
+    if fill_time_basis is not None:
+        values["fill_time_basis"] = fill_time_basis
     return values, dict(hints or {})
 
 
@@ -1130,16 +1206,22 @@ def fill_rows(
 ) -> list[tuple[datetime | None, Row]]:
     out: list[tuple[datetime | None, Row]] = []
     for f in data.fills:
+        at = data.fill_at(f)
         order_ref = order_refs.get(
             (order_identity(f), _day(f.broker, market, f.filled_at))
         )
         out.append(
             (
-                f.filled_at,
+                at,
                 _row(
                     symbol=f.symbol,
                     stage="fill",
-                    event_at=f.filled_at,
+                    event_at=at,
+                    fill_time_basis=(
+                        "broker_fill_time"
+                        if f.id in data.broker_fill_times
+                        else fill_time_basis(f)
+                    ),
                     event_ref=make_ref("fill", f.id),
                     linked_ref=order_ref,
                     status=f"{f.side}_filled",
@@ -1197,14 +1279,15 @@ def markout_rows(
         symbol = f.symbol.upper()
         bars = series.get(symbol, [])
         mixed = bars is None
-        later = [b for b in bars or [] if b.time > f.filled_at]
+        at = data.fill_at(f)
+        later = [b for b in bars or [] if b.time > at]
         horizon = (
             later[MARKOUT_SESSIONS - 1] if len(later) >= MARKOUT_SESSIONS else None
         )
         miss = "source_mixed" if mixed else "missing_data"
         out.append(
             (
-                horizon.time if horizon else f.filled_at,
+                horizon.time if horizon else at,
                 _row(
                     symbol=f.symbol,
                     stage="markout",
@@ -1257,7 +1340,8 @@ def lot_rows(data: ChainData, market: MarketInfo) -> list[tuple[datetime | None,
         rows = history.get(key, [])
         authoritative = [r for r in rows if r.source in AUTHORITATIVE_SOURCES]
         provisional = [r for r in rows if r.source not in AUTHORITATIVE_SOURCES]
-        last_fill = max(fills, key=lambda r: (r.filled_at, r.id))
+        last_fill = max(fills, key=lambda r: (data.fill_at(r), r.id))
+        at = data.fill_at(last_fill)
         net, average, oversold = fifo_position([_ledger_fill(r) for r in authoritative])
         known = (
             bool(authoritative)
@@ -1273,11 +1357,11 @@ def lot_rows(data: ChainData, market: MarketInfo) -> list[tuple[datetime | None,
             reason = "incomplete_evidence"
         out.append(
             (
-                last_fill.filled_at,
+                at,
                 _row(
                     symbol=last_fill.symbol,
                     stage="lot",
-                    event_at=last_fill.filled_at,
+                    event_at=at,
                     event_ref=make_ref("lot", f"{key[0]}|{key[1]}|{last_fill.id}"),
                     linked_ref=make_ref("fill", last_fill.id),
                     status=status,
@@ -1324,7 +1408,7 @@ def data_as_of(data: ChainData) -> datetime | None:
     times += [c.recorded_at for c in data.candidates]
     times += [f.created_at for f in data.forecasts]
     times += [p.created_at for p in data.proposals]
-    times += [f.filled_at for f in data.fills]
+    times += [data.fill_at(f) for f in data.fills]
     times += [o.trade_date for _, o in data.orders]
     aware = [t for t in times if t is not None and t.tzinfo is not None]
     return max(aware) if aware else None
