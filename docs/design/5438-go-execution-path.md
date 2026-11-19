@@ -146,6 +146,25 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | B19 | **잡의 입력 표면.** 호가: 무인증 공개 REST orderbook(`/v1/orderbook`) 읽기. 계정 평단: 기존 인증 읽기 `fetch_my_coins`(읽기 전용, 주문 모듈 import 없음). 둘 중 하나라도 실패하면 그 종목은 intent 없음 + 결정 행 사유(`input_unavailable`), 열린 청산은 B13 래치 유지 | 5440 |
 | B20 | **fillwire fill·view 검증.** `LedgerFill.Execution`의 가격 상한(10,000,000)·수량 상한(1,000,000)은 계좌별로: `upbit_live`는 가격 ≤ 10,000,000,000 KRW, 수량은 1e-8 고정소수. `/intents/<id>` `view`의 `filled_qty`·`order.qty`도 v2에서 decimal 문자열이고 계좌별로 파싱한다 | 5439, 5441 |
 
+### 2.3 경계 규칙 (리뷰 2회차 반영, §2.2보다 우선)
+
+| # | 규칙 | 대체·보완 | 소유 |
+|---|---|---|---|
+| B21 | **shadow는 카드·제안을 만들지 않는다.** B13·B14·B9의 래치·알림·카드 지시는 `execution_mode='live'` 결정에만 적용한다. shadow의 거부(`loss_sell_requires_card` 등)는 결정 행에 `shadow_exit_refused`로 기록만 하고, 운영자 카드 요청·알림을 내지 않는다(공유 계좌의 실제 코인을 팔 위험 차단) | B13·B14 | 5440 |
+| B22 | **자동 매도는 sleeve `live`에서만.** B8을 대체한다: sleeve가 `paused`·`stopped`(손실 한도 포함)이면 매수·매도 모두 의도 경로에서 거부(`sleeve_not_live`)하고, 열린 포지션은 4885 §8대로 운영자 판단의 카드 경로다. I8의 "청산 intent는 허용"도 이 규칙으로 대체된다. 정지 후 자동 청산 허용은 §10 D16 | B8, I8 | 5441 |
+| B23 | **계좌 결속은 운영자가 확인한 실계좌에.** B12 보완: Upbit 공개 API가 계좌 식별자를 주는지 확인하지 않았다 [추정 — 없다고 가정]. 그래서 live 위임장 승인 요청은 자격증명 지문과 함께 그 자격증명으로 읽은 계좌 잔고 요약(통화·수량, 금액 포함)을 승인 카드에 싣고, 운영자가 그것이 의도한 계좌임을 승인으로 확인한다. 자격증명은 계좌 신원의 대체물이 아니므로 이 확인 없이는 live 위임장을 만들지 않는다(§10 D17) | B12 | 5441 |
+| B24 | **계좌가 바뀐 sleeve는 이어 쓰지 않는다.** child·귀속·보유 계산은 그 child를 예약한 위임장의 `account_ref`로 묶는다. 현재 위임장 `account_ref`와 다른 계좌의 과거 child가 있는 sleeve에 `store_intent`하면 거부(`sleeve_account_changed`). 계좌를 바꾸려면 이전 계좌 포지션 0이 증명된 뒤 새 sleeve(새 epoch)로 시작한다 | §1.4, I9 | 5441 |
+| B25 | **래치 해제 조건.** B13 대체: `exit_pending`은 (a) 그 leg 보유 0이 체결 증거로 증명되거나 (b) 운영자가 `scripts/upbit_trend_job.py resolve-exit`(preview 기본, 사유 필수, 기록 남김)로 해소할 때만 풀린다. 카드 생성·만료·미체결은 래치를 풀지 않고, 래치 행은 카드 상태(활성/만료/체결)를 따로 기록한다 | B13 | 5440 |
+| B26 | **예약일 ≠ 전송일이면 보내지 않는다.** pre-send hook이 현재 UTC일이 예약 UTC일과 다르면 전송 전에 중단하고 child를 B29의 `not_sent/reservation_day_changed`로 끝낸다. 실행기는 새 child 키로 새 날 상한 아래 다시 결정한다(불명 child는 재전송하지 않음) | B6 | 5441 |
+| B27 | **평단 미증명은 조사 상태.** B9 보완: 기존 loss_cut 확인은 평단 0 이하를 거부하므로(`revalidation.py:1139-1150`) 카드로도 청산할 수 없다. 평단 미증명이면 결정 행 `needs_operator_investigation` + ops 알림(live만)이고 래치는 유지한다. 운영자는 평단 데이터를 바로잡거나 기존 경로 밖에서 처리한 뒤 B25(b)로 해소한다. 가드는 바꾸지 않는다 | B9 | 5440, 5442 |
+| B28 | **호가 정규화는 Upbit 호가표 하나.** 기존 `adjust_price_to_upbit_unit`은 1,000~5,000원 구간을 5원 단위로 맞춰 공식 호가표(1원)와 다르다. 게이트웨이 출처 주문은 `upbit_krw_tick`으로 이미 검증된 가격이므로 forwarder는 그 함수를 거치지 않는 인자(`price_prevalidated=True`)로 기존 crypto place 함수를 부르고, POST 직전 본문 가격이 검증값과 같은지 B2대로 확인한다. 기존 함수의 전역 수정은 이 설계 범위 밖(§11) | B2 | 5441 |
+| B29 | **증명된 미전송 상태.** 저널에 새 종결 상태 `not_sent`를 더한다: `sending → not_sent`는 forwarder가 브로커 함수 호출 전 또는 `pre_send_hook` 예외로 POST 전에 멈췄을 때만(같은 트랜잭션에 사유 `price_normalization_mismatch`·`reservation_day_changed`·`mandate_revoked`·`account_mismatch`). 재생은 `refused`와 같은 답(사유 포함)을 주고, `not_sent`는 노출·B5 예약에 포함되지 않는다. DB 트리거가 다른 출처의 이 전이를 거부한다 | B2, E1 Open item | 5441 |
+| B30 | **취소 child 복구는 대상 주문으로.** B4 보완: `cancel` child는 `target_idempotency_key`의 원 submit identifier/UUID로 주문을 조회해, 취소·종결 상태와 체결 수량이 증명되면 해소한다. 조회 실패·부재는 미해결 유지이고 재전송 권한이 아니다 | B4 | 5441 |
+| B31 | **슬롯당 결정 하나.** B15 대체: 유일 키는 `(strategy, symbol, decision_at)`이고 `action`은 열이다. 잡은 먼저 그 키로 claim 행을 INSERT(충돌 시 기존 행 사용)한 뒤 결정을 채우므로 동시 실행의 두 번째는 첫 결정을 따른다 | B15 | 5440 |
+| B32 | **재실행 재생 규칙.** B16 대체: 결정 행에 intent가 없으면 그대로 반환. intent id가 이미 `review.execution_intents`에 있으면 `store_intent`를 부르지 않고 성공 no-op(만료 검사 생략, 새 전송 권한 없음). 없고 만료 전이면 저장한다. 없고 만료 후면 결정 행 `expired_before_store`로 끝낸다 | B16 | 5440 |
+| B33 | **읽기 표면의 전이 import.** `app.services.brokers.upbit` 패키지 초기화가 `orders`를 import하므로 잡은 그 패키지를 import하지 않는다. 5440이 계좌·호가 읽기만 하는 모듈을 패키지 밖에 두거나 5441이 패키지 초기화를 분리하고, 정적 테스트는 직접 import가 아니라 **전이 import 폐쇄**에서 주문 모듈 부재를 확인한다(retro/v1 가드와 같은 방식) | B19, §8.1-6 | 5440 |
+| B34 | **소수 체결가.** B20 보완: `upbit_live` 체결가는 decimal 문자열이고 fillwire는 계좌별로 정수(kis_mock, `IsInt` 유지)와 정확한 유리수/고정소수(Upbit, 1e-8)를 고른다. 명목 = 수량 × 가격을 정확히 계산한다. kis_mock 계약·골든은 그대로 | B20 | 5439, 5441 |
+
 ## 3. Upbit child wire 계약 변경
 
 ### 3.1 원칙
@@ -341,7 +360,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 쿨다운 심볼 진입은 intent 없음 + `blocked_by_cooldown` 결정 행.
 6. 브로커 주문 모듈을 import하지 않는다(정적 테스트).
 7. Dagu YAML은 `deploy/dagu/` 사본뿐이며 등록하지 않는다.
-8. §2.2 B11·B13~B16·B19를 구현하고 각각 테스트가 있다(`review.upbit_trend_decisions` 마이그레이션 포함).
+8. §2.2·§2.3 B11·B13~B16·B19·B21·B25·B27·B31~B33을 구현하고 각각 테스트가 있다(`review.upbit_trend_decisions` 마이그레이션 포함).
 9. 4885 §7 지표를 sleeve report와 결정 행에서 계산하는 읽기 전용 보고 명령이 있다.
 
 ### 8.2 hk 5441 — 게이트웨이 Upbit forwarder (auto_trader, T3)
@@ -355,7 +374,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. §2.2 B2~B12·B17·B18·B20 각각에 실패 방향 테스트가 있다.
+8. §2.2·§2.3 B2~B12·B17·B18·B20·B22~B24·B26·B28~B30·B34 각각에 실패 방향 테스트가 있다.
 9. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
 10. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
@@ -376,7 +395,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 4. 새 `cmd/execupbit`는 기본 `Off`, `upbit_live` 전송은 별도 플래그가 있어야 하고, 브로커 API·DB를 import하지 않는다(정적 테스트).
 5. Upbit 호가표 Go 구현이 auto_trader 공유 픽스처와 일치한다.
 6. shadow 가상 체결 출력 파일 형식이 문서화된다.
-7. §2.2 B1(최우선 매도호가 ≤ 마지막 체결가일 때만 매수)과 B20(계좌별 fill·view 검증)에 테스트가 있다.
+7. §2.3 B34(계좌별 체결가 표현), §2.2 B1(최우선 매도호가 ≤ 마지막 체결가일 때만 매수)과 B20(계좌별 fill·view 검증)에 테스트가 있다.
 
 ## 9. 롤아웃
 
@@ -419,6 +438,8 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 | D12 | shadow 위임장을 운영자 CLI `--commit`만으로 만드는 것 | **예** — shadow는 전송이 불가능(I6) | §4.3 |
 | D14 | 기존 매수 가드(지정가 ≤ 마지막 체결가) 완화 | **아니오** — B1로 가드 안에서 실행. 체결률이 측정상 낮으면 별도 결정 | 하드룰 4 |
 | D15 | 무인 잡이 회고·`approval_issue_id`를 만들고 허용 caller로 loss_cut 제안을 직접 생성 | **1단계는 아니오** — B14대로 알림 + 운영자 카드. 필요 시 env(`LOSS_CUT_ALLOWED_AGENT_IDS`) 변경 승인과 함께 별도 결정 | 기존 loss_cut 증거 계약 |
+| D16 | 정지(`paused`/`stopped`) sleeve 포지션을 의도 경로로 자동 청산 | **아니오** — 4885 §8대로 카드(B22) | 4885 §8 |
+| D17 | live 위임장의 계좌 결속을 운영자 확인(지문 + 잔고 요약)으로 받는 것 | **예**, 브로커 계좌 식별자를 얻는 방법이 확인되면 그것으로 교체 | 3795 §4.6, B23 |
 | D13 | 실행기 상수 | `CancelAfter` 120초, `ExpiryMargin` 60초, `StaleAfter` 2초(기존), `PollEvery` 15초, child 1회/초 | §5 |
 
 ## 11. 알았지만 건드리지 않은 것
@@ -426,5 +447,6 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 - E1 계약의 KIS mock 코디네이션 라우트·amend 차단(hk 3745) — 이 경로와 무관.
 - 3795 바구니·회차 계획·낙폭 동결 — 최소판에 넣지 않았다.
 - Upbit 계정 평단을 sleeve 단위로 분리하는 것 — 가드의 입력을 바꾸는 일이라 범위 밖(D4 근거).
+- `adjust_price_to_upbit_unit`의 1,000~5,000원 구간이 공식 호가표와 다른 것(B28) — 다른 호출자에게 영향이 있어 전역 수정은 별도 작업.
 - 키움 모의 KR을 같은 경로에 올리는 것 — at-go-executor 2의 다음 단계, 별도 설계.
 - 4885 §1.3(하드룰 6 "세션의 수동 작업")·§5.2("스케줄러가 없으므로")·§10(시작 순서)는 Dagu 잡·의도 경로를 전제로 하지 않는다. brief가 4885는 §4·§9만 고치라고 했으므로 그대로 두었다 — 5438 §7 안내 줄이 우선한다.
