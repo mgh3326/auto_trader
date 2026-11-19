@@ -708,10 +708,10 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
 async def test_journal_exit_correction_drops_the_quarantined_row(
     db_session, seed
 ) -> None:
-    """hk 5357: a quarantined sell is not found as a journal's closing fill.
+    """hk 5357: a quarantined sell is not found among a journal's closing-order fills.
 
-    The reader names a fill by its full ledger identity and only authoritative
-    sources are accepted by the planner; only a websocket row can be
+    The reader names the fills of an order by its ledger identity and only
+    authoritative sources are accepted by the planner; only a websocket row can be
     quarantined, so the source rule would catch this row too (the same position
     as the ROB-1460 reader). The contract still ANDs the in-effect predicate. The
     reconciler sell of the same symbol is found, which shows the reader is not
@@ -764,19 +764,19 @@ async def test_journal_exit_correction_drops_the_quarantined_row(
             allocated_quantity=Decimal("3"),
         )
 
-    found = await journal_exit_correction.load_fill(
+    found = await journal_exit_correction.load_order_fills(
         db_session, journal, cite(sell_order_id, 0)
     )
-    found_id = None if found is None else int(found.id)
+    found_ids = [int(r.id) for r in found]
     await db_session.rollback()
-    assert found_id == sell_id
+    assert found_ids == [sell_id]
 
-    phantom = await journal_exit_correction.load_fill(
+    phantom = await journal_exit_correction.load_order_fills(
         db_session, journal, cite(scenario.phantom_order_no, phantom_seq)
     )
-    phantom_found = phantom is not None
+    phantom_found = len(phantom)
     await db_session.rollback()
-    assert phantom_found is False
+    assert phantom_found == 0
 
 
 async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:

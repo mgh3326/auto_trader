@@ -228,7 +228,7 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/kis_us_inference_expiry_service.py", "_decide"): (
         "test_quarantine_readers_db::test_us_inference_excludes_quarantined_fill"
     ),
-    ("app/services/journal_exit_correction.py", "load_fill"): (
+    ("app/services/journal_exit_correction.py", "load_order_fills"): (
         "test_quarantine_readers_db::test_journal_exit_correction_drops_the_quarantined_row"
     ),
     ("app/services/mechanical_loss_cut/positions.py", "_load_lot_fills"): (

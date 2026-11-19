@@ -25,7 +25,7 @@ The layers are split so the rules are testable without a database:
 * ``parse_evidence`` — strict input parsing, before any connection.
 * ``plan_journal`` / ``plan_batch`` — pure; compare a journal, its evidence and
   the ledger row the evidence names.
-* ``load_fill`` — the only ledger reader, ANDs ``execution_ledger_in_effect``.
+* ``load_order_fills`` — the only ledger reader, ANDs ``execution_ledger_in_effect``.
 * ``preview`` / ``commit`` — session orchestration; ``commit`` holds off ledger
   writers, locks the journal rows, recomputes the plan and writes only if it
   still equals the previewed one.
@@ -140,6 +140,11 @@ class Evidence:
     broker_order_id: str
     fill_seq: int
     allocated_quantity: Decimal
+    #: Execution time proven by a retained record, for a ledger row whose own
+    #: ``filled_at`` is not a broker fill time (KIS reconciler rows carry the
+    #: order time). ``verified_fill_ref`` names that record.
+    verified_fill_at: datetime | None = None
+    verified_fill_ref: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +158,12 @@ class Evidence:
                 "fill_seq": self.fill_seq,
             },
             "allocated_quantity": format(self.allocated_quantity, "f"),
+            "verified_fill_time": None
+            if self.verified_fill_at is None
+            else {
+                "at": self.verified_fill_at.isoformat(),
+                "ref": self.verified_fill_ref,
+            },
         }
 
 
@@ -164,7 +175,9 @@ _ENTRY_KEYS = {
     "ledger",
     "allocated_quantity",
 }
+_OPTIONAL_ENTRY_KEYS = {"verified_fill_time"}
 _LEDGER_KEYS = {"venue", "broker_order_id", "fill_seq"}
+_VERIFIED_KEYS = {"at", "ref"}
 
 
 def _text(name: str, value: Any, *, pattern: re.Pattern[str] = _REF) -> str:
@@ -191,7 +204,7 @@ def parse_evidence(raw: str, ids: Sequence[int]) -> dict[int, Evidence]:
         raise CorrectionInputError("evidence must be a JSON list of objects")
     out: dict[int, Evidence] = {}
     for entry in data:
-        if set(entry) != _ENTRY_KEYS:
+        if not _ENTRY_KEYS <= set(entry) <= _ENTRY_KEYS | _OPTIONAL_ENTRY_KEYS:
             raise CorrectionInputError(
                 "evidence entry keys are not exactly the contract"
             )
@@ -210,6 +223,25 @@ def parse_evidence(raw: str, ids: Sequence[int]) -> dict[int, Evidence]:
             raise CorrectionInputError(
                 "evidence allocated_quantity must be a decimal string"
             )
+        verified_at: datetime | None = None
+        verified_ref: str | None = None
+        verified = entry.get("verified_fill_time")
+        if "verified_fill_time" in entry:
+            if not isinstance(verified, dict) or set(verified) != _VERIFIED_KEYS:
+                raise CorrectionInputError(
+                    "evidence verified_fill_time keys are not exactly the contract"
+                )
+            verified_ref = _text("verified_fill_time.ref", verified["ref"])
+            try:
+                verified_at = datetime.fromisoformat(str(verified["at"]))
+            except ValueError:
+                raise CorrectionInputError(
+                    "evidence verified_fill_time.at is not an ISO timestamp"
+                ) from None
+            if not isinstance(verified["at"], str) or verified_at.utcoffset() is None:
+                raise CorrectionInputError(
+                    "evidence verified_fill_time.at needs a UTC offset"
+                )
         item = Evidence(
             journal_id=_int("journal_id", entry["journal_id"], minimum=1),
             evidence_ref=_text("evidence_ref", entry["evidence_ref"]),
@@ -221,6 +253,8 @@ def parse_evidence(raw: str, ids: Sequence[int]) -> dict[int, Evidence]:
             broker_order_id=_text("ledger.broker_order_id", ledger["broker_order_id"]),
             fill_seq=_int("ledger.fill_seq", ledger["fill_seq"], minimum=0),
             allocated_quantity=Decimal(quantity),
+            verified_fill_at=verified_at,
+            verified_fill_ref=verified_ref,
         )
         if item.allocated_quantity <= 0:
             raise CorrectionInputError("evidence allocated_quantity must be positive")
@@ -255,6 +289,7 @@ class JournalPlan:
     ledger_filled_qty: Decimal | None = None
     ledger_filled_price: Decimal | None = None
     ledger_filled_at_basis: str | None = None
+    fill_time_source: str | None = None
     evidence: Evidence | None = None
     notes_sha256: str | None = None
 
@@ -286,6 +321,7 @@ class JournalPlan:
             "ledger_filled_qty": money(self.ledger_filled_qty),
             "ledger_filled_price": money(self.ledger_filled_price),
             "ledger_filled_at_basis": self.ledger_filled_at_basis,
+            "fill_time_source": self.fill_time_source,
             "evidence": None if self.evidence is None else self.evidence.as_dict(),
         }
 
@@ -325,9 +361,14 @@ def ledger_identity(
 
 
 def plan_journal(
-    journal: Any, evidence: Evidence, row: LedgerRowLike | None
+    journal: Any, evidence: Evidence, rows: Sequence[LedgerRowLike]
 ) -> JournalPlan:
-    """Judge one journal against its cited evidence and the ledger row it names."""
+    """Judge one journal against its evidence and every ledger row of the cited order.
+
+    The cited ``fill_seq`` is a claim, not proof of uniqueness: all rows of the
+    order are read, and an order with more than one in-effect authoritative row
+    is refused because the evidence cannot say which fill the allocation closed.
+    """
     jid = int(journal.id)
     if journal.status != JournalStatus.closed:
         return _ineligible(jid, "journal_not_closed", journal)
@@ -352,17 +393,28 @@ def plan_journal(
         return _ineligible(jid, "evidence_does_not_list_journal", journal)
     if evidence.record_order_id != evidence.broker_order_id:
         return _ineligible(jid, "evidence_order_mismatch", journal)
-    if row is None:
+    if not rows:
         return _ineligible(jid, "ledger_row_not_found", journal)
+    usable = [
+        r
+        for r in rows
+        if r.quarantined_at is None and r.source in AUTHORITATIVE_SOURCES
+    ]
+    if not usable:
+        return _ineligible(jid, "ledger_row_not_in_effect_authoritative", journal)
+    if len(usable) > 1:
+        return _ineligible(jid, "ambiguous_order_fills", journal)
+    [row] = usable
 
     quantity = Decimal(journal.quantity)
     identity = ledger_identity(journal, evidence)
     if (
-        row.quarantined_at is not None
-        or row.source not in AUTHORITATIVE_SOURCES
-        or (row.broker, row.account_mode, row.venue, row.broker_order_id, row.fill_seq)
-        != identity
-    ):
+        row.broker,
+        row.account_mode,
+        row.venue,
+        row.broker_order_id,
+        row.fill_seq,
+    ) != identity:
         return _ineligible(jid, "ledger_row_not_in_effect_authoritative", journal)
     if (
         row.instrument_type != InstrumentType.equity_kr
@@ -377,7 +429,18 @@ def plan_journal(
         return _ineligible(jid, "allocation_exceeds_fill", journal)
     if _q(Decimal(row.filled_price)) != _q(Decimal(journal.exit_price)):
         return _ineligible(jid, "ledger_price_mismatch", journal)
-    if row.filled_at > journal.exit_date:
+    # ``filled_at`` is an execution time only when its basis says so; KIS
+    # reconciler rows carry the order time. Otherwise the evidence must supply a
+    # retained, verified execution time.
+    if row.filled_at_basis == "broker_fill_time":
+        if evidence.verified_fill_at not in (None, row.filled_at):
+            return _ineligible(jid, "verified_fill_time_conflicts_with_ledger", journal)
+        exec_time, time_source = row.filled_at, "ledger_broker_fill_time"
+    elif evidence.verified_fill_at is not None:
+        exec_time, time_source = evidence.verified_fill_at, "evidence_verified"
+    else:
+        return _ineligible(jid, "fill_time_not_a_broker_fill_time", journal)
+    if exec_time > journal.exit_date:
         return _ineligible(jid, "fill_after_booking", journal)
 
     entry_price = Decimal(journal.entry_price)
@@ -386,7 +449,7 @@ def plan_journal(
         None if journal.total_pnl_krw is None else _q(Decimal(journal.total_pnl_krw))
     )
     done = (
-        journal.exit_date == row.filled_at
+        journal.exit_date == exec_time
         and current_pnl == new_pnl
         and _marker(int(row.id), evidence.evidence_ref) in (journal.notes or "")
     )
@@ -399,13 +462,14 @@ def plan_journal(
         entry_price=entry_price,
         current_exit_date=journal.exit_date,
         current_total_pnl_krw=current_pnl,
-        new_exit_date=row.filled_at,
+        new_exit_date=exec_time,
         new_total_pnl_krw=new_pnl,
         ledger_id=int(row.id),
         ledger_source=row.source,
         ledger_filled_qty=Decimal(row.filled_qty),
         ledger_filled_price=Decimal(row.filled_price),
         ledger_filled_at_basis=row.filled_at_basis,
+        fill_time_source=time_source,
         evidence=evidence,
         notes_sha256=_sha(journal.notes),
     )
@@ -435,7 +499,7 @@ def plan_batch(
     ids: Sequence[int],
     journals: dict[int, Any],
     evidence: dict[int, Evidence],
-    fills: dict[int, LedgerRowLike | None],
+    fills: dict[int, Sequence[LedgerRowLike]],
 ) -> BatchPlan:
     plans: list[JournalPlan] = []
     for jid in ids:
@@ -443,7 +507,7 @@ def plan_batch(
         if journal is None:
             plans.append(_ineligible(jid, "journal_not_found"))
         else:
-            plans.append(plan_journal(journal, evidence[jid], fills.get(jid)))
+            plans.append(plan_journal(journal, evidence[jid], fills.get(jid, ())))
     # Several journals may share one fill, but only within what it booked.
     allocated: dict[int, Decimal] = {}
     for p in plans:
@@ -476,18 +540,20 @@ async def load_journals(
     return {int(row.id): row for row in rows}
 
 
-async def load_fill(
+async def load_order_fills(
     session: AsyncSession, journal: TradeJournal, evidence: Evidence
-) -> ExecutionLedger | None:
-    """The in-effect ledger row the evidence names, by its full identity.
+) -> list[ExecutionLedger]:
+    """Every in-effect ledger row of the cited order, whatever its ``fill_seq``.
 
-    Reads only; every fill reader ANDs ``execution_ledger_in_effect`` (#1175). A
-    quarantined row is not found. The pure planner checks the rest.
+    The planner refuses an order with more than one authoritative row, so a
+    chosen sequence cannot make an ambiguous order look unique. Reads only;
+    every fill reader ANDs ``execution_ledger_in_effect`` (#1175), so a
+    quarantined row is not found.
     """
     identity = ledger_identity(journal, evidence)
     if identity is None:
-        return None
-    broker, account_mode, venue, broker_order_id, fill_seq = identity
+        return []
+    broker, account_mode, venue, broker_order_id, _fill_seq = identity
     stmt = (
         select(ExecutionLedger)
         .where(
@@ -496,11 +562,11 @@ async def load_fill(
             ExecutionLedger.account_mode == account_mode,
             ExecutionLedger.venue == venue,
             ExecutionLedger.broker_order_id == broker_order_id,
-            ExecutionLedger.fill_seq == fill_seq,
         )
+        .order_by(ExecutionLedger.fill_seq, ExecutionLedger.id)
         .execution_options(populate_existing=True)
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def lock_ledger_writers(session: AsyncSession) -> None:
@@ -525,7 +591,7 @@ async def _build_plan(
 ) -> tuple[BatchPlan, dict[int, TradeJournal]]:
     journals = await load_journals(session, ids, lock=lock)
     fills = {
-        jid: await load_fill(session, journal, evidence[jid])
+        jid: await load_order_fills(session, journal, evidence[jid])
         for jid, journal in journals.items()
     }
     return plan_batch(ids, journals, evidence, fills), journals
@@ -574,6 +640,7 @@ def audit_note(plan: JournalPlan, *, reason: str, actor: str) -> str:
         f"total_pnl_krw {money(plan.current_total_pnl_krw)} -> "
         f"{money(plan.new_total_pnl_krw)}; "
         f"fill={ev.venue}/{ev.broker_order_id}/{ev.fill_seq} "
+        f"fill_time={plan.fill_time_source} "
         f"allocated={format(ev.allocated_quantity, 'f')}; "
         f"reason={reason}; actor={actor}; decision={DECISION_REF}"
     )

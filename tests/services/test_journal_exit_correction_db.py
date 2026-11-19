@@ -56,6 +56,7 @@ class _Seed:
                     filled_price="91000",
                     filled_notional="182000",
                     filled_at=FILLED.isoformat(),
+                    filled_at_basis="broker_fill_time",
                 )
             ).model_dump()
         )
@@ -319,3 +320,58 @@ async def test_a_stuck_ledger_writer_makes_commit_fail_closed(
             )
         await writer.rollback()
     assert (await _journal(db_session, jid)).total_pnl_krw is None
+
+
+async def test_an_order_with_two_authoritative_fills_is_refused_in_the_database(
+    db_session, seed
+) -> None:
+    """The cited fill_seq does not make an ambiguous order unique."""
+    symbol = _symbol()
+    jid, _ = await seed.lot(symbol)
+    db_session.add(
+        ExecutionLedger(
+            **ExecutionLedgerUpsert(
+                **row_kwargs(
+                    symbol=symbol,
+                    order_no=f"S{symbol[1:]}0001",
+                    side="sell",
+                    source="reconciler",
+                    raw_payload_json=None,
+                    fill_seq=1,
+                    filled_qty="2",
+                    filled_price="91000",
+                    filled_notional="182000",
+                    filled_at=(FILLED + timedelta(minutes=1)).isoformat(),
+                    filled_at_basis="broker_fill_time",
+                )
+            ).model_dump()
+        )
+    )
+    await db_session.commit()
+
+    prev = await jec.preview(db_session, [jid], {jid: _evidence(jid, symbol)})
+    assert prev.status == "refused"
+    assert prev.plan.plans[0].reason == "ambiguous_order_fills"
+
+
+async def test_an_order_time_row_needs_a_verified_fill_time(db_session, seed) -> None:
+    symbol = _symbol()
+    jid, _ = await seed.lot(symbol)
+    await db_session.execute(
+        update(ExecutionLedger)
+        .where(ExecutionLedger.symbol == symbol)
+        .values(filled_at_basis="broker_order_time")
+    )
+    await db_session.commit()
+
+    prev = await jec.preview(db_session, [jid], {jid: _evidence(jid, symbol)})
+    assert prev.plan.plans[0].reason == "fill_time_not_a_broker_fill_time"
+    verified = _evidence(
+        jid,
+        symbol,
+        verified_fill_at=FILLED + timedelta(hours=2),
+        verified_fill_ref="hk:doc/fill-time",
+    )
+    again = await jec.preview(db_session, [jid], {jid: verified})
+    assert again.status == "eligible"
+    assert again.plan.plans[0].new_exit_date == FILLED + timedelta(hours=2)

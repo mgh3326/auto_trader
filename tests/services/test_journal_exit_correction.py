@@ -69,7 +69,7 @@ def ledger(lid: int, **over: Any) -> SimpleNamespace:
         "filled_qty": Decimal("2"),
         "filled_price": Decimal("91000"),
         "filled_at": FILLED,
-        "filled_at_basis": "broker_order_time",
+        "filled_at_basis": "broker_fill_time",
     }
     data.update(over)
     return SimpleNamespace(**data)
@@ -153,11 +153,12 @@ def world(monkeypatch):
         session.calls.append(f"load_journals:lock={lock}")
         return {i: journals[i] for i in ids if i in journals}
 
-    async def load_fill(session, j, evidence_item):
-        return rows.get(int(j.id))
+    async def load_order_fills(session, j, evidence_item):
+        row = rows.get(int(j.id))
+        return [] if row is None else [row]
 
     monkeypatch.setattr(jec, "load_journals", load_journals)
-    monkeypatch.setattr(jec, "load_fill", load_fill)
+    monkeypatch.setattr(jec, "load_order_fills", load_order_fills)
     return SimpleNamespace(journals=journals, rows=rows, ev=ev)
 
 
@@ -225,18 +226,127 @@ async def test_preview_prints_new_values_and_writes_nothing(world) -> None:
 def test_ledger_row_rules(row_over, reason) -> None:
     row = ledger(9, **row_over)
     ev = evidence(1, ledger(9))  # the evidence names the identity of a clean row
-    plan = jec.plan_journal(journal(1), ev, row)
+    plan = jec.plan_journal(journal(1), ev, [row])
     assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
 def test_a_clean_row_with_clean_evidence_is_eligible() -> None:
     row = ledger(9)
-    assert jec.plan_journal(journal(1), evidence(1, row), row).status == "eligible"
+    assert jec.plan_journal(journal(1), evidence(1, row), [row]).status == "eligible"
 
 
 def test_no_ledger_row_is_refused() -> None:
-    plan = jec.plan_journal(journal(1), evidence(1, ledger(9)), None)
+    plan = jec.plan_journal(journal(1), evidence(1, ledger(9)), [])
     assert (plan.status, plan.reason) == ("ineligible", "ledger_row_not_found")
+
+
+# execution time basis ----------------------------------------------------------
+
+VERIFIED = datetime(2026, 11, 18, 7, 9, 45, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("basis", ["broker_order_time", "observed_at", None])
+def test_only_a_broker_fill_time_is_an_execution_time(basis) -> None:
+    """KIS reconciler rows carry the order time; it must not become the exit time."""
+    row = ledger(9, filled_at_basis=basis, filled_at=FILLED - timedelta(hours=5))
+    plan = jec.plan_journal(journal(1), evidence(1, row), [row])
+    assert (plan.status, plan.reason) == (
+        "ineligible",
+        "fill_time_not_a_broker_fill_time",
+    )
+
+
+def test_a_verified_execution_time_can_stand_in_for_an_order_time_row() -> None:
+    row = ledger(
+        9, filled_at_basis="broker_order_time", filled_at=FILLED - timedelta(hours=5)
+    )
+    ev = evidence(
+        1, row, verified_fill_at=VERIFIED, verified_fill_ref="hk:doc/fill-time"
+    )
+    plan = jec.plan_journal(journal(1), ev, [row])
+    assert plan.status == "eligible"
+    assert plan.new_exit_date == VERIFIED  # not the order time
+    assert plan.fill_time_source == "evidence_verified"
+    note = jec.audit_note(plan, reason=REASON, actor=ACTOR)
+    assert "fill_time=evidence_verified" in note
+
+
+def test_a_verified_time_cannot_contradict_a_broker_fill_time() -> None:
+    row = ledger(9, filled_at_basis="broker_fill_time")
+    ev = evidence(
+        1, row, verified_fill_at=VERIFIED + timedelta(minutes=1), verified_fill_ref="r"
+    )
+    plan = jec.plan_journal(journal(1), ev, [row])
+    assert plan.reason == "verified_fill_time_conflicts_with_ledger"
+    same = evidence(1, row, verified_fill_at=row.filled_at, verified_fill_ref="r")
+    assert jec.plan_journal(journal(1), same, [row]).status == "eligible"
+
+
+def test_a_verified_time_after_the_booking_is_refused() -> None:
+    row = ledger(9, filled_at_basis="broker_order_time")
+    ev = evidence(
+        1, row, verified_fill_at=BOOKED + timedelta(minutes=1), verified_fill_ref="r"
+    )
+    assert jec.plan_journal(journal(1), ev, [row]).reason == "fill_after_booking"
+
+
+def test_the_ledger_time_is_the_exit_time_for_a_broker_fill_time_row() -> None:
+    row = ledger(9)
+    plan = jec.plan_journal(journal(1), evidence(1, row), [row])
+    assert plan.fill_time_source == "ledger_broker_fill_time"
+    assert plan.new_exit_date == FILLED
+
+
+# an order with more than one authoritative fill -----------------------------------
+
+
+@pytest.mark.parametrize("cited_seq", [0, 1])
+def test_an_order_with_two_authoritative_fills_is_refused_whichever_is_cited(
+    cited_seq,
+) -> None:
+    """Same order, same price, enough quantity: the evidence cannot pick the fill."""
+    first = ledger(9, broker_order_id="ORD9", fill_seq=0)
+    second = ledger(
+        10, broker_order_id="ORD9", fill_seq=1, filled_at=FILLED + timedelta(minutes=1)
+    )
+    cited = first if cited_seq == 0 else second
+    plan = jec.plan_journal(journal(1), evidence(1, cited), [first, second])
+    assert (plan.status, plan.reason) == ("ineligible", "ambiguous_order_fills")
+
+
+def test_siblings_that_are_not_authoritative_do_not_make_an_order_ambiguous() -> None:
+    row = ledger(9, broker_order_id="ORD9")
+    quarantined = ledger(10, broker_order_id="ORD9", fill_seq=1, quarantined_at=BOOKED)
+    websocket = ledger(11, broker_order_id="ORD9", fill_seq=2, source="websocket")
+    plan = jec.plan_journal(journal(1), evidence(1, row), [row, quarantined, websocket])
+    assert plan.status == "eligible"
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_order_blocks_the_whole_batch(world, monkeypatch) -> None:
+    sibling = ledger(273, broker_order_id=world.rows[245].broker_order_id, fill_seq=1)
+
+    async def load_order_fills(session, j, evidence_item):
+        row = world.rows.get(int(j.id))
+        return [row, sibling] if int(j.id) == 245 else [row]
+
+    monkeypatch.setattr(jec, "load_order_fills", load_order_fills)
+    prev = await jec.preview(FakeSession(), IDS, world.ev)
+    assert prev.status == "refused"
+    assert {p.journal_id: p.reason for p in prev.plan.plans}[
+        245
+    ] == "ambiguous_order_fills"
+    before = snapshot(world.journals)
+    result = await jec.commit(
+        FakeSession(),
+        IDS,
+        world.ev,
+        expected_digest=prev.plan.digest,
+        reason=REASON,
+        actor=ACTOR,
+    )
+    assert result.status == "refused"
+    assert snapshot(world.journals) == before
 
 
 @pytest.mark.parametrize(
@@ -249,7 +359,7 @@ def test_no_ledger_row_is_refused() -> None:
 )
 def test_evidence_rules(ev_over, reason) -> None:
     row = ledger(9)
-    plan = jec.plan_journal(journal(1), evidence(1, row, **ev_over), row)
+    plan = jec.plan_journal(journal(1), evidence(1, row, **ev_over), [row])
     assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
@@ -271,7 +381,7 @@ def test_evidence_rules(ev_over, reason) -> None:
 )
 def test_journal_rules(over, reason) -> None:
     row = ledger(9)
-    plan = jec.plan_journal(journal(1, **over), evidence(1, row), row)
+    plan = jec.plan_journal(journal(1, **over), evidence(1, row), [row])
     assert (plan.status, plan.reason) == ("ineligible", reason)
 
 
@@ -287,7 +397,7 @@ def test_a_fill_before_the_journal_was_created_can_be_the_closer() -> None:
     closer = ledger(10, filled_qty=Decimal("10"), filled_at=CREATED - timedelta(days=2))
     j = journal(1, created_at=CREATED)
     plan = jec.plan_journal(
-        j, evidence(1, closer, allocated_quantity=Decimal("2")), closer
+        j, evidence(1, closer, allocated_quantity=Decimal("2")), [closer]
     )
     assert plan.status == "eligible"
     assert plan.new_exit_date == CREATED - timedelta(days=2)
@@ -300,7 +410,7 @@ def test_an_unrelated_sell_is_never_picked_by_quantity_price_or_time() -> None:
     unrelated = ledger(11)
     j = journal(1)
     # evidence naming the real closer: the unrelated row is irrelevant
-    ok = jec.plan_journal(j, evidence(1, closer), closer)
+    ok = jec.plan_journal(j, evidence(1, closer), [closer])
     assert (ok.ledger_id, ok.new_exit_date) == (10, CREATED - timedelta(days=2))
     # a bare ledger id has no evidence entry and cannot be expressed at all
     with pytest.raises(jec.CorrectionInputError):
@@ -315,7 +425,7 @@ def test_one_fill_may_close_several_lots_within_what_it_booked() -> None:
         1: evidence(1, row, allocated_quantity=Decimal("2")),
         2: evidence(2, row, allocated_quantity=Decimal("8")),
     }
-    batch = jec.plan_batch([1, 2], journals, ev, {1: row, 2: row})
+    batch = jec.plan_batch([1, 2], journals, ev, {1: [row], 2: [row]})
     assert batch.status == "eligible"
     assert [p.new_total_pnl_krw for p in batch.plans] == [
         Decimal("17600.0000"),
@@ -326,7 +436,7 @@ def test_one_fill_may_close_several_lots_within_what_it_booked() -> None:
         2: evidence(2, row, allocated_quantity=Decimal("9")),
     }
     journals[2].quantity = Decimal("9")
-    refused = jec.plan_batch([1, 2], journals, over, {1: row, 2: row})
+    refused = jec.plan_batch([1, 2], journals, over, {1: [row], 2: [row]})
     assert refused.status == "refused"
     assert {p.reason for p in refused.plans} == {"allocations_exceed_fill"}
 
@@ -501,7 +611,7 @@ async def test_commit_writes_the_corrected_fields_and_an_audit_note(world) -> No
         BOOKED.isoformat(),
         FILLED.isoformat(),
         "total_pnl_krw None -> 17600.0000",
-        "fill=krx/ORD272/0 allocated=2",
+        "fill=krx/ORD272/0 fill_time=ledger_broker_fill_time allocated=2",
         f"reason={REASON}",
         f"actor={ACTOR}",
         "decision=hk 5357",
@@ -610,7 +720,7 @@ async def test_a_receipt_for_other_evidence_is_not_a_noop(world) -> None:
 async def test_same_values_without_the_audit_note_still_get_the_note(world) -> None:
     world.journals[245].exit_date = FILLED
     world.journals[245].total_pnl_krw = Decimal("17600")
-    plan = jec.plan_journal(world.journals[245], world.ev[245], world.rows[245])
+    plan = jec.plan_journal(world.journals[245], world.ev[245], [world.rows[245]])
     assert plan.status == "eligible"
 
 
@@ -628,6 +738,25 @@ def _entry(jid: int = 1, **over: Any) -> dict[str, Any]:
     }
     data.update(over)
     return data
+
+
+def test_a_verified_fill_time_parses_and_needs_an_offset() -> None:
+    ok = _entry(
+        1, verified_fill_time={"at": "2026-11-18T16:09:45+09:00", "ref": "hk:doc/t"}
+    )
+    parsed = jec.parse_evidence(json.dumps([ok]), [1])
+    assert parsed[1].verified_fill_at == datetime(2026, 11, 18, 7, 9, 45, tzinfo=UTC)
+    assert parsed[1].verified_fill_ref == "hk:doc/t"
+    for bad in (
+        {"at": "2026-11-18T16:09:45", "ref": "r"},  # no offset
+        {"at": "yesterday", "ref": "r"},
+        {"at": 5, "ref": "r"},
+        {"at": "2026-11-18T16:09:45+09:00"},  # no ref
+        {"at": "2026-11-18T16:09:45+09:00", "ref": "r", "x": 1},
+        "2026-11-18T16:09:45+09:00",
+    ):
+        with pytest.raises(jec.CorrectionInputError):
+            jec.parse_evidence(json.dumps([_entry(1, verified_fill_time=bad)]), [1])
 
 
 def test_a_valid_evidence_file_parses() -> None:
