@@ -244,6 +244,11 @@ tests/services/kis_mock_runner/test_cli.py
 tests/services/kis_mock_runner/test_control.py
 tests/services/kis_mock_runner/test_correlation.py
 tests/services/kis_websocket/test_protocol.py
+tests/services/mandate/test_batch_callback.py
+tests/services/mandate/test_batch_cli.py
+tests/services/mandate/test_batch_migration_shape.py
+tests/services/mandate/test_batch_rules.py
+tests/services/mandate/test_batch_static_boundary.py
 tests/services/mandate/test_cli.py
 tests/services/mandate/test_fold.py
 tests/services/mandate/test_hashing.py
