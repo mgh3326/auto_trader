@@ -413,3 +413,25 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 ### retro/v1 funnel 집계 범위 (hk 5496)
 
 `retro_funnel`의 각 `FunnelRow`는 선택 필드 `date_basis`(닫힌 어휘 `candidate_recorded_at_kst`·`forecast_created_kst`·`proposal_created_kst`·`order_trade_date_kst`·`fill_filled_at_kst`)를 항상 싣는다. 실계좌 단계(`proposal`·`rung`·`order`·`fill`)는 추가로 `account_mode`(항상 `live`)와 `brokers`(닫힌 `kis`·`toss`·`upbit`의 고유 목록)를 싣는다. 후보와 기각 forecast는 계좌 모집단이 아니므로 이 두 키를 내지 않는다. `brokers`는 그 단계 쿼리가 계좌 모드·레저 scope 조건으로 고른 브로커를 시장별로 좁힌 값이다(KIS·Toss는 KR/US, Upbit은 crypto). 값은 `chain.py`가 쿼리에 바인딩하는 같은 상수(`LIVE_PROPOSAL_ACCOUNT_MODES`·`KIS_ORDER_ACCOUNT_MODE`·`TOSS_ORDER_ACCOUNT_MODE`·`LIVE_ORDER_SCOPES`)에서 나오며 `app/services/retro_v1/funnel_scope.py`가 조립한다. `order` 단계의 날짜 기준은 주문 레저의 `trade_date`이고, KIS 주문의 전송 시각(`order_send_intents.created_at`)은 판단과의 연결에만 쓰이며 집계 창에는 쓰이지 않는다. 체결은 `execution_ledger.filled_at`이다. 계약 필수 목록과 기존 필드·열거는 바뀌지 않았고 `consumers.lock`도 그대로다(호환 확장 → 소비자 커밋 → 핀 갱신 순서, `docs/runbooks/retro-consumer-pin.md`). 테스트 `tests/services/retro_v1/test_funnel_scope.py`는 kr·us·crypto 픽스처에서 보고된 브로커·날짜 기준이 실제로 실행된 SQL의 바인드 값과 WHERE 열과 일치함을 확인하고, 새 키를 지우면 기존 골든 바이트와 같음을 확인한다.
+
+### retro/v1 제출 차단·대기 사유 `block_reason` (hk 5610)
+
+`proposal`·`rung` 단계 chain 행(`retro_day`·`retro_symbol`)에 선택 필드 `block_reason`(닫힌 어휘 `BlockReason`)과 `block_reason_basis`(`recorded`/`inference`)를 더한다. 호환 확장이며 `consumers.lock`은 그대로다(소비자 게이트 통과 확인, 핀 갱신은 호환 확장 → 소비자 커밋 → 핀 갱신 순서). 🔴 원천은 이미 저장된 열뿐이다 — 새 기록·writer·dispatch·승인 경로 변경이 없고 `app.services.order_proposals`는 import하지 않는다(문자열은 `block_reason.py`에서 리터럴로 비교). 증거가 값을 결정하지 못하면 키를 내보내지 않는다(빈 문자열·0·추측 금지). 저장된 `void_reason` 원문, 승인창 `failure_code`의 detail, 브로커 메시지는 응답에 나가지 않는다(매칭에만 쓰고 닫힌 코드만 낸다). `basis=recorded`는 writer가 그 상태·코드를 직접 저장한 경우, `inference`는 "전송된 적 없음" 같은 부재 증거에서 유도한 경우다. 이 필드는 `status`·`reason`을 대체하지 않으며 주문·체결·후속 단계에는 붙지 않는다.
+
+| 값 | 대상 | 유도 규칙(저장 열) | basis |
+|---|---|---|---|
+| `deferred_session_closed` | proposal·rung | 제안 `lifecycle_state='proposed'`, `approval_dispatch_state ∈ {failed, partial_failed, failed_superseded}`, `approval_dispatch_failure_code`가 `DEFER_SESSION_CLOSED/…`. rung은 `pending_approval`/`needs_reconfirm`일 때 제안의 값을 따른다 | recorded |
+| `no_executable_window` | 동일 | 위와 같고 코드 `NO_EXECUTABLE_WINDOW/…` | recorded |
+| `calendar_unknown` | 동일 | 코드 `CALENDAR_UNKNOWN/…` | recorded |
+| `invalid_valid_until` | 동일 | 코드 `INVALID_VALID_UNTIL/…` | recorded |
+| `expired_valid_until` | proposal·rung | (a) 승인창 코드 `EXPIRED/…`(제안 `proposed`, 위 dispatch 조건), (b) 제안/rung `void_reason`이 `expired_valid_until`로 시작(야간 스윕 등), (c) 제안 `lifecycle_state='expired'`이고 모든 rung(또는 해당 rung)의 `broker_order_id`·`idempotency_key`가 NULL — 브로커에 닿지 않은 만료 | (a)(b) recorded, (c) inference |
+| `auto_approve_demoted` | proposal·rung | 제안 `proposed`, `source_asof.auto_approve_rejections`에 rung 목록이 있는 시도가 있고 `source_asof.auto_approved` 키가 없음(자동 전송 안 됨). 위 승인창 코드가 있으면 그것이 우선 | recorded |
+| `awaiting_human_approval` | proposal·rung | 제안 `proposed`, `approval_dispatch_state='sent_current'`, `approval_dispatch_card_kind ∈ {manual, reconfirm, loss_cut_confirmation}`, `approval_nonce_used_at IS NULL`. `auto_veto` 카드는 대기가 아니다. 앞의 값들이 우선 | recorded |
+| `voided` | proposal·rung | 제안 `lifecycle_state='voided'`, rung `state ∈ {voided, voided_local_stale}` (거부 사유 문자열이 아닐 때) | recorded |
+| `superseded` | proposal·rung | `lifecycle_state='superseded'` / rung `state='superseded'` | recorded |
+| `denied_by_operator` | proposal·rung | 제안 `lifecycle_state ∈ {voided, rejected}` 또는 rung `state ∈ {voided, voided_local_stale, rejected}`이고 `void_reason`이 정확히 `operator_denied`/`telegram_deny` | recorded |
+| `rejected_policy_guard` | rung | rung `state='rejected'`, `void_reason_group='policy_guard'`(거부 사유 문자열 제외) | recorded |
+| `rejected_broker` | rung | rung `state='rejected'`, `void_reason_group ∈ {broker_rejection, provider_throttle}` | recorded |
+| `duplicate_intent` | rung | rung `state='rejected'`, `void_reason_group='duplicate_pending_intent'` | recorded |
+
+키가 없는 경우: 이미 제출·체결 단계로 간 행(`approved`·`submitted`·`resting`·`filled` 등), 승인창 코드가 아닌 dispatch 실패, 모르는 코드, 이후 카드가 성공 발송된 행, 이미 응답(nonce 소비)한 카드, 브로커에 닿은 주문의 만료, `void_reason_group`이 없는 거부, 제안 단계의 단순 `rejected`. 제안 `rejected`는 rung의 사유가 갈릴 수 있어 거부 문자열(`operator_denied`/`telegram_deny`)일 때만 값을 낸다. 동작은 `tests/services/retro_v1/test_block_reason.py`가 값마다 고정하고, 어휘·계약 enum 일치와 원문 비노출을 함께 검증한다. 소비자 게이트(`scripts/ci/run_retro_consumer_gate.py`)는 새 선택 필드를 포함한 계약으로 통과한다.
