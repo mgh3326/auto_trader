@@ -788,6 +788,36 @@ components:
       - no_decision_link
       - attempts_unavailable
       - null
+    BlockReason:
+      description: >-
+        Why a proposal or rung has not been submitted, derived from stored
+        columns only. awaiting_human_approval - an approval card went to a
+        person and is unanswered. auto_approve_demoted - auto-approve was
+        evaluated and refused, so the order waits for a person.
+        deferred_session_closed, no_executable_window, calendar_unknown,
+        invalid_valid_until - the approval-window verdict that stopped the
+        last card dispatch. expired_valid_until - the order expired before it
+        was sent. voided, superseded - the proposal or rung was voided or
+        replaced. denied_by_operator - a person denied it. rejected_policy_guard
+        - a policy guard rejected the rung. rejected_broker - the broker
+        rejected or throttled it. duplicate_intent - an identical pending
+        intent already existed. The stored reason text and any broker message
+        are never exposed.
+      type: string
+      enum:
+      - awaiting_human_approval
+      - auto_approve_demoted
+      - deferred_session_closed
+      - no_executable_window
+      - calendar_unknown
+      - invalid_valid_until
+      - expired_valid_until
+      - voided
+      - superseded
+      - denied_by_operator
+      - rejected_policy_guard
+      - rejected_broker
+      - duplicate_intent
     UnknownReason:
       type: string
       enum:
@@ -935,6 +965,10 @@ components:
         key recorded, correlation only inference). A proposal links to the
         candidate its decision names; one without a decision links to an earlier
         candidate of the same KST day only (inference).
+        The optional block_reason and block_reason_basis appear only on proposal
+        and rung rows whose stored evidence decides why the order is not
+        submitted; recorded is a value a writer stored, inference is derived from
+        the absence of a send. A row without such evidence has neither key.
       type: object
       additionalProperties: false
       required:
@@ -982,6 +1016,13 @@ components:
           $ref: '#/components/schemas/LinkBasis'
         link_reason:
           $ref: '#/components/schemas/LinkReason'
+        block_reason:
+          $ref: '#/components/schemas/BlockReason'
+        block_reason_basis:
+          type: string
+          enum:
+          - recorded
+          - inference
     FunnelRow:
       description: Order and fill counts use the same ledger orders and fill rows as the chain.
       type: object
