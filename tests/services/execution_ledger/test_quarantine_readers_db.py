@@ -31,6 +31,7 @@ from sqlalchemy import delete
 from app.core.db import AsyncSessionLocal
 from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services import journal_exit_correction
 from app.services import kis_us_inference_expiry_service as us_inference
 from app.services import protected_quantity_service as pq
 from app.services.dots_history_export import reader as dots_reader
@@ -702,6 +703,80 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
 
     [lot] = [lot for lot in lots if lot.key.symbol == scenario.symbol]
     assert lot.quantity == Decimal("10")
+
+
+async def test_journal_exit_correction_drops_the_quarantined_row(
+    db_session, seed
+) -> None:
+    """hk 5357: a quarantined sell is not found among a journal's closing-order fills.
+
+    The reader names the fills of an order by its ledger identity and only
+    authoritative sources are accepted by the planner; only a websocket row can be
+    quarantined, so the source rule would catch this row too (the same position
+    as the ROB-1460 reader). The contract still ANDs the in-effect predicate. The
+    reconciler sell of the same symbol is found, which shows the reader is not
+    simply empty.
+    """
+    scenario = await seed.scenario(phantom_side="sell")
+    phantom_seq = int(
+        (
+            await db_session.execute(
+                sa.select(ExecutionLedger.fill_seq).where(
+                    ExecutionLedger.id == scenario.phantom_id
+                )
+            )
+        ).scalar_one()
+    )
+    await _quarantine(db_session, scenario)
+    sell = ExecutionLedger(
+        **ExecutionLedgerUpsert(
+            **row_kwargs(
+                symbol=scenario.symbol,
+                order_no=f"S{scenario.symbol[1:]}0001",
+                side="sell",
+                source="reconciler",
+                raw_payload_json=None,
+                fill_seq=0,
+                filled_qty="3",
+                filled_price="6000",
+                filled_notional="18000",
+                filled_at=(NOW - timedelta(hours=1)).isoformat(),
+            )
+        ).model_dump()
+    )
+    db_session.add(sell)
+    await db_session.flush()
+    sell_id = int(sell.id)
+    sell_order_id = sell.broker_order_id
+    await db_session.commit()
+
+    journal = SimpleNamespace(account="kis")
+
+    def cite(order_id: str, fill_seq: int) -> journal_exit_correction.Evidence:
+        return journal_exit_correction.Evidence(
+            journal_id=1,
+            evidence_ref="hk:doc/test",
+            record_order_id=order_id,
+            record_closed_journal_ids=(1,),
+            venue="krx",
+            broker_order_id=order_id,
+            fill_seq=fill_seq,
+            allocated_quantity=Decimal("3"),
+        )
+
+    found = await journal_exit_correction.load_order_fills(
+        db_session, journal, cite(sell_order_id, 0)
+    )
+    found_ids = [int(r.id) for r in found]
+    await db_session.rollback()
+    assert found_ids == [sell_id]
+
+    phantom = await journal_exit_correction.load_order_fills(
+        db_session, journal, cite(scenario.phantom_order_no, phantom_seq)
+    )
+    phantom_found = len(phantom)
+    await db_session.rollback()
+    assert phantom_found == 0
 
 
 async def test_strategy_sleeve_fills_drop_the_quarantined_row(db_session, seed) -> None:

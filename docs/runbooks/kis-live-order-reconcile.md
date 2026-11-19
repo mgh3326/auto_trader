@@ -144,3 +144,37 @@ retrospective를 자동 기록하지 않으며, `save_trade_retrospective`는 �
 - **기타 세션**: premarket/nxt_after 주문은 20:00 KST (`nxt_carry`), off 창 접수 주문은 20:00 KST (`unknown_session`)으로 처리됩니다.
 - **해외/US**: US history 행의 `expiry_reason` 은 `us_day_order` placeholder(NXT 없음)로 기록됩니다.
 
+
+## 늦게 닫힌 매도 저널의 종료 시각·KRW 손익 보정 (hk 5357)
+
+hk 5332(PR #2468, 2026-11-19 12:26 KST 배포) 전에 대사로 부기된 매도는 저널 `exit_date` 에 부기 시각이 남고 `total_pnl_krw` 가 비어 있다(저널 243·244·245). 이후 부기는 `exit_date`=체결 시각, `total_pnl_krw`=`(체결가-진입가)×수량`(KR 주식·KRW 코인)으로 맞게 기록된다. 과거 행은 일회성 CLI `scripts/correct_journal_exit_fields.py` 로 같은 규칙에 맞춘다.
+
+**짝짓기는 추론하지 않는다.** 닫힌 lot 저널에는 닫은 매도로 가는 영속 링크가 없다(`closed_journal_ids` 는 대사 응답에만 있다). 한 부기 매도가 여러 lot 을 닫을 수 있고, 매수 저널이 체결보다 늦게 만들어진 뒤 더 이른 체결이 그 lot 을 닫을 수도 있어서, 수량·가격·시각이 맞는 원장 행이 하나뿐이라는 사실은 증거가 아니다. 그래서 운영자가 저널마다 증거 항목 하나를 `--evidence-file`(JSON 목록)로 준다: 그 저널을 닫은 대사 결과를 보존한 기록(`evidence_ref`: hk 문서 키·Dagu 실행 로그 경로 등)과 그 기록의 `order_id`·`closed_journal_ids`, 닫은 매도의 원장 전체 식별자(`venue`·`broker_order_id`·`fill_seq`; `broker`·`account_mode=live` 는 저널 계좌에서 정해진다), 그 저널에 배분된 수량.
+
+```json
+[{"journal_id": 245,
+  "evidence_ref": "hk:doc/<보존한 대사 결과 키>",
+  "record_order_id": "<기록의 주문번호>",
+  "record_closed_journal_ids": [245],
+  "ledger": {"venue": "krx", "broker_order_id": "<원장 주문번호>", "fill_seq": 0},
+  "allocated_quantity": "2"}]
+```
+
+체결 시각: 원장 행의 `filled_at` 은 `filled_at_basis=broker_fill_time` 일 때만 체결 시각이다(KIS reconciler 행은 `broker_order_time` 이라 주문 시각이다). basis 가 그 밖이면 증거 항목에 `"verified_fill_time": {"at": "<오프셋 포함 ISO 시각>", "ref": "<보존된 기록>"}` 를 더해야 하고, 없으면 `fill_time_not_a_broker_fill_time` 으로 거부한다. `broker_fill_time` 행에 다른 `verified_fill_time` 을 주면 충돌로 거부한다. 같은 주문(`broker_order_id`)에 in-effect authoritative 행이 둘 이상이면 증거가 어느 체결인지 가릴 수 없으므로 어느 `fill_seq` 를 인용하든 `ambiguous_order_fills` 로 거부한다.
+
+CLI 는 항목을 DB 와 대조한다: 기록이 이 저널을 `closed_journal_ids` 에 올렸고 기록의 주문번호가 원장 주문번호와 같으며, 그 주문의 in-effect authoritative(reconciler/manual_import) 행이 정확히 하나이고 인용한 식별자와 같으며 같은 계좌·종목·KRW 매도이고, 배분 수량이 저널 수량과 같고 체결 수량 이하이며(한 체결을 여러 저널이 나눠도 배분 합이 체결 수량 이하), `exit_price` 가 체결가와 같고 체결이 `exit_date` 이전일 때만 적격이다. 하나라도 없거나 어긋나면 그 저널은 `ineligible` 이고 배치 전체를 쓰지 않는다. `total_pnl_krw` 는 `(체결가-진입가)×배분 수량` 이다. 🔴 CLI 는 인용한 기록 자체를 인증하지 못한다 — `evidence_ref` 와 항목 전체가 preview digest 와 `notes` 감사 메모에 묶여 리뷰에 남을 뿐이므로, 기록이 실제로 그 저널·주문을 연결하는지는 증거를 고른 사람이 확인해야 한다. 증거가 하나라도 없으면 그 저널은 이 도구로 보정하지 않는다. `exit_price`·`pnl_pct`·US FX 필드는 건드리지 않고, 감사 메모(원래 값·새 값·원장 행 id·증거 참조·체결 식별자·배분 수량·reason·actor·`decision=hk 5357`)를 `notes` 끝에 덧붙인다. 지원 범위는 `equity_kr` 의 `kis`·`toss` 계좌뿐이며 열린 저널·다른 instrument 는 거부한다. DB URL 은 `postgresql+asyncpg://` 여야 한다(맨 `postgresql://` 은 동기 드라이버라 연결 전에 거부). 운영 DB 실행은 운영자 승인 뒤에만 한다.
+
+```bash
+# 1) preview 먼저 — 쓰기 0. 저널마다 현재 값·새 값·근거 원장 행 id·증거·적격 여부와 plan_digest 가 나온다
+uv run python -m scripts.correct_journal_exit_fields --database-url-env DATABASE_URL_NAME \
+  --ids 243,244,245 --evidence-file <증거.json> \
+  --reason "hk 5357: 대사로 늦게 닫힌 저널 보정" --actor <운영자>
+
+# 2) preview 가 전부 eligible 일 때만, 출력된 plan_digest 로 commit — 사실이 바뀌었으면 전체 롤백(exit 2)
+uv run python -m scripts.correct_journal_exit_fields --database-url-env DATABASE_URL_NAME \
+  --ids 243,244,245 --evidence-file <증거.json> \
+  --reason "hk 5357: 대사로 늦게 닫힌 저널 보정" --actor <운영자> \
+  --commit --expect-digest <preview 의 plan_digest>
+```
+
+`--ids` 는 쉼표로 나눈 정확한 양의 정수(최대 20개)이며 증거 파일에는 그 id 마다 정확히 한 항목만 있어야 한다. 범위·패턴·중복·누락·알 수 없는 키는 DB 연결 전에 거부된다. 종료 코드: 0 preview 적격/커밋/no-op, 1 입력·DB 오류, 2 배치 거부 또는 preview 이후 사실 변경. `--commit` 은 트랜잭션 동안 `execution_ledger` 에 SHARE 잠금(5초 `lock_timeout`)을 잡아 원장 쓰기가 끝나기를 기다리고 새 쓰기를 막은 뒤(커밋까지 유지) 사실을 다시 읽는다 — 잠금을 못 얻으면 쓰지 않고 실패한다. 같은 증거의 감사 메모와 보정된 값이 이미 있는 저널은 no-op 이라 두 번째 `--commit`(같은 digest 로 재시도해도)은 무변경이다.
