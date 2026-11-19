@@ -4,8 +4,8 @@
 
 ## 호스트 복사 순서
 
-1. 기존 TaskIQ `at-scheduler`가 중지되어 있고 일봉 cron이 실행되지 않는지 확인한다. 아직 실행 중이면 먼저 중지해 TaskIQ와 Dagu가 같은 시장을 동시에 동기화하지 않게 한다.
-2. 확인 후에만 해당 일봉 DAG를 Dagu 호스트에 복사하고 검증한다. 이 저장소/PR은 복사나 등록을 수행하지 않는다.
+1. 기존 TaskIQ `at-scheduler`가 중지되어 있고 `candles.daily.*.sync` 및 `order_proposal.night_sweep` cron이 실행되지 않는지 확인한다. 아직 실행 중이면 먼저 중지해 TaskIQ와 Dagu가 같은 작업을 겹쳐 실행하지 않게 한다.
+2. 확인 후에만 해당 DAG를 Dagu 호스트에 복사하고 검증한다. 이 저장소/PR은 복사나 등록을 수행하지 않는다.
 
 | DAG | 스케줄 (KST) | 스케줄 (UTC) | 진입점 |
 |---|---|---|---|

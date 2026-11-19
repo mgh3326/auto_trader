@@ -1,4 +1,5 @@
 # 16:30·07:00 KST 월–금 야간 제안 스윕. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 등록 전 기존 TaskIQ at-scheduler 중지와 night_sweep cron 비실행을 확인해 중복 실행을 막는다.
 # 스케줄은 UTC(07:30 월–금, 22:00 일–목)로 표기한다. 기존 body·schedule 두 게이트가 모두 필요하다.
 description: "order proposal night sweep (existing environment gate required)"
 schedule:
