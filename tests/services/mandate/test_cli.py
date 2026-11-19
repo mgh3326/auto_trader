@@ -569,3 +569,240 @@ def test_every_subcommand_and_flag_is_named_in_the_runbook() -> None:
             if option in ("-h", "--help"):
                 continue
             assert option in text, option
+
+
+# ------------------------------------------- the remaining command bodies (fake)
+class _Rows:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class FakeSessionWithRows(FakeSession):
+    """Answers ``execute`` from a queue, one result per query the command makes."""
+
+    def __init__(self, results: list) -> None:
+        super().__init__()
+        self._results = list(results)
+
+    async def execute(self, statement):
+        return _Rows(self._results.pop(0))
+
+
+def _record(calls: list, result):
+    async def store(*args, **kwargs):
+        calls.append((args, kwargs))
+        return result
+
+    return store
+
+
+def _plan_input_file(tmp_path: Path) -> str:
+    data = {
+        "sleeve_key": "mock-kr",
+        "symbol": "005930",
+        "planned_amount": "2350000",
+        "adopted_amount": "0",
+        "adopted_evidence": {
+            "checked_at": "2026-11-20T00:00:00Z",
+            "holdings": [
+                {"account_ref": "acct-a", "quantity": "0", "amount": "0"},
+                {"account_ref": "acct-b", "quantity": "0", "amount": "0"},
+            ],
+        },
+        "account_ref": "acct-a",
+        "scope_account_refs": ["acct-a", "acct-b"],
+        "thesis": "test thesis",
+        "invalidation_conditions": ["x falls"],
+        "sector_key": "auto",
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+def _sleeve(market: str = "equity_kr"):
+    return SimpleNamespace(id=3, sleeve_key="mock-kr", market=market)
+
+
+def test_register_plan_sizes_one_share_from_the_last_close_and_writes_via_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list = []
+    registered = SimpleNamespace(
+        plan=SimpleNamespace(
+            id=9,
+            symbol="005930",
+            planned_amount=cli.Decimal("2350000"),
+            adopted_amount=cli.Decimal("0"),
+        ),
+        tranches=(SimpleNamespace(tranche_index=1, amount=cli.Decimal("940000")),),
+        reservation=SimpleNamespace(realm="mock", market="equity_kr", symbol="005930"),
+    )
+
+    async def get_sleeve(session, key):
+        return _sleeve()
+
+    async def marks(session, market, symbols, now):
+        return {symbols[0]: cli.Decimal("10000")}
+
+    monkeypatch.setattr(cli.sleeve_store, "get_sleeve_by_key", get_sleeve)
+    monkeypatch.setattr(cli, "latest_close_marks", marks)
+    monkeypatch.setattr(cli.ms, "register_plan", _record(calls, registered))
+    argv = ["register-plan", "--input", _plan_input_file(tmp_path), *ACTOR]
+
+    preview = FakeSession()
+    _, payload = asyncio.run(cli.run(_parse(*argv), session_factory=lambda: preview))
+    assert (preview.commits, preview.rollbacks) == (0, 1)
+    assert payload["plan_id"] == 9 and payload["authority"] == "proposed"
+    (_, data), _kw = calls[0]
+    assert data.one_share_price == cli.Decimal("10000")
+    assert data.created_by == "operator:cli:tester"
+    assert data.symbol == "005930"
+
+    committed = FakeSession()
+    asyncio.run(cli.run(_parse(*argv, "--commit"), session_factory=lambda: committed))
+    assert (committed.commits, committed.rollbacks) == (1, 0)
+    assert len(calls) == 2
+
+
+def test_register_plan_refuses_a_missing_price_with_no_store_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list = []
+
+    async def get_sleeve(session, key):
+        return _sleeve()
+
+    async def no_close(session, market, symbols, now):
+        return {symbols[0]: None}
+
+    monkeypatch.setattr(cli.sleeve_store, "get_sleeve_by_key", get_sleeve)
+    monkeypatch.setattr(cli, "latest_close_marks", no_close)
+    monkeypatch.setattr(cli.ms, "register_plan", _record(calls, None))
+    argv = ["register-plan", "--input", _plan_input_file(tmp_path), "--commit", *ACTOR]
+
+    with pytest.raises(cli.ms.MandateError, match="mandate_invalid_fields"):
+        asyncio.run(cli.run(_parse(*argv), session_factory=FakeSession))
+    assert calls == []
+
+
+def test_request_profile_previews_then_commits_through_the_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list = []
+    request = SimpleNamespace(
+        subject_kind="activation_profile",
+        id=5,
+        content_sha256="b" * 64,
+        approval_ref="hk:1",
+        requested_by="operator:cli:tester",
+    )
+
+    async def get_sleeve(session, key):
+        return _sleeve()
+
+    monkeypatch.setattr(cli.sleeve_store, "get_sleeve_by_key", get_sleeve)
+    monkeypatch.setattr(cli.ms, "create_profile_request", _record(calls, request))
+    argv = [
+        "request-profile",
+        "--sleeve-key",
+        "mock-kr",
+        "--terms-id",
+        "12",
+        "--max-tranche-index",
+        "1",
+        "--effective-session",
+        "2026-11-23",
+        "--expires-at",
+        "2027-01-01T00:00:00+09:00",
+        "--approval-ref",
+        "hk:1",
+        *ACTOR,
+    ]
+
+    preview = FakeSession()
+    _, payload = asyncio.run(cli.run(_parse(*argv), session_factory=lambda: preview))
+    assert (preview.commits, preview.rollbacks) == (0, 1)
+    assert payload["subject_kind"] == "activation_profile"
+    (_, kwargs) = calls[0]
+    assert kwargs["terms_id"] == 12 and kwargs["max_tranche_index"] == 1
+    assert kwargs["effective_session"] == date(2026, 11, 23)
+    assert kwargs["expires_at"].utcoffset() is not None
+
+    committed = FakeSession()
+    asyncio.run(cli.run(_parse(*argv, "--commit"), session_factory=lambda: committed))
+    assert (committed.commits, committed.rollbacks) == (1, 0)
+
+
+def test_status_of_one_plan_is_read_only_and_folds_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = SimpleNamespace(
+        id=9,
+        symbol="005930",
+        account_ref="acct-a",
+        scope_account_refs=("acct-a", "acct-b"),
+        planned_amount=cli.Decimal("2350000"),
+        adopted_amount=cli.Decimal("0"),
+        sector_key="auto",
+    )
+
+    async def get_plan(session, plan_id):
+        return plan
+
+    async def plan_state(session, plan_id):
+        return _state(authority="approved", t1={"filled_amount": cli.Decimal("300000")})
+
+    async def list_events(session, plan_id):
+        return [SimpleNamespace(seq=1, event="proposed", actor="operator:cli:x")]
+
+    monkeypatch.setattr(cli.ms, "get_plan", get_plan)
+    monkeypatch.setattr(cli.ms, "plan_state", plan_state)
+    monkeypatch.setattr(cli.ms, "list_plan_events", list_events)
+    tranche = SimpleNamespace(tranche_index=1, amount=cli.Decimal("940000"))
+    session = FakeSessionWithRows([[tranche]])
+
+    code, payload = asyncio.run(
+        cli.run(_parse("status", "--plan-id", "9"), session_factory=lambda: session)
+    )
+    assert code == cli.EXIT_OK
+    assert payload["mode"] == "read" and payload["authority"] == "approved"
+    assert payload["tranches"][0]["filled_amount"] == "300000"
+    assert payload["events"] == [
+        {"seq": 1, "event": "proposed", "actor": "operator:cli:x"}
+    ]
+    assert (session.commits, session.rollbacks) == (0, 1)
+
+
+def test_status_of_a_sleeve_lists_its_plans(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def get_sleeve(session, key):
+        return _sleeve()
+
+    async def plan_state(session, plan_id):
+        return _state(authority="proposed")
+
+    monkeypatch.setattr(cli.sleeve_store, "get_sleeve_by_key", get_sleeve)
+    monkeypatch.setattr(cli.ms, "plan_state", plan_state)
+    session = FakeSessionWithRows([[SimpleNamespace(id=9, symbol="005930")]])
+
+    _, payload = asyncio.run(
+        cli.run(
+            _parse("status", "--sleeve-key", "mock-kr"), session_factory=lambda: session
+        )
+    )
+    assert payload["sleeve_key"] == "mock-kr"
+    assert payload["plans"] == [
+        {
+            "plan_id": 9,
+            "symbol": "005930",
+            "authority": "proposed",
+            "cleanup": "none",
+            "released": False,
+        }
+    ]

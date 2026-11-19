@@ -18,11 +18,9 @@ import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal, engine
 from app.models.mandate import MandateApprovalRequest, MandatePlanEvent
-from app.services.mandate import store as ms
 from scripts import mandate as cli
 from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.mandate.db_support import (
-    EFFECTIVE,
     RULE,
     TRANCHE_RULE,
     MandateSeed,
@@ -104,12 +102,13 @@ async def test_a_preview_request_terms_writes_no_approval_request(
     sleeve = await seed.sleeve(
         state="shadow", budget_cap="10000000", loss_limit="500000", rule_id=RULE
     )
-    before = await _requests(db_session, sleeve.id)
+    sleeve_id, sleeve_key = sleeve.id, sleeve.sleeve_key
+    before = await _requests(db_session, sleeve_id)
     code, payload = await cli.run(
         _args(
             "request-terms",
             "--sleeve-key",
-            sleeve.sleeve_key,
+            sleeve_key,
             "--input",
             _clause(tmp_path, new_symbol()),
             "--approval-ref",
@@ -121,7 +120,7 @@ async def test_a_preview_request_terms_writes_no_approval_request(
     )
     assert code == cli.EXIT_OK
     assert payload["mode"] == "preview"
-    assert await _requests(db_session, sleeve.id) == before == 0
+    assert await _requests(db_session, sleeve_id) == before == 0
 
 
 async def test_a_commit_request_terms_writes_one_request(
@@ -130,11 +129,12 @@ async def test_a_commit_request_terms_writes_one_request(
     sleeve = await seed.sleeve(
         state="shadow", budget_cap="10000000", loss_limit="500000", rule_id=RULE
     )
+    sleeve_id, sleeve_key = sleeve.id, sleeve.sleeve_key
     _, payload = await cli.run(
         _args(
             "request-terms",
             "--sleeve-key",
-            sleeve.sleeve_key,
+            sleeve_key,
             "--input",
             _clause(tmp_path, new_symbol()),
             "--approval-ref",
@@ -146,7 +146,7 @@ async def test_a_commit_request_terms_writes_one_request(
         session_factory=AsyncSessionLocal,
     )
     assert payload["mode"] == "commit"
-    assert await _requests(db_session, sleeve.id) == 1
+    assert await _requests(db_session, sleeve_id) == 1
     row = await db_session.get(MandateApprovalRequest, payload["request_id"])
     assert row is not None and row.requested_by == ACTOR
 
@@ -157,12 +157,13 @@ async def test_a_system_actor_writes_nothing_even_with_commit(
     sleeve = await seed.sleeve(
         state="shadow", budget_cap="10000000", loss_limit="500000", rule_id=RULE
     )
+    sleeve_id, sleeve_key = sleeve.id, sleeve.sleeve_key
     with pytest.raises(cli.MandateCliError):
         await cli.run(
             _args(
                 "request-terms",
                 "--sleeve-key",
-                sleeve.sleeve_key,
+                sleeve_key,
                 "--input",
                 _clause(tmp_path, new_symbol()),
                 "--approval-ref",
@@ -173,7 +174,7 @@ async def test_a_system_actor_writes_nothing_even_with_commit(
             ),
             session_factory=AsyncSessionLocal,
         )
-    assert await _requests(db_session, sleeve.id) == 0
+    assert await _requests(db_session, sleeve_id) == 0
 
 
 async def test_a_preview_event_writes_nothing_and_a_commit_appends_one(
@@ -182,20 +183,14 @@ async def test_a_preview_event_writes_nothing_and_a_commit_appends_one(
     symbol = new_symbol()
     sleeve, terms = await seed.clause_sleeve(symbols=(symbol,))
     plan = await seed.register(sleeve, terms, symbol)
-    # operator-side approval of the plan; the T3a card does this in production
-    await ms.append_plan_event(
-        db_session,
-        plan_id=plan.plan.id,
-        event="approved",
-        actor="operator:test",
-        terms_id=terms.id,
-        effective_session=EFFECTIVE,
-    )
-    await db_session.commit()
+    # plain copies: the commits below would expire the ORM objects
+    plan_id = plan.plan.id
+    # the approval card (T3a) does this in production; the seed approves directly
+    await seed.approve_plan(plan_id, terms)
     argv = [
         "event",
         "--plan-id",
-        str(plan.plan.id),
+        str(plan_id),
         "--event",
         "suspended",
         "--reason",
@@ -203,14 +198,14 @@ async def test_a_preview_event_writes_nothing_and_a_commit_appends_one(
         "--actor",
         ACTOR,
     ]
-    before = await _events(db_session, plan.plan.id)
+    before = await _events(db_session, plan_id)
 
     await cli.run(_args(*argv), session_factory=AsyncSessionLocal)
-    assert await _events(db_session, plan.plan.id) == before
+    assert await _events(db_session, plan_id) == before
 
     _, payload = await cli.run(
         _args(*argv, "--commit"), session_factory=AsyncSessionLocal
     )
-    after = await _events(db_session, plan.plan.id)
+    after = await _events(db_session, plan_id)
     assert after == [*before, "suspended"]
     assert payload["event"] == "suspended" and payload["seq"] == len(after)

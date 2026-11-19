@@ -27,7 +27,7 @@ uv run python -m scripts.mandate --database-url-env MANDATE_DB_URL request-terms
 
 ## 2. 활성화 프로필 승인 요청 — `request-profile`
 
-회차 상한(1~3)과 효력 세션, 만료를 담은 프로필을 요청한다. 현재 live 조항의 `terms_id`에 묶인다. 회차 확대는 새 프로필 버전이다.
+회차 상한(0~3, `--max-tranche-index`)과 효력 세션, 만료를 담은 프로필을 요청한다. 현재 live 조항의 `terms_id`에 묶인다. 회차 확대는 새 프로필 버전이다.
 
 ```bash
 uv run python -m scripts.mandate --database-url-env MANDATE_DB_URL request-profile --sleeve-key mock-kr-sleeve --terms-id 12 --max-tranche-index 1 --effective-session 2026-11-23 --expires-at 2027-06-30T00:00:00+09:00 --approval-ref hk:5638 --actor operator:cli:mgh
