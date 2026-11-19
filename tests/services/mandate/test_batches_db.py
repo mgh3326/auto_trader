@@ -213,9 +213,7 @@ def auth(card, action: str = "approve", user: int = OPERATOR) -> cb.Authorized:
 
 async def answer(sc: Scene, card, action: str = "approve") -> cb.Outcome:
     async with AsyncSessionLocal() as session:
-        return await cb.answer(
-            session, auth(card, action), now=datetime.now(UTC), calendar=sc.cal
-        )
+        return await cb.answer(session, auth(card, action), calendar=sc.cal)
 
 
 async def second_live_terms(
@@ -1340,3 +1338,63 @@ async def test_i22_an_answer_whose_transaction_began_before_the_close_is_refused
         "approved",
         "terms_rebound",
     ]
+
+
+async def test_i22_an_answer_straddling_the_opening_deadline_keeps_the_session_it_was_decided_for(
+    db_session, seed, monkeypatch
+) -> None:
+    """The decision instant is read once (before the deadline) and handed to the trigger:
+    the INSERT lands after the opening bell and is neither refused nor re-classified."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    now = datetime.now(UTC)
+    sc = await open_batch(
+        db_session,
+        seed,
+        sleeve,
+        terms,
+        [plan],
+        when="before",
+        times=(now, now + timedelta(seconds=4), now + timedelta(hours=7)),
+    )
+    card = sc.cards[plan.id]
+    real_append = ms.append_plan_event
+
+    async def slow_append(session, **kwargs):
+        # the application side is done deciding; the write reaches the trigger late
+        await asyncio.sleep(
+            max(0.0, (sc.deadline - datetime.now(UTC)).total_seconds()) + 0.5
+        )
+        assert datetime.now(UTC) > sc.deadline
+        return await real_append(session, **kwargs)
+
+    monkeypatch.setattr(ms, "append_plan_event", slow_append)
+    out = await answer(sc, card)
+    assert out.handled and out.reason == "approved", out
+    effective = (
+        await db_session.execute(
+            sa.text(
+                "SELECT effective_session FROM review.mandate_plan_events "
+                "WHERE plan_id = :p AND event = 'approved'"
+            ),
+            {"p": plan.id},
+        )
+    ).scalar_one()
+    assert effective == sc.target  # decided before the deadline
+
+
+async def test_the_decision_instant_must_be_current(db_session, seed) -> None:
+    """A writer cannot backdate ``mandate.decided_at`` to get the target session late."""
+    sc = await scene(db_session, seed, when="after")  # the deadline passed an hour ago
+    plan = sc.plans[0]
+    card = sc.cards[plan.id]
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            sa.text("SELECT set_config('mandate.decided_at', :at, true)"), {"at": old}
+        )
+        message = await _try(
+            session, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id
+        )
+    assert message is not None and "the decision instant is not current" in message

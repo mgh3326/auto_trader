@@ -27,10 +27,12 @@ the message edit come after the commit and never change the result.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.models.mandate import MandateTerms
@@ -165,26 +167,36 @@ async def _card_facts(
         approval_deadline_at=batch.approval_deadline_at,
         expires_at=batch.expires_at,
         card_no=member.card_no,
+        realm=batch.realm,
+        batch_id=batch.id,
+        member_id=member.id,
         open_order_count=await bt.open_order_count(session, plan.id),
     )
+
+
+async def db_clock(session: Any) -> datetime:
+    """The database wall clock: the one clock the answer trigger also reads."""
+    value = (await session.execute(text("SELECT clock_timestamp()"))).scalar_one()
+    return value.astimezone(UTC)
 
 
 async def answer(
     session: Any,
     auth: Authorized,
     *,
-    now: datetime,
     calendar: rules.SessionCalendar,
-    resample: Callable[[], datetime] | None = None,
+    decision_clock: Callable[[Any], Awaitable[datetime]] | None = None,
 ) -> Outcome:
     """Check 4 and the write. Commits on success, rolls back on every refusal.
 
-    ``now`` is when the button arrived. ``resample`` reads the clock again once the
-    basket and sleeve locks are held: expiry and the effective session are judged at
-    that moment, so a request that waited on a lock cannot answer after the batch
-    closed (the database trigger reads the wall clock for the same reason).
+    The decision instant is read once, from the database clock, after the basket and
+    sleeve locks are held. Expiry, the approval deadline and the effective session are
+    all judged at that instant, and it is handed to the answer trigger
+    (``mandate.decided_at``, transaction-local), which accepts it only within seconds of
+    its own clock: a valid click that straddles the opening bell is neither refused nor
+    given the wrong session, and a request that waited on a lock cannot answer after
+    the batch closed (the trigger checks expiry against its own wall clock at insert).
     """
-    moment = now.astimezone(UTC)
     member = await bt.get_member(session, auth.parsed.member_id)
     if member is None:
         await session.rollback()
@@ -203,8 +215,7 @@ async def answer(
         return Outcome(False, v.MandateRefusal.BINDING_BROKEN.value)
     await acquire_basket_lock(session, batch.realm, batch.basket_key)
     await acquire_sleeve_lock(session, plan_row.sleeve_id)
-    if resample is not None:
-        moment = max(moment, resample().astimezone(UTC))
+    moment = (await (decision_clock or db_clock)(session)).astimezone(UTC)
     refusal = await _refusal(session, member, batch, moment)
     if refusal is not None:
         await session.rollback()
@@ -241,6 +252,10 @@ async def answer(
             evidence["open_order_count"] = await bt.open_order_count(session, plan.id)
     facts = await _card_facts(session, batch, plan, member, terms)
     try:
+        await session.execute(
+            text("SELECT set_config('mandate.decided_at', :at, true)"),
+            {"at": moment.isoformat()},
+        )
         await ms.append_plan_event(
             session,
             plan_id=plan.id,
@@ -305,7 +320,7 @@ async def handle_mandate_callback(
     session_factory: Callable[[], Any] | None = None,
     notifier: Any = None,
     calendar: rules.SessionCalendar | None = None,
-    clock: Callable[[], datetime] | None = None,
+    decision_clock: Callable[[Any], Awaitable[datetime]] | None = None,
 ) -> dict[str, Any]:
     """Handle one ``mpb:`` update. Never raises; the HTTP layer answers 200 either way."""
     auth = authorize(update)
@@ -321,9 +336,8 @@ async def handle_mandate_callback(
             outcome = await answer(
                 session,
                 auth,
-                now=now,
                 calendar=calendar or rules.ExchangeCalendar(),
-                resample=clock or (lambda: datetime.now(UTC)),
+                decision_clock=decision_clock,
             )
     except Exception as exc:  # noqa: BLE001 - fail closed, never leak the cause
         logger.error(
@@ -337,11 +351,7 @@ async def handle_mandate_callback(
         ANSWER_TEXT.get(outcome.reason, ANSWER_TEXT["internal_error"]),
     )
     if outcome.handled and outcome.facts is not None:
-        await _edit(
-            notifier,
-            auth,
-            cards.render_answered(outcome.facts, ANSWER_TEXT[outcome.reason]),
-        )
+        await _edit(notifier, auth, outcome.facts, ANSWER_TEXT[outcome.reason])
     return {"handled": outcome.handled, "reason": outcome.reason}
 
 
@@ -364,14 +374,19 @@ async def _reply(
         logger.warning("mandate.batch_callback.reply_failed")
 
 
-async def _edit(notifier: Any, auth: Authorized, text: str) -> None:
+async def _edit(
+    notifier: Any, auth: Authorized, facts: cards.CardFacts, outcome_text: str
+) -> None:
+    """Rewrite the answered card. Rendering is inside the boundary: the decision is
+    already durable, so nothing here may fail the webhook."""
     if auth.message_id is None:
         return
     try:
+        text_ = cards.render_answered(facts, outcome_text)
         await _notifier(notifier).edit_message(
             str(auth.chat_id),
             auth.message_id,
-            text,
+            text_,
             reply_markup={"inline_keyboard": []},
             parse_mode=None,  # the card was sent as plain text
         )

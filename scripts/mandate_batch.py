@@ -116,6 +116,9 @@ async def _card_facts(
         approval_deadline_at=batch.approval_deadline_at,
         expires_at=batch.expires_at,
         card_no=member.card_no,
+        realm=batch.realm,
+        batch_id=batch.id,
+        member_id=member.id,
         open_order_count=await bt.open_order_count(session, plan.id),
     )
 
@@ -228,19 +231,37 @@ async def _deliver_cards(
     return results
 
 
-async def _summary_text(session: AsyncSession, batch: Any, member_count: int) -> str:
+async def _summary_messages(
+    session: AsyncSession, batch: Any, member_count: int
+) -> tuple[str, ...]:
     armed = await _armed_tranches(session, batch.realm, batch.basket_key)
-    return cards.render_summary(
-        cards.SummaryFacts(
-            market=batch.market,
-            basket_key=batch.basket_key,
-            target_session=batch.target_session,
-            approval_deadline_at=batch.approval_deadline_at,
-            expires_at=batch.expires_at,
-            armed_tranches=armed,
-            member_count=member_count,
+    try:
+        return cards.render_summary_messages(
+            cards.SummaryFacts(
+                market=batch.market,
+                basket_key=batch.basket_key,
+                target_session=batch.target_session,
+                approval_deadline_at=batch.approval_deadline_at,
+                expires_at=batch.expires_at,
+                armed_tranches=armed,
+                member_count=member_count,
+                realm=batch.realm,
+                batch_id=batch.id,
+            )
         )
-    )
+    except ValueError as exc:
+        raise MandateCliError(
+            f"요약을 발송 가능한 크기로 만들 수 없습니다: {exc}"
+        ) from exc
+
+
+async def _send_all(sender: Sender, texts: tuple[str, ...]) -> dict[str, Any]:
+    ok, failure = True, None
+    for text in texts:
+        ok, failure = await sender(text, None)
+        if not ok:
+            break
+    return {"message": "summary", "sent": ok, "failure_code": failure}
 
 
 async def _create(
@@ -261,7 +282,7 @@ async def _create(
     )
     batch = issued.batch
     facts = [(c, await _card_facts(session, batch, c.member)) for c in issued.cards]
-    summary = await _summary_text(session, batch, len(issued.cards))
+    summary = await _summary_messages(session, batch, len(issued.cards))
     body: dict[str, Any] = {
         "batch": {
             "id": batch.id,
@@ -285,8 +306,7 @@ async def _create(
         return EXIT_OK, {"mode": "preview", **body}
     await session.commit()  # rows first: a delivered card always names a stored digest
     assert sender is not None
-    ok, failure = await sender(summary, None)
-    sent = [{"message": "summary", "sent": ok, "failure_code": failure}]
+    sent = [await _send_all(sender, summary)]
     sent += await _deliver_cards(sender, outgoing)
     body["sent"] = sent
     code = EXIT_OK if all(r["sent"] for r in sent) else EXIT_SEND_FAILED
@@ -312,7 +332,7 @@ async def _resend(
         session, batch_id=args.batch_id, actor=actor, now=now
     )
     facts = [(c, await _card_facts(session, batch, c.member)) for c in issued]
-    summary = await _summary_text(session, batch, len(issued))
+    summary = await _summary_messages(session, batch, len(issued))
     body: dict[str, Any] = {
         "batch_id": batch.id,
         "cards": [_card_row(c, f) for c, f in facts],
@@ -323,8 +343,7 @@ async def _resend(
         return EXIT_OK, {"mode": "preview", **body}
     await session.commit()
     assert sender is not None
-    ok, failure = await sender(summary, None)
-    results = [{"message": "summary", "sent": ok, "failure_code": failure}]
+    results = [await _send_all(sender, summary)]
     results += await _deliver_cards(sender, outgoing)
     body["sent"] = results
     code = EXIT_OK if all(r["sent"] for r in results) else EXIT_SEND_FAILED

@@ -251,6 +251,7 @@ class Recorder:
         self.rollbacks = 0
         self.locks: list[tuple[str, str]] = []
         self.moments: list[datetime] = []
+        self.statements: list[tuple[str, dict | None]] = []
 
 
 @pytest.fixture
@@ -294,6 +295,10 @@ def world(monkeypatch):
         async def get(self, model, key):
             return terms
 
+        async def execute(self, statement, params=None):
+            rec.statements.append((str(statement), params))
+            rec.locks.append(("statement", None))
+
         async def commit(self):
             rec.commits += 1
 
@@ -326,6 +331,7 @@ def world(monkeypatch):
         return state["orders"]
 
     async def append(session, **kwargs):
+        rec.locks.append(("append", None))
         rec.events.append(kwargs)
 
     monkeypatch.setattr(bt, "get_member", get_member)
@@ -358,6 +364,15 @@ def auth_for(action: str) -> cb.Authorized:
     return got
 
 
+def at(moment: datetime):
+    """A fixed decision clock: the instant the answer is judged at."""
+
+    async def clock(session):
+        return moment
+
+    return clock
+
+
 BEFORE_OPEN = datetime(2026, 11, 22, 23, 40, tzinfo=UTC)  # Mon 08:40 KST
 AFTER_OPEN = NOW  # Mon 09:10 KST
 
@@ -367,7 +382,10 @@ async def test_new_plan_approve_before_the_deadline_is_approved_effective_on_the
     world,
 ) -> None:
     out = await cb.answer(
-        world.session, auth_for("approve"), now=BEFORE_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(BEFORE_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out.handled and out.reason == "approved"
     (event,) = world.rec.events
@@ -378,7 +396,12 @@ async def test_new_plan_approve_before_the_deadline_is_approved_effective_on_the
     assert event["actor"] == f"operator:telegram:{OPERATOR}"
     assert world.rec.commits == 1 and world.rec.rollbacks == 0
     # L2 then L3, both before the checks
-    assert world.rec.locks == [("mock", "basket-1"), ("sleeve", 5), ("checks", None)]
+    assert [x for x in world.rec.locks if x[0] != "statement"] == [
+        ("mock", "basket-1"),
+        ("sleeve", 5),
+        ("checks", None),
+        ("append", None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -386,7 +409,10 @@ async def test_new_plan_approve_after_the_deadline_takes_effect_the_next_session
     world,
 ) -> None:
     out = await cb.answer(
-        world.session, auth_for("approve"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out.handled
     assert world.rec.events[0]["effective_session"] == date(2026, 11, 24)
@@ -397,7 +423,10 @@ async def test_new_plan_reject_is_rejected_with_the_card_clause_and_no_effective
     world,
 ) -> None:
     out = await cb.answer(
-        world.session, auth_for("reject"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("reject"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out.handled and out.reason == "rejected"
     (event,) = world.rec.events
@@ -411,7 +440,10 @@ async def test_new_plan_reject_is_rejected_with_the_card_clause_and_no_effective
 async def test_reapproval_approve_is_terms_rebound(world) -> None:
     world.state["member"] = world.member("reapproval")
     out = await cb.answer(
-        world.session, auth_for("approve"), now=BEFORE_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(BEFORE_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out.handled
     (event,) = world.rec.events
@@ -425,7 +457,10 @@ async def test_reapproval_reject_retires_the_plan_and_records_the_open_order_cou
 ) -> None:
     world.state["member"] = world.member("reapproval")
     out = await cb.answer(
-        world.session, auth_for("reject"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("reject"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out.handled and out.facts is not None
     assert out.facts.open_order_count == 2
@@ -449,7 +484,7 @@ async def test_the_events_a_button_may_write_are_exactly_the_four_of_the_design(
             await cb.answer(
                 world.session,
                 auth_for(action),
-                now=AFTER_OPEN,
+                decision_clock=at(AFTER_OPEN),
                 calendar=FixedCalendar(),
             )
             written.add(world.rec.events[0]["event"])
@@ -460,7 +495,9 @@ async def test_the_events_a_button_may_write_are_exactly_the_four_of_the_design(
 async def test_a_wrong_nonce_writes_nothing(world) -> None:
     other = rules.build_callback_data("approve", 7, "M" * 22)
     auth = cb.authorize(update(data=other))
-    out = await cb.answer(world.session, auth, now=AFTER_OPEN, calendar=FixedCalendar())
+    out = await cb.answer(
+        world.session, auth, decision_clock=at(AFTER_OPEN), calendar=FixedCalendar()
+    )
     assert out == cb.Outcome(False, "mandate_nonce_mismatch")
     assert world.rec.events == [] and world.rec.commits == 0
     assert world.rec.locks == []  # refused before the basket lock
@@ -470,7 +507,10 @@ async def test_a_wrong_nonce_writes_nothing(world) -> None:
 async def test_an_unknown_card_writes_nothing(world) -> None:
     world.state["member"] = None
     out = await cb.answer(
-        world.session, auth_for("approve"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out == cb.Outcome(False, "card_not_found")
     assert world.rec.events == []
@@ -491,7 +531,10 @@ async def test_an_unknown_card_writes_nothing(world) -> None:
 async def test_every_refusal_writes_nothing_and_rolls_back(world, refusal) -> None:
     world.state["refusal"] = refusal
     out = await cb.answer(
-        world.session, auth_for("approve"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out == cb.Outcome(False, refusal)
     assert world.rec.events == [] and world.rec.commits == 0
@@ -507,7 +550,10 @@ async def test_a_refused_event_from_the_store_rolls_back_with_a_closed_reason(
 
     monkeypatch.setattr(ms, "append_plan_event", refuse)
     out = await cb.answer(
-        world.session, auth_for("approve"), now=AFTER_OPEN, calendar=FixedCalendar()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=FixedCalendar(),
     )
     assert out == cb.Outcome(False, "mandate_invalid_transition")
     assert world.rec.commits == 0 and world.rec.rollbacks == 1
@@ -520,7 +566,10 @@ async def test_a_calendar_without_the_next_session_refuses_the_approval(world) -
             return None
 
     out = await cb.answer(
-        world.session, auth_for("approve"), now=AFTER_OPEN, calendar=Closed()
+        world.session,
+        auth_for("approve"),
+        decision_clock=at(AFTER_OPEN),
+        calendar=Closed(),
     )
     assert out == cb.Outcome(False, "mandate_calendar_unknown")
     assert world.rec.events == []
@@ -543,6 +592,7 @@ async def test_handle_replies_and_edits_the_card_after_the_commit(world) -> None
     result = await cb.handle_mandate_callback(
         update(),
         now=AFTER_OPEN,
+        decision_clock=at(AFTER_OPEN),
         session_factory=Factory(),
         notifier=notifier,
         calendar=FixedCalendar(),
@@ -577,6 +627,7 @@ async def test_a_lost_reply_does_not_change_the_result(world) -> None:
     result = await cb.handle_mandate_callback(
         update(),
         now=AFTER_OPEN,
+        decision_clock=at(AFTER_OPEN),
         session_factory=Factory(),
         notifier=Broken(),
         calendar=FixedCalendar(),
@@ -749,30 +800,6 @@ async def test_the_card_edit_reaches_telegram_as_plain_text_with_markdown_punctu
     assert seen[1]["parse_mode"] == "Markdown"
 
 
-@pytest.mark.asyncio
-async def test_the_expiry_clock_is_read_again_after_the_locks_are_held(world) -> None:
-    """A button that waited on a lock is judged at the moment it got the lock."""
-    later = NOW + timedelta(hours=9)
-    await cb.answer(
-        world.session,
-        auth_for("approve"),
-        now=BEFORE_OPEN,
-        calendar=FixedCalendar(),
-        resample=lambda: later,
-    )
-    assert world.rec.moments == [later]
-    # an older resample never moves the clock back
-    world.rec.moments.clear()
-    await cb.answer(
-        world.session,
-        auth_for("approve"),
-        now=AFTER_OPEN,
-        calendar=FixedCalendar(),
-        resample=lambda: BEFORE_OPEN,
-    )
-    assert world.rec.moments == [AFTER_OPEN]
-
-
 # ------------------------- the real writer's fold step with a card id (review od-a379f60b50)
 def _answer_fields(event: str, **over):
     fields = {
@@ -828,3 +855,140 @@ def test_every_answer_with_a_card_id_passes_the_writers_own_checks_and_the_fold(
     assert not hasattr(candidate, "batch_member_id")
     after = apply_event(state, candidate)
     assert after.last_seq == state.last_seq + 1
+
+
+# -------------------------------------- the decision instant (review round 2)
+@pytest.mark.asyncio
+async def test_the_decision_instant_is_read_after_the_locks_and_handed_to_the_trigger(
+    world,
+) -> None:
+    """One instant, read once after the basket and sleeve locks: refusal checks, the
+    effective session and the trigger's ``mandate.decided_at`` all use it."""
+    decided = BEFORE_OPEN  # before the 09:00 deadline: effective on the target session
+
+    async def clock(session):
+        world.rec.locks.append(("clock", None))
+        return decided
+
+    out = await cb.answer(
+        world.session,
+        auth_for("approve"),
+        calendar=FixedCalendar(),
+        decision_clock=clock,
+    )
+    assert out.handled
+    order = [x[0] for x in world.rec.locks]
+    assert order.index("sleeve") < order.index("clock") < order.index("checks")
+    assert world.rec.moments == [decided]
+    assert world.rec.events[0]["effective_session"] == date(2026, 11, 23)
+    (sql, params) = world.rec.statements[0]
+    assert "set_config('mandate.decided_at'" in sql and "true)" in sql
+    assert params == {"at": decided.isoformat()}
+    assert order.index("append") > order.index("statement")  # set before the insert
+
+
+@pytest.mark.asyncio
+async def test_the_default_clock_is_the_database_clock(world) -> None:
+    class Scalar:
+        def scalar_one(self):
+            return NOW
+
+    class Session:
+        async def execute(self, statement, params=None):
+            assert "clock_timestamp()" in str(statement)
+            return Scalar()
+
+    assert await cb.db_clock(Session()) == NOW
+
+
+@pytest.mark.asyncio
+async def test_a_clock_after_the_expiry_is_refused_by_the_expiry_check_not_the_arrival_time(
+    world,
+) -> None:
+    """The refusal is judged at the decision instant (the checks receive it)."""
+    late = NOW + timedelta(hours=9)
+    await cb.answer(
+        world.session,
+        auth_for("approve"),
+        calendar=FixedCalendar(),
+        decision_clock=at(late),
+    )
+    assert world.rec.moments == [late]
+
+
+# ---------------------------------- the post-commit notification boundary (round 2)
+@pytest.mark.asyncio
+async def test_a_card_at_the_publishing_limit_still_renders_its_answered_text() -> None:
+    """Room for the outcome line is reserved, so the edit fits where the card fit."""
+    from app.services.mandate import batch_cards as bc
+    from app.telegram_contract import (
+        TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+        telegram_text_length,
+    )
+
+    base = bc.CardFacts(
+        kind="new_plan",
+        market="equity_kr",
+        basket_key="b",
+        symbol="005930",
+        planned_amount=Decimal(100),
+        adopted_amount=Decimal(0),
+        sector_key="x",
+        thesis="t",
+        invalidation_conditions=(),
+        terms_id=1,
+        terms_sha256="a" * 64,
+        plan_sha256="b" * 64,
+        target_session=date(2026, 11, 23),
+        approval_deadline_at=datetime(2026, 11, 23, tzinfo=UTC),
+        expires_at=datetime(2026, 11, 23, 6, tzinfo=UTC),
+        card_no=1,
+        realm="mock",
+        batch_id=1,
+        member_id=1,
+    )
+    # the longest thesis that still publishes as ONE message
+    lo, hi = 1, 4000
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        try:
+            bc.render_card(bc.CardFacts(**{**base.__dict__, "thesis": "가" * mid}))
+            lo = mid
+        except ValueError:
+            hi = mid - 1
+    edge = bc.CardFacts(**{**base.__dict__, "thesis": "가" * lo})
+    assert len(bc.render_card_messages(edge)) == 1
+    answered = bc.render_answered(edge, "승인했습니다.")
+    assert telegram_text_length(answered) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_a_failing_render_after_the_commit_never_escapes_the_handler(
+    world, monkeypatch
+) -> None:
+    def boom(facts, outcome):
+        raise ValueError("too long")
+
+    monkeypatch.setattr(cb.cards, "render_answered", boom)
+
+    class Factory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return world.session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    notifier = Notifier()
+    result = await cb.handle_mandate_callback(
+        update(),
+        now=AFTER_OPEN,
+        decision_clock=at(AFTER_OPEN),
+        session_factory=Factory(),
+        notifier=notifier,
+        calendar=FixedCalendar(),
+    )
+    assert result == {"handled": True, "reason": "approved"}
+    assert world.rec.commits == 1 and notifier.edits == []

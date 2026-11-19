@@ -5,7 +5,7 @@
 ## 먼저 설정할 것
 
 - **`MANDATE_APPROVER_TELEGRAM_USER_IDS`** — 위임장 카드에 응답할 수 있는 Telegram 사용자 id를 쉼표로 적는다(정수 십진수만). **기본은 빈 값이고 빈 값이면 아무도 승인할 수 없다.** 항목 하나라도 형식이 틀리면 목록 전체가 빈 값으로 취급된다(fail-closed). 이 값은 env 변경이므로 배포 때 내용 기준 승인을 받는다.
-- 카드는 승인 allowlist(`ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`)의 첫 chat으로 `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN` 봇이 보낸다. 콜백은 기존 webhook(`/trading/api/telegram/callback`) 하나로 들어오며 `ORDER_PROPOSALS_TELEGRAM_ENABLED`가 꺼져 있으면 받지 않는다.
+- 카드는 승인 allowlist(`ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR`)의 첫 chat으로 보낸다. **봇은 기존 승인 메시지와 같은 `TELEGRAM_TOKEN`(TradeNotifier가 쓰는 BotFather 토큰)이고, 웹훅을 등록한 봇이어야 한다.** 카드를 보내는 봇과 버튼 응답·메시지 수정을 하는 봇이 같아야 하며, `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`은 어떤 코드도 읽지 않는다. 콜백은 기존 webhook(`/trading/api/telegram/callback`) 하나로 들어오며 `ORDER_PROPOSALS_TELEGRAM_ENABLED`가 꺼져 있으면 받지 않는다.
 - 마이그레이션 `20261120_hk5648_mandate_batches`가 적용돼 있어야 한다(운영자 적용).
 
 ## 공통 규칙
@@ -22,7 +22,7 @@
 
 - **승인 마감** = T의 정규장 개장. **배치 만료** = T의 정규장 종료. 만료 뒤에는 응답을 받지 않는다.
 - 카드 대상: (a) `proposed` 계획(신규), (b) 위임장 버전이 바뀌어 현재 결속 조항이 live 조항과 다른 `approved`/`active` 계획(재승인). 계좌 참조가 live 조항과 다른 계획은 카드를 만들지 않고 `skipped`로 출력한다.
-- 배치의 첫 메시지는 "오늘 적용 기준" 요약이다(승인 대상 카드 수, 오늘 armed 회차). 승인할 것이 없어도 배치는 만들어져 그 거래일을 차지한다.
+- 배치의 첫 메시지는 "오늘 적용 기준" 요약이다(승인 대상 카드 수, 오늘 armed 회차). armed 회차 목록이 길면 여러 메시지로 나뉜다. 모든 메시지에는 발급 식별자(영역·배치·카드 번호)가 붙고, 논지가 길어 카드가 여러 메시지로 나뉘면 앞의 맥락 메시지와 버튼이 달린 카드가 같은 식별자를 갖는다. 승인할 것이 없어도 배치는 만들어져 그 거래일을 차지한다.
 - **배치 단일성(I22)**: 바구니 × 대상 거래일에 배치는 하나다. 그 바구니의 앞 배치가 열려 있으면(만료 전이고 응답 없는 계획이 있음) 새 배치는 거부된다(`mandate_batch_open`). 배치를 만든 뒤 등록한 계획은 그 배치에 들어가지 않고 다음 배치에 들어간다.
 
 ```bash

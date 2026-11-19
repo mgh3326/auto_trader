@@ -63,7 +63,12 @@ def test_the_callback_writes_plan_events_only_through_the_store() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     ]
-    assert "add" not in calls and "add_all" not in calls and "execute" not in calls
+    assert "add" not in calls and "add_all" not in calls
+    # the only SQL the callback issues itself: the database clock and the decision instant
+    text = (ROOT / "app/services/mandate/batch_callback.py").read_text()
+    assert calls.count("execute") == 2
+    assert "SELECT clock_timestamp()" in text
+    assert "SELECT set_config('mandate.decided_at', :at, true)" in text
     assert calls.count("append_plan_event") == 1
     text = (ROOT / "app/services/mandate/batch_callback.py").read_text().lower()
     assert "insert into" not in text and "update review." not in text

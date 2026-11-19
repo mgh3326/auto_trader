@@ -24,8 +24,12 @@ KIND_LABELS: dict[str, str] = {
 }
 #: Telegram counts UTF-16 code units; the margin keeps every message well inside it.
 MAX_UNITS = TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - 96
+#: Room kept in every published message for the outcome line added when the card is
+#: edited after the answer, so the edit always fits where the original did.
+OUTCOME_RESERVE = 300
+PUBLISH_UNITS = MAX_UNITS - OUTCOME_RESERVE
 #: Budget of one context message of the thesis and conditions (the header comes on top).
-STORY_CHUNK_UNITS = 3500
+STORY_CHUNK_UNITS = 3300
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,10 @@ class CardFacts:
     approval_deadline_at: datetime
     expires_at: datetime
     card_no: int
+    #: identifies this issuance on every message of it (realm, batch, card row)
+    realm: str = ""
+    batch_id: int = 0
+    member_id: int = 0
     open_order_count: int = 0
 
 
@@ -59,6 +67,8 @@ class SummaryFacts:
     #: (symbol, tranche index) of tranches armed for the day
     armed_tranches: tuple[tuple[str, int], ...] = ()
     member_count: int = 0
+    realm: str = ""
+    batch_id: int = 0
 
 
 def _local(value: datetime, market: str) -> str:
@@ -69,9 +79,14 @@ def _amount(value: Decimal) -> str:
     return format(value.normalize(), "f") if value != 0 else "0"
 
 
-def _check(text: str) -> str:
+def _tag(facts: CardFacts) -> str:
+    """The issuance identifier carried by every message of one card."""
+    return f"{facts.realm} · 배치 {facts.batch_id} · 카드 {facts.member_id}"
+
+
+def _check(text: str, limit: int = PUBLISH_UNITS) -> str:
     """Never truncate approvable text: an oversized message is a refusal, not a clip."""
-    if telegram_text_length(text) > MAX_UNITS:
+    if telegram_text_length(text) > limit:
         raise ValueError("a mandate card message exceeds the Telegram text limit")
     return text
 
@@ -87,7 +102,7 @@ def _story_lines(facts: CardFacts) -> list[str]:
 def _card_lines(facts: CardFacts, *, story: list[str]) -> list[str]:
     new_amount = facts.planned_amount - facts.adopted_amount
     lines = [
-        f"[위임장 아침 승인] {KIND_LABELS[facts.kind]}",
+        f"[위임장 아침 승인 · {_tag(facts)}] {KIND_LABELS[facts.kind]}",
         f"바구니 {facts.basket_key} · {facts.symbol} ({facts.market})",
         f"계획 금액 {_amount(facts.planned_amount)} (편입액 {_amount(facts.adopted_amount)}, "
         f"신규 매수 {_amount(new_amount)})",
@@ -136,35 +151,63 @@ def render_card_messages(facts: CardFacts) -> tuple[str, ...]:
     )
     context = tuple(
         _check(
-            f"[위임장 아침 승인] {facts.symbol} 논지·훼손 조건 ({i}/{len(chunks)})\n{chunk}"
+            f"[위임장 아침 승인 · {_tag(facts)}] {facts.symbol} "
+            f"논지·훼손 조건 ({i}/{len(chunks)})\n{chunk}"
         )
         for i, chunk in enumerate(chunks, 1)
     )
-    pointer = [f"논지와 훼손 조건은 위 메시지 {len(chunks)}개에 전문이 있습니다."]
+    pointer = [
+        f"논지와 훼손 조건: 위 메시지 {len(chunks)}개에 전문이 있습니다 "
+        f"(같은 발급 · {_tag(facts)})."
+    ]
     return (*context, _check("\n".join(_card_lines(facts, story=pointer))))
 
 
-def render_summary(facts: SummaryFacts) -> str:
-    """The batch overview, sent first; with no member it is the whole message."""
-    lines = [
-        "[위임장 아침 승인] 오늘 적용 기준",
+def render_summary_messages(facts: SummaryFacts) -> tuple[str, ...]:
+    """The batch overview, sent first, in UTF-16-bounded messages.
+
+    The list of armed tranches has no upper bound, so it is split by lines into as many
+    messages as it needs; the first message always carries the basis and the card count.
+    """
+    tag = f"{facts.realm} · 배치 {facts.batch_id}"
+    head = [
+        f"[위임장 아침 승인 · {tag}] 오늘 적용 기준",
         f"바구니 {facts.basket_key} ({facts.market}) · 대상 거래일 "
         f"{facts.target_session.isoformat()}",
         f"승인 마감 {_local(facts.approval_deadline_at, facts.market)} · "
         f"만료 {_local(facts.expires_at, facts.market)}",
+        f"승인 대상 카드 {facts.member_count}장"
+        if facts.member_count
+        else "승인할 변경이 없습니다.",
     ]
-    if facts.member_count:
-        lines.append(f"승인 대상 카드 {facts.member_count}장")
-    else:
-        lines.append("승인할 변경이 없습니다.")
-    if facts.armed_tranches:
-        lines.append("오늘 armed 회차:")
-        lines += [f"- {sym} {idx}차" for sym, idx in facts.armed_tranches]
-    else:
-        lines.append("오늘 armed 회차 없음")
-    return _check("\n".join(lines))
+    if not facts.armed_tranches:
+        return (_check("\n".join([*head, "오늘 armed 회차 없음"])),)
+    items = [f"- {sym} {idx}차" for sym, idx in facts.armed_tranches]
+    groups: list[list[str]] = [[]]
+    used = telegram_text_length("\n".join([*head, "오늘 armed 회차:"])) + 1
+    for line in items:
+        size = telegram_text_length(line) + 1
+        if used + size > PUBLISH_UNITS - 200:
+            groups.append([])
+            used = 200
+        groups[-1].append(line)
+        used += size
+    out: list[str] = []
+    for i, group in enumerate(groups, 1):
+        title = (
+            "오늘 armed 회차:"
+            if i == 1
+            else f"[위임장 아침 승인 · {tag}] 오늘 armed 회차 ({i}/{len(groups)})"
+        )
+        lines = [*head, title, *group] if i == 1 else [title, *group]
+        out.append(_check("\n".join(lines)))
+    return tuple(out)
 
 
 def render_answered(facts: CardFacts, outcome: str) -> str:
-    """The card text after an answer; the buttons are removed by the caller."""
-    return _check(f"{render_card_messages(facts)[-1]}\n\n결과: {outcome}")
+    """The card text after an answer; the buttons are removed by the caller.
+
+    The published layout reserves room for the outcome, so this fits the real
+    Telegram limit wherever the card itself fit.
+    """
+    return _check(f"{render_card_messages(facts)[-1]}\n\n결과: {outcome}", MAX_UNITS)

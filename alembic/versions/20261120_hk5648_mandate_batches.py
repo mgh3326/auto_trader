@@ -268,6 +268,7 @@ def _guard_ddl() -> tuple[str, ...]:
         DECLARE
             mem record;
             cur_terms bigint;
+            decided timestamptz;
         BEGIN
             IF current_setting('transaction_isolation') <> 'read committed' THEN
                 RAISE EXCEPTION 'mandate batch answers need READ COMMITTED'
@@ -295,6 +296,19 @@ def _guard_ddl() -> tuple[str, ...]:
                 'mandate_batch_member:' || mem.batch_id || ':' || mem.plan_id, 0));
             IF clock_timestamp() >= mem.expires_at THEN
                 RAISE EXCEPTION 'the batch has expired'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            -- The decision instant: the application reads the database clock once,
+            -- after the locks, picks the effective session at that instant and passes
+            -- it here (transaction-local). It is accepted only within seconds of this
+            -- trigger's own clock, so a click that straddles the opening bell keeps the
+            -- session it was decided for; without it the wall clock is the instant.
+            decided := nullif(current_setting('mandate.decided_at', true), '')::timestamptz;
+            IF decided IS NULL THEN
+                decided := clock_timestamp();
+            ELSIF decided > clock_timestamp() + interval '1 second'
+               OR clock_timestamp() - decided > interval '5 seconds' THEN
+                RAISE EXCEPTION 'the decision instant is not current'
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF EXISTS (
@@ -335,7 +349,7 @@ def _guard_ddl() -> tuple[str, ...]:
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF NEW.event IN ('approved', 'terms_rebound') THEN
-                IF clock_timestamp() < mem.approval_deadline_at THEN
+                IF decided < mem.approval_deadline_at THEN
                     IF NEW.effective_session <> mem.target_session THEN
                         RAISE EXCEPTION 'before the deadline an approval takes effect on the target session'
                             USING ERRCODE = 'restrict_violation';

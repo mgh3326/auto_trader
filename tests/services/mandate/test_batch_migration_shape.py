@@ -328,4 +328,10 @@ def test_expiry_and_the_deadline_are_read_from_the_wall_clock_not_the_transactio
         assert "clock_timestamp()" in body, name
     answer = _body("mandate_plan_events_batch_guard")
     assert "IF clock_timestamp() >= mem.expires_at THEN" in answer
-    assert "IF clock_timestamp() < mem.approval_deadline_at THEN" in answer
+    assert "IF decided < mem.approval_deadline_at THEN" in answer
+    # one authoritative instant: the application's, accepted only near the trigger's clock
+    assert "current_setting('mandate.decided_at', true)" in answer
+    assert "the decision instant is not current" in answer
+    assert answer.index("IF clock_timestamp() >= mem.expires_at THEN") < answer.index(
+        "decided :="
+    )

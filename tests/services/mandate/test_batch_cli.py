@@ -51,6 +51,9 @@ def facts(symbol: str = "005930", kind: str = "new_plan", card_no: int = 1):
         approval_deadline_at=datetime(2026, 11, 23, 0, 0, tzinfo=UTC),
         expires_at=datetime(2026, 11, 23, 6, 30, tzinfo=UTC),
         card_no=card_no,
+        realm="mock",
+        batch_id=9,
+        member_id=100,
         open_order_count=3,
     )
 
@@ -188,6 +191,7 @@ async def test_commit_writes_first_and_sends_the_summary_then_one_card_each(
     summary, first, second = wired.sent
     assert summary[1] is None and "오늘 적용 기준" in summary[0]
     assert "005930 2차" in summary[0] and "승인 대상 카드 2장" in summary[0]
+    assert "mock · 배치 9" in summary[0]
     for (text, board), nonce, member_id in zip(
         (first, second), NONCES, (100, 101), strict=True
     ):
@@ -315,17 +319,38 @@ def test_a_reapproval_card_states_the_open_order_count_a_rejection_leaves() -> N
     assert "미결 제안·주문 3건" in text and "폐기" in text
 
 
-def test_a_summary_without_members_is_the_whole_message() -> None:
-    text = cards.render_summary(
-        cards.SummaryFacts(
-            "equity_kr",
-            "b",
-            date(2026, 11, 23),
-            datetime(2026, 11, 23, 0, 0, tzinfo=UTC),
-            datetime(2026, 11, 23, 6, 30, tzinfo=UTC),
-        )
+def _summary(armed=(), members=0):
+    return cards.SummaryFacts(
+        "equity_kr",
+        "b",
+        date(2026, 11, 23),
+        datetime(2026, 11, 23, 0, 0, tzinfo=UTC),
+        datetime(2026, 11, 23, 6, 30, tzinfo=UTC),
+        armed_tranches=tuple(armed),
+        member_count=members,
+        realm="mock",
+        batch_id=9,
     )
+
+
+def test_a_summary_without_members_is_the_whole_message() -> None:
+    (text,) = cards.render_summary_messages(_summary())
     assert "승인할 변경이 없습니다" in text and "armed 회차 없음" in text
+    assert "mock · 배치 9" in text
+
+
+def test_an_unbounded_armed_list_is_split_into_bounded_summary_messages() -> None:
+    """334+ symbols with one armed tranche each used to make the summary raise."""
+    from app.telegram_contract import telegram_text_length
+
+    armed = [(f"{i:06d}", 2) for i in range(1, 801)]
+    messages = cards.render_summary_messages(_summary(armed, members=3))
+    assert len(messages) > 1
+    assert all(telegram_text_length(m) <= 4096 for m in messages)
+    joined = "\n".join(messages)
+    assert all(f"- {sym} 2차" in joined for sym, _ in armed)  # nothing dropped
+    assert "승인 대상 카드 3장" in messages[0]
+    assert all("mock · 배치 9" in m for m in messages)
 
 
 ASTRAL = "\U0001d54f"  # one code point, two UTF-16 units
@@ -369,6 +394,21 @@ def test_an_astral_heavy_card_is_published_whole_in_utf16_bounded_parts() -> Non
     answered = cards.render_answered(big, "승인했습니다.")
     assert telegram_text_length(answered) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
     assert "a" * 64 in answered and "결과: 승인했습니다." in answered
+
+
+def test_every_part_and_the_action_card_carry_the_same_issuance_identifier() -> None:
+    """Two issuances of one symbol (another realm, another card) never look alike."""
+    big = oversize_facts()
+    other = cards.CardFacts(**{**big.__dict__, "realm": "live", "member_id": 555})
+    first, second = cards.render_card_messages(big), cards.render_card_messages(other)
+    assert len(first) >= 3
+    for message in first:
+        assert "mock · 배치 9 · 카드 100" in message and "live" not in message
+    for message in second:
+        assert "live · 배치 9 · 카드 555" in message
+    assert "같은 발급 · mock · 배치 9 · 카드 100" in first[-1]
+    # no message of one issuance is identical to a message of the other
+    assert set(first).isdisjoint(second)
 
 
 def test_a_card_that_fits_is_one_message_with_the_story_inline() -> None:
