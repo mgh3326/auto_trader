@@ -74,7 +74,15 @@ US 사전 eligibility/session/shape 검사는 claim 전과 POST 직전에 둘 �
 초기 거부는 planned 유지, claim 뒤 양성 no-POST 거부만 terminal rejected(0 fill)이며
 POST 경계 뒤 오류·취소는 sending/uncertain 예약을 유지한다. 청산은 durable indexed
 leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill을 뺀 잔량을 새 leg로
-보낸다. uncertain/nonterminal leg는 후속 leg를 막는다. recorder API/스키마 변경 없음.
+보낸다. uncertain/nonterminal leg는 후속 leg를 막는다.
+`decision/2026-11-20/at-mock-uncertain-and-data-gaps` 항목 1에 따라 Alpaca paper의
+동일 client_order_id 조회가 HTTP 404를 반환한 경우에만, 브로커 주문 결속과 체결
+증거가 없는 sending/uncertain leg를 recorder가 `rejected`(0 fill,
+`broker_confirmed_absent`)로 종결한다. 그 뒤 close-due는 기존 인덱스 규칙에 따라
+잔량만 새 client_order_id로 한 번 전송한다. 설계 세션 ESC 답 591964에 따라
+정확히 일치하는 HTTP 200 주문 증거는 결속과 체결 기록을 복구하며, 같은 실행에서
+해당 에피소드의 새 주문은 보내지 않는다. echo 불일치·빈 응답·예외·타임아웃·5xx는
+sending/uncertain 상태와 예약을 유지한다. Binance demo의 규칙은 기존과 같다.
 US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
 보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
 만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.
