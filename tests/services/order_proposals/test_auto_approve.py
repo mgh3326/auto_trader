@@ -267,13 +267,31 @@ def test_mandate_proposal_accounts_default_closed_and_only_accept_kiwoom_mock():
 
 
 @pytest.mark.asyncio
-async def test_i23_mandate_auto_revalidation_blocks_before_broker():
-    group = _group(mandate_plan_id=42, account_mode="kiwoom_mock")
+async def test_i23_mandate_auto_revalidation_blocks_before_broker(monkeypatch):
+    group = _group(
+        mandate_plan_id=42,
+        account_mode="kiwoom_mock",
+        source_asof={},
+        superseded_by_proposal_id=None,
+        lifecycle_state="proposed",
+    )
     rung = _rung(state="pending_approval")
     service = AsyncMock()
     service.get_proposal.return_value = (group, [rung])
     broker = AsyncMock(side_effect=AssertionError("unexpected broker call"))
     eligible = AsyncMock(side_effect=AssertionError("unexpected eligibility gate"))
+    monkeypatch.setattr(
+        "app.services.order_proposals.revalidation.evaluate_approval_window_boundary",
+        AsyncMock(return_value=SimpleNamespace(allowed=True)),
+    )
+
+    async def broker_path(**kwargs):
+        return await kwargs["place_order_fn"]()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.revalidation._revalidate_place_rung",
+        broker_path,
+    )
 
     outcomes = await revalidate_and_submit(
         service=service,
@@ -281,6 +299,7 @@ async def test_i23_mandate_auto_revalidation_blocks_before_broker():
         now=datetime.now(UTC),
         place_order_fn=broker,
         eligibility_gate=eligible,
+        expected_policy_stamp="fixture",
     )
 
     assert outcomes == [
@@ -302,9 +321,15 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
     rung = _rung(state="pending_approval")
     service = AsyncMock()
     service.get_proposal.return_value = (group, [rung])
+    service.acquire_commit_lease.return_value = True
+    now = datetime.now(UTC)
     monkeypatch.setattr(
         "app.services.order_proposals.telegram_callback._preflight_proposal_callback",
         AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.order_proposals.telegram_callback._evaluate_bound_window",
+        AsyncMock(return_value=SimpleNamespace(allowed=True, observed_at=now)),
     )
     submit = AsyncMock(side_effect=AssertionError("unexpected submit call"))
     proposal_id = uuid.uuid4()
@@ -314,7 +339,7 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
         service=service,
         proposal_id=proposal_id,
         callback=SimpleNamespace(),
-        now=datetime.now(UTC),
+        now=now,
         notifier=AsyncMock(),
         chat_id="1",
         message_id=None,
