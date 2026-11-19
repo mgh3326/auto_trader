@@ -451,3 +451,178 @@ async def test_us_universe_unions_held_symbols_with_resolved_exchange() -> None:
         SyncTarget(market=MarketKey.US, symbol="SGOV", partition="AMEX"),
     ]
     loader.assert_awaited_once()
+
+
+def _one_day_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "date": "2026-11-18",
+                "open": 1,
+                "high": 2,
+                "low": 1,
+                "close": 2,
+                "volume": 10,
+                "value": 20,
+            }
+        ]
+    )
+
+
+def _yahoo_row(symbol: str):
+    from app.services.daily_candles.yahoo_us_fallback import YahooFallbackRow
+
+    return YahooFallbackRow(
+        time_utc=datetime(2026, 11, 18, 20, tzinfo=UTC),
+        symbol=symbol,
+        open=1.0,
+        high=2.0,
+        low=1.0,
+        close=2.0,
+        adj_close=2.0,
+        volume=10.0,
+        value=20.0,
+    )
+
+
+def _repo_with_session():
+    repo = MagicMock()
+    repo.upsert_rows = AsyncMock(side_effect=lambda *, market, rows: len(rows))
+    repo.session = MagicMock()
+    repo.session.commit = AsyncMock()
+    repo.session.rollback = AsyncMock()
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_us_symbol_without_history_is_isolated_and_others_commit(caplog):
+    """ANT-style failure: one symbol raises at the fallback, the market goes on."""
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+
+    async def yahoo(*, symbol, n):
+        if symbol == "ANT":
+            raise ValueError("ANT OHLCV not found")
+        return [_yahoo_row(symbol)]
+
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(return_value=pd.DataFrame()),
+        yahoo_us_fetcher=AsyncMock(side_effect=yahoo),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=MarketKey.US, symbol="ANT", partition="NYSE"),
+            SyncTarget(market=MarketKey.US, symbol="AAPL", partition="NASD"),
+        ]
+    )
+
+    result = await svc.sync_market_universe(market="us", horizon_bars=1)
+
+    assert result["status"] == "partial"
+    assert result["failed_count"] == 1
+    assert result["failed_symbols"] == [{"symbol": "ANT", "error_class": "ValueError"}]
+    assert result["rows_upserted"] == 1
+    assert result["targets_total"] == 2
+    repo.session.commit.assert_awaited_once()
+    repo.session.rollback.assert_awaited_once()
+    assert any(
+        record.levelname == "WARNING"
+        and "market=us symbol=ANT error_class=ValueError" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_kr_symbol_failure_is_isolated_and_others_commit():
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+
+    async def kis(*, code, n):
+        if code == "000000":
+            raise RuntimeError("kis rejected symbol")
+        return _one_day_frame()
+
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(side_effect=kis),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        # no toss_kr_fetcher: the KIS exception propagates to the loop
+    )
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=MarketKey.KR, symbol="000000", partition="KRX"),
+            SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        ]
+    )
+
+    result = await svc.sync_market_universe(market="kr", horizon_bars=1)
+
+    assert result["status"] == "partial"
+    assert result["failed_symbols"] == [
+        {"symbol": "000000", "error_class": "RuntimeError"}
+    ]
+    assert result["failed_count"] == 1
+    assert result["rows_upserted"] == 1
+    repo.session.commit.assert_awaited_once()
+    repo.session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kr_and_us_report_failed_when_every_symbol_fails():
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(side_effect=RuntimeError("kis down")),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    svc._resolve_universe = AsyncMock(
+        return_value=[SyncTarget(market=MarketKey.KR, symbol="000000", partition="KRX")]
+    )
+
+    result = await svc.sync_market_universe(market="kr", horizon_bars=1)
+
+    assert result["status"] == "failed"
+    assert result["failed_count"] == 1
+    repo.session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_database_connection_error_still_aborts_the_job(market: str) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.daily_candles.sync_service import DailyCandleSyncService
+
+    repo = _repo_with_session()
+    db_down = OperationalError("SELECT 1", {}, Exception("connection lost"))
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(side_effect=db_down),
+        kis_us_fetcher=AsyncMock(side_effect=db_down),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    target_market = MarketKey.KR if market == "kr" else MarketKey.US
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=target_market, symbol="A", partition="KRX"),
+            SyncTarget(market=target_market, symbol="B", partition="NASD"),
+        ]
+    )
+
+    with pytest.raises(OperationalError):
+        await svc.sync_market_universe(market=market, horizon_bars=1)
+
+    repo.session.rollback.assert_awaited_once()
+    repo.session.commit.assert_not_awaited()

@@ -27,6 +27,13 @@ DAGS = {
 }
 
 
+DAILY_CANDLE_DAGS = {
+    "at-batch2-daily-candles-kr",
+    "at-batch2-daily-candles-us",
+    "at-batch2-daily-candles-crypto",
+}
+
+
 @pytest.mark.parametrize(("name", "expected"), DAGS.items())
 def test_dag_copy_contract(name: str, expected: tuple[object, str]) -> None:
     schedule, module = expected
@@ -49,8 +56,20 @@ def test_dag_copy_contract(name: str, expected: tuple[object, str]) -> None:
         "/app/.venv/bin/python -m "
     )
     assert lines[1].endswith(f"{module} || rc=$?")
-    assert lines[2] == 'exit "$rc"'
-    assert raw.count("logger -t at-dagu-batch") == 2
+    if name in DAILY_CANDLE_DAGS:
+        # Exit 3 is a partial sync (some symbols failed, the rest were
+        # written): log an attention line and let the step succeed, like the
+        # terminal reconcile DAG does. Any other non-zero code still fails.
+        assert lines[2] == (
+            'if [ "$rc" -eq 3 ]; then logger -t at-dagu-batch '
+            f'"dag={name} step=sync status=attention" || true; exit 0; fi'
+        )
+        assert lines[3] == 'exit "$rc"'
+        assert len(lines) == 4
+        assert raw.count("logger -t at-dagu-batch") == 3
+    else:
+        assert lines[2] == 'exit "$rc"'
+        assert raw.count("logger -t at-dagu-batch") == 2
     assert dag["handler_on"] == {
         "success": {
             "command": (f'logger -t at-dagu-batch "dag={name} status=success"')

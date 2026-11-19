@@ -256,15 +256,16 @@ class DailyCandleSyncService:
                 await self._repository.session.rollback()
                 raise
             except Exception as exc:
-                if market != "crypto":
-                    raise
-                # A failed statement can leave the shared session unusable for
-                # the next symbol. Seeds are committed before this loop, so
+                # A symbol-local failure (for example a newly listed symbol with
+                # no history at the fallback provider) must not abort the whole
+                # market. A failed statement can leave the shared session unusable
+                # for the next symbol. Seeds are committed before this loop, so
                 # this rollback cannot undo the newly created instruments.
                 await self._repository.session.rollback()
                 error_class = type(exc).__name__
                 logger.warning(
-                    "Crypto daily-candle sync failed symbol=%s error_class=%s",
+                    "Daily-candle sync failed market=%s symbol=%s error_class=%s",
+                    market,
                     target.symbol,
                     error_class,
                 )
