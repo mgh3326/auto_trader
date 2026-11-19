@@ -433,6 +433,18 @@ class UsPaperStrategy:
                 mark = len(outcomes)
                 verdict = verdicts.get(entry.symbol)
                 change = verdict if verdict and verdict["applied"] else None
+                if verdict and change is None:
+                    # A declared but unproven mapping must never fall back to an
+                    # OLD-symbol close: nothing is sent for this entry.
+                    outcomes.append(
+                        {
+                            **projection(entry),
+                            "episode_status": "awaiting_close_evidence",
+                            "reason": "symbol_change_refused",
+                            "symbol_change": _verdict_view(verdict),
+                        }
+                    )
+                    continue
                 try:
                     entry = await self._refresh(entry)
                     qty = Decimal(entry.meta.get("filled_qty", "0"))

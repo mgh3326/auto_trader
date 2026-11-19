@@ -607,3 +607,33 @@ async def test_status_shows_declared_and_journaled_mapping(monkeypatch):
     flagless = await mock_strategy.execute(cli(command="status"))
     assert "symbol_changes" not in flagless
     json.dumps(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "new symbol position below open episode quantity",
+        "new symbol position direction differs",
+        "symbol change pre-dispatch read failed",
+    ],
+)
+async def test_refused_mapping_never_falls_back_to_an_old_symbol_close(refusal):
+    class StillTradable(ChangeBroker):
+        async def prepare(self, request, *, side, asof, confirm):
+            assert confirm is True  # OLD still passes every per-send guard
+
+    recorder, broker = ChangeRecorder(), StillTradable()
+    strategy = await entries(recorder, broker)
+    broker.verify_refusal = refusal
+    result = await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    assert not sells(broker)
+    assert not bkh_exits(recorder)  # no OLD leg is even journaled
+    refused = [o for o in result["orders"] if o["symbol"] == "BKH"]
+    assert refused and all(
+        o["reason"] == "symbol_change_refused"
+        and o["symbol_change"]["reason"] == refusal
+        for o in refused
+    )
+    # NVDA (not mapped) still closes normally.
+    assert any(side == "cover" for side, _ in broker.posts)
