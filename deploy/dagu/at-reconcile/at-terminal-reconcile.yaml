@@ -3,8 +3,9 @@
 # 활성화 플래그는 이 잡의 docker run -e 에만 있다. 공유 .env.api 는 바꾸지 않는다(docker 는 -e 를 --env-file 보다 우선한다).
 # 스케줄(UTC 로 쓴다, OCI Dagu 는 bare cron 을 KST 로 읽는다): 01:40 UTC = 10:40 KST(미국 정규·애프터 20:00 ET 종료 뒤),
 # 11:40 UTC = 20:40 KST(KR NXT 20:00 종료 뒤). batch2 체결 대사(15·45분)와 겹치지 않게 40분.
-# 종료 코드: 0 완료, 3 주의 필요(체결 보류·미확인 행·잘린 scan) -> journal 에 status=attention 한 줄 남기고 단계는 성공,
-# 1·2 등 그 밖 -> 단계 실패(failure 핸들러). 3 을 실패로 두면 체결 보류 행·KIS US 6월 45행(hk 4178) 때문에 매번 실패가 되어 진짜 실패가 묻힌다.
+# 종료 코드: 0 완료, 2 게이트 차단, 3 주의 필요(체결 보류·사람 검토 행·미확인 행) -> journal 에 status=attention 한 줄 남기고 단계는 성공,
+# 4 실행 실패 또는 불완전(커널 실패·잘린 scan·행 오류 등) -> 단계 실패(failure 핸들러). 그 밖의 0 아닌 코드(1 등)도 단계 실패다.
+# 3 을 실패로 두면 체결 보류 행·KIS US 6월 45행(hk 4178) 때문에 매번 실패가 되어 진짜 실패가 묻힌다. 4 는 그 묻힘을 막으려고 실패로 남긴다.
 # 단계는 command 가 아니라 script 로 쓴다: Dagu 가 command 안의 $? 와 $rc 를 셸보다 먼저 펼쳐 종료 코드를 잃는다(로컬 dagu 2.21 로 확인).
 # script 는 errexit 로 돌므로 `|| rc=$?` 로 받는다.
 # worker host: pi — OCI 코디네이터에 등록된 at-batch1·batch2·at-account-value-snapshot 16개가 이미 host: pi 로 돈다(레포 사본의 ncp 표기는 hk 4896 batch2 동기화 전 값).

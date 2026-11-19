@@ -88,7 +88,7 @@ Migration for ROB-476 is 0 (non-breaking, backward compatible).
   모두 켜져 있어야 동작(exit 2로 거부, 게이트 우회 불가).
 - **종료 상태 전용**: `--apply-terminal-only`는 `KIS_LIVE_AUTO_RECONCILE_ENABLED=true`만 요구하고 증거가 있는 만료·취소를 기록한다. 체결 부기는 보류하며 `--apply`의 `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` 게이트는 유지된다.
 - **정기 실행 (hk 3794)**: `deploy/dagu/at-reconcile/at-terminal-reconcile.yaml` 이 KIS KR·KIS US·Toss 의 `--apply-terminal-only` 를 하루 두 번(10:40·20:40 KST) pi 워커에서 돌린다(운영자 결정 `decision/2026-11-18/at-3794-3795-recommended`). 활성화 플래그는 그 잡의 `docker run -e` 에만 있고 `.env.api` 는 바꾸지 않는다. 종료 코드 3 은 journal(`at-dagu-batch`)에 `status=attention` 으로 남고 단계는 성공, 그 밖의 0 아닌 코드는 실패다. 체결 부기 게이트는 열지 않는다.
-- **종료 코드**: 0 완료, 1 커널 실패, 2 게이트 차단, 3 성공했으나 작업이 남음(종료 상태 전용의 체결 보류 또는 dry-run의 `would_` 결과). `--apply`는 0/1을 유지한다.
+- **종료 코드**: 0 완료, 2 게이트 차단, 3 실행은 완료됐으나 사람이 봐야 할 행이 있음(종료 상태 전용의 체결 보류, `requires_manual_review`·`not_found` 행, 또는 dry-run의 `would_` 결과), 4 실행 실패 또는 불완전(커널 `success=false`, 행 `error`). 4 는 `실패: 대사 실행이 완료되지 않았다 (조건: …)` 한 줄로 조건 이름만 남긴다(브로커 원문 없음). 종료 4 가 DAG 에서 단계 실패가 되므로 3 과 구별해 본다. `--apply`는 0·3·4 를 쓴다(1 은 더 이상 나오지 않는다).
 - **Paused TaskIQ 태스크**: `kis_live.reconcile_periodic` — worker에 등록되지만
   코드 내 `schedule=`은 없다. 외부 recurrence는 robin-prefect-automations에서
   등록한다. 활성화에는 **(ROB-487/ROB-574) 2개 플래그가 모두** 필요:
