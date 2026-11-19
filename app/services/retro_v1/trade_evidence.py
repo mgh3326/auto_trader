@@ -37,9 +37,14 @@ from app.services.execution_ledger.supersede import (
     supersede_provisional,
 )
 from app.services.retro_v1.chain import (
+    _TIME_BASIS_RANK,
     _order_identity,
+    covered_broker_fill_time,
     fills_stmt,
     is_opening_seed,
+)
+from app.services.retro_v1.chain import (
+    fill_time_basis as fill_time_basis,
 )
 from app.services.retro_v1.envelope import (
     MAX_SOURCE_ROWS,
@@ -60,13 +65,6 @@ from app.services.retro_v1.metrics import Costs, calculate_costs
 #: Authority window around the orders, as in ``chain`` (a reconciler row stamped
 #: at order time must still cover a websocket fill stamped later).
 _PAD: Final = timedelta(days=2)
-#: Weakest last: a trade is only as precise as its least precise fill.
-_TIME_BASIS_RANK: Final = {
-    "broker_fill_time": 0,
-    "broker_order_time": 1,
-    "observed_at": 2,
-}
-
 _ORDER_LEDGERS: Final = (
     ("kis_orders", KISLiveOrderLedger),
     ("live_orders", LiveOrderLedger),
@@ -320,23 +318,6 @@ def _orders_fill_coverage(
     return True
 
 
-def fill_time_basis(fill: Any) -> str | None:
-    """A fill's time basis; a pre-L5 row is read by ``(broker, source)`` (§6.2-4).
-
-    Only a KIS reconciler row has a known meaning (the order time stands in for
-    the fill time); any other row without the column is unknown.
-    """
-    if fill.filled_at_basis in _TIME_BASIS_RANK:
-        return fill.filled_at_basis
-    if (
-        fill.filled_at_basis is None
-        and fill.broker == "kis"
-        and fill.source == "reconciler"
-    ):
-        return "broker_order_time"
-    return None
-
-
 def _weakest(bases: Sequence[str | None]) -> str | None:
     known = [b for b in bases if b is not None]
     if not known or len(known) != len(bases):
@@ -363,27 +344,12 @@ def trade_time_basis(fills: Sequence[Any], raw_fills: Sequence[Any]) -> str | No
     bases: list[str | None] = []
     for identity, rows in by_order.items():
         authority = [r for r in rows if r.source in AUTHORITATIVE_SOURCES]
-        # ROB-1379: fillwire and the in-app monitor can record the same
-        # websocket fill under different ``fill_seq`` values, so equal rows
-        # count once — otherwise two copies of one fill can masquerade as
-        # coverage of another fill that was never observed.
-        taps = []
-        seen_taps: set[tuple[Any, ...]] = set()
-        for row in raw_fills:
-            if row.source != "websocket" or order_identity(row) != identity:
-                continue
-            marker = (row.filled_at, row.filled_qty, row.filled_price)
-            if marker in seen_taps:
-                continue
-            seen_taps.add(marker)
-            taps.append(row)
-        if (
-            authority
-            and taps
-            and all(r.filled_at_basis == "broker_fill_time" for r in taps)
-            and sum((r.filled_qty for r in taps), Decimal(0))
-            == sum((r.filled_qty for r in authority), Decimal(0))
-        ):
+        taps = [
+            r
+            for r in raw_fills
+            if r.source == "websocket" and order_identity(r) == identity
+        ]
+        if covered_broker_fill_time(authority, taps) is not None:
             bases.append("broker_fill_time")
         else:
             bases.append(weakest_time_basis(rows))

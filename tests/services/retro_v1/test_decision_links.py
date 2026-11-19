@@ -36,8 +36,14 @@ pytestmark = pytest.mark.unit
 
 DAY = date(2026, 1, 5)
 GOLDEN = Path(__file__).parent / "golden" / "legacy_main_4188.json"
-#: Everything hk 4188 added to a chain row; all optional.
-NEW_FIELDS = {"link_basis", "decision_ref", "decision_link_basis", "link_reason"}
+#: Optional fields added after the chain golden was captured.
+NEW_FIELDS = {
+    "link_basis",
+    "decision_ref",
+    "decision_link_basis",
+    "link_reason",
+    "fill_time_basis",
+}
 
 PROPOSAL_A, PROPOSAL_B = UUID(int=0xA), UUID(int=0xB)
 DECISION_A, DECISION_B = UUID(int=0xDA), UUID(int=0xDB)
@@ -57,7 +63,7 @@ def row_of(response: dict, stage: str) -> dict:
 # rows without new data differ from main only by the optional fields
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_legacy_rows_differ_from_main_only_by_optional_link_fields() -> None:
+async def test_legacy_rows_differ_from_main_only_by_optional_fields() -> None:
     golden = json.loads(GOLDEN.read_text())
     day = await read_retro_day(kr_day_session(), market="kr", date=DAY)
     symbol = await read_retro_symbol(
