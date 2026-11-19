@@ -441,6 +441,60 @@ async def set_sleeve_version(
     return row
 
 
+async def append_version_with_terms(
+    session: AsyncSession,
+    *,
+    sleeve_id: int,
+    expected_version: int,
+    state: str,
+    budget_cap: Any,
+    loss_limit: Any,
+    prereg: PreRegistration,
+    reason: str,
+    set_by: str,
+) -> StrategySleeveVersion:
+    """Append the next version as the mandate approval writes it (hk 3795 T1).
+
+    ``set_sleeve_version`` refuses a version that changes nothing; a mandate
+    clause can change while the sleeve values stay the same, and an approved
+    request fixes every value. So this append takes the exact values, requires
+    the sleeve to still be at ``expected_version`` and keeps the same
+    pre-registration freeze. The caller holds the sleeve lock and the approval
+    transaction; ``set_sleeve_version`` and the ROB-1470 triggers are unchanged.
+    """
+    who = _nonblank("set_by", set_by, 128)
+    why = _nonblank("reason", reason, 500)
+    rows = await history(session, sleeve_id)
+    if not rows:
+        raise SleeveError(f"sleeve {sleeve_id} does not exist")
+    current = rows[-1]
+    if current.version != expected_version:
+        raise SleeveError(
+            f"sleeve {sleeve_id} is at version {current.version}, "
+            f"not {expected_version}"
+        )
+    new_state = _state(state).value
+    if prereg != prereg_of(current) and any(r.state == SleeveState.LIVE for r in rows):
+        raise SleeveError(
+            "the pre-registration is frozen once the sleeve has been live; "
+            "create a new sleeve for a new epoch"
+        )
+    _require_prereg_for_live(new_state, prereg)
+    row = StrategySleeveVersion(
+        sleeve_id=sleeve_id,
+        version=current.version + 1,
+        state=new_state,
+        budget_cap=_amount("budget_cap", budget_cap, positive=False),
+        loss_limit=_amount("loss_limit", loss_limit, positive=True),
+        reason=why,
+        set_by=who,
+        **_prereg_columns(prereg),
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
 async def stop_at_loss_limit(
     session: AsyncSession,
     *,

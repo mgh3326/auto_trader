@@ -151,6 +151,18 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # ROB-1460 exit plan tables are later than this boundary.
     "review.lot_exit_plans",
     "review.mechanical_loss_cut_decisions",
+    # hk 5528 mandate tables are later than this boundary and reference the
+    # sleeve tables, so they drop first (children before parents; the
+    # order_proposals mandate columns referencing the plans drop before).
+    "review.mandate_symbol_reservation_releases",
+    "review.mandate_symbol_reservations",
+    "review.mandate_plan_events",
+    "review.mandate_plan_tranches",
+    "review.mandate_plans",
+    "review.mandate_activation_profiles",
+    "review.mandate_terms",
+    "review.mandate_approvals",
+    "review.mandate_approval_requests",
     # ROB-1470 sleeve tables are later than this boundary (versions first; the
     # order_proposals.sleeve_id column referencing them is dropped before).
     "review.strategy_sleeve_versions",
@@ -197,6 +209,15 @@ async def scratch_database() -> AsyncIterator[str]:
                 await connection.execute(
                     text(
                         "ALTER TABLE review.live_order_ledger DROP COLUMN last_reconcile_detail"
+                    )
+                )
+                # hk 5528: the mandate binding columns reference a post-parent
+                # table, so they go before the table drops below.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposals "
+                        "DROP COLUMN IF EXISTS mandate_plan_id, "
+                        "DROP COLUMN IF EXISTS mandate_tranche_index"
                     )
                 )
                 # ROB-1470: the sleeve tag column references a post-parent

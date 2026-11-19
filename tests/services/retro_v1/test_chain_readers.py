@@ -19,6 +19,7 @@ from tests.services.retro_v1.support import (
     FILL_AT,
     FakeSession,
     kr_day_session,
+    ledger,
     operational_error,
     pick,
     rung,
@@ -83,6 +84,55 @@ async def test_quarantined_row_and_superseded_websocket_duplicate_are_not_fills(
     ]
     assert ledger_reads
     assert all("quarantined_at IS NULL" in s for s in ledger_reads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("taps", "corrected"),
+    [
+        ([(2, "broker_fill_time", False)], True),
+        ([(1, "broker_fill_time", False), (1, "broker_fill_time", False)], True),
+        ([], False),
+        ([(1, "broker_fill_time", False)], False),
+        ([(1, "broker_fill_time", False), (1, "observed_at", False)], False),
+        ([(2, "broker_fill_time", True)], False),
+    ],
+    ids=["complete", "split", "missing", "short", "mixed", "quarantined"],
+)
+async def test_chain_fill_time_uses_complete_broker_evidence(taps, corrected) -> None:
+    order_at = datetime(2026, 11, 18, 7, 9, 45, tzinfo=UTC)
+    fill_at = datetime(2026, 11, 18, 7, 14, 14, tzinfo=UTC)
+    identity = {"symbol": "041510", "broker_order_id": "0018423500"}
+    authority = ledger(
+        59448,
+        order_at,
+        filled_qty=Decimal(2),
+        filled_at_basis="broker_order_time",
+        **identity,
+    )
+    rows = [authority] + [
+        ledger(
+            59449 + index,
+            fill_at - timedelta(seconds=len(taps) - index - 1),
+            source="websocket",
+            filled_qty=Decimal(quantity),
+            filled_at_basis=basis,
+            quarantined_at=fill_at if quarantined else None,
+            **identity,
+        )
+        for index, (quantity, basis, quarantined) in enumerate(taps)
+    ]
+    session = FakeSession({"FROM review.execution_ledger": rows})
+    response = await read_retro_day(session, market="kr", date=order_at.date())
+    validate(response, "RetroDayResponse")
+    (fill,) = [row for row in response["data"] if row["stage"] == "fill"]
+    assert fill["event_ref"] == make_ref("fill", authority.id)
+    assert datetime.fromisoformat(fill["event_at"]) == (
+        fill_at if corrected else order_at
+    )
+    assert fill["fill_time_basis"] == (
+        "broker_fill_time" if corrected else "broker_order_time"
+    )
 
 
 @pytest.mark.asyncio
