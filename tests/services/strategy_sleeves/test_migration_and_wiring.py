@@ -370,3 +370,13 @@ def test_the_only_kiwoom_combination_is_mock_kr_and_no_live_one_changed() -> Non
         "kiwoom_mock": ("kiwoom", "mock"),
     }
     assert {m for m, _ in SLEEVE_ACCOUNT_MARKETS} == set(vocabulary.LEDGER_IDENTITY)
+
+
+def test_kiwoom_migration_passes_the_expand_contract_lint_for_its_task() -> None:
+    """The required PR lint refuses a non-trivial module without the task marker."""
+    from scripts.ci import migration_expand_contract_lint as lint
+
+    source = KIWOOM_MIGRATION.read_text(encoding="utf-8")
+    assert lint.violations(source, "5637") == []
+    # The marker names this task only.
+    assert lint.violations(source, "5638") != []

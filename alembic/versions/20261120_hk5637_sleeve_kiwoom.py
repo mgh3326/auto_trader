@@ -20,6 +20,7 @@ Revises: 20261120_hk5528_mandate
 Create Date: 2026-11-20
 """
 
+# expand-contract: contract-step 5637
 from __future__ import annotations
 
 from collections.abc import Sequence
