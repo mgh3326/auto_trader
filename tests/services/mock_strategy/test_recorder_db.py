@@ -121,3 +121,12 @@ async def test_migration_trigger_preserves_the_send_fence(db_session, recorder):
                 await session.commit()
             await session.rollback()
     assert (await recorder.get(coid)).status == "sending"
+
+    # The same trigger allows a zero-fill terminal outcome while keeping
+    # the original client ID permanently fenced.
+    absent = await recorder.confirm_alpaca_absence(coid, account_ref="fixture")
+    assert absent.status == "rejected"
+    assert absent.meta["broker_status"] == "broker_confirmed_absent"
+    assert absent.meta["filled_qty"] == "0"
+    assert (await recorder.get(coid)).meta == absent.meta
+    assert not await recorder.claim(coid)

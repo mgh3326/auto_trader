@@ -97,7 +97,11 @@ class UsPaperBroker:
         }
 
     async def lookup(self, client_order_id: str) -> Order | None:
-        return await self._service.get_order_by_client_order_id(client_order_id)
+        if self.account_ref is None:
+            raise PreDispatchRefusal("paper preflight required")
+        return await self._service.get_order_by_client_order_id(
+            client_order_id, report_not_found=True
+        )
 
     async def eligible(self, symbol: str, side: str, qty: Decimal | None) -> None:
         require_enabled()

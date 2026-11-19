@@ -145,10 +145,15 @@ boundary remains ambiguous, even a ValueError or a refusal-shaped exception.
 Cancellation propagates unchanged and leaves the durable sending fence intact.
 
 Timeout, bad broker echo, failed result commit or crash leaves `uncertain` or the
-already committed `sending`. Replay only looks up evidence by client ID; missing
-or failed lookup is never permission to resubmit. An uncertain or nonterminal close
-keeps its reservation and blocks later legs. Once all preceding legs have proven
-terminal outcomes, a later `close-due` invocation can create one indexed leg for
+already committed `sending`. Under
+`decision/2026-11-20/at-mock-uncertain-and-data-gaps` item 1, only HTTP 404 from
+Alpaca paper's `GET /v2/orders:by_client_order_id` for that leg's exact client ID
+lets the recorder mark an unbound, unfilled `sending` or `uncertain` leg
+`rejected` with zero fill and `broker_confirmed_absent`. A failed lookup, timeout,
+5xx or 200 response preserves those unbound legs and their reservations. Existing
+broker-bound orders still use the regular fill evidence checks. Once all preceding
+legs have proven terminal outcomes, `close-due` can create one indexed leg with
+a fresh client ID for
 the entry fill quantity minus their proven fills. Canceled, expired or rejected
 zero-fill closes release no filled quantity. A terminal partial fill reduces only
 the residual. Each leg commits and claims separately. The episode closes only when
@@ -156,8 +161,8 @@ aggregate terminal fills cover the entry, with weighted exit price and aggregate
 gross P&L. Do not delete rows, reset statuses or invent a new index without the
 preceding terminal evidence.
 
-`run` reconciles existing entry evidence on same-session replay. `close-due`
-reconciles due entry/exit evidence and safely resumes bookkeeping after a crash.
+`run` looks up existing entries on same-session replay. `close-due` checks due
+entry and exit evidence and resumes bookkeeping after a crash.
 An ordinary error in one due entry is reported as `episode_status=unresolved`
 with its exception class; independent entries continue and the CLI returns nonzero.
 This result does not change the entry's durable status or grant retry authority.

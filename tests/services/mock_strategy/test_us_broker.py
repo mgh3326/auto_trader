@@ -1,17 +1,25 @@
 """Exercise the real paper HTTP service through an in-memory transport."""
 
+import ast
 import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import pytest
 
 from app.core.config import settings
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
-from app.services.brokers.alpaca.exceptions import AlpacaPaperIdentityMismatch
+from app.services.brokers.alpaca.exceptions import (
+    AlpacaPaperIdentityMismatch,
+    AlpacaPaperOrderNotFound,
+    AlpacaPaperRequestError,
+)
 from app.services.brokers.alpaca.schemas import OrderRequest
-from app.services.mock_strategy import us_broker
+from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+from app.services.mock_strategy import recorder as recorder_module
+from app.services.mock_strategy import us, us_broker
 from app.services.mock_strategy.us_broker import UsPaperBroker
 
 pytestmark = pytest.mark.asyncio
@@ -387,3 +395,141 @@ async def test_errors_after_post_boundary_are_always_uncertain(
         assert row.status == "uncertain" and not row.meta.get("no_order_proven")
     assert not await recorder.claim(row.client_order_id)
     assert sum(m == "POST" for m, _, _ in transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "initial_status, response, prior_fill, resolves",
+    [
+        ("sending", "404", None, True),
+        ("uncertain", "404", None, True),
+        ("uncertain", "error", None, False),
+        ("sending", "timeout", None, False),
+        ("uncertain", "500", None, False),
+        ("uncertain", "found", None, False),
+        ("uncertain", "empty", None, False),
+        ("uncertain", "malformed", None, False),
+        ("uncertain", "404", "10", False),
+        ("rejected", "404", None, False),
+    ],
+)
+async def test_lnth_exit_absence_requires_exact_404(
+    enabled, initial_status, response, prior_fill, resolves
+):
+    from dataclasses import replace
+
+    from app.services.mock_strategy.us import UsPaperStrategy
+    from tests.services.mock_strategy.test_us import (
+        MemoryRecorder,
+        PaperBroker,
+        asset,
+        selection,
+    )
+
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    broker.asset_map = {"LNTH": asset("LNTH")}
+    strategy = UsPaperStrategy(recorder, broker)
+    signals = selection()
+    await strategy.run(
+        asof=DAY,
+        selection=lambda: replace(signals, up=(replace(signals.up[0], symbol="LNTH"),)),
+        top_n=1,
+        confirm=True,
+    )
+    broker.fail_submit = True
+    await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
+    original = next(row for row in recorder.rows.values() if row.side == "sell")
+    original.status = initial_status
+    if prior_fill is not None:
+        original.meta = {**original.meta, "filled_qty": prior_fill}
+    before = dict(original.meta)
+    attempts = []
+
+    class LookupTransport(Transport):
+        async def request(self, method, path, **kwargs):
+            if path == "/v2/orders:by_client_order_id":
+                assert method == "GET"
+                assert kwargs["params"] == {"client_order_id": original.client_order_id}
+                attempts.append(original.client_order_id)
+                if response == "error":
+                    raise httpx.ConnectError("fixture connection error")
+                if response == "timeout":
+                    raise httpx.ReadTimeout("fixture read timeout")
+                if response == "found":
+                    order = next(
+                        order for side, order in broker.posts if side == "sell"
+                    )
+                    return httpx.Response(
+                        200,
+                        json=order.model_dump(mode="json")
+                        | {
+                            "id": "existing-order",
+                            "status": "canceled",
+                            "filled_qty": "0",
+                        },
+                    )
+                if response == "empty":
+                    return httpx.Response(200, json={})
+                if response == "malformed":
+                    return httpx.Response(200, content=b"{")
+                return httpx.Response(int(response), json={})
+            return await super().request(method, path, **kwargs)
+
+    paper = UsPaperBroker(settings=config(), transport=LookupTransport())
+    await paper.preflight(DAY)
+    lookup = broker.lookup
+
+    async def lookup_exit(client_order_id):
+        if client_order_id == original.client_order_id:
+            return await paper.lookup(client_order_id)
+        return await lookup(client_order_id)
+
+    broker.lookup = lookup_exit
+    broker.fail_submit = False
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    await strategy.close_due(asof=date(2026, 11, 10), confirm=True)
+    sells = [order for side, order in broker.posts if side == "sell"]
+    if not resolves:
+        assert original.status == initial_status
+        assert original.meta == before
+        assert len(sells) == 1
+        assert len(attempts) == (0 if initial_status == "rejected" else 2)
+        return
+    assert attempts == [original.client_order_id]
+    assert original.status == "rejected"
+    assert original.meta["broker_status"] == "broker_confirmed_absent"
+    assert original.meta["filled_qty"] == "0"
+    assert len(sells) == 2
+    assert sells[0].client_order_id != sells[1].client_order_id
+    assert sells[1].qty == Decimal("100")
+
+
+async def test_us_paper_absence_has_no_live_order_imports():
+    allowed_services = ("app.services.brokers.alpaca.", "app.services.mock_strategy.")
+    for module in (us, us_broker, recorder_module):
+        tree = ast.parse(Path(module.__file__).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imports = [node.module or ""]
+            elif isinstance(node, ast.Import):
+                imports = [alias.name for alias in node.names]
+            else:
+                continue
+            for name in imports:
+                if name.startswith("app.services."):
+                    assert name.startswith(allowed_services), (module.__name__, name)
+
+
+async def test_account_404_is_not_order_absence():
+    class MissingAccountTransport(Transport):
+        async def request(self, method, path, **kwargs):
+            assert (method, path) == ("GET", "/v2/account")
+            return httpx.Response(404, json={})
+
+    service = AlpacaPaperBrokerService(
+        settings=config(), transport=MissingAccountTransport()
+    )
+    with pytest.raises(AlpacaPaperRequestError) as error:
+        await service.get_order_by_client_order_id(
+            "fixture-order", report_not_found=True
+        )
+    assert not isinstance(error.value, AlpacaPaperOrderNotFound)

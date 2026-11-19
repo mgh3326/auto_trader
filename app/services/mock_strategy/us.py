@@ -9,6 +9,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from app.core.symbol import to_db_symbol
 from app.models.mock_strategy import MockStrategyOrder
+from app.services.brokers.alpaca.exceptions import AlpacaPaperOrderNotFound
 from app.services.brokers.alpaca.schemas import Asset, Order, OrderRequest
 from app.services.mock_strategy.recorder import MockStrategyRecorder, OrderIntent
 from app.services.mock_strategy.us_broker import PreDispatchRefusal, UsPaperBroker
@@ -337,12 +338,22 @@ class UsPaperStrategy:
     async def _refresh(self, row: MockStrategyOrder) -> MockStrategyOrder:
         if row.status in {"planned", "closed", "canceled", "rejected"}:
             return row
+        pending = row.status in {"sending", "uncertain"}
+        unbound = pending and row.broker_order_id is None
         try:
             order = await self.broker.lookup(row.client_order_id)
-            if order is None:
+            if order is None or unbound:
                 return row
             return await self._observe(row, order)
+        except AlpacaPaperOrderNotFound:
+            if unbound:
+                return await self.recorder.confirm_alpaca_absence(
+                    row.client_order_id, account_ref=row.account_ref
+                )
+            return row
         except Exception:
+            if pending:
+                return row
             return await self.recorder.update(row.client_order_id, status="uncertain")
 
     async def close_due(self, *, asof: date, confirm: bool = False) -> dict:

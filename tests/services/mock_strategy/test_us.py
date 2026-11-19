@@ -13,6 +13,7 @@ import pytest
 
 from app.models.mock_strategy import OPEN_STATUSES, MockStrategyOrder
 from app.services.brokers.alpaca.schemas import Asset, Order
+from app.services.mock_strategy.recorder import record_alpaca_absence
 from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
 from app.services.mock_strategy.us_broker import PreDispatchRefusal
 from app.services.mock_strategy.us_signals import Candidate, UsSelection, session_times
@@ -81,6 +82,12 @@ class MemoryRecorder:
             return False
         row.status = "sending"
         return True
+
+    async def confirm_alpaca_absence(self, client_order_id, *, account_ref):
+        row = self.rows[client_order_id]
+        assert row.account_ref == account_ref
+        record_alpaca_absence(row)
+        return row
 
     async def update(self, client_order_id, *, status, meta=None, **kwargs):
         if self.fail_updates:

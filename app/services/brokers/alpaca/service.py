@@ -12,6 +12,7 @@ from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperConfigurationError,
     AlpacaPaperEndpointError,
     AlpacaPaperIdentityMismatch,
+    AlpacaPaperOrderNotFound,
     AlpacaPaperRequestError,
 )
 from app.services.brokers.alpaca.schemas import (
@@ -29,6 +30,8 @@ from app.services.brokers.client_order_ids import (
     BrokerClientIdTarget,
     assert_broker_client_order_id,
 )
+
+_ORDER_NOT_FOUND = object()
 
 
 class AlpacaPaperBrokerService:
@@ -93,6 +96,7 @@ class AlpacaPaperBrokerService:
         **kwargs: Any,
     ) -> Any:
         skip_identity = bool(kwargs.pop("_skip_identity", False))
+        lookup_order = kwargs.pop("_lookup_order", False)
         if (
             not skip_identity
             and not self._identity_verified
@@ -106,6 +110,9 @@ class AlpacaPaperBrokerService:
             response = await self._transport.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
             raise AlpacaPaperRequestError(str(exc)) from exc
+
+        if lookup_order and response.status_code == 404:
+            return _ORDER_NOT_FOUND
 
         if response.status_code >= 400:
             raise AlpacaPaperRequestError(
@@ -240,26 +247,26 @@ class AlpacaPaperBrokerService:
         data = await self._request("GET", f"/v2/orders/{order_id}")
         return Order.model_validate(data)
 
-    async def get_order_by_client_order_id(self, client_order_id: str) -> Order | None:
-        """Read-only lookup of a paper order by client_order_id.
-
-        Returns None when no order exists for the id (HTTP 404). Used only for
-        crash-after-success reconciliation — this never mutates and never POSTs.
-        """
+    async def get_order_by_client_order_id(
+        self, client_order_id: str, *, report_not_found: bool = False
+    ) -> Order | None:
+        """Read an order; optionally distinguish endpoint 404 from empty data."""
         assert_broker_client_order_id(
             target=BrokerClientIdTarget.ALPACA_PAPER,
             client_order_id=client_order_id,
         )
-        try:
-            data = await self._request(
-                "GET",
-                "/v2/orders:by_client_order_id",
-                params={"client_order_id": client_order_id},
-            )
-        except AlpacaPaperRequestError as exc:
-            if getattr(exc, "status_code", None) == 404:
-                return None
-            raise
+        data = await self._request(
+            "GET",
+            "/v2/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+            _lookup_order=True,
+        )
+        if data is _ORDER_NOT_FOUND:
+            if report_not_found:
+                raise AlpacaPaperOrderNotFound(
+                    "Alpaca paper order lookup returned 404", status_code=404
+                )
+            return None
         if not data:
             return None
         return Order.model_validate(data)
