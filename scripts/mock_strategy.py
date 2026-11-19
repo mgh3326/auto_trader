@@ -45,16 +45,41 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--account-ref", help="optional status scope; required for close-due --dry-run"
     )
+    result.add_argument(
+        "--symbol-change",
+        action="append",
+        metavar="OLD=NEW",
+        help=(
+            "close-due/status: operator-declared US ticker change; repeatable. "
+            "Exit legs go out as NEW only after broker evidence proves the swap"
+        ),
+    )
     return result
+
+
+def _status_changes(changes: dict[str, str]) -> dict:
+    """Read-only views never contact the broker; verification is close-due's."""
+    if not changes:
+        return {}
+    return {
+        "symbol_changes": [
+            {"from": old, "to": new, "verified": False} for old, new in changes.items()
+        ],
+        "symbol_changes_note": "declared only; broker verification runs in close-due",
+    }
 
 
 async def execute(args: argparse.Namespace) -> dict:
     from app.services.mock_strategy.recorder import MockStrategyRecorder
     from app.services.mock_strategy.us import UsPaperStrategy, plan_orders, projection
     from app.services.mock_strategy.us_signals import build_selection, session_times
+    from app.services.mock_strategy.us_symbol_change import parse_symbol_changes
 
     if args.top_n < 1 or not args.notional.is_finite() or args.notional <= 0:
         raise ValueError("positive top-n and finite positive notional required")
+    changes = parse_symbol_changes(getattr(args, "symbol_change", None))
+    if changes and args.command == "run":
+        raise ValueError("--symbol-change applies to close-due and status only")
     if args.asset_fixture and (not args.dry_run or args.command != "run"):
         raise ValueError("asset fixture is run --dry-run only")
     if args.command == "run" and args.dry_run:
@@ -104,6 +129,7 @@ async def execute(args: argparse.Namespace) -> dict:
                 for row in rows
                 if row.meta.get("asof", "9999") <= args.asof.isoformat()
             ],
+            **_status_changes(changes),
         }
     if args.dry_run:
         if not args.account_ref:
@@ -116,6 +142,7 @@ async def execute(args: argparse.Namespace) -> dict:
             "venue": args.venue,
             "dry_run": True,
             "orders": [projection(row) for row in rows],
+            **_status_changes(changes),
             "note": "due entries only; broker terminal-entry and fresh position checks required before close",
         }
     if args.confirm is not True:
@@ -124,7 +151,9 @@ async def execute(args: argparse.Namespace) -> dict:
 
     strategy = UsPaperStrategy(recorder, UsPaperBroker())
     if args.command == "close-due":
-        return await strategy.close_due(asof=args.asof, confirm=True)
+        return await strategy.close_due(
+            asof=args.asof, confirm=True, symbol_changes=changes
+        )
     return await strategy.run(
         asof=args.asof,
         horizon=args.horizon,
