@@ -640,6 +640,7 @@ def test_b7_the_same_cap_refuses_a_buy() -> None:
     assert _decide(intent, submit(intent)).refusal is Refusal.NOTIONAL_CAP_EXCEEDED
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("avg", [None, Decimal("0"), Decimal("-1"), Decimal("NaN")])
 async def test_b9_an_unproven_average_price_means_no_automatic_sell(avg) -> None:
     intent = sell_intent()
