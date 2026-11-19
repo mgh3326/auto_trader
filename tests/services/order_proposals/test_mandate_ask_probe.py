@@ -14,8 +14,18 @@ pytestmark = pytest.mark.unit
 
 
 def _book(*_args) -> mandate_quote.VenueBook:
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
     return mandate_quote.parse_kis_book(
-        {"askp1": "70100", "askp_rsqn1": "5", "bidp1": "70000", "bidp_rsqn1": "5"},
+        {
+            "aspr_acpt_hour": datetime.now(KST).strftime("%H%M%S"),
+            "askp1": "70100",
+            "askp_rsqn1": "5",
+            "bidp1": "70000",
+            "bidp_rsqn1": "5",
+        },
         "70050",
     )
 
@@ -24,7 +34,7 @@ def test_the_probe_appends_one_record_per_symbol_per_round(tmp_path, monkeypatch
     async def book(symbol: str, code: str):
         return _book()
 
-    monkeypatch.setattr(mandate_quote, "_read_kis_krx", book)
+    monkeypatch.setattr(mandate_quote, "_read_kis_book", book)
     monkeypatch.setattr(mandate_ask_probe.asyncio, "sleep", _no_sleep)
     out = tmp_path / "e1.jsonl"
     code = mandate_ask_probe.main(
@@ -64,7 +74,7 @@ def test_the_probe_refuses_before_any_read(argv, tmp_path, monkeypatch):
     async def boom(*_args):
         raise AssertionError("must not read")
 
-    monkeypatch.setattr(mandate_quote, "_read_kis_krx", boom)
+    monkeypatch.setattr(mandate_quote, "_read_kis_book", boom)
     assert mandate_ask_probe.main([*argv, "--out", str(tmp_path / "x.jsonl")]) == 2
     assert not (tmp_path / "x.jsonl").exists()
 
@@ -73,3 +83,22 @@ def test_the_probe_refuses_an_output_inside_the_repo(monkeypatch):
     inside = Path(mandate_ask_probe.__file__).resolve().parents[1] / "e1.jsonl"
     assert mandate_ask_probe.main(["--symbol", "005930", "--out", str(inside)]) == 2
     assert not inside.exists()
+
+
+def test_the_probe_exits_nonzero_when_records_are_lost(tmp_path, monkeypatch):
+    async def book(symbol: str, code: str):
+        return _book()
+
+    monkeypatch.setattr(mandate_quote, "_read_kis_book", book)
+    monkeypatch.setattr(mandate_ask_probe.asyncio, "sleep", _no_sleep)
+    # the output path exists as a directory: every append fails
+    code = mandate_ask_probe.main(
+        ["--symbol", "005930", "--count", "2", "--out", str(tmp_path)]
+    )
+    assert code == 1
+
+
+def test_the_probe_refuses_an_output_under_a_missing_directory(tmp_path):
+    out = tmp_path / "nope" / "e1.jsonl"
+    assert mandate_ask_probe.main(["--symbol", "005930", "--out", str(out)]) == 2
+    assert not out.parent.exists()

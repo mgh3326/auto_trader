@@ -21,8 +21,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.services.order_proposals.mandate_quote import (
-    KIS_BOOK_BY_ACCOUNT,
     JsonlSink,
+    has_book_source,
     read_venue_quote,
 )
 
@@ -55,6 +55,10 @@ async def probe(args: argparse.Namespace) -> int:
             )
         if index + 1 < args.count:
             await asyncio.sleep(args.interval_seconds)
+    # A measurement with lost or no records is not a measurement.
+    if sink.failed or not sink.written:
+        print(f"기록 실패: 저장 {sink.written}건, 유실 {sink.failed}건")
+        return 1
     return 0
 
 
@@ -63,8 +67,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not 1 <= args.count <= MAX_COUNT or not 0.5 <= args.interval_seconds <= 3600:
         print("--count 은 1~500, --interval-seconds 는 0.5~3600 이어야 합니다.")
         return 2
-    if (args.account_mode, args.market) not in KIS_BOOK_BY_ACCOUNT:
+    if not has_book_source(args.account_mode, args.market):
         print("이 계좌·시장에는 호가 읽기 소스가 없습니다(대체 없음).")
+        return 2
+    if not args.out.resolve().parent.is_dir():
+        print("--out 의 상위 디렉터리가 없습니다.")
         return 2
     repo_root = Path(__file__).resolve().parents[1]
     if repo_root in args.out.resolve().parents:

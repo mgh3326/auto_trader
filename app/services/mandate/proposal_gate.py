@@ -357,6 +357,9 @@ class ProposalQuote:
     # evaluated no earlier than this, so a ``now`` sampled before the read cannot
     # make a just-read ask look like it comes from the future.
     read_at: datetime | None = None
+    # Opaque id of the read that produced this ask; a later use records it so the
+    # read -> use elapsed time is paired by identity, not by symbol and proximity.
+    observation_id: str | None = None
 
 
 QuoteReader = Callable[[PlanProposalContext], Awaitable[ProposalQuote | None]]
