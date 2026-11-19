@@ -152,3 +152,47 @@ async def test_gate_on_valid_token_returns_ok_even_when_handler_reports_not_hand
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
     fake_handler.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_i21_mta_uses_webhook_auth_without_entering_either_order_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_TOKEN", "test-secret")
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED", True
+    )
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED", False
+    )
+    update = {"callback_query": {"data": "mta:test"}}
+    handler = AsyncMock(return_value="mandate_card_invalid")
+    with (
+        patch("app.routers.telegram_callback.handle_mandate_update", handler),
+        patch(
+            "app.routers.telegram_callback.handle_callback_update",
+            new_callable=AsyncMock,
+        ) as inline,
+        patch(
+            "app.routers.telegram_callback.ingest_callback_update",
+            new_callable=AsyncMock,
+        ) as durable,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=_build_app(with_auth_middleware=True)),
+            base_url="https://test",
+        ) as client:
+            assert (await client.post(_PATH, json=update)).status_code == 401
+            handler.assert_not_awaited()
+            response = await client.post(
+                _PATH,
+                json=update,
+                headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+            )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        handler.assert_awaited_once()
+        inline.assert_not_awaited()
+        durable.assert_not_awaited()

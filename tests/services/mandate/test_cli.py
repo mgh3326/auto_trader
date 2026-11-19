@@ -806,3 +806,115 @@ def test_status_of_a_sleeve_lists_its_plans(monkeypatch: pytest.MonkeyPatch) -> 
             "released": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("message", "mandate_card_invalid"),
+        ("chat", "mandate_card_invalid"),
+        ("hash", "mandate_card_invalid"),
+        ("decision", "mandate_card_invalid"),
+        ("expired", "mandate_card_expired"),
+        ("null_update", "invalid_telegram_identifier"),
+    ],
+)
+async def test_i21_mta_rejects_changed_card_bindings(monkeypatch, change, expected):
+    from copy import deepcopy
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock
+
+    from app.core.config import settings
+    from app.services.mandate import telegram_approval as approval
+
+    monkeypatch.setattr(settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "42")
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-123,-456"
+    )
+    now = datetime.now(UTC)
+    request = SimpleNamespace(id=7, content_sha256="01" * 32)
+    markup = approval.card_markup(request, -123, 29, now)
+    buttons = markup["inline_keyboard"][0]
+    data = buttons[1]["callback_data"]
+    assert len(data.encode()) <= 64
+    update = {
+        "update_id": 1,
+        "callback_query": {
+            "data": data,
+            "from": {"id": 42},
+            "message": {"chat": {"id": -123}, "message_id": 29},
+        },
+    }
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.get.return_value = deepcopy(request)
+    write = AsyncMock()
+    monkeypatch.setattr(approval.store, "record_approval", write)
+    query = update["callback_query"]
+    if change == "message":
+        query["message"]["message_id"] = 30
+    elif change == "chat":
+        query["message"]["chat"]["id"] = -456
+    elif change == "hash":
+        session.get.return_value.content_sha256 = "02" * 32
+    elif change == "decision":
+        pending = buttons[0]["callback_data"]
+        query["data"] = pending[:32] + data[32:]
+    elif change == "expired":
+        now += timedelta(seconds=approval.CARD_TTL_SECONDS)
+    else:
+        update["update_id"] = None
+    assert (
+        await approval.handle_mandate_update(
+            update, now=now, session_factory=lambda: session
+        )
+        == expected
+    )
+    write.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i21_send_approval_card_publishes_buttons_only_after_message_id(
+    monkeypatch,
+):
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-123")
+    monkeypatch.setattr(
+        cli.telegram_approval, "card_text", AsyncMock(return_value="조항 <값>")
+    )
+    request = SimpleNamespace(id=7, content_sha256="01" * 32)
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.get.return_value = request
+    send = AsyncMock(return_value=SimpleNamespace(ok=True, message_id=29))
+    edit = AsyncMock(return_value=SimpleNamespace(ok=True))
+    monkeypatch.setattr(cli, "send_telegram_message", send)
+    monkeypatch.setattr(cli, "edit_message_text", edit)
+
+    argv = DB + ["send-approval-card", "--request-id", "7", "--chat-id", "-123"] + ACTOR
+    parser = cli._parser()
+    now = datetime.now(UTC)
+    _, preview = await cli.run(
+        parser.parse_args(argv), session_factory=lambda: session, now=now
+    )
+    assert preview == {"mode": "preview", "text": "조항 <값>"}
+    send.assert_not_awaited()
+    edit.assert_not_awaited()
+
+    _, published = await cli.run(
+        parser.parse_args(argv + ["--commit"]), session_factory=lambda: session, now=now
+    )
+    assert published == {"mode": "published", "request_id": 7, "message_id": 29}
+    assert "reply_markup" not in send.await_args.kwargs
+    assert edit.await_args.kwargs["message_id"] == 29
+    assert edit.await_args.kwargs["text"] == "조항 &lt;값&gt;"
+    assert len(edit.await_args.kwargs["reply_markup"]["inline_keyboard"][0]) == 2
+    session.commit.assert_not_awaited()

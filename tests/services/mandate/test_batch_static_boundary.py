@@ -104,8 +104,8 @@ def test_the_existing_callback_and_the_w5_inbox_do_not_know_the_mpb_path(
 
 def test_the_router_routes_by_the_prefix_and_leaves_the_rest_in_place() -> None:
     text = (ROOT / "app/routers/telegram_callback.py").read_text()
-    assert "is_mandate_update(body)" in text
-    first = text.index("is_mandate_update(body)")
+    assert "is_batch_update(body)" in text
+    first = text.index("is_batch_update(body)")
     # the mandate branch comes before the durable-inbox branch and the inline call
     assert first < text.index("ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED:")
     assert first < text.index("await handle_callback_update(")
