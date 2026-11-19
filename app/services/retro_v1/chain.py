@@ -56,6 +56,12 @@ from app.services.execution_ledger.supersede import (
     supersede_provisional,
 )
 from app.services.retro_v1 import daily_bars
+from app.services.retro_v1.block_reason import (
+    BlockReason,
+    block_fields,
+    proposal_block_reason,
+    rung_block_reason,
+)
 from app.services.retro_v1.envelope import (
     MAX_SOURCE_ROWS,
     Row,
@@ -773,6 +779,7 @@ def _row(
     basis: str = "inference",
     hints: dict[str, str] | None = None,
     links: RowLinks | None = None,
+    block: BlockReason | None = None,
     fill_time_basis: str | None = None,
 ) -> Row:
     values = {
@@ -793,6 +800,7 @@ def _row(
         # Optional fields: present only with a value, so a row without link
         # evidence is exactly the pre-hk-4188 row.
         values.update({k: v for k, v in links.fields().items() if v is not None})
+    values.update(block_fields(block))
     if fill_time_basis is not None:
         values["fill_time_basis"] = fill_time_basis
     return values, dict(hints or {})
@@ -940,6 +948,7 @@ def proposal_rung_rows(
                     price=None,
                     market=market,
                     hints={"price": "not_applicable"},
+                    block=proposal_block_reason(p, rungs),
                     links=RowLinks(
                         link_basis=candidate_basis,
                         decision_ref=decision_ref(p.decision_id)
@@ -973,6 +982,7 @@ def proposal_rung_rows(
                         price=limit_price,
                         market=market,
                         hints=price_hint,
+                        block=rung_block_reason(p, r),
                         links=RowLinks(
                             link_basis="recorded",
                             decision_ref=decision_ref(p.decision_id)
