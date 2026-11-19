@@ -231,12 +231,9 @@ class _Session:
 
 
 @pytest.mark.asyncio
-async def test_the_loader_reads_the_own_account_place_rows_and_the_in_effect_ledger(
-    monkeypatch,
-) -> None:
-    # T1m-b adds this mapping; T1m-a must work once it exists, without owning it.
-    monkeypatch.setitem(vocabulary.LEDGER_IDENTITY, ACCOUNT, ("kiwoom", "mock"))
-    monkeypatch.setitem(store.LEDGER_IDENTITY, ACCOUNT, ("kiwoom", "mock"))
+async def test_the_loader_reads_the_own_account_place_rows_and_the_in_effect_ledger() -> (
+    None
+):
     proposal = SimpleNamespace(
         id=1, symbol="005930", root_proposal_id="root-1", created_at=T0
     )
@@ -272,7 +269,144 @@ async def test_the_loader_reads_the_own_account_place_rows_and_the_in_effect_led
     assert "account_mode = 'mock'" in ledger_sql
 
 
-def test_the_sleeve_vocabulary_is_untouched_by_this_ticket() -> None:
-    """T1m-b owns the account combination; this ticket must not add it."""
-    assert ACCOUNT not in vocabulary.LEDGER_IDENTITY
-    assert all(mode != ACCOUNT for mode, _m in vocabulary.SLEEVE_ACCOUNT_MARKETS)
+def test_the_kiwoom_mock_combination_is_in_the_vocabulary() -> None:
+    """T1m-b owns the account combination; the mapping is the real one."""
+    assert vocabulary.LEDGER_IDENTITY[ACCOUNT] == ("kiwoom", "mock")
+    assert store.LEDGER_IDENTITY[ACCOUNT] == ("kiwoom", "mock")
+    assert (ACCOUNT, "equity_kr") in vocabulary.SLEEVE_ACCOUNT_MARKETS
+    assert (ACCOUNT, "equity_kr") in vocabulary.ACCOUNT_MARKETS
+
+
+# --- the sleeve's cash used and P&L are measured from the Kiwoom attribution ----
+
+
+def _proposal_and_rung(
+    *,
+    rung_id: int,
+    order_no: str,
+    idem: str,
+    side: str,
+    qty: str,
+    limit: str,
+    state: str,
+):
+    proposal = SimpleNamespace(
+        id=rung_id,
+        symbol="005930",
+        root_proposal_id=f"root-{rung_id}",
+        created_at=T0,
+    )
+    rung = SimpleNamespace(
+        id=rung_id,
+        side=side,
+        state=state,
+        quantity=D(qty),
+        limit_price=D(limit),
+        notional=None,
+        filled_qty=None,
+        broker_order_id=order_no,
+        idempotency_key=idem,
+        correlation_id=f"corr-{rung_id}",
+    )
+    return proposal, rung
+
+
+@pytest.mark.asyncio
+async def test_a_kiwoom_mock_sleeves_used_and_pnl_come_from_the_attributed_fills() -> (
+    None
+):
+    """Buy 10 (filled 6 so far), sell 4 of those; one fill is another account's."""
+    from app.services.strategy_sleeves.book import compute_sleeve_book
+
+    buy = _proposal_and_rung(
+        rung_id=10,
+        order_no="0000123",
+        idem="idem-10",
+        side="buy",
+        qty="10",
+        limit="70000",
+        state="partially_filled",
+    )
+    sell = _proposal_and_rung(
+        rung_id=11,
+        order_no="0000456",
+        idem="idem-11",
+        side="sell",
+        qty="4",
+        limit="72000",
+        state="filled",
+    )
+    session = _Session(
+        [buy, sell],
+        [_send("123", DAY0, idem="idem-10"), _send("456", DAY0, idem="idem-11")],
+        [
+            _row(1, filled_qty=D("4"), filled_price=D("70000"), id=1),
+            _row(2, filled_qty=D("2"), filled_price=D("70500"), id=2),
+            _row(
+                3,
+                side="sell",
+                broker_order_id="0000456",
+                filled_qty=D("4"),
+                filled_price=D("72000"),
+                filled_at=T0 + timedelta(minutes=30),
+                id=3,
+            ),
+            # Same number on another day: never this rung's fill.
+            _row(4, filled_at=T0 + timedelta(days=1), filled_qty=D("9"), id=4),
+        ],
+    )
+
+    inputs = await store.load_sleeve_inputs(session, _sleeve())  # type: ignore[arg-type]
+
+    assert sorted((f.ledger_id, f.rung_id) for f in inputs.fills) == [
+        (1, 10),
+        (2, 10),
+        (3, 11),
+    ]
+    assert inputs.diagnostics == {"order_id_reused_on_another_day": 1}
+    assert inputs.unattributed_rungs == ()
+
+    book = compute_sleeve_book(
+        orders=inputs.orders,
+        fills=inputs.fills,
+        marks={"005930": D("71000")},
+        unattributed_rungs=inputs.unattributed_rungs,
+    )
+    # FIFO: 4 @ 70000 sold at 72000 -> +8000; 2 @ 70500 held, marked at 71000.
+    assert book.realized_pnl == D("8000")
+    assert book.unrealized_pnl == D("1000")
+    assert book.net_pnl == D("9000")
+    assert book.held_cost_basis == D("141000")
+    # The partially filled buy still has 10 - 6 = 4 resting at its limit.
+    assert book.open_order_notional == D("280000")
+    assert book.used == D("421000")
+
+
+@pytest.mark.asyncio
+async def test_an_unattributable_kiwoom_fill_leaves_the_sleeve_unmeasured() -> None:
+    from app.services.strategy_sleeves.book import compute_sleeve_book
+
+    buy = _proposal_and_rung(
+        rung_id=10,
+        order_no="0000123",
+        idem="idem-10",
+        side="buy",
+        qty="10",
+        limit="70000",
+        state="filled",
+    )
+    # No place row on this account carries the rung's key: its day is unknown.
+    session = _Session([buy], [], [_row(1)])
+
+    inputs = await store.load_sleeve_inputs(session, _sleeve())  # type: ignore[arg-type]
+
+    assert inputs.fills == ()
+    assert inputs.unattributed_rungs == (10,)
+    book = compute_sleeve_book(
+        orders=inputs.orders,
+        fills=inputs.fills,
+        marks={},
+        unattributed_rungs=inputs.unattributed_rungs,
+    )
+    assert book.used is None
+    assert book.unattributed_rungs == (10,)
