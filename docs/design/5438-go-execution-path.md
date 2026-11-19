@@ -119,6 +119,33 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 
 권고는 A이고, B는 §10 D5로 남긴다. 쿨다운은 어느 선택지에서도 바꾸지 않는다: 쿨다운으로 거부된 진입은 4885 §5.4대로 `blocked_by_cooldown`으로 센다.
 
+### 2.2 경계 규칙 (리뷰 1회차 반영, 구속력 있음)
+
+아래 규칙은 §2 표와 같은 효력이며 표와 충돌하면 이 절이 우선한다. 번호(B1…)는 티켓 Acceptance가 인용한다.
+
+| # | 규칙 | 소유 |
+|---|---|---|
+| B1 | **매수 지정가와 기존 매수 가드.** `_preview_buy`는 지정가가 현재가(Upbit 마지막 체결가)보다 높으면 거부한다(`order_validation.py:1118`). 가드는 유지한다: 실행기는 최우선 매도호가 ≤ 마지막 체결가(같은 웹소켓 `trade` 스트림)일 때만 그 매도호가로 submit하고, 아니면 기다린다(R2). 기다리다 `CancelAfter`가 지나면 submit 없이 `DoneDeadline`. 가드 완화는 §10 D14 | 5439, 5441 |
+| B2 | **승인한 가격 = POST 가격.** 기존 crypto 경로는 `adjust_price_to_upbit_unit`로 가격을 다시 맞춘다. Upbit forwarder는 그 함수의 결과가 게이트웨이가 검증한 `limit_price_krw`와 다르면 **보내기 전에** 거부한다(`refused/price_normalization_mismatch`, 미전송 증명). 수량도 같은 방식으로 POST 본문 직전 값과 비교한다. 게이트가 승인한 (가격, 수량)과 POST 본문의 일치가 계약이다 | 5441 |
+| B3 | **결과 기록 실패 후 결속.** `finish` 실패로 child가 `sending`·`broker_order_id=NULL`이면 귀속·`/fills`는 `identifier`(= child 키)로 결속된 유일한 `live_order_ledger`/Upbit 주문 증거를 사용한다. 결속이 없거나 둘 이상이면 그 child는 **미해결**이고 sleeve 사용액·보유는 `unmeasured`(0 아님) → 매수 intent 거부 | 5441 |
+| B4 | **응답 유실 대사 주체.** 새 읽기 전용 명령 `scripts/execution_intent_upbit_resolve.py`(preview 기본, `--commit`)가 `sending`/`uncertain` Upbit child마다 `fetch_order_by_identifier(child 키)`를 부르고, 찾으면 기존 `live_order_ledger` 서비스로 행을 기록한다(하드룰 5). 못 찾음·조회 실패는 미전송 증거가 아니며 child는 미해결로 남는다. 운영자 수동 복구 절차는 5442 런북. 이 명령은 점검 잡과 같은 슬롯에서 돈다(D8 승인 범위) | 5441, 5442 |
+| B5 | **미해결 주문은 슬롯을 넘어 예약을 유지.** 같은 sleeve·심볼에 브로커 종결과 체결 수량이 증명되지 않은 child(상태 `sending`·`uncertain`, 또는 종결 증거 없는 `accepted`)가 있으면 `store_intent`가 새 intent를 거부한다(`unresolved_prior_order`). intent 만료·슬롯 변경으로 풀리지 않는다 | 5441 |
+| B6 | **위임장 일별 매수 상한.** child(매수 submit) 예약은 위임장 행을 `FOR UPDATE`로 잠근 뒤 그 UTC일의 같은 위임장 매수 child high-water 합(거부만 제외, 불명 포함) + 새 child ≤ `daily_max_buy_notional_krw`를 확인하고 같은 트랜잭션에 저널을 커밋한다. 초과는 `refused/mandate_daily_cap_exceeded` | 5441 |
+| B7 | **매도에는 명목 상한이 없다.** `per_intent_max_notional_krw`·I2 명목 상한·B6은 매수에만 적용한다. 매도 intent의 상한은 수량뿐이고 증명된 보유 이하(I9)다 — 상승한 포지션도 전량 청산 가능 | 5441 |
+| B8 | **정지된 sleeve의 청산.** 매수만 `strategy_sleeves.gate`(live 요구)를 통과해야 한다. 매도는 sleeve 상태 `live`·`paused`·`stopped` 어느 것에서도, 철회되지 않은(또는 손실 한도로만 정지된) 위임장 아래, 증명된 보유 이하로 허용한다. 위임장 철회 뒤의 청산은 카드 경로 | 5441 |
+| B9 | **평단 미증명 = 자동 매도 없음.** 게이트웨이는 매도 child마다 계정 평단을 읽어 양의 유한값이고 읽기가 성공했을 때만 비교한다. 누락·0·읽기 실패면 `refused/avg_price_unproven`(전송 0) → B13 카드 경로 | 5441 |
+| B10 | **철회 fence.** 철회 writer와 child 예약은 같은 위임장 행 `FOR UPDATE`를 잡는다(B6과 같은 잠금). 철회 커밋 이후 예약되는 child는 전부 거부된다. 철회 커밋 이전에 예약된 child는 막을 수 없다(pre-send 재확인은 best-effort, 3795 §4.6과 같음) — `revoke` 명령은 그런 child 목록을 출력해 운영자가 취소·검토한다. §4.3의 "즉시"는 이 의미다 | 5441 |
+| B11 | **전략 코드 SHA.** v2 intent에 필수 불변 필드 `strategy_code_sha`(40자 hex)를 둔다. `store_intent`와 예약이 위임장 값과 대조한다 | 5440, 5441 |
+| B12 | **실제 계좌 결속.** 위임장에 `account_ref`(Upbit 자격증명 식별자의 HMAC 지문, 수동 계좌 스냅샷 hk 3800과 같은 방식)를 저장·해시한다. forwarder는 전송 직전 설정된 자격증명으로 같은 지문을 계산해 다르면 `refused/account_mismatch`. 지문을 계산할 수 없으면 live 위임장을 만들 수 없다 | 5441 |
+| B13 | **손실매도 거부의 래치.** 청산 결정은 결정 행(B15)에 `exit_pending`으로 래치된다. 게이트웨이 `loss_sell_requires_card`·`avg_price_unproven` 거부는 저널에 남고, 다음 점검 잡이 래치된 청산을 다시 읽어 B14 경로로 넘긴다. 래치는 포지션 0이 증명되거나 카드가 생성될 때만 풀린다(가격 회복으로 풀리지 않음) | 5440 |
+| B14 | **loss_cut 카드 증거.** 기존 loss_cut은 72시간 이내 `retrospective_id`·`approval_issue_id`와 허용 caller가 필요하다. 1단계에서 잡은 이것을 만들지 않는다: 래치된 손실 청산이 있으면 ops Discord 알림 + 결정 행 `needs_operator_card`를 남기고, 운영자 세션이 기존 절차로 카드를 만든다. 잡이 증거를 만들고 직접 제안하는 것은 §10 D15 | 5440, 5442 |
+| B15 | **결정 저장소.** `review.decision_evidence`에는 신호값·σ̂·no-op 사유·intent id 열이 없고 매 호출 새 행이다. 5440이 추가형 마이그레이션으로 `review.upbit_trend_decisions`(유일 키 `(strategy, symbol, decision_at, action)`, 신호·σ̂·크기·사유·intent payload·`intent_id`·래치 상태, append-only + 래치 상태 전진만)와 유일 writer 서비스를 만든다. §6.4의 `decision_evidence` 기록은 선택적 연결로 내려간다 | 5440 |
+| B16 | **재실행 멱등.** 잡은 먼저 결정 행을 찾고 있으면 그 행에 저장된 intent payload를 그대로 `store_intent`한다(호가를 다시 읽지 않음). 결정 행과 intent는 한 트랜잭션에 쓴다 | 5440 |
+| B17 | **shadow 판정.** shadow intent의 sleeve 판정은 `strategy_sleeves.gate`가 아니라 shadow 장부(§3.6)로 계산하는 별도 함수 `evaluate_shadow_sleeve`(예산·손실·보유)이며, shadow sleeve 상태(`shadow`)를 받는다. 이 함수의 결과는 `shadowed` 기록만 허용하고 live forwarder를 고를 수 없다 | 5441 |
+| B18 | **shadow 원가는 FIFO.** §3.6의 진입가는 시간순 가상 체결을 기존 sleeve와 같은 FIFO로 접어 남은 lot의 원가로 계산한다(청산된 에피소드의 매수는 빠진다) | 5441 |
+| B19 | **잡의 입력 표면.** 호가: 무인증 공개 REST orderbook(`/v1/orderbook`) 읽기. 계정 평단: 기존 인증 읽기 `fetch_my_coins`(읽기 전용, 주문 모듈 import 없음). 둘 중 하나라도 실패하면 그 종목은 intent 없음 + 결정 행 사유(`input_unavailable`), 열린 청산은 B13 래치 유지 | 5440 |
+| B20 | **fillwire fill·view 검증.** `LedgerFill.Execution`의 가격 상한(10,000,000)·수량 상한(1,000,000)은 계좌별로: `upbit_live`는 가격 ≤ 10,000,000,000 KRW, 수량은 1e-8 고정소수. `/intents/<id>` `view`의 `filled_qty`·`order.qty`도 v2에서 decimal 문자열이고 계좌별로 파싱한다 | 5439, 5441 |
+
 ## 3. Upbit child wire 계약 변경
 
 ### 3.1 원칙
@@ -142,7 +169,8 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 | `symbol` | `KRW-BTC`·`KRW-ETH`·`KRW-SOL`·`KRW-XRP` 형식(`^KRW-[A-Z0-9]{2,10}$`) **이고** 위임장 심볼 목록에 있음 |
 | `side` | `buy`/`sell` |
 | `max_quantity_decimal` | decimal 문자열, `^[0-9]+(\.[0-9]{1,8})?$`, 0 초과, ≤ 1,000,000 |
-| `max_notional_krw` | 정수 KRW, 5,000 이상(Upbit 최소 주문, dots §2) ~ 위임장 `per_intent_max_notional_krw` 이하 |
+| `max_notional_krw` | 정수 KRW, 5,000 이상(Upbit 최소 주문, dots §2). 매수는 위임장 `per_intent_max_notional_krw` 이하, 매도는 위임장 상한을 적용하지 않음(B7) |
+| `strategy_code_sha` | 필수 40자 hex, 위임장 값과 같아야 함(B11) |
 | `limit_price_krw` | 정수 KRW, Upbit KRW 호가 단위에 맞는 값(§3.4), 1 ~ 10,000,000,000 |
 | `max_slippage_bps` | 정수 0 ~ min(500, 위임장 `price_band_bps`) |
 | `expires_at` | 저장 후 위임장 `max_intent_ttl`(권고 12시간) 이내 **이고** 위임장 만료 이전 |
@@ -244,7 +272,7 @@ shadow는 원장 행이 없으므로 Python 쪽에 가상 보유가 필요하다
 | # | 요구사항 |
 |---|---|
 | R1 | 호가 공급원은 `internal/upbit/reader.go`의 공개 웹소켓 `orderbook` 스트림을 재사용한다(무인증). 주문용 private 웹소켓·REST 키를 쓰지 않는다 |
-| R2 | **진입(buy)**: submit 지정가 = 최우선 매도호가(taker, 4885 §4.3·Q10). 그 가격이 intent 경계(`limit_price_krw × (1+bps)`)를 넘으면 보내지 않고 기다린다. 수량 = min(intent 잔량, floor(남은 명목 / 가격, 8자리)) |
+| R2 | **진입(buy)**: submit 지정가 = 최우선 매도호가(taker, 4885 §4.3·Q10). 단 그 값 ≤ 마지막 체결가일 때만(B1). 그 가격이 intent 경계(`limit_price_krw × (1+bps)`)를 넘으면 보내지 않고 기다린다. 수량 = min(intent 잔량, floor(남은 명목 / 가격, 8자리)) |
 | R3 | **청산(sell)**: 지정가 = 최우선 매수호가. 경계(`limit × (1−bps)`) 아래면 보내지 않는다. 평단×1.01 미만 청산은 게이트웨이가 거부하므로(I10) 실행기는 `loss_sell_requires_card`를 받으면 그 intent를 `DoneRefused`로 끝내고 재시도하지 않는다 |
 | R4 | **추격 없음(1단계)**: intent당 submit 1회. E1 상한 규칙상 cancel은 노출을 풀지 않고(E1 "How caps count"), 체결 증거는 최대 30분 늦으므로(§1.5) 같은 intent 안의 재submit은 상한에 막힌다. 접수 후 `CancelAfter`(권고 120초)에 잔량이 있을 수 있으면 cancel 하고 `DoneDeadline`으로 끝낸다. 남은 몫은 다음 슬롯의 새 intent다. 추격(취소 확인 증거로 노출 해제)은 §10 D11 |
 | R5 | **만료**: intent `expires_at` − `ExpiryMargin`(권고 60초)에 새 submit 금지, 열린 주문은 cancel. 만료 후 남은 잔량은 다음 결정 시각의 새 intent 몫이다 |
@@ -313,7 +341,8 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 쿨다운 심볼 진입은 intent 없음 + `blocked_by_cooldown` 결정 행.
 6. 브로커 주문 모듈을 import하지 않는다(정적 테스트).
 7. Dagu YAML은 `deploy/dagu/` 사본뿐이며 등록하지 않는다.
-8. 4885 §7 지표를 sleeve report와 결정 행에서 계산하는 읽기 전용 보고 명령이 있다.
+8. §2.2 B11·B13~B16·B19를 구현하고 각각 테스트가 있다(`review.upbit_trend_decisions` 마이그레이션 포함).
+9. 4885 §7 지표를 sleeve report와 결정 행에서 계산하는 읽기 전용 보고 명령이 있다.
 
 ### 8.2 hk 5441 — 게이트웨이 Upbit forwarder (auto_trader, T3)
 
@@ -326,8 +355,9 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
-9. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
+8. §2.2 B2~B12·B17·B18·B20 각각에 실패 방향 테스트가 있다.
+9. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
+10. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
 ### 8.3 hk 5442 — pi 운영 (런북·배치)
 
@@ -346,6 +376,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 4. 새 `cmd/execupbit`는 기본 `Off`, `upbit_live` 전송은 별도 플래그가 있어야 하고, 브로커 API·DB를 import하지 않는다(정적 테스트).
 5. Upbit 호가표 Go 구현이 auto_trader 공유 픽스처와 일치한다.
 6. shadow 가상 체결 출력 파일 형식이 문서화된다.
+7. §2.2 B1(최우선 매도호가 ≤ 마지막 체결가일 때만 매수)과 B20(계좌별 fill·view 검증)에 테스트가 있다.
 
 ## 9. 롤아웃
 
@@ -386,6 +417,8 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 | D10 | Claude 정기 매매 세션 축소 시점 | §1.2의 조건(live 첫 2주 통과) | at-go-executor 4 |
 | D11 | 같은 intent 안의 추격(cancel 후 재submit) | **1단계는 없음**(R4). 필요해지면 브로커 확인 cancel + 체결 수량 증거로 노출을 푸는 E1 규칙 변경을 별도 설계 | E1 cap 규칙, §1.5 지연 |
 | D12 | shadow 위임장을 운영자 CLI `--commit`만으로 만드는 것 | **예** — shadow는 전송이 불가능(I6) | §4.3 |
+| D14 | 기존 매수 가드(지정가 ≤ 마지막 체결가) 완화 | **아니오** — B1로 가드 안에서 실행. 체결률이 측정상 낮으면 별도 결정 | 하드룰 4 |
+| D15 | 무인 잡이 회고·`approval_issue_id`를 만들고 허용 caller로 loss_cut 제안을 직접 생성 | **1단계는 아니오** — B14대로 알림 + 운영자 카드. 필요 시 env(`LOSS_CUT_ALLOWED_AGENT_IDS`) 변경 승인과 함께 별도 결정 | 기존 loss_cut 증거 계약 |
 | D13 | 실행기 상수 | `CancelAfter` 120초, `ExpiryMargin` 60초, `StaleAfter` 2초(기존), `PollEvery` 15초, child 1회/초 | §5 |
 
 ## 11. 알았지만 건드리지 않은 것
