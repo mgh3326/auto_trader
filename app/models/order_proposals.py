@@ -92,6 +92,11 @@ class OrderProposal(Base):
         Index("ix_order_proposals_state", "lifecycle_state"),
         Index("ix_order_proposals_symbol", "symbol"),
         Index("ix_order_proposals_sleeve_id", "sleeve_id"),
+        CheckConstraint(
+            "exit_handoff_id IS NULL OR sleeve_id IS NOT NULL",
+            name="order_proposals_exit_handoff_needs_sleeve",
+        ),
+        Index("ix_order_proposals_exit_handoff_id", "exit_handoff_id"),
         Index("ix_order_proposals_decision_id", "decision_id"),
         {"schema": "review"},
     )
@@ -129,6 +134,13 @@ class OrderProposal(Base):
     sleeve_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("review.strategy_sleeves.id", ondelete="RESTRICT"),
+    )
+    # hk 5441 (design 5438 S5): the exit handoff this card was claimed from.
+    # NULL for every other proposal. Set once at create; DB triggers require it
+    # on a go-path sleeve and refuse a change.
+    exit_handoff_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("review.execution_exit_handoffs.id", ondelete="RESTRICT"),
     )
     rationale: Mapped[dict | None] = mapped_column(JSONB)
     broker_account_id: Mapped[str | None] = mapped_column(Text)

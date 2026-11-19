@@ -32,6 +32,7 @@ from sqlalchemy.sql import func
 from app.models.base import Base
 
 SLEEVE_STATES: tuple[str, ...] = ("shadow", "live", "paused", "stopped")
+SLEEVE_EXECUTION_PATHS: tuple[str, ...] = ("card", "go")
 SLEEVE_ACCOUNT_MARKETS: tuple[tuple[str, str], ...] = (
     ("kis_live", "equity_kr"),
     ("kis_live", "equity_us"),
@@ -74,6 +75,7 @@ class StrategySleeve(Base):
             "char_length(btrim(created_by)) BETWEEN 1 AND 128",
             name="created_by_nonblank",
         ),
+        CheckConstraint("execution_path IN ('card', 'go')", name="execution_path"),
         {"schema": "review"},
     )
 
@@ -86,6 +88,12 @@ class StrategySleeve(Base):
     created_by: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: hk 5441 (design 5438 S7): how this sleeve's orders reach the broker.
+    #: ``card`` is every existing sleeve. ``go`` is fixed at creation for a
+    #: sleeve the Go executor trades; an ordinary card can never tag it.
+    execution_path: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="card"
     )
 
 

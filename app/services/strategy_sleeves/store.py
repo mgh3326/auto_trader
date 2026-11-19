@@ -20,6 +20,11 @@ Fill attribution reads execution_ledger evidence only:
   the rung's idempotency key or correlation id *and* its order number -- never
   by the order number alone.
 
+A ``go`` sleeve (hk 5441) has a second source of orders: the submit children of
+its execution intents, read by ``intent_orders``. Their fills are the same
+ledger rows, matched by the child's Upbit order uuid under the same rules. A
+``card`` sleeve never reads that source, so its result is unchanged.
+
 A fill that fails any of these is not the sleeve's fill. The diagnostics count
 what was skipped and why. A KIS fill that matches a rung whose order day is
 unknown is not guessed onto it either: the rung is reported as unattributed and
@@ -30,7 +35,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -40,9 +45,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
+from app.models.execution_mandates import ExecutionExitHandoff
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
-from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
+from app.models.strategy_sleeves import (
+    SLEEVE_EXECUTION_PATHS,
+    StrategySleeve,
+    StrategySleeveVersion,
+)
 from app.services.execution_ledger.supersede import (
     AUTHORITATIVE_SOURCES,
     normalize_order_id,
@@ -50,6 +60,10 @@ from app.services.execution_ledger.supersede import (
 )
 from app.services.strategy_sleeves.book import SleeveFill, SleeveOrder
 from app.services.strategy_sleeves.gate import SleeveVersionView
+from app.services.strategy_sleeves.intent_orders import (
+    live_orders,
+    load_intent_child_orders,
+)
 from app.services.strategy_sleeves.vocabulary import (
     ACCOUNT_MARKETS,
     CANARY_RULES,
@@ -298,9 +312,20 @@ async def create_sleeve(
     min_effect_pct: Any = None,
     horizon_sessions: Any = None,
     max_duration_days: Any = None,
+    execution_path: str = "card",
 ) -> tuple[StrategySleeve, StrategySleeveVersion]:
-    """Create a sleeve and its version 1. Every value comes from the caller."""
+    """Create a sleeve and its version 1. Every value comes from the caller.
+
+    ``execution_path`` is fixed here and never changes (design 5438 S7): ``go``
+    is a sleeve the Go executor trades through execution intents, on Upbit only.
+    """
     key = _nonblank("sleeve_key", sleeve_key, 64)
+    if execution_path not in SLEEVE_EXECUTION_PATHS:
+        raise SleeveError(
+            "execution_path must be one of: " + ", ".join(SLEEVE_EXECUTION_PATHS)
+        )
+    if execution_path == "go" and (account_mode, market) != ("upbit", "crypto"):
+        raise SleeveError("a go-path sleeve runs on upbit/crypto only")
     rule = CANARY_RULES.get(rule_id)
     if rule is None:
         raise SleeveError("rule_id must be one of: " + ", ".join(sorted(CANARY_RULES)))
@@ -332,6 +357,7 @@ async def create_sleeve(
         market=market,
         currency=CURRENCY_BY_MARKET[market],
         created_by=who,
+        execution_path=execution_path,
     )
     session.add(sleeve)
     await session.flush()
@@ -596,6 +622,17 @@ async def load_sleeve_inputs(
                 )
             )
 
+    if getattr(sleeve, "execution_path", "card") == "go":
+        orders = await _mark_unmeasured_handoff_cards(session, sleeve, orders)
+        for child in live_orders(await load_intent_child_orders(session, sleeve.id)):
+            orders.append(
+                (
+                    child.as_sleeve_order(),
+                    child.intent_created_at,
+                    normalize_order_id(child.order_uuid) or None,
+                )
+            )
+
     broker, ledger_mode = LEDGER_IDENTITY[sleeve.account_mode]
     order_days: dict[int, Any] = {}
     if broker == "kis" and send_keys:
@@ -638,6 +675,74 @@ async def load_sleeve_inputs(
         diagnostics=dict(diagnostics),
         unattributed_rungs=tuple(sorted(unattributed)),
     )
+
+
+#: Book key of the placeholder order for an unmeasured handoff whose card has
+#: no rung row to mark. Far below any child order key.
+_HANDOFF_PLACEHOLDER_BASE = -(2**48)
+
+
+async def _mark_unmeasured_handoff_cards(
+    session: AsyncSession,
+    sleeve: StrategySleeve,
+    orders: list[tuple[SleeveOrder, datetime, str | None]],
+) -> list[tuple[SleeveOrder, datetime, str | None]]:
+    """Mark the card orders of handoffs whose fills could not be proven (O2, O4).
+
+    The handoff settle step sets ``fills_unmeasured`` when the broker's
+    cumulative fill and the ledger's attributed total could not both be read, or
+    differ. Until a later settle proves them equal, the lots built from the
+    ledger may be missing a sell, so the card's order is marked and the book
+    reports the whole sleeve as unmeasured.
+    """
+    result = await session.execute(
+        select(ExecutionExitHandoff.id, OrderProposal.id)
+        .outerjoin(
+            OrderProposal, OrderProposal.proposal_id == ExecutionExitHandoff.proposal_id
+        )
+        .where(
+            ExecutionExitHandoff.sleeve_id == sleeve.id,
+            ExecutionExitHandoff.state == "card_claimed",
+            ExecutionExitHandoff.fills_unmeasured.is_(True),
+        )
+    )
+    flagged = list(result.all())
+    if not flagged:
+        return orders
+    card_pks = {proposal_pk for _handoff, proposal_pk in flagged if proposal_pk}
+    marked = [
+        (
+            replace(order, fill_unproven=True)
+            if order.proposal_pk in card_pks
+            else order,
+            created_at,
+            order_id,
+        )
+        for order, created_at, order_id in orders
+    ]
+    seen = {order.proposal_pk for order, _c, _i in marked if order.fill_unproven}
+    for handoff_id, proposal_pk in flagged:
+        if proposal_pk in seen:
+            continue
+        marked.append(
+            (
+                SleeveOrder(
+                    proposal_pk=proposal_pk or 0,
+                    rung_id=_HANDOFF_PLACEHOLDER_BASE - int(handoff_id),
+                    symbol="",
+                    side="sell",
+                    state="unverified",
+                    quantity=ZERO,
+                    limit_price=None,
+                    notional=None,
+                    rung_filled_qty=None,
+                    fill_unproven=True,
+                ),
+                sleeve.created_at,
+                None,
+            )
+        )
+    return marked
 
 
 def attribute_fills(
