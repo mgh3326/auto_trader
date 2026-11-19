@@ -149,7 +149,7 @@ def _operator_actor(value: str | None) -> str:
         or len(who) > ACTOR_MAX
     ):
         raise MandateCliError(
-            "actor must be operator:<name> (system and other actors are refused)"
+            "actor는 operator:<이름> 형식이어야 합니다(system 등 다른 actor는 거부)"
         )
     return who
 
@@ -158,9 +158,9 @@ def _positive_int(text: str) -> int:
     try:
         value = int(text)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("expected a whole number") from exc
+        raise argparse.ArgumentTypeError("정수여야 합니다") from exc
     if value < 1:
-        raise argparse.ArgumentTypeError("expected a whole number >= 1")
+        raise argparse.ArgumentTypeError("1 이상의 정수여야 합니다")
     return value
 
 
@@ -168,7 +168,7 @@ def _iso_date(text: str) -> date:
     try:
         return date.fromisoformat(text)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
+        raise argparse.ArgumentTypeError("YYYY-MM-DD 형식이어야 합니다") from exc
 
 
 def _aware_datetime(text: str) -> datetime:
@@ -176,10 +176,10 @@ def _aware_datetime(text: str) -> datetime:
         value = datetime.fromisoformat(text)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
-            "expected an ISO 8601 time with a zone"
+            "시간대가 붙은 ISO 8601 시각이어야 합니다"
         ) from exc
     if value.tzinfo is None:
-        raise argparse.ArgumentTypeError("the time needs a time zone")
+        raise argparse.ArgumentTypeError("시각에 시간대가 필요합니다")
     return value
 
 
@@ -188,15 +188,17 @@ def _read_input(path: str, allowed: frozenset[str], required: frozenset[str]) ->
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"), parse_float=str)
     except (OSError, ValueError) as exc:
-        raise MandateCliError(f"input {path!r} is not readable JSON") from exc
+        raise MandateCliError(
+            f"입력 {path!r}을(를) 읽을 수 없거나 JSON이 아닙니다"
+        ) from exc
     if not isinstance(raw, dict):
-        raise MandateCliError("the input must be a JSON object")
+        raise MandateCliError("입력은 JSON 객체여야 합니다")
     unknown = set(raw) - allowed
     if unknown:
-        raise MandateCliError(f"unknown input keys {sorted(unknown)}")
+        raise MandateCliError(f"모르는 입력 키 {sorted(unknown)}")
     missing = required - set(raw)
     if missing:
-        raise MandateCliError(f"missing input keys {sorted(missing)}")
+        raise MandateCliError(f"빠진 입력 키 {sorted(missing)}")
     return raw
 
 
@@ -204,16 +206,16 @@ def _terms_input(raw: dict) -> ms.TermsInput:
     prereg = raw["prereg"]
     if not isinstance(prereg, dict) or set(prereg) != PREREG_KEYS:
         raise MandateCliError(
-            "prereg needs exactly metric, min_effect_pct, horizon_sessions, "
-            "max_duration_days"
+            "prereg에는 metric, min_effect_pct, horizon_sessions, "
+            "max_duration_days 넷만 필요합니다"
         )
     expires_at = raw["expires_at"]
     try:
         expires = datetime.fromisoformat(str(expires_at))
     except ValueError as exc:
-        raise MandateCliError("expires_at must be an ISO 8601 time") from exc
+        raise MandateCliError("expires_at은 ISO 8601 시각이어야 합니다") from exc
     if expires.tzinfo is None:
-        raise MandateCliError("expires_at needs a time zone")
+        raise MandateCliError("expires_at에 시간대가 필요합니다")
     return ms.TermsInput(
         basket_key=raw["basket_key"],
         account_ref=raw["account_ref"],
@@ -270,10 +272,10 @@ def event_fields(
     }
     extra = given - EVENT_FLAGS[event]
     if extra:
-        raise MandateCliError(f"{event} takes no {sorted(extra)}")
+        raise MandateCliError(f"{event}은(는) {sorted(extra)} 플래그를 받지 않습니다")
     missing = EVENT_REQUIRED[event] - given
     if missing:
-        raise MandateCliError(f"{event} needs {sorted(missing)}")
+        raise MandateCliError(f"{event}에는 {sorted(missing)}이(가) 필요합니다")
 
     evidence: dict[str, Any] = {"reason_code": args.reason}
     fields: dict[str, Any] = {}
@@ -291,7 +293,7 @@ def event_fields(
         evidence["approval_issue_id"] = args.approval_issue_id
         if event == "thesis_evidence_refreshed":
             if not state.thesis_broken_seqs:
-                raise MandateCliError("no thesis_broken event to refresh")
+                raise MandateCliError("갱신할 thesis_broken 이벤트가 없습니다")
             fields["thesis_seq"] = state.thesis_broken_seqs[-1]
     elif event == "holdings_disposed":
         evidence["holdings_disposition"] = "kept_outside_basket"
@@ -308,7 +310,7 @@ async def _finish(session: AsyncSession, commit: bool) -> None:
 async def _sleeve_or_refuse(session: AsyncSession, sleeve_key: str) -> Any:
     sleeve = await sleeve_store.get_sleeve_by_key(session, sleeve_key)
     if sleeve is None:
-        raise MandateCliError(f"sleeve {sleeve_key!r} does not exist")
+        raise MandateCliError(f"sleeve {sleeve_key!r}가 없습니다")
     return sleeve
 
 
@@ -370,7 +372,7 @@ async def _register_plan(
     if price is None:
         raise ms.MandateError(
             v.MandateRefusal.INVALID_FIELDS,
-            f"{key} has no complete daily close to size one share",
+            f"{key}에 1주 크기 계산용 완결 일봉 종가가 없습니다",
         )
     registered = await ms.register_plan(
         session,
@@ -414,7 +416,7 @@ async def _event(
 ) -> dict[str, Any]:
     plan = await ms.get_plan(session, args.plan_id)
     if plan is None:
-        raise MandateCliError(f"plan {args.plan_id} does not exist")
+        raise MandateCliError(f"계획 {args.plan_id}가 없습니다")
     state = await ms.plan_state(session, args.plan_id)
     fields, evidence = event_fields(args.event, state, args)
     row = await ms.append_plan_event(
@@ -482,7 +484,7 @@ async def _status(session: AsyncSession, args: argparse.Namespace) -> dict[str, 
     if args.plan_id is not None:
         plan = await ms.get_plan(session, args.plan_id)
         if plan is None:
-            raise MandateCliError(f"plan {args.plan_id} does not exist")
+            raise MandateCliError(f"계획 {args.plan_id}가 없습니다")
         return await _plan_detail(session, plan)
     sleeve = await _sleeve_or_refuse(session, args.sleeve_key)
     plans = (
@@ -528,7 +530,7 @@ async def _dispatch(
     elif args.command == "event":
         body = await _event(session, args, actor)
     else:
-        raise MandateCliError(f"unknown command {args.command}")
+        raise MandateCliError(f"알 수 없는 명령 {args.command}")
     await _finish(session, args.commit)
     return {"mode": "commit" if args.commit else "preview", **body}
 
@@ -587,43 +589,45 @@ async def run(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="hk 3795 mandate operator CLI")
+    parser = argparse.ArgumentParser(description="hk 3795 위임장 운영 CLI")
     database = parser.add_mutually_exclusive_group(required=True)
-    database.add_argument("--database-url", help="Explicit PostgreSQL URL")
+    database.add_argument("--database-url", help="명시적 PostgreSQL URL")
     database.add_argument(
         "--database-url-env",
         metavar="NAME",
-        help="Environment variable holding the PostgreSQL URL (never printed)",
+        help="PostgreSQL URL을 담은 환경 변수 이름(값은 출력하지 않음)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    terms = sub.add_parser("request-terms", help="Snapshot a clause approval request")
+    terms = sub.add_parser(
+        "request-terms", help="조항 승인 요청 스냅샷(승인은 Telegram 카드에서만 기록)"
+    )
     terms.add_argument("--sleeve-key", required=True)
-    terms.add_argument("--input", required=True, help="JSON clause (closed keys)")
+    terms.add_argument("--input", required=True, help="JSON 조항(닫힌 키)")
     terms.add_argument("--approval-ref", required=True)
-    terms.add_argument("--actor", required=True, help="operator:<name>")
+    terms.add_argument("--actor", required=True, help="operator:<이름>")
     terms.add_argument("--commit", action="store_true")
 
-    profile = sub.add_parser("request-profile", help="Snapshot a profile request")
+    profile = sub.add_parser("request-profile", help="활성화 프로필 승인 요청 스냅샷")
     profile.add_argument("--sleeve-key", required=True)
     profile.add_argument("--terms-id", type=_positive_int, required=True)
     profile.add_argument("--max-tranche-index", type=int, required=True)
     profile.add_argument("--effective-session", type=_iso_date, required=True)
     profile.add_argument("--expires-at", type=_aware_datetime, required=True)
     profile.add_argument("--approval-ref", required=True)
-    profile.add_argument("--actor", required=True, help="operator:<name>")
+    profile.add_argument("--actor", required=True, help="operator:<이름>")
     profile.add_argument("--commit", action="store_true")
 
-    register = sub.add_parser("register-plan", help="Register a plan as proposed")
-    register.add_argument("--input", required=True, help="JSON plan (closed keys)")
-    register.add_argument("--actor", required=True, help="operator:<name>")
+    register = sub.add_parser("register-plan", help="분할 매수 계획을 proposed로 등록")
+    register.add_argument("--input", required=True, help="JSON 계획(닫힌 키)")
+    register.add_argument("--actor", required=True, help="operator:<이름>")
     register.add_argument("--commit", action="store_true")
 
-    event = sub.add_parser("event", help="Append one operator plan event")
+    event = sub.add_parser("event", help="운영자 계획 이벤트 1건 추가")
     event.add_argument("--plan-id", type=_positive_int, required=True)
     event.add_argument("--event", required=True, choices=list(OPERATOR_EVENTS))
-    event.add_argument("--reason", required=True, help="recorded as reason_code")
-    event.add_argument("--actor", required=True, help="operator:<name>")
+    event.add_argument("--reason", required=True, help="사유(reason_code로 기록, 필수)")
+    event.add_argument("--actor", required=True, help="operator:<이름>")
     event.add_argument("--effective-session", type=_iso_date)
     event.add_argument(
         "--tranche-index", type=int, choices=range(1, v.MAX_TRANCHES + 1)
@@ -632,7 +636,7 @@ def _parser() -> argparse.ArgumentParser:
     event.add_argument("--approval-issue-id")
     event.add_argument("--commit", action="store_true")
 
-    status = sub.add_parser("status", help="Read-only plan state")
+    status = sub.add_parser("status", help="읽기 전용 계획 상태")
     target = status.add_mutually_exclusive_group(required=True)
     target.add_argument("--plan-id", type=_positive_int)
     target.add_argument("--sleeve-key")

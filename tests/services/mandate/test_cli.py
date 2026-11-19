@@ -364,7 +364,7 @@ def test_thesis_refresh_points_at_the_latest_thesis_broken() -> None:
         "retrospective_id": 42,
         "approval_issue_id": "hk:5600",
     }
-    with pytest.raises(cli.MandateCliError, match="no thesis_broken"):
+    with pytest.raises(cli.MandateCliError, match="갱신할 thesis_broken"):
         cli.event_fields("thesis_evidence_refreshed", _state(), args)
 
 
@@ -376,7 +376,7 @@ def test_thesis_broken_needs_both_evidence_ids() -> None:
 
 def test_a_flag_the_event_does_not_take_is_refused() -> None:
     args = _event_args("--event", "suspended", "--tranche-index", "1")
-    with pytest.raises(cli.MandateCliError, match="takes no"):
+    with pytest.raises(cli.MandateCliError, match="받지 않습니다"):
         cli.event_fields("suspended", _state(), args)
 
 
@@ -398,14 +398,14 @@ def _json(tmp_path: Path, data) -> str:
 
 def test_an_unknown_input_key_is_refused(tmp_path: Path) -> None:
     path = _json(tmp_path, {**TERMS_JSON, "status": "approved"})
-    with pytest.raises(cli.MandateCliError, match="unknown input keys"):
+    with pytest.raises(cli.MandateCliError, match="모르는 입력 키"):
         cli._read_input(path, cli.TERMS_KEYS, cli.TERMS_REQUIRED)
 
 
 def test_a_missing_input_key_is_refused(tmp_path: Path) -> None:
     data = dict(TERMS_JSON)
     del data["budget_cap"]
-    with pytest.raises(cli.MandateCliError, match="missing input keys"):
+    with pytest.raises(cli.MandateCliError, match="빠진 입력 키"):
         cli._read_input(_json(tmp_path, data), cli.TERMS_KEYS, cli.TERMS_REQUIRED)
 
 
@@ -421,11 +421,11 @@ def test_a_json_float_stays_an_exact_decimal_string(tmp_path: Path) -> None:
 def test_the_clause_needs_a_zoned_expiry_and_a_full_prereg(tmp_path: Path) -> None:
     naive = {**TERMS_JSON, "expires_at": "2027-06-30T00:00:00"}
     raw = cli._read_input(_json(tmp_path, naive), cli.TERMS_KEYS, cli.TERMS_REQUIRED)
-    with pytest.raises(cli.MandateCliError, match="time zone"):
+    with pytest.raises(cli.MandateCliError, match="시간대"):
         cli._terms_input(raw)
     partial = {**TERMS_JSON, "prereg": {"metric": "m"}}
     raw = cli._read_input(_json(tmp_path, partial), cli.TERMS_KEYS, cli.TERMS_REQUIRED)
-    with pytest.raises(cli.MandateCliError, match="prereg needs"):
+    with pytest.raises(cli.MandateCliError, match="prereg에는"):
         cli._terms_input(raw)
 
 
