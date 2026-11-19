@@ -166,10 +166,20 @@ wake §T3 형식: 불변식 · 입력 · 전이 · 강제 위치 · 의존 · �
 
 | # | 규칙 | 소유 |
 |---|---|---|
-| S1 | **Go 경로 전용 sleeve.** 위임장은 그 위임장을 위해 새로 만든 **빈** sleeve(새 epoch)에만 붙는다. 이 sleeve에는 카드 경로 주문을 **절대** 태그하지 않는다(제안 생성이 위임장 sleeve id를 거부). 그래서 귀속은 게이트웨이 child뿐이고 모두 위임장의 `account_ref`로 예약된 것이다 — 계좌 혼입·카드 체결 미귀속 문제가 구조적으로 없다. 이 sleeve의 청산도 intent로만 한다. 평단 아래 청산(I10)은 D4대로 이 경로로 보낼 수 없으므로 B13·B25 래치 + 운영자 결정 행(`needs_operator_card`/`needs_operator_investigation`)으로 남고, 운영자가 경로 밖에서 처리하면 그 leg는 `resolve-exit`(B25 b)로 닫고 sleeve를 `paused`로 둔다(장부가 경로 밖 체결을 모르므로 이후 판정은 운영자 몫) | 5440, 5441 |
+| S1 | **Go 경로 전용 sleeve.** 위임장은 생성 시점부터 Go 경로로 고정된 **빈** sleeve(새 epoch, S7)에만 붙는다. 이 sleeve의 주문은 게이트웨이 child와 S5의 청산 인계 카드 둘뿐이고, 둘 다 위임장의 `account_ref`로 대조된다. 일반 카드 제안은 이 sleeve를 태그할 수 없다(S7 DB 트리거). 평단 아래 청산(I10)은 손실매도 가드를 바꾸지 않으므로(하드룰 4) 게이트웨이로 보낼 수 없고, S5 청산 인계로만 카드가 된다 | 5440, 5441 |
 | S2 | **매도 intent는 (sleeve, 심볼)당 하나.** 종결되지 않은(저장됨·child가 `sending`/`uncertain`/종결 증거 없는 `accepted`) 매도 intent가 같은 sleeve·심볼에 있으면 새 매도 intent를 거부(`open_sell_intent_exists`). 그 매도 intent의 수량 ≤ 증명된 자기 보유(live = 귀속 체결, shadow = §3.6). 검사는 `store_intent`와 child 예약에서 같은 잠금(위임장 행 `FOR UPDATE`, B10과 같은 잠금) 아래 한다 | 5441 |
 | S3 | **달력 일별 상한 없음.** 상한은 intent 단위(명목·수량·가격 경계·만료, I2·I3) + sleeve 예산(I4) + sleeve 누적 손실 한도(I8)뿐이다. 4885에는 이것으로 충분하다 | 5441 |
-| S4 | **live·shadow 구분과 `not_sent`.** sleeve 상태 검사: `execution_mode=live` 전송은 sleeve `live`에서만, `execution_mode=shadow`는 sleeve `shadow`에서 가상 매수·매도 모두 허용(B17). sleeve가 `paused`/`stopped`이면 잡은 자동 매도하지 않고, 운영자가 `scripts/upbit_trend_job.py exit --symbol ... --commit`(preview 기본)으로 매도 intent(`origin='operator_exit'`)를 낼 때만 게이트웨이가 그 매도를 받는다(매수는 거부). E1 조회의 lineage·복구 계산은 `not_sent`를 `refused`처럼 제외하고 children 감사 목록에만 남긴다; 응답 유실 뒤 재조회가 `not_sent` submit을 working order로 돌려주지 않는 사례를 E1 계약 표에 추가한다 | 5441 |
+| S4 | **live·shadow 구분과 `not_sent`.** sleeve 상태 검사: `execution_mode=live` 전송은 sleeve `live`에서만, `execution_mode=shadow`는 sleeve `shadow`에서 가상 매수·매도 모두 허용(B17). sleeve가 `paused`/`stopped`이면 잡은 자동 매도하지 않고, 운영자 청산은 S6 하나로만 받는다(매수는 거부). E1 조회의 lineage·복구 계산은 `not_sent`를 `refused`처럼 제외하고 children 감사 목록에만 남긴다; 응답 유실 뒤 재조회가 `not_sent` submit을 working order로 돌려주지 않는 사례를 E1 계약 표에 추가한다 | 5441 |
+
+### 2.5 청산 인계·운영자 청산·경로 고정 (리뷰 5회차, 설계 세션 인수 — §2.2~§2.4보다 우선)
+
+리뷰 5회차의 세 지적은 하나의 빈틈에서 나왔다: S1이 평단 아래 청산을 "경로 밖"으로 보냈고, 그 경계가 정의되지 않았다. 손실매도 가드는 바꾸지 않으므로(하드룰 4) 그 청산은 카드일 수밖에 없다. 그래서 카드가 이 sleeve에 닿는 유일한 길을 아래처럼 좁게 정의한다. B13·B25·B27의 "경로 밖 처리"·`resolve-exit` 서술은 이 절로 대체된다(래치·조사 상태 자체는 유지).
+
+| # | 규칙 | 소유 |
+|---|---|---|
+| S5 | **청산 인계(exit handoff).** (a) 게이트웨이가 매도를 `loss_sell_requires_card`로 거부하거나 B13 래치가 걸리면, 같은 위임장 잠금 아래 `review.execution_exit_handoffs(sleeve_id, symbol, mandate_id, state, opened_at)` 행을 `open`으로 쓴다(유일: 같은 sleeve·심볼에 열린 인계 하나). (b) 인계가 `open`인 동안 그 sleeve·심볼의 `store_intent`와 submit·amend 예약은 매수·매도 모두 `exit_handoff_active`로 거부된다(cancel은 허용). 실행기는 그 심볼의 살아 있는 주문을 cancel한다. (c) 인계는 그 sleeve·심볼의 모든 child가 브로커 종결과 체결 수량의 **양성 증거**(B5·B30과 같은 증거 규칙)를 가질 때만 `ready_for_card`로 간다 — 취소 결과 불명·`uncertain`이 하나라도 있으면 `open`에 머문다. (d) 카드는 `ready_for_card` 인계에서만 만든다: 수량 = 그 시점에 증명된 자기 보유, 카드 생성과 dispatch 직전 둘 다 위임장 `account_ref` 대조(B12), 제안 행은 `exit_handoff_id`를 가진다. (e) 카드 종결(체결·만료·취소)의 브로커 증거로 인계는 `closed`가 되고, 카드 체결은 그 제안 rung으로 sleeve에 귀속된다(기존 rung 귀속, 계좌는 (d)에서 증명됨). 인계가 `closed`되기 전에는 그 심볼에 새 intent가 없다. 리뷰 r4627665293을 닫는다 | 5440, 5441 |
+| S6 | **운영자 청산(operator exit).** `scripts/execution_mandates.py exit --mandate ... --symbol ... --max-quantity ...`(preview 기본, `--commit`, 사람 actor만)가 `review.execution_operator_exits(mandate_id, symbol, max_quantity, reason, created_by, expires_at ≤ 1시간)` append-only 행을 쓰고, 그 행을 가리키는 매도 intent(`origin='operator_exit'`)를 저장한다. 이 intent에 한해 `store_intent`·child 예약·전송 직전 검사가 **sleeve 상태 검사 대신** 다음을 본다: 운영자 청산 행 존재·미만료, 매도뿐, 수량 ≤ 행의 `max_quantity` 및 증명된 자기 보유, S2(살아 있는 매도 하나), S5(열린 인계 없음), B12 계좌 대조, kill (a)(b)(d). 위임장 철회·만료·sleeve `paused`/`stopped`는 이 intent를 막지 않는다(보유를 남기지 않기 위함). `strategy_sleeves.gate.evaluate_sleeve_gate`는 이 intent에 쓰지 않고, 별도 함수 `evaluate_operator_exit`가 위 조건을 한 곳에서 판정한다 — `store_intent`·예약·pre-send hook이 같은 함수를 호출한다. 평단 아래면 운영자 청산도 S5 인계로 간다. 리뷰 r4627665327을 닫는다 | 5441 |
+| S7 | **경로는 sleeve 생성 시 고정.** `review.strategy_sleeves`(정체성 불변 테이블)에 `execution_path text NOT NULL DEFAULT 'card' CHECK IN ('card','go')`를 더하고(추가형 마이그레이션, 기존 행은 `card`) 생성 뒤 변경을 기존 불변 트리거가 거부한다. 위임장은 `execution_path='go'`이고 귀속 이력이 0인 sleeve에만 결속된다. `review.order_proposals` INSERT 트리거: `sleeve_id`가 `go` sleeve를 가리키면 `exit_handoff_id`가 `ready_for_card` 인계를 가리키고 side=sell·수량 ≤ 인계 수량일 때만 허용, 그 밖은 거부. 경로가 생성 시점에 정해지므로 "위임장 결속 직전에 카드가 생기는" 경쟁 창이 없다 — 위임장보다 먼저 생긴 `go` sleeve에도 일반 카드는 처음부터 붙을 수 없다. 리뷰 r4627665310을 닫는다 | 5441 |
 
 ## 3. Upbit child wire 계약 변경
 
@@ -283,7 +293,7 @@ shadow는 원장 행이 없으므로 Python 쪽에 가상 보유가 필요하다
 
 ### 4.4 게이트웨이 검사
 
-`store_intent`와 child 예약(submit) 두 번: 위임장 존재 · 미철회 · `now < expires_at` · `mode == intent.execution_mode` · 심볼·sleeve·전략·`strategy_code_sha` 일치 · intent 상한 ⊆ 위임장 상한 · sleeve 버전이 현재 live/shadow 상태와 위임장 `mode`에 맞음(live 위임장은 sleeve `state='live'`). 예약 시 검사는 intent 행 잠금 아래에서 읽는다(E1 Expiry 판정과 같은 위치). 전송 직전 재검사(pre-send hook)는 E1 계약 Open items "Expiry and kill at the wire"를 Upbit forwarder에서 닫는다: Upbit place 경로의 `pre_send_hook`에서 철회·kill·만료를 다시 읽고 실패면 `proven_not_sent`로 기록한다.
+`origin='operator_exit'` 매도는 아래 대신 S6의 `evaluate_operator_exit`를 쓴다. 그 밖의 intent는 `store_intent`와 child 예약(submit) 두 번: 열린 청산 인계 없음(S5) · 위임장 존재 · 미철회 · `now < expires_at` · `mode == intent.execution_mode` · 심볼·sleeve·전략·`strategy_code_sha` 일치 · intent 상한 ⊆ 위임장 상한 · sleeve 버전이 현재 live/shadow 상태와 위임장 `mode`에 맞음(live 위임장은 sleeve `state='live'`). 예약 시 검사는 intent 행 잠금 아래에서 읽는다(E1 Expiry 판정과 같은 위치). 전송 직전 재검사(pre-send hook)는 E1 계약 Open items "Expiry and kill at the wire"를 Upbit forwarder에서 닫는다: Upbit place 경로의 `pre_send_hook`에서 철회·kill·만료를 다시 읽고 실패면 `proven_not_sent`로 기록한다.
 
 ### 4.5 3795와의 관계와 hk 5286
 
@@ -370,7 +380,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 
 ### 8.2 hk 5441 — 게이트웨이 Upbit forwarder (auto_trader, T3)
 
-범위: 스키마 v2, 위임장 두 테이블 + 계좌 kill 행 + 저널 `shadowed` 상태(추가형 마이그레이션, GRANT 포함), `UpbitShadowForwarder`·`UpbitLiveForwarder`, `upbit_krw_tick`, intent 목록 GET, `scripts/execution_mandates.py`.
+범위: 스키마 v2, 위임장 두 테이블 + 청산 인계·운영자 청산 테이블(S5·S6) + `strategy_sleeves.execution_path`·제안 INSERT 트리거(S7) + 계좌 kill 행 + 저널 `shadowed` 상태(추가형 마이그레이션, GRANT 포함), `UpbitShadowForwarder`·`UpbitLiveForwarder`, `upbit_krw_tick`, intent 목록 GET, `scripts/execution_mandates.py`.
 
 1. kis_mock 경로의 요청·응답·픽스처가 바이트 동일하다(기존 테스트 무변경 통과).
 2. §2 I1~I10의 각 행에 실패 방향 테스트가 하나씩 있고 이름에 행 번호가 있다(`test_i<n>_*`).
@@ -379,7 +389,7 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 5. 손실매도 가드·쿨다운·loss_cut 코드와 상수는 diff에 없다.
 6. 위임장 CLI는 preview 기본, `--commit` 필요, live 위임장 행은 §4.3 결정(D2)대로만 생긴다.
 7. 마이그레이션 downgrade는 행이 있으면 거부한다.
-8. §2.2~§2.4 B2~B5·B7·B9~B12·B17·B18·B20·B23·B28~B30·B34·S1~S4 각각에 실패 방향 테스트가 있다.
+8. §2.2~§2.5 B2~B5·B7·B9~B12·B17·B18·B20·B23·B28~B30·B34·S1~S7 각각에 실패 방향 테스트가 있다. S5는 인계 `open` 동안 매수·매도 예약 거부, 미해결 child가 있으면 `ready_for_card`로 못 감, `ready_for_card` 없이 `go` sleeve 카드 INSERT 거부를 포함한다. S6은 `paused`/`stopped`·위임장 철회 상태에서 운영자 청산 매도가 저장·예약·전송 직전 모두 같은 `evaluate_operator_exit`로 통과하고 매수는 거부됨을 포함한다. S7은 `execution_path` 변경 거부와 `card` sleeve 위임장 결속 거부를 포함한다.
 9. §1.4 sleeve 귀속 두 번째 출처와 §1.5 Upbit 체결 증거 질의, §3.6 `shadow_positions`가 있고, 기존 rung 귀속 결과가 바이트 동일하다(골든).
 10. `docs/design/1440-intent-gateway-contract.md`와 `docs/agent-contracts/broker-and-ledger-contracts.md` "Execution Intent Gateway" 절을 같은 PR에서 갱신하고, 루트 `AGENTS.md` 하드룰 4 예외가 필요하면 그 문구는 운영자 결정(D3) 인용과 함께만 넣는다.
 
@@ -443,9 +453,11 @@ Dagu DAG 정의는 `deploy/dagu/`에 사본으로 두고 **등록은 운영자 �
 | D12 | shadow 위임장을 운영자 CLI `--commit`만으로 만드는 것 | **예** — shadow는 전송이 불가능(I6) | §4.3 |
 | D14 | 기존 매수 가드(지정가 ≤ 마지막 체결가) 완화 | **아니오** — B1로 가드 안에서 실행. 체결률이 측정상 낮으면 별도 결정 | 하드룰 4 |
 | D15 | 무인 잡이 회고·`approval_issue_id`를 만들고 허용 caller로 loss_cut 제안을 직접 생성 | **1단계는 아니오** — B14대로 알림 + 운영자 카드. 필요 시 env(`LOSS_CUT_ALLOWED_AGENT_IDS`) 변경 승인과 함께 별도 결정 | 기존 loss_cut 증거 계약 |
-| D16 | 정지(`paused`/`stopped`) sleeve 포지션을 잡이 자동 청산 | **아니오** — 운영자 `exit` 명령으로만(S4), 4885 §8의 운영자 판단 유지 | 4885 §8 |
+| D16 | 정지(`paused`/`stopped`) sleeve 포지션을 잡이 자동 청산 | **아니오** — 운영자 청산(S6)으로만, 4885 §8의 운영자 판단 유지 | 4885 §8 |
 | D17 | live 위임장의 계좌 결속을 운영자 확인(지문 + 잔고 요약)으로 받는 것 | **예**, 브로커 계좌 식별자를 얻는 방법이 확인되면 그것으로 교체 | 3795 §4.6, B23 |
 | D13 | 실행기 상수 | `CancelAfter` 120초, `ExpiryMargin` 60초, `StaleAfter` 2초(기존), `PollEvery` 15초, child 1회/초 | §5 |
+| D18 | 달력 일별 매수 상한을 두지 않음(S3) | **예** — 위험은 intent 상한(4885 `LEG_CAP` 480,000)·sleeve 예산(1,950,000)·누적 손실 한도(1,000,000)로 묶인다. 일별 상한은 자정 경계 규칙만 늘렸다 | at-next-go 2, 리뷰 1~4회차 |
+| D19 | 평단 아래 청산은 청산 인계(S5)로 카드에 넘기고, 인계 중 그 심볼의 Go 주문을 막음 | **예** — 가드 완화 없음(D4 A). 손절이 사람 2클릭만큼 늦는 것은 4885 §5.2 한계 그대로 | 하드룰 4 |
 
 ## 11. 알았지만 건드리지 않은 것
 
