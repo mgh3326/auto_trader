@@ -269,3 +269,18 @@ def test_constraint_and_index_names_fit_the_postgres_limit() -> None:
         assert len(name) <= 63, name
     for name in re.findall(r"CREATE (?:UNIQUE )?INDEX (\S+)", sql):
         assert len(name) <= 63, name
+
+
+def test_i21_principal_check_bounds_the_user_id_like_the_writer() -> None:
+    """The DB CHECK and ``_check_principal`` accept the same range (<= 2**52 - 1)."""
+    from app.models.mandate import MandateApproval
+
+    bound = "principal <= '4503599627370495'"
+    assert str(2**52 - 1) == "4503599627370495"
+    assert bound in _norm(_render("upgrade"))
+    orm = next(
+        c
+        for c in MandateApproval.__table__.constraints
+        if c.name == "ck_mandate_approvals_principal_format"
+    )
+    assert bound in str(orm.sqltext)

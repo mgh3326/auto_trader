@@ -186,7 +186,11 @@ class MandateApproval(Base):
         CheckConstraint(
             "subject_sha256 ~ '^[0-9a-f]{64}$'", name="subject_sha256_format"
         ),
-        CheckConstraint("principal ~ '^[1-9][0-9]{0,15}$'", name="principal_format"),
+        CheckConstraint(
+            "principal ~ '^[1-9][0-9]{0,15}$' AND "
+            "(char_length(principal) < 16 OR principal <= '4503599627370495')",
+            name="principal_format",
+        ),
         CheckConstraint("nonce_digest ~ '^[0-9a-f]{64}$'", name="nonce_digest_format"),
         {"schema": "review"},
     )

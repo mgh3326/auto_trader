@@ -347,3 +347,70 @@ def test_the_system_loss_gate_actor_is_not_an_operator() -> None:
     with raises(v.MandateRefusal.INVALID_FIELDS):
         ms._operator("system:sleeve_loss_gate")
     assert ms._operator("operator:cli") == "operator:cli"
+
+
+def test_column_bounds_match_the_numeric_columns() -> None:
+    """NUMERIC(10,4) holds < 1e6 and Integer < 2**31: overflow is INVALID_FIELDS."""
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        ms._terms_columns(_sleeve(), _data(entry_max_premium_bps="2000000"))
+    assert ms._terms_columns(_sleeve(), _data(entry_max_premium_bps="999999.9999"))
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        ms._tranche_rule(
+            {**GOOD_RULE, "triggers_pct_from_first": ["0", "-2000000", "-3000000"]}
+        )
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        ms._tranche_rule({**GOOD_RULE, "min_gap_sessions": 2**31})
+    assert ms._tranche_rule({**GOOD_RULE, "min_gap_sessions": 2**31 - 1})
+
+
+@pytest.mark.asyncio
+async def test_a_refused_terms_approval_writes_nothing(monkeypatch) -> None:
+    """The basket check runs before the first write (MandateError: nothing written)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    class Row:
+        def first(self):
+            return None
+
+    session = MagicMock()
+    added: list[object] = []
+    session.add.side_effect = added.append
+    session.flush = AsyncMock()
+    session.execute = AsyncMock(return_value=Row())
+    content = {"basket_key": "b", "expires_at": "2099-01-01T00:00:00.000000Z"}
+    request = SimpleNamespace(
+        id=1,
+        subject_kind="terms",
+        sleeve_id=7,
+        base_sleeve_version=1,
+        content=content,
+        content_sha256=hashing.content_sha256(content),
+    )
+    session.get = AsyncMock(return_value=request)
+
+    async def done(*_a, **_k):
+        return None
+
+    async def sleeve(*_a, **_k):
+        return _sleeve()
+
+    async def current(*_a, **_k):
+        return SimpleNamespace(version=1)
+
+    async def mismatch(*_a, **_k):
+        raise ms.MandateError(v.MandateRefusal.INVALID_FIELDS, "basket mismatch")
+
+    monkeypatch.setattr(ms, "acquire_basket_lock", done)
+    monkeypatch.setattr(ms, "acquire_sleeve_lock", done)
+    monkeypatch.setattr(ms, "_sleeve", sleeve)
+    monkeypatch.setattr(ms, "_check_basket_market", mismatch)
+    monkeypatch.setattr(ms.sleeve_store, "current_version", current)
+    with raises(v.MandateRefusal.INVALID_FIELDS):
+        await ms.record_approval(
+            session,
+            request_id=1,
+            decision="approved",
+            principal="123",
+            nonce_digest="a" * 64,
+        )
+    assert added == []

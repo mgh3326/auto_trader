@@ -1042,7 +1042,10 @@ def _create_tables() -> None:
         _ck("mandate_approvals", "decision", "decision IN ('approved','denied')"),
         _sha_check("mandate_approvals", "subject_sha256"),
         _ck(
-            "mandate_approvals", "principal_format", "principal ~ '^[1-9][0-9]{0,15}$'"
+            "mandate_approvals",
+            "principal_format",
+            "principal ~ '^[1-9][0-9]{0,15}$' AND "
+            "(char_length(principal) < 16 OR principal <= '4503599627370495')",
         ),
         _sha_check("mandate_approvals", "nonce_digest"),
         sa.ForeignKeyConstraint(

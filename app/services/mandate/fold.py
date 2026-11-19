@@ -217,7 +217,11 @@ def _apply_authority_event(state: PlanState, event: PlanEvent) -> PlanState:
             "exhausted needs a completed third tranche",
         )
     if name == "resumed":
-        assert event.resume_target in v.RESUME_TARGETS
+        _require(
+            event.resume_target in v.RESUME_TARGETS,
+            v.MandateRefusal.INVALID_FIELDS,
+            "resume_target must be approved or active",
+        )
         expected = "active" if state.tranche(1).completed else "approved"
         _require(
             event.resume_target == expected,
@@ -368,7 +372,11 @@ def _apply_tranche_event(state: PlanState, event: PlanEvent) -> PlanState:
             v.MandateRefusal.TRANCHE_DUPLICATE,
             "attempt id already holds a fence",
         )
-        assert event.approval_mode in v.APPROVAL_MODES
+        _require(
+            event.approval_mode in v.APPROVAL_MODES,
+            v.MandateRefusal.INVALID_FIELDS,
+            "approval_mode must be auto or human",
+        )
         fence = Fence(
             seq=seq,
             tranche_index=k,

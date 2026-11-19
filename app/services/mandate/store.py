@@ -77,6 +77,9 @@ from app.services.strategy_sleeves.store import PreRegistration, SleeveError
 from app.services.strategy_sleeves.vocabulary import SYSTEM_LOSS_GATE_ACTOR, SleeveState
 
 ZERO = Decimal("0")
+#: NUMERIC(10, 4) holds below 1e6; Integer holds up to 2**31 - 1.
+_NUMERIC_10_4 = Decimal("1e6")
+_INT32_MAX = 2**31 - 1
 _PRINCIPAL_MAX = 2**52 - 1
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 #: ``order_proposals.lifecycle_state`` values after which a proposal is closed.
@@ -129,6 +132,7 @@ def _dec(
     places: int = 4,
     positive: bool = False,
     upper: Decimal | None = None,
+    below: Decimal = Decimal("1e16"),
 ) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise MandateError(v.MandateRefusal.INVALID_FIELDS, f"{name} is required")
@@ -138,7 +142,7 @@ def _dec(
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS, f"{name} must be a number"
         ) from exc
-    if not number.is_finite() or number >= Decimal("1e16"):
+    if not number.is_finite() or number >= below:
         raise MandateError(v.MandateRefusal.INVALID_FIELDS, f"{name} is out of range")
     if number != number.quantize(Decimal(1).scaleb(-places)):
         raise MandateError(
@@ -358,10 +362,10 @@ def _tranche_rule(raw: Mapping[str, Any]) -> dict[str, Any]:
             v.MandateRefusal.INVALID_FIELDS,
             "triggers_pct_from_first start at 0 and never rise",
         )
-    if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
+    if isinstance(gap, bool) or not isinstance(gap, int) or not 0 <= gap <= _INT32_MAX:
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS,
-            "min_gap_sessions must be a whole number >= 0",
+            "min_gap_sessions must be a whole number >= 0 that fits an integer column",
         )
     return {
         "weights": [hashing.canonical_decimal(w) for w in weights],
@@ -377,7 +381,9 @@ def _signed(value: Any) -> Decimal:
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS, "trigger must be a number"
         ) from exc
-    if not number.is_finite() or number != number.quantize(Decimal("0.0001")):
+    if not number.is_finite() or abs(number) >= _NUMERIC_10_4:
+        raise MandateError(v.MandateRefusal.INVALID_FIELDS, "trigger is out of range")
+    if number != number.quantize(Decimal("0.0001")):
         raise MandateError(
             v.MandateRefusal.INVALID_FIELDS, "trigger must have <= 4 decimals"
         )
@@ -411,7 +417,10 @@ def _terms_columns(sleeve: StrategySleeve, data: TermsInput) -> dict[str, Any]:
         "universe_rule": _text("universe_rule", data.universe_rule, 500),
         "allowed_symbols": symbols,
         "entry_max_premium_bps": _dec(
-            "entry_max_premium_bps", data.entry_max_premium_bps, positive=True
+            "entry_max_premium_bps",
+            data.entry_max_premium_bps,
+            positive=True,
+            below=_NUMERIC_10_4,
         ),
         "per_order_cap": _dec("per_order_cap", data.per_order_cap, positive=True),
         "daily_cap": _dec("daily_cap", data.daily_cap, positive=True),
@@ -759,6 +768,9 @@ async def record_approval(
             raise MandateError(
                 v.MandateRefusal.REQUEST_STALE, "the sleeve changed after the request"
             )
+        # Every refusal that does not need the approval row comes first, so a
+        # refusal leaves nothing written (MandateError's contract).
+        await _precheck_approved(session, request, sleeve, realm, moment)
     approval = MandateApproval(
         request_id=request_id,
         decision=decision,
@@ -773,7 +785,46 @@ async def record_approval(
         return ApprovalResult(approval)
     if request.subject_kind == "terms":
         return await _write_terms(session, request, approval, sleeve, who, moment)
-    return await _write_profile(session, request, approval, moment)
+    return await _write_profile(session, request, approval)
+
+
+async def _precheck_approved(
+    session: AsyncSession,
+    request: MandateApprovalRequest,
+    sleeve: StrategySleeve,
+    realm: str,
+    moment: datetime,
+) -> None:
+    """Read-only checks of an approval; raises before the first write."""
+    c = request.content
+    expires_at = _parse_ts(c["expires_at"])
+    if expires_at <= moment:
+        raise MandateError(
+            v.MandateRefusal.TERMS_EXPIRED, "the request is already expired"
+        )
+    if request.subject_kind == "terms":
+        await _check_basket_market(session, realm, c["basket_key"], sleeve)
+        return
+    version, terms = await current_terms(session, request.sleeve_id)
+    if (
+        version is None
+        or terms is None
+        or terms.id != int(c["terms_id"])
+        or version.state != "live"
+    ):
+        raise MandateError(
+            v.MandateRefusal.TERMS_NOT_CURRENT,
+            "the profile's clause is no longer current",
+        )
+    latest = await latest_profile(session, request.sleeve_id)
+    if int(c["profile_version"]) != (latest.profile_version if latest else 0) + 1:
+        raise MandateError(
+            v.MandateRefusal.REQUEST_STALE, "another profile was approved first"
+        )
+
+
+def _parse_ts(text_: str) -> datetime:
+    return datetime.strptime(text_, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
 
 
 async def _write_terms(
@@ -785,13 +836,7 @@ async def _write_terms(
     moment: datetime,
 ) -> ApprovalResult:
     c = request.content
-    expires_at = datetime.strptime(c["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-        tzinfo=UTC
-    )
-    if expires_at <= moment:
-        raise MandateError(
-            v.MandateRefusal.TERMS_EXPIRED, "the clause is already expired"
-        )
+    expires_at = _parse_ts(c["expires_at"])
     s = c["sleeve"]
     prereg = PreRegistration(
         metric=s["prereg_metric"],
@@ -817,8 +862,6 @@ async def _write_terms(
         )
     except SleeveError as exc:
         raise MandateError(v.MandateRefusal.REQUEST_STALE, str(exc)) from exc
-    realm, _market = realm_and_market(sleeve)
-    await _check_basket_market(session, realm, c["basket_key"], sleeve)
     terms = MandateTerms(
         sleeve_version_id=version.id,
         terms_version=c["terms_version"],
@@ -857,32 +900,9 @@ async def _write_profile(
     session: AsyncSession,
     request: MandateApprovalRequest,
     approval: MandateApproval,
-    moment: datetime,
 ) -> ApprovalResult:
     c = request.content
-    version, terms = await current_terms(session, request.sleeve_id)
-    if (
-        version is None
-        or terms is None
-        or terms.id != int(c["terms_id"])
-        or version.state != "live"
-    ):
-        raise MandateError(
-            v.MandateRefusal.TERMS_NOT_CURRENT,
-            "the profile's clause is no longer current",
-        )
-    latest = await latest_profile(session, request.sleeve_id)
-    if int(c["profile_version"]) != (latest.profile_version if latest else 0) + 1:
-        raise MandateError(
-            v.MandateRefusal.REQUEST_STALE, "another profile was approved first"
-        )
-    expires_at = datetime.strptime(c["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-        tzinfo=UTC
-    )
-    if expires_at <= moment:
-        raise MandateError(
-            v.MandateRefusal.TERMS_EXPIRED, "the profile is already expired"
-        )
+    expires_at = _parse_ts(c["expires_at"])
     profile = MandateActivationProfile(
         sleeve_id=request.sleeve_id,
         profile_version=int(c["profile_version"]),

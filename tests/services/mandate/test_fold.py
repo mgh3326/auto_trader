@@ -364,3 +364,27 @@ def test_tranche_fills_accumulate_and_settle_day_is_the_latest_fill_day() -> Non
     t = s.state.tranche(1)
     assert (t.filled_amount, t.filled_quantity) == (D("300100"), D("4"))
     assert t.settled_on == date(2026, 11, 25)
+
+
+def test_a_bad_resume_target_or_approval_mode_is_a_closed_refusal_not_an_assert() -> (
+    None
+):
+    s = Stream()
+    s.approve()
+    s.add("suspended")
+    with refused(v.MandateRefusal.INVALID_FIELDS):
+        s.add("resumed", resume_target="bogus", effective_session=SESSION)
+    s2 = Stream()
+    s2.approve()
+    pid = s2.arm_and_propose(1)
+    with refused(v.MandateRefusal.INVALID_FIELDS):
+        s2.add(
+            "tranche_send_fenced",
+            tranche_index=1,
+            proposal_id=pid,
+            notional=D("1"),
+            kst_day=SESSION,
+            approval_mode="bogus",
+            account_ref="a",
+            attempt_id=uuid4(),
+        )
