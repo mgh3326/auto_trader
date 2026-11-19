@@ -74,6 +74,11 @@ def test_night_sweep_gate_off_prints_skipped_and_does_not_call_job(
 ) -> None:
     monkeypatch.setattr(
         order_proposal_night_sweep.settings,
+        "order_proposal_night_sweep_schedule_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        order_proposal_night_sweep.settings,
         "order_proposal_night_sweep_enabled",
         False,
     )
