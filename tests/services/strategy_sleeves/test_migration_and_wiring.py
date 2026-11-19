@@ -151,7 +151,11 @@ def test_downgrade_refuses_rows_before_dropping_anything() -> None:
 def test_every_canary_rule_runs_in_a_sleeve_market() -> None:
     for rule in CANARY_RULES.values():
         assert rule.markets <= {"equity_kr", "equity_us", "crypto"}
-        assert rule.design_section.startswith("4.")
+        if rule.rule_id.startswith("rob1458."):
+            assert rule.design_section.startswith("4.")
+        else:
+            # hk 3795 basket 1: its design section names the design document.
+            assert rule.design_section.strip()
 
 
 # ---------------------------------------------------------------- dispatch wiring
