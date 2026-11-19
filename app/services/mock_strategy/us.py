@@ -433,18 +433,6 @@ class UsPaperStrategy:
                 mark = len(outcomes)
                 verdict = verdicts.get(entry.symbol)
                 change = verdict if verdict and verdict["applied"] else None
-                if verdict and change is None:
-                    # A declared but unproven mapping must never fall back to an
-                    # OLD-symbol close: nothing is sent for this entry.
-                    outcomes.append(
-                        {
-                            **projection(entry),
-                            "episode_status": "awaiting_close_evidence",
-                            "reason": "symbol_change_refused",
-                            "symbol_change": _verdict_view(verdict),
-                        }
-                    )
-                    continue
                 try:
                     entry = await self._refresh(entry)
                     qty = Decimal(entry.meta.get("filled_qty", "0"))
@@ -461,7 +449,17 @@ class UsPaperStrategy:
                             }
                         )
                         continue
-                    outcomes.append(await self._close_entry(entry, qty, asof, change))
+                    outcomes.append(
+                        await self._close_entry(
+                            entry,
+                            qty,
+                            asof,
+                            change,
+                            # A declared but unproven mapping may reconcile what was
+                            # already sent, but must never create or send a leg.
+                            dispatch=not (verdict and change is None),
+                        )
+                    )
                 except Exception as exc:
                     outcomes.append(
                         {
@@ -525,6 +523,7 @@ class UsPaperStrategy:
         qty: Decimal,
         asof: date,
         change: dict | None = None,
+        dispatch: bool = True,
     ) -> dict:
         side = "sell" if entry.side == "buy" else "cover"
         legs = [
@@ -578,6 +577,12 @@ class UsPaperStrategy:
                         "episode_status": "awaiting_close_evidence",
                         "reason": "exit_sequence_invalid",
                     }
+                if not dispatch:
+                    return {
+                        **projection(leg),
+                        "episode_status": "awaiting_close_evidence",
+                        "reason": "symbol_change_refused",
+                    }
                 outcome = await self._execute(leg, asof, change)
                 submitted = True
                 leg = await self.recorder.get(leg.client_order_id)
@@ -592,6 +597,12 @@ class UsPaperStrategy:
             proceeds += evidence[1]
         # At most one planned/new leg is attempted per entry per invocation.
         # Every prior leg must first have terminal, positive evidence.
+        if filled < qty and not submitted and not dispatch:
+            return {
+                **outcome,
+                "episode_status": "awaiting_close_evidence",
+                "reason": "symbol_change_refused",
+            }
         if filled < qty and not submitted:
             index = len(legs)
             leg = await self.recorder.record(

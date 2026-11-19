@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -11,8 +11,9 @@ import pytest
 from app.core.config import settings
 from app.models.mock_strategy import MockStrategyOrder
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
+from app.services.brokers.alpaca.schemas import Order
 from app.services.mock_strategy import us_broker
-from app.services.mock_strategy.us import UsPaperStrategy
+from app.services.mock_strategy.us import UsPaperStrategy, order_request
 from app.services.mock_strategy.us_broker import PreDispatchRefusal, UsPaperBroker
 from app.services.mock_strategy.us_signals import Candidate, UsSelection
 from app.services.mock_strategy.us_symbol_change import (
@@ -637,3 +638,46 @@ async def test_refused_mapping_never_falls_back_to_an_old_symbol_close(refusal):
     )
     # NVDA (not mapped) still closes normally.
     assert any(side == "cover" for side, _ in broker.posts)
+
+
+def fill_exit_legs(broker, recorder):
+    for leg in bkh_exits(recorder):
+        request = order_request(leg)
+        broker.orders[leg.client_order_id] = Order(
+            **request.model_dump(),
+            id=leg.broker_order_id or f"late-{leg.id}",
+            status="filled",
+            filled_qty=leg.qty,
+            filled_avg_price=Decimal("105"),
+            filled_at=datetime(2026, 11, 9, 15, tzinfo=UTC),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost", ["response_lost", "acknowledged_only"])
+async def test_refused_rerun_still_reconciles_sent_mapped_legs_with_zero_posts(lost):
+    recorder, broker, strategy = await stranded()
+    broker.fail_submit = lost == "response_lost"
+    broker.accept_only = lost == "acknowledged_only"
+    await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    legs = bkh_exits(recorder)
+    assert {leg.status for leg in legs} <= {"uncertain", "accepted", "sending"}
+    sent = len(broker.posts)
+    # Still unobservable: nothing new is sent, and the unresolved leg is reported.
+    broker.fail_submit = broker.accept_only = False
+    broker.orders.clear()
+    result = await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    pending = [o for o in result["orders"] if o["symbol"] == "BKH"]
+    assert len(broker.posts) == sent
+    assert all(o["status"] in {"uncertain", "accepted", "sending"} for o in pending)
+    # Alpaca now shows the fill: the refused-by-open-quantity rerun books it.
+    fill_exit_legs(broker, recorder)
+    result = await strategy.close_due(asof=DUE, confirm=True, symbol_changes=CHANGES)
+    assert len(broker.posts) == sent
+    assert result["symbol_changes"][0]["applied"] is False
+    assert {leg.status for leg in legs} == {"closed"}
+    entries_ = [
+        r for r in recorder.rows.values() if r.symbol == "BKH" and r.side == "buy"
+    ]
+    assert {r.status for r in entries_} == {"closed"}
+    assert all(r.realized_pnl == Decimal("500") for r in entries_)
