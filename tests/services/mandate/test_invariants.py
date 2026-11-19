@@ -434,3 +434,21 @@ def test_t4a_dispatch_market_recheck(case, price, sessions, failure_field):
         "mandate_tranche_amount" if case == "I8_notional" else "mandate_tranche_not_due"
     )
     assert failure_field in detail
+
+
+@pytest.mark.asyncio
+async def test_i11_freeze_stub_fails_closed_for_live_and_mock():
+    from datetime import UTC, datetime
+
+    from app.services.mandate.buy_freeze import buy_freeze_state
+
+    for account_mode in ("kis_live", "toss_live", "kiwoom_mock"):
+        verdict = await buy_freeze_state(
+            None,  # type: ignore[arg-type]  # The stub performs no DB read.
+            account_mode=account_mode,
+            market="kr",
+            sleeve_id=1,
+            now=datetime.now(UTC),
+        )
+        assert verdict.frozen is True
+        assert verdict.valid_until is None
