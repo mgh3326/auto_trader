@@ -70,6 +70,18 @@ ANSWER_TEXT: dict[str, str] = {
 }
 
 
+def is_mandate_update(update: object) -> bool:
+    """True when the update is a button of this path (``mpb:`` data), valid or not.
+
+    The router sends exactly these updates here and every other update to the
+    unchanged order-approval callback.
+    """
+    if not isinstance(update, dict):
+        return False
+    query = update.get("callback_query")
+    return isinstance(query, dict) and rules.is_mandate_callback_data(query.get("data"))
+
+
 def valid_user_id(value: object) -> int | None:
     """An exact built-in int in Telegram's bound; no coercion (R37 rule)."""
     if type(value) is not int or not USER_ID_MIN <= value <= USER_ID_MAX:

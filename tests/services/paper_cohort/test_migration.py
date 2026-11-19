@@ -373,6 +373,10 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 )
             )
             await connection.execute(
+                text("DROP TABLE review.mandate_plan_batch_members")
+            )
+            await connection.execute(text("DROP TABLE review.mandate_plan_batches"))
+            await connection.execute(
                 text("DROP TABLE review.mandate_symbol_reservation_releases")
             )
             await connection.execute(

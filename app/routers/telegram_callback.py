@@ -23,6 +23,8 @@ Hard invariants:
   ``200 {"ok": True}``. Durable mode may instead return a sanitized ``503``
   when its worker/recovery gates are not armed or durable persistence is
   unavailable, so Telegram can retry without receiving internal details.
+* An ``mpb:`` button (hk 3795 morning-batch card) is handled by its own path, which
+  writes plan events only; every other update behaves exactly as before.
 * No broker/order mutation is reachable from this router directly; accepted
   inline callbacks reach the existing downstream safety gates through
   ``handle_callback_update``, while durable callbacks only commit an inbox row.
@@ -37,6 +39,10 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import settings
 from app.core.timezone import now_kst
+from app.services.mandate.batch_callback import (
+    handle_mandate_callback,
+    is_mandate_update,
+)
 from app.services.order_proposals.callback_inbox.ingress import (
     CallbackInboxUnavailable,
     ingest_callback_update,
@@ -121,6 +127,11 @@ async def telegram_callback(body: dict[str, Any]) -> dict[str, Any]:
     internal result — Telegram only inspects the HTTP status.
     """
     _require_enabled()
+    if is_mandate_update(body):
+        # hk 3795 T3a: the morning-batch card (``mpb:``) is its own path; it never
+        # reaches the order-approval callback or the durable inbox below.
+        await handle_mandate_callback(body, now=now_kst())
+        return {"ok": True}
     if settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED:
         await _ingest_durably(body)
         return {"ok": True}
