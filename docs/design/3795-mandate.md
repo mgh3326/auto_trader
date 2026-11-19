@@ -59,7 +59,7 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다. 이 판�
 | 하드룰 4 — 브로커 실행 표면은 default-disabled, 게이트 완화 금지 | 계획 결속 자동승인은 **게이트 완화다**. 새 스위치 `MANDATE_AUTO_APPROVE_ENABLED`(기본 false) + 시장 allowlist + 계좌 allowlist + `ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded` + 위임장 버전의 `state='live'` + 인증된 승인 기록이 있는 조항(§3.5) + 그 조항에 결속된 활성화 프로필과 그 프로필의 회차 상한(§3.6)이 모두 참일 때만 자동승인이 열린다(D2·D3). preview·submit의 근접가 허용(D1)은 스위치와 allowlist 뒤에 있고 승인 방식과 무관하다(§4.4 "D1의 범위"). 완화 목록 전부를 §4.4에 적고 구현 PR에 deviation record를 붙인다. 레버리지·per-order cap·daily cap 상수는 올리지 않는다. 운영자 결정 없이 활성화하지 않는다. 계획 결속 제안을 만들 수 있는 계좌도 따로 닫아 둔다(`MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES`, 기본 빈 값, §4.2). |
 | 하드룰 6 — 스케줄러 등록 금지 | 아침 묶음 승인 카드 발송·트리거 감시·낙폭 계산은 전부 scheduleless CLI/수동 레버로 출고한다(§7 Q8, 결정됨 A). 실행이 빠지면 권한이 늘지 않고 줄어든다: 카드가 없으면 승인도 없고, 트리거 스캔이 없으면 armed 회차도 없고, 낙폭 측정이 stale이면 동결이다(§5.4). 정기 실행은 카나리 뒤 별도 승인이다. |
 | 하드룰 19 — 기계식 손절(ROB-1460) | 논지 훼손 손실 매도(1b)는 ROB-1460과 **다른 부류**다. ROB-1460의 결정 행 결속 경로·스위치·캡을 재사용하거나 넓히지 않는다. 1b는 이 설계에서 언제나 사람 카드다. 처음 4주 뒤의 재검토 결과는 별도 설계로만 반영한다(§5.2). ROB-1460 스위치는 기본 off 그대로이고, 바구니 ①을 기계식 손절에서 빼는 방식이 계좌 전체에 미치는 영향은 §5.2의 표다. |
-| 하드룰 18 — #789 DB 역할 | 새 테이블마다 같은 마이그레이션에 조건부 `at_app` GRANT(SELECT·INSERT만, UPDATE·DELETE 없음). ROB-1470 선례 `alembic/versions/20261102_rob1470_strategy_sleeves.py:329-332`. |
+| 하드룰 18 — #789 DB 역할 | 새 테이블마다 같은 마이그레이션에 조건부 `at_app` GRANT(SELECT·INSERT만, UPDATE·DELETE 없음). 예외는 §4.6의 조정 테이블 둘(`mandate_basket_authority`·`mandate_cap_mutex`: SELECT·INSERT·UPDATE, DELETE 없음, 금액·권한 값 없음)뿐이고, 시도·증거 행은 SELECT·INSERT만이다. ROB-1470 선례 `alembic/versions/20261102_rob1470_strategy_sleeves.py:329-332`. |
 | 하드룰 5 — 레저 쓰기는 서비스 경유 | 계획 상태의 "체결" 전이는 `execution_ledger_in_effect()` 의 authoritative 체결 증거로만 한다. 계획 테이블은 원장이 아니며 원장에 쓰지 않는다. |
 | 하드룰 9 — 검증 규율 | 각 티켓은 변경 범위 테스트를 돌리고 DB 트리거·경쟁 테스트는 CI가 증거다. |
 
@@ -304,29 +304,29 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 | I8 | 회차 금액 초과 주문 없음: 제안 notional(max(limit, 현재가) × 수량) ≤ 회차 `amount` − 이미 체결된 회차 금액. 그리고 계획 전체로 체결 금액 누계 + notional ≤ `planned_amount − adopted_amount` | 제안 rung | 제안 생성, armed→proposed, 전송 직전 | 제안 생성(거부), 계획 게이트, 전송 직전 경계 | 생성 때 넘으면 제안 거부. 생성 뒤 가격이 움직여 회차 잔여를 넘으면 사람 카드 `mandate_tranche_amount`(카드에 넘는 금액 표시). 계획 전체 한도를 넘으면 전송 차단 `mandate_plan_amount_exceeded` |
 | I9 | 같은 회차에 열린 제안은 1개. 전송 결과 불명 제안이 있는 회차는 새 제안도 전송도 없다 | 이벤트 | armed→proposed, dispatch, 전송 직전 | sleeve lock + 이벤트 트리거 + 계획 게이트 + 전송 직전 경계 | 제안 생성 거부 / 전송 차단 `mandate_tranche_duplicate`·`mandate_tranche_uncertain` |
 | I10 | "filled"는 브로커 증거로만(`execution_ledger_in_effect()`, authoritative) | 원장 | proposed→filled | 대사 후 투영 CLI | 증거 없으면 전이 없음(websocket 단독은 미확정) |
-| I11 | 낙폭 동결(측정 불가·stale 포함)이 커밋된 뒤에는 그 범위의 매수 회차 armed/제안이 없고 **새 전송 fence가 커밋되지 않는다**(수동 승인 포함). 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고 그 금액과 예약은 대사 때까지 남는다. 보유·매도는 유지 | 낙폭 판정(관측 버전·유효 기한 포함) | 없음(판정이다. 계획 상태를 바꾸지 않는다) | 제안 생성 + dispatch 계획 게이트 + fence 트랜잭션(동결 범위 lock 아래에서 판정을 읽고 fence를 쓴다. 동결 writer는 같은 lock을 배타로 — hk 4900). POST 직전 재확인은 best-effort(§4.6·§5.4) | 제안 생성 거부·fence 거부 `mandate_drawdown_frozen` + 운영자 알림 |
+| I11 | 낙폭 동결(측정 불가·stale 포함)이 커밋된 뒤에는 그 범위의 매수 회차 armed/제안이 없고 **새 전송 fence가 커밋되지 않는다**(수동 승인 포함). 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고 그 금액과 예약은 대사 때까지 남는다. 보유·매도는 유지 | 낙폭 판정(관측 버전·유효 기한 포함) | 없음(판정이다. 계획 상태를 바꾸지 않는다) | 제안 생성 + dispatch 계획 게이트 + fence 트랜잭션(F1 동결 범위 lock을 공유로 쥔 뒤 판정을 읽고 fence를 쓴다. 동결 writer는 F1을 배타로 — hk 4900이 따른다, §4.6 "직렬화 메커니즘"). POST 직전 재확인은 best-effort(§4.6·§5.4) | 제안 생성 거부·fence 거부 `mandate_drawdown_frozen` + 운영자 알림 |
 | I12 | 위임장 버전이 live가 아니거나 조항이 없거나 만료면 자동승인 없음 | sleeve 버전·조항 | 모든 제안 | sleeve 게이트(live 여부, 기존) + 계획 게이트(조항·만료) | 사람 카드 `sleeve_not_live`(기존 코드)/`mandate_terms_missing`/`mandate_expired` |
 | I15 | 제안의 심볼·시장·계좌 모드는 결속된 계획과 같고, 실제 송신 요청의 계좌는 계획의 계좌 참조(`account_ref`)와 같다 | 제안 INSERT, dispatch, fence 트랜잭션, POST 직전 | 계획 등록 / 제안 생성 / 결속 소비 | `order_proposals` INSERT 트리거(정규화 심볼·`market`·`account_mode`를 계획·sleeve와 비교) + 계획 게이트 재비교 + fence 트랜잭션 + POST 직전(어댑터가 실제 요청의 계좌에서 참조를 계산해 대조, §4.6 "계좌 결속") | INSERT 거부 / fence 거부·전송 차단 `mandate_binding_mismatch`·`mandate_account_mismatch`(사람 승인으로 넘어가지 않는다, §4.7) |
-| I16 | 계획의 권한 상태가 `approved`(1차)·`active`(2·3차)가 아니게 된 뒤 — `retired`·`suspended`·`thesis_broken` 등이 커밋된 뒤 — 에는 그 계획의 **새 전송 fence가 커밋되지 않는다.** 효력 세션 전에도 같다. 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고, 그 fence가 대사로 닫힐 때까지 예약·예산은 풀리지 않는다. 자동승인은 추가로 현재 결속 조항이 현재 live 버전의 조항이어야 한다 | 계획 이벤트 스트림(`seq` 순서) | 결속 소비, fence 트랜잭션 | 이벤트 INSERT 트리거(권한 상태가 `approved`/`active`가 아닌 계획의 fence INSERT 거부, `UNIQUE(plan_id, seq)`) + 계획 게이트 + fence 트랜잭션의 판정. POST 직전 재확인은 best-effort | 권한 상태·효력 세션 위반은 fence 거부 `mandate_plan_not_active`. 조항만 낡은 경우(재승인 대기)는 사람 카드 `mandate_terms_stale` |
+| I16 | 계획의 권한 상태가 `approved`(1차)·`active`(2·3차)가 아니게 된 뒤 — `retired`·`suspended`·`thesis_broken` 등이 커밋된 뒤 — 에는 그 계획의 **새 전송 fence가 커밋되지 않는다.** 효력 세션 전에도 같다. 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고, 그 fence가 대사로 닫힐 때까지 예약·예산은 풀리지 않는다. 자동승인은 추가로 현재 결속 조항이 현재 live 버전의 조항이고 최신 활성화 프로필·sleeve 버전이 허용해야 한다(fence 트랜잭션이 F2 아래에서 다시 읽는다) | 계획 이벤트 스트림(`seq` 순서) | 결속 소비, fence 트랜잭션 | 이벤트 INSERT 트리거(권한 상태가 `approved`/`active`가 아닌 계획의 fence INSERT 거부, `UNIQUE(plan_id, seq)`, 자동 fence의 최신 프로필 확인) + 계획 게이트 + fence 트랜잭션의 판정(F2 아래). POST 직전 재확인은 best-effort | 권한 상태·효력 세션 위반은 fence 거부 `mandate_plan_not_active`. 조항만 낡은 경우(재승인 대기)는 사람 카드 `mandate_terms_stale` |
 | I17 | 파킹 allowlist 심볼(459580·357870·SGOV·BIL)은 계획 대상이 아니다 | 계획 INSERT | proposed | store + `allowed_symbols` 검증(`parking_scope`) | 거부 |
 | I13 | 계획·회차·조항·이벤트 행은 수정·삭제 불가 | 모든 쓰기 | — | DB 트리거 | `restrict_violation` |
 | I14 | 실계좌 영역에 미해제 계획이 있는 종목의 손실 매도(`exit_intent='loss_cut'`)는 계좌와 무관하게 그 계획의 `thesis_broken` 이벤트 뒤에만 만들고 보낼 수 있고, 항상 사람 카드다. 시간이 지났다는 이유로 바뀌지 않는다(§5.2) | 시장·종목 예약(계좌 무관), `thesis_broken`·`thesis_evidence_refreshed` 이벤트의 `evidence`(회고 id), `loss_sell_mode` | →closed | 세 곳(T4c): `loss_cut` 제안 생성(종목 lock 아래), 사람 승인 콜백의 nonce 소비 전, 브로커 호출 직전. 계획 등록은 같은 종목 lock 아래에서 열린 `loss_cut` 제안이 있으면 거부(T1). 그리고 기존 분류기의 `loss_cut_intent` 거부(자동승인 차단, 변경 없음) | 생성 거부·승인 거부·전송 차단 `mandate_thesis_not_broken` / 계획 등록 거부 `mandate_open_loss_cut` / 통과한 제안은 사람 카드(기존 손절 2클릭 의식) |
 | I18 | 자동승인되는 회차 번호 ≤ 활성화 프로필의 `max_tranche_index`. 프로필은 현재 live 조항에 결속되고 승인 기록이 있으며 만료·철회되지 않았다(R1, §3.6) | 활성화 프로필 최신 버전, 조항, 회차 번호 | 결속 소비 | 계획 게이트(sleeve lock 아래에서 매번 다시 읽는다) | 사람 카드 `mandate_activation_missing`·`mandate_tranche_not_activated` |
 | I19 | 종목 예약·예산(I3)·업종 몫(I4)은 계획이 `released`가 될 때까지 유지된다. `released`는 미결 주문 0, 불명 주문 0(닫히지 않은 fence 0), 보유 처리 증거가 모두 있을 때만 쓸 수 있다. 보유 0의 증거는 계획이 등록 때 고정한 범위 계좌(`scope_account_refs`)와 참조가 일치하는 계좌의 조회여야 한다(R2, §3.7) | 주문 원장·제안 상태·fence·보유, 계좌 참조 | →released | 이벤트 INSERT 트리거 + store, 종목 lock 아래 | `released` INSERT 거부. 예약이 남아 같은 종목의 새 계획 등록이 거부된다(I1) |
-| I20 | 자동승인은 전역 누계와 바구니 누계를 **둘 다** 통과해야 한다. 두 누계는 자동 전송 fence로 세고, fence는 브로커 호출 전에 따로 커밋되며 미전송이 증명된 때에만 해제된다. 전역 누계는 계획 결속 판정에서 `broker_account_id` 키로 나누지 않는다(R3, §4.6) | 전역 누계 reader, `tranche_send_fenced`/`tranche_send_released` 이벤트 | 결속 소비 | 계획 게이트·분류기, lock 순서 §4.6 | 사람 카드 `daily_cap_exceeded`(전역)·`mandate_basket_daily_cap`(바구니) |
+| I20 | 자동승인은 전역 누계와 바구니 누계를 **둘 다** 통과해야 한다. 두 누계는 자동 전송 fence로 세고, fence는 브로커 호출 전에 따로 커밋되며 미전송이 증명된 때에만 해제된다. 전역 누계는 `broker_account_id` 키로 나누지 않는다. 한도 판정과 예약은 fence 트랜잭션이 누계 직렬화 행 F3·F4를 `FOR UPDATE`로 잡은 뒤 다시 합해 한 트랜잭션에서 한다(R3, §4.6 "직렬화 메커니즘") | 전역 누계 reader, `tranche_send_fenced`/`tranche_send_released` 이벤트, `review.mandate_cap_mutex`, 비계획 예약 | 결속 소비 | fence 트랜잭션(F3·F4), dispatch의 참고 판정(L2·L4a) | 사람 카드 `daily_cap_exceeded`(전역)·`mandate_basket_daily_cap`(바구니) |
 | I21 | 조항 행과 활성화 프로필 행은 내용 해시가 같은 인증된 승인 기록 없이는 존재하지 않는다. 승인 기록과 묶음 승인 이벤트는 허용된 chat에서 운영자 principal 목록에 있는 발신자가 눌렀을 때만 생긴다(Q1, §3.5) | 승인 요청 스냅샷, 승인 기록 | 조항·프로필 INSERT | INSERT 트리거(승인 기록 FK·해시 일치·1:1) + 계획 게이트 재확인 | INSERT 거부 / 전송 차단 `mandate_binding_broken` |
 | I22 | 묶음 승인 배치는 바구니 × 대상 거래일당 1개이고, 그 바구니의 앞 배치가 닫힌 뒤에만 새 배치를 만든다. 한 계획이 열린 멤버를 둘 갖지 않는다(1a, §5.1) | 배치 INSERT | 배치 생성 | `UNIQUE(realm, basket_key, target_session)` + 배치 INSERT 트리거(앞 배치의 열린 멤버 검사, 바구니 lock 아래) | 배치 INSERT 거부. 재발송은 같은 배치 |
 | I23 | 계획 결속 제안은 §4.1의 조건이 **전부** 참일 때만 자동승인된다. 계획 결속이 있는데 계획 게이트의 결속 증거(`mandate_binding`)가 없는 rung은 분류기의 어떤 다른 경로로도 자동승인되지 않는다(§4.1 조건 0) | `mandate_plan_id`, `mandate_binding` | 결속 소비 | 분류기 진입부(T4a가 넣는 거부) | 사람 카드 `mandate_not_eligible` + 계획 게이트의 사유 |
-| I24 | **전송 권한의 단위는 커밋된 전송 fence다.** 계획 결속 rung의 브로커 호출은 그 시도의 fence가 커밋된 뒤에만, fence 하나에 POST 한 번만 한다(자동·사람 승인 모두). 닫히지 않은 fence가 있는 회차는 새 제안도 새 fence도 없다. advisory lock의 보유는 권한의 근거가 아니다(§4.6) | `tranche_send_fenced`/`tranche_send_released` 이벤트, 계획 이벤트 스트림 | fence 트랜잭션 ~ 대사 | 별도 세션의 fence 트랜잭션(판정과 INSERT를 한 트랜잭션에), 이벤트 INSERT 트리거 | fence 커밋을 확인하지 못하면 전송 안 됨 `mandate_fence_unavailable` / 닫히지 않은 fence면 `mandate_tranche_uncertain` |
+| I24 | **전송 권한의 단위는 커밋된 전송 fence다.** 계획 결속 rung의 브로커 호출은 그 시도의 fence가 커밋된 뒤에만, fence 하나에 POST 한 번만 한다(자동·사람 승인 모두). 닫히지 않은 fence가 있는 회차는 새 제안도 새 fence도 없다. advisory lock의 보유는 권한의 근거가 아니다(§4.6) | `tranche_send_fenced`/`tranche_send_released` 이벤트, 계획 이벤트 스트림 | fence 트랜잭션 ~ 대사 | 별도 세션의 fence 트랜잭션(fence 영역 lock F1~F4 아래에서 판정과 INSERT를 한 트랜잭션에), 이벤트 INSERT 트리거 | fence 커밋을 확인하지 못하면 전송 안 됨 `mandate_fence_unavailable` / 닫히지 않은 fence면 `mandate_tranche_uncertain` |
 
 ### 3.4 DB 가드와 GRANT
 
-- 이 설계의 새 테이블은 모두 열하나다. T1이 아홉(`mandate_approval_requests`, `mandate_approvals`, `mandate_terms`, `mandate_activation_profiles`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`, `mandate_symbol_reservation_releases`), T3a가 둘(`mandate_plan_batches`, `mandate_plan_batch_members`)을 만든다(§8과 같은 수). 열하나 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
+- 이 설계의 새 테이블은 모두 열넷이다: 아래 열하나와 §4.6의 직렬화 객체 셋(T4c의 `mandate_basket_authority`·`mandate_cap_mutex`, T5의 `auto_approve_send_reservations`). 아래 목록은 열하나 쪽이다. T1이 아홉(`mandate_approval_requests`, `mandate_approvals`, `mandate_terms`, `mandate_activation_profiles`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`, `mandate_symbol_reservation_releases`), T3a가 둘(`mandate_plan_batches`, `mandate_plan_batch_members`)을 만든다(§8과 같은 수). 열하나 모두 UPDATE·DELETE·TRUNCATE 거부 트리거(모든 역할). 선례 `20261102_rob1470_strategy_sleeves.py:75-130`.
 - 이벤트 `seq`는 직전+1만, 이벤트 어휘·전이 표에 없는 전이는 INSERT 트리거가 거부. 전송 fence(`tranche_send_fenced`)도 이 스트림의 이벤트다: 트리거는 그 `seq` 시점의 권한 상태가 `approved`/`active`가 아닌 계획에 대한 fence INSERT를 거부한다. 그래서 `retired`·`suspended`·`thesis_broken`보다 뒤에 커밋되는 fence는 존재할 수 없고, 그 순서는 쓰는 쪽의 lock이 아니라 `UNIQUE(plan_id, seq)`와 이 트리거가 정한다(§4.6).
 - I1: 예약은 append-only 두 테이블 `review.mandate_symbol_reservations`(realm, market, 정규화 symbol, plan_id)와 `review.mandate_symbol_reservation_releases`(reservation_id UNIQUE)로 기록하고 이력은 지우지 않는다. 부분 UNIQUE는 다른 테이블의 해제 행을 볼 수 없으므로 쓰지 않는다. 대신 예약 INSERT 트리거가 **스스로** `pg_advisory_xact_lock(hashtextextended('mandate_symbol:'||realm||':'||market||':'||symbol,0))`을 잡은 뒤 같은 realm·market·symbol에 해제 행이 없는 예약이 있으면 거부한다. 해제 INSERT 트리거도 같은 락을 잡는다. 락이 트리거 안에 있으므로 어떤 writer도 우회할 수 없고, 두 동시 INSERT 중 뒤의 것은 앞의 커밋을 기다린 뒤(READ COMMITTED 재조회) 거부된다. 트리거는 READ COMMITTED가 아닌 트랜잭션을 거부한다(#1250 Q-46 게이트와 같은 이유). 해제 행은 그 계획의 `released` 이벤트가 같은 트랜잭션에 있을 때만 INSERT된다(트리거가 확인). 권한 상태가 `retired`·`rejected`·`exhausted`·`closed`가 됐다는 것만으로는 해제하지 않는다(§3.7, I19).
 - `order_proposals`에 `mandate_plan_id`·`mandate_tranche_index`(nullable) 추가, INSERT 때만 설정, `sleeve_id`·`account_mode`·`market`·정규화 `symbol`이 계획(과 그 sleeve)과 같아야 함(트리거, I15). `order_proposal_create`는 `symbol`을 따로 받으므로(`app/mcp_server/tooling/order_proposal_tools.py:703`) 이 비교 없이는 다른 종목 제안이 회차에 결속될 수 있다. 선례 `:157-164`.
 - downgrade는 행이 하나라도 있으면 거부.
-- 하드룰 18: 테이블을 만드는 마이그레이션마다 조건부 `at_app` GRANT — 위 열하나 테이블 SELECT·INSERT만, UPDATE·DELETE 없음. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
+- 하드룰 18: 테이블을 만드는 마이그레이션마다 조건부 `at_app` GRANT — 위 열하나 테이블과 예약 테이블은 SELECT·INSERT만, UPDATE·DELETE 없음. 예외는 §4.6의 권한 행·mutex 둘(SELECT·INSERT·UPDATE, DELETE 없음, 금액·권한 값 없음)이다. `order_proposals` 새 열은 기존 테이블 권한을 따른다.
 
 ### 3.5 인증된 승인 기록 (Q1의 조건)
 
@@ -540,10 +540,10 @@ approved/active ──(위임장 변경 뒤 재승인 rebind)──▶ 같은 �
 **(가) dispatch 계획 게이트.** 두 단계다. 가격이 필요 없는 판정은 revalidation(브로커 호출) 전에, 신선한 가격이 필요한 판정은 분류기 안에서 한다.
 
 - **1단계(가격 무관)**: `dispatch_proposal`의 sleeve 게이트(`dispatch.py:1171-1189`) **바로 뒤**, revalidation 전. 계획 결속 제안이면 sleeve 게이트에 들어가기 **전에** 바구니 lock을 먼저 잡는다(lock 순서는 §4.6). sleeve advisory lock 아래에서 계획 이벤트·조항·승인 기록·활성화 프로필을 읽고 I4(업종)·I9(중복·불명)·I11(동결)·I12·I15·I16·I18·I21과 I7(회차 순서)을 판정하고, 바구니 누계의 현재 값 B를 읽는다. 전부 통과하면 `mandate_binding`(ROB-1460의 `mechanical_binding`과 같은 모양, `dispatch.py:384-400`)을 만든다. 하나라도 실패하면 결속은 `None`이고 사유를 기록한다.
-- **2단계(가격 필요)**: 분류기 안, 신선한 preview와 매도 1호가가 있는 시점. `mandate_binding`이 있을 때만 I5·I6(가격 트리거·간격 재검)·I8(회차 잔여·계획 전체 한도)·근접가(§4.1 조건 6)·주문당 한도·두 누계(§4.6, 금액은 max(지정가, 현재가) × 수량)를 판정하고, 통과하면 §4.4의 분류기 게이트 하나(D2)를 푼다. B는 1단계에서 읽은 값을 쓴다 — 바구니 lock을 계속 쥐고 있으므로 그 사이에 바뀌지 않는다.
+- **2단계(가격 필요)**: 분류기 안, 신선한 preview와 매도 1호가가 있는 시점. `mandate_binding`이 있을 때만 I5·I6(가격 트리거·간격 재검)·I8(회차 잔여·계획 전체 한도)·근접가(§4.1 조건 6)·주문당 한도·두 누계(§4.6, 금액은 max(지정가, 현재가) × 수량)를 판정하고, 통과하면 §4.4의 분류기 게이트 하나(D2)를 푼다. B는 1단계에서 읽은 **참고값**이다 — fence 트랜잭션과 해제 writer는 L2가 아니라 F3으로 직렬화하므로 그 사이에 늘거나(다른 fence) 줄 수 있다(해제). 통과 판정은 fence 트랜잭션이 F3 아래에서 다시 합해 확정한다. 참고값으로 **넘는다**는 판정도 확정이 아니다: 그때 분류기는 바로 사람 카드로 보내지 않고 같은 fence 트랜잭션(`approval_mode='auto'`)을 한 번 돌려 F3·F4 아래의 값으로 다시 판정하고, 거기서도 넘을 때만 사람 카드다(`mandate_basket_daily_cap`). 재판정은 한 번뿐이고 L2에 기대지 않는다.
 - `mandate_binding`이 `None`인 계획 결속 rung은 분류기가 `mandate_not_eligible`로 거부한다(§4.1 조건 0). 이 게이트는 자동승인 여부만 정한다. `mandate_plan_id`가 NULL인 제안은 이 분기에 들어가지 않는다.
 
-**(나) 계획 결속 전송 직전 경계 — fence 트랜잭션의 판정.** 사람이 Telegram에서 승인하면 분류기 없이 `revalidate_and_submit`로 간다(`app/services/order_proposals/telegram_callback.py:879`, `app/services/order_proposals/revalidation.py:1361`). 그래서 dispatch 게이트만으로는 "사람이 승인해도 보내면 안 되는 것"을 막지 못한다. 계획 결속 rung은 승인 방식(자동·사람)과 무관하게 **전송 fence를 쓰는 트랜잭션 안에서**(§4.6) 아래를 다시 읽고, 하나라도 실패하면 fence를 쓰지 않는다. fence가 없으면 전송도 없다.
+**(나) 계획 결속 전송 직전 경계 — fence 트랜잭션의 판정.** 사람이 Telegram에서 승인하면 분류기 없이 `revalidate_and_submit`로 간다(`app/services/order_proposals/telegram_callback.py:879`, `app/services/order_proposals/revalidation.py:1361`). 그래서 dispatch 게이트만으로는 "사람이 승인해도 보내면 안 되는 것"을 막지 못한다. 계획 결속 rung은 승인 방식(자동·사람)과 무관하게 **전송 fence를 쓰는 트랜잭션 안에서**(§4.6) 아래를 다시 읽고, 하나라도 실패하면 fence를 쓰지 않는다. fence가 없으면 전송도 없다. 이 읽기는 §4.6 "직렬화 메커니즘"의 fence 영역 lock(F1 동결, F2 바구니 권한 행) 아래에서 하고, 자동 fence는 여기에 더해 최신 활성화 프로필·조항·sleeve 자격(F2)과 두 누계(F3·F4)를 같은 트랜잭션에서 다시 확인한다. dispatch·승인 콜백의 앞선 판정은 참고용이다.
 
 | 전송 직전 재확인 | 실패 시 |
 |---|---|
@@ -610,7 +610,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
   - `relaxations`: §4.4의 D1~D4를 번호 그대로
   - `change_class: [auto_approval_guard_relaxation_behind_default_off_switch, marketable_buy_release_plan_bound]`
   - `affected_policy_keys`: 없음(정책 값 변경 0) — 위임장 수치는 DB 조항. 새 env는 다섯이다: 완화를 여는 스위치 3개(`MANDATE_AUTO_APPROVE_ENABLED`·`_MARKETS`·`_ACCOUNT_MODES`), 계획 결속 제안 생성 계좌를 닫아 두는 `MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES`(T4a), 위임장 승인자를 닫아 두는 `MANDATE_APPROVER_TELEGRAM_USER_IDS`(T3a·T3b). 뒤의 둘은 완화가 아니고 기본값이 "아무것도 안 됨"이다
-  - `consumer_paths`: `app/services/order_proposals/auto_approve.py`, `dispatch.py`, `revalidation.py`, `repository.py`·`service.py`(전역 누계 reader 보강 — 당일 자동 fence는 스위치와 무관하게 모든 자동승인의 누계에 들어가고, 스위치가 켜졌거나 당일 fence가 남은 계좌 모드·시장에서는 계획 결속이 아닌 자동승인도 모든 키를 합산한 같은 G를 읽는다. 더 엄격해지는 변경이고, 스위치가 꺼져 있고 당일 fence도 없으면 변경 전과 같다. L4a lock은 모든 자동승인 dispatch가 항상 잡는다), `app/mcp_server/tooling/order_validation.py`, `order_execution.py`, `orders_toss_variants.py`, `app/services/mandate/`(신규)
+  - `consumer_paths`: `app/services/order_proposals/auto_approve.py`, `dispatch.py`, `revalidation.py`, `repository.py`·`service.py`(전역 누계 reader 보강 — 당일 자동 fence는 스위치와 무관하게 모든 자동승인의 누계에 들어가고, T5 이후에는 계좌 모드·시장·스위치와 무관하게 계획 결속이 아닌 자동승인도 모든 키를 합산한 같은 G를 F4 아래에서 읽고 시도 행을 남긴다(§4.6 (f)). 더 엄격해지는 변경이고, 스위치가 꺼져 있고 당일 fence도 없으면 변경 전과 같다. L4a lock은 모든 자동승인 dispatch가 항상 잡는다), `app/mcp_server/tooling/order_validation.py`, `order_execution.py`, `orders_toss_variants.py`, `app/services/mandate/`(신규)
   - `effective_at`: 완화마다 다르다. D4는 실전 사람 카드 단계(§4.5 4단계: 실전 위임장 버전 승인 + 계획 결속 제안 생성 계좌 설정) 뒤. D1은 스위치 3개가 그 시장·계좌에 설정된 뒤(활성화 프로필과 무관, §4.4 "D1의 범위"). D2·D3은 스위치 + 활성화 프로필 승인 기록 뒤(§4.5 5단계). 어느 것도 머지만으로는 켜지지 않는다.
   - `rollback`: `MANDATE_AUTO_APPROVE_ENABLED=false` 다음 설정 로드부터 모든 계획 결속 제안은 사람 카드이고 D1도 닫힌다. 스위치는 새 자동승인만 닫는다 — 이미 남은 당일 자동 fence는 그날 모든 자동승인의 전역 누계에 계속 들어가고(§4.6), 닫히지 않은 fence는 대사 때까지 그 회차를 막는다. 계획 결속 제안 자체를 멈추려면 `MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES`를 비운다. 이미 브로커가 받은 주문은 되돌리지 않고 대사로 처리.
 - 활성화 절차(순서, 각 단계는 그 단계의 운영자 결정이 따로 필요하다. 이 문서는 어느 단계도 승인하지 않는다):
@@ -625,7 +625,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 
 | # | 필요 시점 | 항목 | 증거 | 출처 |
 |---|---|---|---|---|
-| C1 | 사람 카드 | T1·T1m-a·T1m-b·T2·T3a·T3b·T4a·T4b·T4c·T4d·T9 머지, 운영 마이그레이션 적용 | PR·head SHA, alembic 현재 리비전 | §8 |
+| C1 | 사람 카드 | T1·T1m-a·T1m-b·T2·T3a·T3b·T4a·T4b·T4c·T4d·T9 머지, 운영 마이그레이션 적용. 사람 계획 송신을 켜기 전에 해당 sleeve의 기존 자동 dispatch가 `ORDER_PROPOSALS_AUTO_APPROVE=false`로 멈춰 있음(§4.6 (f)) | PR·head SHA, alembic 현재 리비전 | §8 |
 | C2 | 사람 카드 | hk 4900의 동결 판정이 **구현되어** 머지됐고(설계 문서 머지가 아니다) §5.4의 요구를 테스트로 충족 | PR·테스트 이름 | §5.4, 리뷰 §5 |
 | C3 | 사람 카드 | 키움 mock **모의 검증 기간 충족**: 실제 mock 계좌에서 사람 카드로 끝까지 30건·4주, 기계 지표 충족. 테스트 fixture 통과, 그리고 한 번 끝까지 돈 "모의 통합 통과"(§8)와 구분해 적는다 | 검증 보고서 hk key | §4.5 3단계 |
 | C5 | 사람 카드 | 현금 규칙 B(결정 §1-4) 작업 완료. 1차 분할이 쓸 현금과 2·3차 대기금이 규칙 B대로 준비됐는지 | 그 작업의 PR·보고서 hk key, 또는 운영자 예외 기록 key | 결정 2a·4, 리뷰 §1 2a |
@@ -635,7 +635,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 | C10 | 사람 카드 | ROB-1460 live 설정 상태가 Q7 원칙과 맞는지(§5.2 영향 표에서 운영자가 고른 방식): A1이면 시장 목록에 kr이 없음, A2면 그 코드 변경의 머지와 테스트 | 배포 env의 key 이름별 확인 결과(값은 적지 않는다) 또는 A2의 PR, 운영자 확정 기록 key | §5.2, §7 Q7 |
 | C12a | 사람 카드 | deviation record가 D4를 담고 머지됨(T4c PR) | 파일 경로·PR | §4.4 |
 | C11 | 사람 카드 | 체결을 부기하는 대사의 실행 담당과 주기. 계획의 `tranche_filled`·정리 이벤트·불명 해소는 authoritative 체결이 원장에 있어야 진행된다(I10, §3.7). 2026-11-18 결정의 정기 실행(hk 3794)은 종료 상태 전용이고 체결 부기는 기존 게이트 뒤에 그대로다 | 실행 담당·주기를 적은 기록 | §3.7, §6 |
-| C4 | 자동승인 | T5 머지. §4.8의 전송 없는 검증 산출물 V1~V22이 그 PR에서 전부 통과 | T5 PR의 테스트 목록·CI 실행 | 리뷰 R4 |
+| C4 | 자동승인 | T5 머지. §4.8의 전송 없는 검증 산출물 V1~V22이 그 PR에서 전부 통과. 스위치를 켜기 전에 모든 dispatch 프로세스가 T5 이후 이미지이고 이전 이미지 프로세스가 0임을 확인. T5 전환은 기존 자동 dispatch·계측되지 않은 sleeve 송신을 멈추고 비운 뒤에, 혼합 배포 동안에는 그 경로를 계속 막고, 이전 이미지로의 완전 롤백은 새 writer 정지·그날 누계 경과·미해결 sleeve 노출 0 뒤에만(§4.6 (f) 배포·전환·롤백 순서) | T5 PR의 테스트 목록·CI 실행, 배포 digest 확인 기록 | 리뷰 R4, §4.6 |
 | C9 | 자동승인 | 근접가 프리미엄 실전 값 확정: Q10의 측정 증거 목록 전부와 운영자가 정한 값. 조항의 값과 다르면 새 위임장 버전과 계획 재승인이 먼저다(§7.1) | 측정 보고서 hk key, 활성화 프로필(값이 바뀌면 조항) 승인 요청의 `approval_ref` | §7.1 |
 | C12 | 자동승인 | deviation record에 D1~D3이 번호대로 더해져 머지됨(T5 PR) | 파일 경로·PR | §4.4 |
 | C13 | 자동승인 | 승인 화면 표시 항목(아래)이 활성화 프로필 승인 카드에 전부 나온다 | 카드 렌더 테스트 + 실제 카드 캡처 | 리뷰 §4 |
@@ -667,7 +667,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 
 호출자(dispatch, 승인 콜백) 쪽의 판정은 **참고용**이다. 호출자의 DB 세션이 죽거나 호출자가 쥔 lock이 풀려도 fence가 커밋되는지 여부는 달라지지 않아야 한다.
 
-**미확정.** 위 요구사항을 만족하는 구체 메커니즘(공통 lock 키, DB 제약)은 **hk 5286**이 확정한다. 그 전에는 T4c 구현을 시작하지 않는다(§8). 이 절의 아래 내용 가운데 메커니즘에 해당하는 부분 — fence 트랜잭션이 어떤 lock을 잡는지, 누계와 자동승인 자격을 어디서 확인하는지, lock 표 — 은 PR #2466 리뷰 5차 시점의 초안이고 요구사항을 다 채우지 못한다: 누계 확인이 dispatch의 lock에 기대고(lock 표 아래 마지막 항목), fence 트랜잭션이 활성화 프로필과 sleeve·조항 자격을 다시 보지 않는다. 요구사항과 어긋나는 곳은 요구사항이 우선하고, hk 5286이 그 부분을 고쳐 쓴다. 그 PR의 리뷰 스레드 r4618309254와 r4618309267이 이 항목으로 넘어갔다(설계 세션의 범위 자르기, hk 5272).
+**확정(hk 5286).** 아래 "직렬화 메커니즘"이 위 요구사항을 만족하는 메커니즘이다. 이 절의 fence 트랜잭션 단계, 두 누계의 판정 위치, lock 표는 이 메커니즘에 맞춰 고쳐 썼다. PR #2466(hk 5272) 리뷰의 r4618309254(누계)와 r4618309267(프로필 철회)은 아래 "두 경쟁의 재현"에서 닫는다. T4c는 이 문서가 머지된 뒤에 시작할 수 있다(§8).
 
 **fence가 권한이다.**
 
@@ -677,22 +677,58 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 4. 커밋된 fence의 금액은 누계에 들어가고(자동 fence), 그 회차의 금액과 그 계획의 예약·예산·업종 몫은 그 fence가 **대사로 닫힐 때까지** 풀리지 않는다. 닫힘은 둘뿐이다: 전송됐고 그 주문의 종결이 원장으로 증명됨, 또는 미전송이 증명됨(§3.7의 `orders_settled`가 "닫히지 않은 fence 0"을 요구한다). 폐기된 계획도 마찬가지다.
 5. 낙폭 동결도 같은 형태다: 동결(측정 불가·stale 포함)이 커밋된 뒤에는 그 범위의 fence가 커밋되지 않고, 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있다(§5.4).
 
-**fence 트랜잭션.** fence는 호출자(dispatch 또는 승인 콜백)와 **다른 세션의 짧은 트랜잭션 하나**로 쓴다. 자동·사람 경로가 같은 것을 쓴다.
+**fence 트랜잭션.** fence는 호출자(dispatch 또는 승인 콜백)와 **다른 세션의 짧은 트랜잭션 하나**로 쓴다. 자동·사람 경로가 같은 것을 쓴다. 격리 수준은 READ COMMITTED이고, 아래 각 읽기는 그 앞의 lock 획득 **뒤의** 문장으로 실행한다(lock을 기다린 뒤의 문장은 그 사이 커밋된 값을 본다). 시작할 때 `SET LOCAL lock_timeout`과 `SET LOCAL statement_timeout`을 건다(값은 T4c가 상수로 정한다. 정책 값이 아니다).
 
-1. 동결 범위 lock LF를 공유로 잡는다(전역, 그 바구니). hk 4900의 측정 게시·동결·해제 writer는 같은 lock을 배타로 잡고 쓴다. 이 lock은 이 트랜잭션 안에서만 쥔다 — 동결 게시와 fence 커밋 중 무엇이 먼저인지를 정하기 위한 것이다.
-2. 계획 이벤트를 다시 접어 전송 직전 차단 판정(§4.3 (나))을 하고, `buy_freeze_state`를 읽고, 계좌 참조를 대조한다(아래 "계좌 결속").
-3. `tranche_send_fenced`(계획·회차·`proposal_id`·rung·계좌 참조·승인 방식·금액·KST 일·시도 id, 자동이면 활성화 프로필)를 INSERT한다. 트리거가 위 2번 규칙을 강제하고, `seq`가 겹치면 INSERT가 실패한다.
-4. 커밋한다. 커밋을 확인하지 못하면 브로커 호출을 시작하지 않는다(`mandate_fence_unavailable`).
+1. **LF**: 동결 범위 advisory lock을 공유로 잡는다(`mandate_freeze:global`, 그 다음 `mandate_freeze:<realm>:<basket_key>`).
+2. **RA**: 그 바구니의 권한 행 `review.mandate_basket_authority(realm, basket_key)`를 `SELECT … FOR SHARE`로 잠근다(자동·사람 둘 다). **행이 없으면 fence를 쓰지 않는다**(`mandate_unreadable`, 차단) — 없는 행은 아무것도 잠그지 않으므로 직렬화가 성립하지 않는다.
+3. **RS**(자동·사람 둘 다), **RB, RG**(자동 fence만): 누계 직렬화 행 `review.mandate_cap_mutex`의 sleeve 행(`scope='sleeve'`, sleeve_id), 바구니 행(`scope='basket'`, realm, basket_key, KST 일), 전역 행(`scope='global'`, account_mode, market, KST 일)을 이 순서로 `INSERT … ON CONFLICT DO NOTHING` 뒤 `SELECT … FOR UPDATE`로 잠근다.
+4. 잠근 뒤 다시 읽는다: 계획 이벤트를 접어 전송 직전 차단 판정(§4.3 (나)), `buy_freeze_state`와 그 유효 기한, 계좌 참조 대조(아래 "계좌 결속"). 자동 fence면 추가로 그 sleeve의 최신 활성화 프로필·현재 live 조항·sleeve의 현재 버전과 스위치(아래 "자격의 재확인"), sleeve 게이트의 예산 판정(아래 "sleeve 예산의 재확인"), 그리고 B와 G(아래 "누계의 재확인과 예약").
+5. `tranche_send_fenced`(계획·회차·`proposal_id`·rung·계좌 참조·승인 방식·금액·KST 일·시도 id, 자동이면 4에서 읽은 최신 활성화 프로필 id)를 INSERT한다. 이벤트 트리거가 위 2번 규칙(권한 상태)을, 자동 fence면 프로필 규칙(아래)을 강제하고, `seq`가 겹치면 INSERT가 실패한다.
+6. 커밋한다. 커밋을 확인하지 못하면 브로커 호출을 시작하지 않는다(`mandate_fence_unavailable`).
 
-- 이 트랜잭션은 호출자가 쥔 lock을 기다리지 않는다: sleeve·바구니·누계 lock을 잡지 않고, 제안 행의 행 lock도 기다리지 않는다. 그래서 `mandate_plan_events.proposal_id`에는 FK 제약을 두지 않고(승인 콜백은 제안 행의 nonce lock을 쥔다 — `auto_trader@ac4f9ed5c` `app/services/order_proposals/telegram_callback.py:668-669`의 주석) 값의 일치는 잠금 없는 SELECT로 확인한다.
-- 이 트랜잭션이 도중에 죽으면 fence는 커밋되지 않고 전송도 없다. 중간 상태가 남지 않는다.
-- 호출자의 DB 세션이 죽어도 fence 트랜잭션의 판정은 달라지지 않는다. 판정에 쓰는 것은 그 순간 DB에 커밋돼 있는 이벤트와 동결 기록이고, 호출자의 lock이 아니다.
+4에서 하나라도 실패하면 fence를 쓰지 않는다. 자동 fence가 자격·누계에서만 실패했으면(강등 사유) 그 제안은 사람 카드로 가고, 사람 승인 뒤 같은 fence 트랜잭션을 `approval_mode='human'`으로 다시 돈다. 차단 사유면 §4.7의 차단이다.
+
+**직렬화 메커니즘(확정, hk 5286).** 요구사항의 네 사실마다 "그 사실의 writer"와 fence 트랜잭션이 **같은 DB 객체를 서로 충돌하는 모드로** 잠근다. 그 객체는 fence 트랜잭션과 각 writer의 짧은 트랜잭션만 잡는 **fence 영역 lock**이고, 호출자(dispatch·승인 콜백)의 트랜잭션은 이것을 잡지 않는다 — 호출자가 쥔 lock이 이 직렬화에 들어가지 않으므로 호출자 세션이 죽어도 결과가 같다.
+
+| 순서 | 객체 | 키·행 | fence 트랜잭션 | 같은 객체를 잡는 writer와 모드 | 막는 경쟁 |
+|---|---|---|---|---|---|
+| F1 | LF 동결 범위(advisory, 트랜잭션 범위) | `mandate_freeze:global`, `mandate_freeze:<realm>:<basket_key>`(앞에서 뒤로) | 공유(`pg_advisory_xact_lock_shared`) | hk 4900의 측정 게시·동결·해제 writer: 배타(`pg_advisory_xact_lock`), 그 트랜잭션에서 다른 fence 영역 lock은 잡지 않는다 | 동결 커밋과 fence 커밋의 순서(I11) |
+| F2 | RA 바구니 권한 행 | `review.mandate_basket_authority(realm, basket_key)`, 열 `authority_seq` | `FOR SHARE` | 활성화 프로필 INSERT(§3.6), 조항 버전 INSERT(§3.1), 바구니 소속 sleeve의 버전 append(`app/services/strategy_sleeves/store.py:353`의 `set_sleeve_version`, sleeve lock은 `:375`), 계획 등록(I3·I4): 같은 트랜잭션에서 `UPDATE … SET authority_seq = authority_seq + 1`(행 배타) | 최신 프로필·조항·sleeve 자격과 자동 fence의 순서(r4618309267) |
+| F3s | RS sleeve 예산 행 | `review.mandate_cap_mutex(scope='sleeve', sleeve_id)` | `FOR UPDATE`(자동·사람 fence 둘 다. 사람 fence는 lock만 잡고 예산 판정은 하지 않는다 — 사람 승인은 sleeve 예산 강등의 대상이 아니라 그 결과다) | 같은 sleeve의 다른 자동·사람 fence, 그 sleeve에 태그된 계획 결속이 아닌 제안의 **전송 전 예약**(아래 "sleeve 예산의 재확인"): `FOR UPDATE` | 호출자 세션 상실 뒤 같은 sleeve의 다른 주문이 먼저 커밋되어 sleeve 예산(`strategy_sleeves/gate.py:73-97`)을 넘는 것 |
+| F3 | RB 바구니 누계 행 | `review.mandate_cap_mutex(scope='basket', realm, basket_key, kst_day)` | `FOR UPDATE`(자동 fence만) | 같은 바구니의 다른 자동 fence, 바구니 fence의 해제 writer: `FOR UPDATE` | 같은 바구니의 두 자동 fence가 같은 B를 읽는 것 |
+| F4 | RG 전역 누계 행 | `review.mandate_cap_mutex(scope='global', account_mode, market, kst_day)` | `FOR UPDATE`(자동 fence만) | 다른 계획의 자동 fence, 해제 writer, 모든 **비계획 자동승인 예약**(아래 (f)): `FOR UPDATE` | 서로 다른 계획·비계획 자동승인이 같은 G를 읽는 것(r4618309254) |
+| — | 계획 이벤트 스트림 | `UNIQUE(plan_id, seq)` + INSERT 트리거(§3.4) | INSERT | 모든 계획 이벤트 writer: INSERT(같은 제약) | 권한 상태 전이와 fence의 순서(I16) |
+
+- **한 객체 = 한 사실.** 누계 행은 직렬화만 한다(mutex). 금액은 행에 쌓지 않고 매번 원천(fence 이벤트·예약·스탬프)에서 다시 합하므로 행 값이 원천과 어긋날 수 없다. 권한 행의 `authority_seq`는 "그 바구니의 자격 사실이 바뀌었다"는 표시일 뿐이고, fence는 이 값을 판정에 쓰지 않는다(최신 행을 직접 읽는다).
+- **교착이 없는 이유.** fence 트랜잭션은 F1 → F2 → F3s → F3 → F4 순서로만 잡는다(F1 안에서는 global → basket). 송신 시도 트랜잭션(아래 "lock 부분집합")은 같은 순서의 부분집합만 잡고, 그 밖의 writer는 **fence 영역 lock을 하나만** 잡는다(한 트랜잭션에 F2 하나, 또는 F3s 하나, 또는 F3 하나, 또는 F4 하나, 또는 F1 배타 하나). sleeve 버전 writer가 바구니 소속 sleeve를 바꾸면 F2 다음 F3s를 잡는다(같은 순서). 노출 종결 writer는 F3s, 계획 해제가 두 누계를 바꾸면 F3s → F3 → F4다. 그래서 fence 영역 안에서는 대기 그래프에 순환이 생길 수 없다. 묶음 승인 콜백처럼 여러 바구니의 권한 행을 바꾸는 writer는 (realm, basket_key) 오름차순으로만 잡는다.
+- **호출자 lock과의 순환.** fence 영역 lock을 잡는 writer는 자기 호출자 쪽 lock(sleeve 버전 writer의 L3 — `store.py:375`, 조항·프로필 승인 콜백의 L2)을 **먼저** 잡고 그 다음에 F2를 잡는다. 그래서 자동 dispatch가 L2·L3을 쥔 채 fence 결과를 기다리는 동안 그 writer는 L2·L3에서 기다릴 뿐 F2를 쥐지 않고, fence 트랜잭션은 F2를 바로 얻는다 — 이 writer들과는 순환이 없다. 남는 순환은 호출자 트랜잭션이 fence 트랜잭션이 기다릴 DB 객체를 커밋하지 않은 채 쥐는 경우다: 그 계획의 커밋되지 않은 이벤트 INSERT(`UNIQUE(plan_id, seq)` 대기), 제안 행의 행 lock(아래 FK 항목). T4c는 호출자가 fence 호출 전에 그런 쓰기를 들고 있지 않게 구조로 막고, 그래도 생기면 fence 트랜잭션의 `lock_timeout`이 끊는다: fence가 실패하고(`mandate_fence_unavailable`, 전송 없음) 호출자가 끝난다. 실패 방향은 항상 "보내지 않음"이다.
+- **advisory lock은 여전히 권한의 근거가 아니다.** F1~F4는 한 트랜잭션 안의 "읽기 → INSERT"를 writer와 직렬화할 뿐이다. 권한은 그 트랜잭션이 커밋한 fence 행이다(위 "fence가 권한이다").
+- **새 객체와 GRANT.** `review.mandate_basket_authority`(바구니당 한 행)와 `review.mandate_cap_mutex`(scope·키 열과 생성 시각만)는 T4c의 마이그레이션이 만들고, 비계획 자동승인 예약 `review.auto_approve_send_reservations`는 T5가 만든다(§3.4·§8의 테이블 수에 포함). 하드룰 18대로 role 존재를 확인한 조건부 `at_app` GRANT를 같은 마이그레이션에 넣고 DELETE는 주지 않는다. 권한 행과 mutex는 `FOR SHARE`/`FOR UPDATE`·`UPDATE`가 필요하므로 SELECT·INSERT·UPDATE를, 예약은 SELECT·INSERT를 준다(§3.4의 "SELECT·INSERT만" 규칙의 예외는 이 둘뿐이고, 두 테이블에는 금액·권한 값이 없다).
+- **권한 행의 존재.** T4c 마이그레이션은 그 시점에 존재하는 모든 바구니(T1~T4a가 등록한 조항·계획의 (realm, basket_key))의 권한 행을 같은 마이그레이션에서 채우고, 그 뒤에는 조항·계획 등록이 같은 트랜잭션에서 행을 만든다(`INSERT … ON CONFLICT DO NOTHING`). F2를 올리는 writer의 `UPDATE`가 0행이면 그 writer는 실패한다(쓰지 않는다). fence는 행이 없으면 차단이다(위 2번). 그래서 "행이 없어 아무것도 잠그지 않은 채 P1로 fence를 쓰는" 경로가 없다.
+
+**자격의 재확인(자동 fence).** F2를 공유로 잡은 뒤 같은 트랜잭션에서 읽는다: **그 계획의 sleeve**(`sleeve_id`)의 최신 활성화 프로필 행(§3.6, 그 sleeve 안의 `profile_version` 최댓값 — 철회도 새 버전이다. 다른 sleeve의 프로필은 보지 않는다), 그 프로필이 결속한 `terms_id`가 그 sleeve의 현재 live 조항인지, 효력 세션·만료, sleeve의 현재 버전(`strategy_sleeve_versions` 최신 행의 상태 `live`), 프로세스 스위치 `MANDATE_AUTO_APPROVE_ENABLED`와 두 allowlist. 회차 번호가 그 프로필의 `max_tranche_index`를 넘거나, 프로필이 만료·효력 전이거나, 결속 조항이 현재 live 조항이 아니거나, 조항이 dispatch가 판정에 쓴 버전과 다르거나, sleeve가 `live`가 아니거나, 스위치가 꺼져 있으면 자동 fence를 쓰지 않는다(강등). 판정에 쓴 프로필 id를 fence 행에 남기고, fence INSERT 트리거는 `approval_mode='auto'`인 fence의 `activation_profile_id`가 **그 계획 sleeve의** 최신 `profile_version` 행이고 그 행의 `terms_id`·효력 세션이 위 조건을 만족하는지 다시 확인한다(F2 아래에서는 그 사이에 새 프로필이 커밋될 수 없으므로 트리거는 같은 답을 내고, F2를 빠뜨린 구현을 잡는 두 번째 방어다). 바구니의 다른 sleeve(예: KIS 철회 뒤 Toss의 새 프로필)는 이 판정에 들어가지 않는다 — 한 바구니의 두 sleeve 프로필 writer는 같은 F2를 올리므로 직렬화는 바구니 단위이고, 판정은 sleeve 단위다. 스위치는 DB 사실이 아니라 프로세스 설정이다: 끄는 효력은 프로세스 재시작으로 생기고, 재시작 전 이전 프로세스가 커밋한 fence는 "끄기 전에 권한을 얻은 전송"이다.
+
+**sleeve 예산의 재확인(자동 fence).** F3s를 잡은 뒤 같은 트랜잭션에서 기존 sleeve 게이트의 판정(`app/services/strategy_sleeves/gate.py:73-97`: 손실 한도, 사용액 + 주문 ≤ 예산, 미측정은 통과 아님)을 그 sleeve의 현재 book으로 다시 돌린다. 사람 fence도 F3s를 같은 순서로 잡으므로(판정은 하지 않는다) 자동 fence가 사용액을 읽은 뒤 사람 fence가 끼어들어 함께 예산을 넘는 일은 없다 — 사람 fence가 먼저 커밋되면 자동 fence는 그 금액을 사용액에 넣는다.
+
+- **전송 시도 기록(attempt) — 공통 송신 경계.** 브로커 호출로 이어질 수 있는 **모든 송신 시도**는 그 전에 정확히 하나의 시도 기록을 커밋한다: 계획 결속 rung은 `tranche_send_fenced`(fence가 곧 시도 기록이다), 계획 결속이 아닌 모든 송신 시도(자동, 그리고 sleeve 태그 여부와 무관한 사람 승인 송신)는 `review.auto_approve_send_reservations`의 시도 행이다. sleeve 태그가 없는 사람 송신의 시도 행은 두 금액이 0이고 fence 영역 lock을 잡지 않지만, rung 안 순번 트리거는 똑같이 적용된다 — 그래서 자동 송신이 브로커에 닿은 뒤 dispatch 트랜잭션이 롤백돼 rung이 대기로 남아도, 그 뒤의 사람 승인(`dispatch.py:1054-1063`이 자동승인 off에서 내는 카드, `telegram_callback.py:879-893`)은 미해결 앞선 시도를 보고 POST 0으로 거부된다. 거래일이 바뀌어 KIS 송신 키가 달라져도 같다(순번은 rung 단위이고 날짜 키와 무관하다). 시도 행은 제안·rung, 새 시도 id, rung 안의 시도 순번(직전+1, 앞선 시도가 미해결이면 INSERT 거부 — 트리거). 동시 INSERT의 직렬화는 트리거가 아니라 **`UNIQUE(proposal_id, rung_index, attempt_seq)` 제약**이 한다: 두 세션이 같은 순번을 고르면 두 번째 INSERT는 첫 번째의 커밋을 기다렸다가 유니크 위반으로 실패하고, 그 시도는 POST 없이 처음부터 다시 판정해 커밋된 앞선 시도(미해결이면 거부)를 본다. 이 제약은 자동·사람·태그 유무와 무관하게 모든 비계획 시도 writer에 공통이고, 계획 rung은 `UNIQUE(plan_id, seq)`가 같은 역할을 한다. 유니크 대기도 `lock_timeout` 대상이며 timeout은 POST 0이다, 승인된 payload 해시와 브로커 송신 키, 승인 방식, sleeve, KST 일, 그리고 **두 금액을 따로** 담는다: `sleeve_exposure`(sleeve book과 같은 통화·기준의 매수 금액, 매도·취소는 0)와 `daily_cap_contribution`(기존 daily-cap 기준 금액. 파킹 면제·사람 시도는 0). 커밋을 확인한 INSERT의 승자만 송신 권한을 얻는다. 재생·모호한 커밋·미해결 앞선 시도는 새 POST 0이다. rung이 미전송 증명 뒤 `pending_approval`로 복원되면(`app/services/order_proposals/service.py:2065-2115`) 다음 승인(사람 클릭 포함 — `telegram_callback.py:879-893`의 `revalidate_and_submit` 진입이 이 경계를 지난다)은 **새 시도 행**을 쓴다. 기존 비계획 전송 재시도는 그 시도가 **아직 닫히지 않았고** 브로커별 양성 미전송 증거와 같은 payload가 있을 때만 같은 시도를 쓸 수 있다. 종결 행(미전송 증명·명시적 거절·체결 0 종결)이 붙은 시도는 **다시 쓰지 않는다** — 재시도는 F3s 아래에서 새 시도 행을 INSERT해 노출을 다시 세운 뒤에만 POST한다. 모호한 응답은 시도를 남기고 재송신을 막는다. `replace`는 첫 브로커 변경 전에 새 leg의 시도를 커밋하고 옛 leg의 노출은 그 종결 증거까지 유지한다(`revalidation.py:2350-2434`).
+- **lock 부분집합.** 순서는 언제나 F1 → F2 → F3s → F3 → F4이고 시도마다 필요한 부분만 잡는다: 계획 자동 = 다섯 전부, 계획 사람 = F1 → F2 → F3s, 계획 결속이 아닌 sleeve 태그 자동 = F3s → F4를 **한 트랜잭션에서** 잡고 sleeve 판정과 G 판정을 둘 다 한 뒤 시도 행을 **한 번** INSERT, 계획 결속이 아닌 sleeve 태그 사람 매수 = F3s(판정 없이 노출 기록만), sleeve 태그가 없는 비계획 자동 = F4. 앞의 "다른 writer는 fence 영역 lock을 하나만 잡는다"는 이 시도 트랜잭션들에는 적용되지 않고, 대신 이들도 같은 전역 순서를 지키므로 순환이 없다.
+- **사용액** = 기존 book(보유 원가·열린 매수 주문·원장 미기록 체결) + 각 시도(자동·사람 fence와 시도 행)의 `sleeve_exposure` 가운데 book이 **아직 나타내지 않은** 부분. 겹침은 매 판정마다 커밋된 book에서 다시 계산하고, 같은 시도·주문 인스턴스(커밋된 송신 키, 계좌·브로커 식별, 번호를 재사용하는 브로커면 거래일)로만 맞춘다. book이 실제로 덮은 working 수량·귀속 체결만 차감한다. 측정할 수 없는 사람 시도는 unknown 노출로 남고, 그 뒤 자동 매수는 `sleeve_used_unmeasured`로 강등된다.
+- **노출의 종결.** 시도에 결속된 증거만 노출을 줄이고, 증거는 F3s 아래에서 같은 테이블(계획은 이벤트 스트림)에 INSERT로 붙인다(UPDATE·DELETE 없음): (가) 커밋된 미전송 증명·명시적 거절·체결 0 종결이면 노출 전부를 닫는다. (나) 전량·부분 체결 종결이면 **book이 아직 귀속하지 못한 체결 금액은 계속 노출로 남기고**, 증명된 미체결분만 푼다. 계획 fence가 `tranche_filled`·`tranche_partially_filled`로 닫혀도 마찬가지다 — 사람 콜백 롤백으로 rung에 `broker_order_id`가 없어 sleeve fill loader(`app/services/strategy_sleeves/store.py:561-639`)가 그 체결을 못 보는 동안에도 금액은 남는다. 증거가 불완전하면 보수적 금액이나 unknown으로 둔다. 결과 불명 시도는 날을 넘어 노출로 남는다. 노출 오버레이는 정확한 book 커버리지가 확인된 만큼만 사라진다.
+- **G와 독립.** sleeve 노출이 닫혀도 비계획 자동 시도의 `daily_cap_contribution`은 그 KST 일 끝까지 G에 남는다. 계획 자동 fence만 기존 증명 기반 해제(`tranche_send_released`)로 B·G를 돌려받는다. 파킹 면제 sleeve 태그 매수는 `sleeve_exposure`가 양수이고 `daily_cap_contribution`이 0이다.
+- 이것은 기존 sleeve 게이트에 판정 지점을 하나 더할 뿐이고 통과시키는 방향의 변경은 없다(T5).
+
+**누계의 재확인과 예약(자동 fence).** F3·F4를 잡은 뒤 같은 트랜잭션에서 합한다. 예약은 fence INSERT 그 자체다 — 커밋된 자동 fence가 곧 누계에 든 금액이다.
+
+- B = 그 바구니·KST 일의 `approval_mode='auto'`이고 짝 해제가 없는 `tranche_send_fenced.notional` 합(모든 sleeve·계좌 합산).
+- G = 그 `account_mode` × `market` × KST 일의 (짝 해제 없는 자동 fence 금액 합) + (비계획 자동 시도 행의 `daily_cap_contribution` 합) + (`auto_approved` 스탬프가 있는 rung 가운데 어떤 시도 기록에도 연결되지 않은 과거 스탬프의 기존 측정 금액 합, `app/services/order_proposals/service.py:4050-4070`의 reader를 `broker_account_id` 조건 없이). **`broker_account_id`로 나누지 않는다**(I20). 기존 daily-cap 면제(파킹, `auto_approve.py:855-860`·`:1072-1073`)는 그대로다: 면제 rung은 G에 0으로 들어가고(기존 reader의 `is_daily_cap_exempt`) 면제 주문은 G 판정을 받지 않으며 예약 금액도 0이다. 자동 취소(`action='cancel'`)도 기존 그대로 금액 판정 밖이다(`auto_approve.py:801-820`): F4 판정·예약을 하지 않고 G에 0으로 든다(`repository.py:297-306`의 cancel 제외). 계획 결속 rung에는 파킹 면제가 없다(V15).
+- `B + notional ≤ 조항 daily_cap` 그리고 `G + notional ≤ 전역 daily_cap`일 때만 INSERT한다. F4를 쥔 동안 같은 G에 더할 수 있는 다른 writer는 기다리므로, 두 자동 fence가 같은 G를 읽고 둘 다 커밋하는 일은 없다.
+- 해제 writer(`tranche_send_released`)도 그 fence의 F3·F4를 같은 순서로 잡고 쓴다. 해제는 누계를 줄이는 쪽이라 경쟁에서 지면 다른 fence가 사람 카드로 갈 뿐이다(안전한 쪽).
 
 **전송 순서.**
 
 | 단계 | 자동승인 | 사람 승인 |
 |---|---|---|
-| 판정 | dispatch가 계획 게이트 1·2단계를 통과시킨다(§4.3 (가)). 누계는 dispatch의 lock 아래에서 읽는다(아래 lock 표) | 승인 콜백의 기존 검사(게시 결속, 운영자 principal 대조 §3.5) 뒤, nonce 소비 전에 차단 판정을 한 번 한다. lock 없는 빠른 거부다 |
+| 판정 | dispatch가 계획 게이트 1·2단계를 통과시킨다(§4.3 (가)). 이 판정의 누계·자격은 참고용이고 fence 트랜잭션이 다시 확인한다(위 "직렬화 메커니즘") | 승인 콜백의 기존 검사(게시 결속, 운영자 principal 대조 §3.5) 뒤, nonce 소비 전에 차단 판정을 한 번 한다. lock 없는 빠른 거부다 |
 | fence | 위 fence 트랜잭션(`approval_mode='auto'`) | 위 fence 트랜잭션(`approval_mode='human'`) |
 | POST 직전 재확인 | 아래 | 아래 |
 | 브로커 호출 | fence 하나에 한 번 | fence 하나에 한 번 |
@@ -738,12 +774,12 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 **전역 누계 reader의 규칙.**
 
 - **당일의 자동 fence는 항상 들어간다.** 그 `account_mode` × `market` × KST 일의 해제되지 않은 자동 fence 금액은, 계획 결속이든 아니든 **모든** 자동승인의 전역 누계 reader에 `MANDATE_AUTO_APPROVE_ENABLED`와 무관하게 더해진다. 스위치(와 두 allowlist)는 **새** 위임장 자동승인만 닫는다. 그렇지 않으면, 결과가 불명인 계획 전송 두 건(각 190만)이 있는 날 스위치만 끄면 일반 자동승인 150만이 그 380만을 보지 못하고 통과해 전역 cap 500만을 넘을 수 있다.
-- **키로 나누지 않는다.** [사실] 기존 누계는 `account_mode`·`market`·`broker_account_id`(없으면 `default`) 키별로 따로 센다(§2.3 F1). 같은 실계좌로 나가는 주문이 NULL 키와 다른 값의 키로 나뉘어 세어지면, 키마다 한도 안이어도 합은 한도를 넘는다(계획 fence 100만 뒤에 서로 다른 키의 일반 자동승인 300만이 둘 오면 각자 자기 키 + 100만만 보고 둘 다 통과해 700만이 된다). 그래서 그 계좌 모드·시장에 위임장 자동승인이 열려 있거나(두 allowlist에 있는 조합) 그날 해제되지 않은 자동 fence가 하나라도 있으면, 모든 자동승인이 **모든 `broker_account_id` 키(NULL 포함)의 스탬프 rung + 자동 fence**를 합친 같은 G를 읽는다. 계좌 모드 하나에 실계좌가 하나인 지금 배치(KIS 하나, Toss 하나)에서는 이것이 계좌별 합과 같고, 실계좌가 여럿이 되면 더 엄격할 뿐이다.
-- 스위치가 꺼져 있고 그날 자동 fence도 없는 계좌 모드·시장에서만 기존 키별 누계 그대로다(판정 결과가 변경 전과 같다, §4.8 V12).
+- **키로 나누지 않는다.** [사실] 기존 누계는 `account_mode`·`market`·`broker_account_id`(없으면 `default`) 키별로 따로 센다(§2.3 F1). 같은 실계좌로 나가는 주문이 NULL 키와 다른 값의 키로 나뉘어 세어지면, 키마다 한도 안이어도 합은 한도를 넘는다(계획 fence 100만 뒤에 서로 다른 키의 일반 자동승인 300만이 둘 오면 각자 자기 키 + 100만만 보고 둘 다 통과해 700만이 된다). 그래서 T5 이후에는 계좌 모드·시장과 무관하게 항상, 모든 자동승인이 **모든 `broker_account_id` 키(NULL 포함)의 스탬프 rung + 자동 fence + 비계획 예약**을 합친 같은 G를 읽고, 그 판정의 경계는 F4다(아래 "기존 비계획 자동승인 경로와의 관계"). 계좌 모드 하나에 실계좌가 하나인 지금 배치(KIS 하나, Toss 하나)에서는 이것이 계좌별 합과 같고, 실계좌가 여럿이 되면 더 엄격할 뿐이다.
+- 기존 키별 누계와 결과가 달라지는 것은 다른 키의 스탬프·fence·예약이 그날 있는 경우뿐이고, 그때는 더 엄격하다(§4.8 V12).
 - **남는 구멍 하나**: 계획 결속이 아닌 자동 전송은 여전히 스탬프를 전송 뒤에 쓰므로, 결과 불명으로 끝난 일반 자동 전송은 G에 없을 수 있다(§2.3 F3a, [추정]). 이 구멍은 이 설계가 만든 것이 아니지만 계획 결속 판정이 읽는 G에 영향을 주므로, 자동승인 단계의 체크리스트 C14가 그 감사 결과 또는 운영자 수용 기록을 요구한다(§4.5).
 - 이 변경은 일반 자동승인의 판정을 더 엄격하게만 바꾼다. 완화가 아니지만 기존 경로의 결과가 달라질 수 있으므로 deviation record의 `consumer_paths` 설명에 적는다.
 
-**lock 표.** 전부 트랜잭션 범위 advisory lock이고 그 트랜잭션이 끝나면 풀린다. lock은 한 트랜잭션 안의 읽기와 쓰기를 직렬화할 뿐이고, 전송 권한의 근거가 아니다(위 "fence가 권한이다"). 기다리는 획득은 항상 아래 순서로만 한다.
+**호출자 쪽 lock 표.** 아래는 호출자(dispatch·등록·콜백) 트랜잭션의 lock이다. fence 영역 lock F1~F4는 위 "직렬화 메커니즘" 표가 정본이고, 아래 lock을 쥔 트랜잭션은 F1~F4를 잡지 않는다(F2를 잡는 writer는 예외 없이 그 짧은 트랜잭션 안에서만, 각자의 L 다음에 잡는다). 아래는 전부 트랜잭션 범위 advisory lock이고 그 트랜잭션이 끝나면 풀린다. lock은 한 트랜잭션 안의 읽기와 쓰기를 직렬화할 뿐이고, 전송 권한의 근거가 아니다(위 "fence가 권한이다"). 기다리는 획득은 항상 아래 순서로만 한다.
 
 | 순서 | lock | 키 | 누가 |
 |---|---|---|---|
@@ -751,16 +787,62 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 | L1 | 종목 | `mandate_symbol:<realm>:<market>:<symbol>` | 계획 등록, `released` 전이, 예약·해제 테이블 트리거, `loss_cut` 제안 생성의 계획 확인(§5.2) |
 | L2 | 바구니 | `mandate_basket:<realm>:<basket_key>` | 계획 등록(I3·I4), 배치 생성(I22), 조항·프로필 승인 콜백, 계획 결속 **자동** dispatch(B를 읽는다) |
 | L3 | sleeve | `review.strategy_sleeves:<id>`(기존, `app/services/strategy_sleeves/store.py:139-144`) | sleeve 게이트, 계획 게이트, 계획 이벤트 writer(fence 트랜잭션 제외) |
-| L4a | 자동승인 계좌 모드·일 | `order_proposals:auto_approve:<account_mode>:<market>:*:<date>`(신규) | 전역 누계를 읽는 **모든** 자동승인 dispatch(스위치와 무관하게 항상) |
+| L4a | 자동승인 계좌 모드·일 | `order_proposals:auto_approve:<account_mode>:<market>:*:<date>`(신규) | 전역 누계를 읽는 **모든** 자동승인 dispatch(스위치와 무관하게 항상). dispatch 안의 참고 판정을 직렬화할 뿐이고, 한도의 경계는 F4다 |
 | L4b | 자동승인 계좌·일 | `order_proposals:auto_approve:<account_mode>:<market>:<account>:<date>`(기존, §2.3 F1) | 기존 그대로 |
-| LF | 동결 범위 | `mandate_freeze:global`, `mandate_freeze:<realm>:<basket_key>` | fence 트랜잭션은 공유로, hk 4900의 측정 게시·동결·해제 writer는 배타로. 다른 lock과 함께 쥐지 않는다 |
 
 - 기존 순서 L0 → L3 → L4b(§2.3 F4)는 그대로다. L1·L2는 L0과 L3 사이에, L4a는 L4b 바로 앞에 놓인다. 한 트랜잭션이 여러 sleeve lock을 잡을 때(묶음 승인 콜백)는 sleeve id 오름차순이다.
 - 계획 결속이 아닌 제안은 L1·L2를 잡지 않는다(`loss_cut` 제안 생성의 L1만 예외, §5.2).
 - 계획 이벤트를 append하는 진입점(묶음 승인 콜백, 운영자 CLI, 투영 CLI, 제안 생성과 arming, 논지 훼손 기록)은 그 계획의 sleeve lock(L3)을 쥐고 쓴다. 이것은 `seq` 충돌을 줄이는 관례이고, 순서의 근거는 `UNIQUE(plan_id, seq)`와 전이 트리거다. 이벤트 INSERT 트리거는 advisory lock을 잡지 않는다(종목 lock을 스스로 잡는 것은 예약·해제 **테이블**의 트리거뿐이다, §3.4).
-- fence 트랜잭션과 해제 writer는 L3을 잡지 않는다. 자동 경로에서는 dispatch 트랜잭션이 L3을 쥐고 있어 잡으려 하면 자기 호출자를 기다리게 된다. `seq`가 다른 writer와 겹치면 INSERT가 실패하고, 다시 읽어 판정부터 한 번 더 한다(그 사이 폐기됐으면 거기서 끝난다).
+- fence 트랜잭션과 해제 writer는 L0~L4b를 잡지 않는다(fence 영역 F1~F4만). 자동 경로에서는 dispatch 트랜잭션이 L3을 쥐고 있어 잡으려 하면 자기 호출자를 기다리게 된다. `seq`가 다른 writer와 겹치면 INSERT가 실패하고, 다시 읽어 판정부터 한 번 더 한다(그 사이 폐기됐으면 거기서 끝난다).
 - 사람 승인 콜백은 위임장 lock을 잡지 않는다.
-- **누계의 직렬화는 dispatch의 lock에 기댄다.** B는 L2 아래, G는 L4a → L4b 아래에서 읽고, 자동 fence는 그 lock을 쥔 동안 커밋된다. 이것은 한도 판정의 동시성 제어이고 전송 권한과는 별개다. dispatch의 DB 세션이 판정과 fence 커밋 사이에 죽으면 그 틈에 다른 dispatch가 같은 누계를 읽을 수 있다. fence 트랜잭션은 INSERT 직전에 B와 G를 자기 트랜잭션에서 한 번 더 읽어 한도를 넘으면 쓰지 않지만, 이것도 best-effort다(동시에 커밋되는 두 fence는 서로를 못 볼 수 있다). 커밋된 fence는 그 뒤의 모든 판정에 들어간다.
+- **누계의 경계는 fence 트랜잭션의 F3·F4다.** dispatch가 L2·L4a·L4b 아래에서 읽는 B·G는 카드 사유를 미리 고르는 참고 판정이다. 한도를 지키는 것은 fence 트랜잭션이 F3·F4를 잡은 뒤 다시 합한 값이고, 그 판정과 fence INSERT는 한 트랜잭션이다. dispatch의 DB 세션이 판정과 fence 커밋 사이에 죽어도 결과는 같다.
+
+**두 경쟁의 재현(PR #2466 리뷰 5차).** 시각은 위에서 아래로 흐른다.
+
+r4618309254 — 두 계획, 호출자 세션 상실, 누계. 기존 G·B = 250만원, 일일 상한 500만원, 서로 다른 계획 A·B의 자동 주문 각 150만원(같은 계좌 모드·시장, 같은 바구니).
+
+| 시각 | 세션 | 일어나는 일 | 초안(PR #2466)에서 | 이 메커니즘에서 |
+|---|---|---|---|---|
+| t1 | dispatch A | L2·L4a 아래 참고 판정: 250 + 150 ≤ 500 통과 | 같다 | 같다(참고용) |
+| t2 | dispatch A | DB 세션 상실 → L2·L4a 풀림 | 같다 | 같다 |
+| t3 | dispatch B | L2·L4a 획득, 참고 판정 250 + 150 ≤ 500 통과 | 같다 | 같다 |
+| t4 | fence A | 시작 | 누계를 best-effort로 다시 읽음 | F1·F2 공유, F3·F4 `FOR UPDATE` 획득 |
+| t5 | fence B | 시작 | A와 겹쳐 같은 250을 읽음 | F3에서 **대기**(A가 쥠) |
+| t6 | fence A | 다시 합함 → 250, INSERT, 커밋 | 커밋 | 커밋 → F3·F4 풀림 |
+| t7 | fence B | 다시 합함 | 250을 읽었으므로 커밋 → 합계 550만원 전송(위반) | **차단 지점**: F3·F4 획득 뒤의 문장이 A의 fence를 보고 B = G = 400, 400 + 150 > 500 → fence 없음, 사람 카드(`mandate_basket_daily_cap`/`daily_cap_exceeded`) |
+
+같은 바구니가 아니면 F3은 다르고 F4(같은 계좌 모드·시장·일)에서 같은 방식으로 기다린다. 비계획 자동승인이 B 대신 들어와도 그 예약이 F4를 잡으므로 같다.
+
+r4618309267 — 세션 상실 뒤 프로필 철회가 먼저 커밋.
+
+| 시각 | 세션 | 일어나는 일 | 초안에서 | 이 메커니즘에서 |
+|---|---|---|---|---|
+| t1 | dispatch | 프로필 P1(`max_tranche_index=1`)로 회차 1 참고 판정 통과 | 같다 | 같다(참고용) |
+| t2 | dispatch | DB 세션 상실(L2 풀림) | 같다 | 같다 |
+| t3 | 운영자 콜백 | 프로필 P2(`max_tranche_index=0`) INSERT, 같은 트랜잭션에서 RA `authority_seq` UPDATE, 커밋 | 커밋 | 커밋 |
+| t4 | fence | 시작 | 프로필을 다시 보지 않고 P1 id로 fence 커밋 → 자동 매수 전송(위반) | **차단 지점**: F2 `FOR SHARE` 뒤 최신 프로필 P2를 읽음, 회차 1 > 0 → 자동 fence 없음, 브로커 호출 0. 구현이 F2를 빠뜨려도 fence 트리거가 P1 ≠ 최신으로 거부 |
+
+- t3의 writer가 t4와 겹쳐 아직 커밋 전이면 fence는 F2에서 기다렸다가 P2를 본다. 반대로 fence가 먼저 F2를 쥐면 writer가 기다리고 fence는 P1로 커밋된다 — 철회보다 먼저 권한을 얻은 전송이고(위 "fence가 권한이다" 3번) POST는 한 번이다.
+- 철회 대신 조항 버전·sleeve 버전(`paused`·`stopped`)이 먼저 커밋돼도 같다. 둘 다 F2를 배타로 바꾸는 writer다.
+
+**실패 결과.**
+
+| 사건 | 결과 |
+|---|---|
+| 호출자(dispatch·콜백) DB 세션 상실 | fence 트랜잭션의 판정은 같다(호출자 lock을 쓰지 않는다). 호출자 프로세스가 살아 있으면 fence를 돌리고 그 결과를 따른다. 프로세스도 죽으면 fence 트랜잭션이 시작되지 않거나(전송 없음) 커밋된 fence만 남는다. 커밋된 fence의 전송 주체가 사라지면 그 fence는 "닫히지 않은 fence"로 대사까지 남고(누계 포함, 회차 정지) 아무도 재전송하지 않는다 |
+| fence 트랜잭션 도중 사망(커밋 전) | 롤백. fence 없음, 누계 변화 없음, 전송 없음. F1~F4는 세션과 함께 풀린다. 중간 상태가 남지 않는다 |
+| fence 커밋 응답 유실 | 커밋됐는지 알 수 없으므로 보내지 않는다(`mandate_fence_unavailable`). 커밋됐다면 그 fence는 닫히지 않은 fence로 남아 대사까지 회차를 막는다(재전송 없음) |
+| `lock_timeout`·`statement_timeout` | fence 트랜잭션 롤백, `mandate_fence_unavailable`, 전송 없음. 자동이면 그 제안은 사람 카드가 아니라 재시도 없이 끝난다(같은 회차의 다음 dispatch가 처음부터 판정). 사람 승인이면 nonce를 남긴 채 거부하고 다시 누를 수 있다. 어떤 경우에도 timeout이 fence를 쓰게 하지 않는다 |
+
+- `mandate_plan_events.proposal_id`에는 FK 제약을 두지 않는다. 승인 콜백은 제안 행의 nonce lock을 쥐고 있으므로(`app/services/order_proposals/telegram_callback.py:666-669`의 lock 순서) fence 트랜잭션이 그 행 lock을 기다리면 위와 같은 순환이 생긴다. 값의 일치는 잠금 없는 SELECT로 확인한다.
+
+**기존 비계획 자동승인 경로와의 관계 (f).** 기존 daily cap은 `auto_approved_daily_notional`이 L4b(`service.py:4059-4062`) 아래에서 키별 스탬프 합을 읽어(`auto_approve.py:1072-1078`) 판정하고, 스탬프는 전송 뒤에 남는다(§2.3 F3·F3a). 범위가 도중에 바뀌는 경합(어떤 dispatch는 "아직 엄격 범위가 아니다"라고 읽고 예약 없이 보내는 동안 다른 프로세스가 첫 fence를 커밋)을 없애기 위해, **T5 이후 모든 자동승인 dispatch는 계좌 모드·시장과 무관하게 항상** 브로커 호출 전에 별도 세션의 짧은 트랜잭션에서 F4를 `FOR UPDATE`로 잡고 위 G를 다시 합해 `G + notional ≤ 전역 daily_cap`(파킹 면제 rung은 판정 없음·`daily_cap_contribution` 0, 자동 취소는 이 단계를 거치지 않는다)일 때만 `review.auto_approve_send_reservations`에 시도 행을 INSERT·커밋한다. sleeve 태그 rung이면 같은 트랜잭션이 F3s → F4 순서로 잡고 sleeve 판정도 하므로 INSERT는 한 번이다. 새 스탬프는 정확한 fence·시도 행에 연결되어 성공한 송신이 재시도 뒤에도 한 번만 센다. 넘으면 기존과 같은 `daily_cap_exceeded` 사람 카드다. 범위 판정이 없으므로 범위 전이도 없다. 예약은 해제하지 않는다(미전송이어도 그날 cap을 차지한다 — 기존 스탬프보다 엄격하다). 그래서:
+
+- 비계획 경로는 **더 엄격해지기만 한다**: G가 키 합산·fence·예약 포함으로 넓어지고, 결과 불명 전송도 예약으로 잡혀 §2.3 F3a의 구멍이 닫힌다. 면제는 그대로이고 판정을 통과시키는 방향의 변경은 없다. 그래서 V12는 "바이트 동일"이 아니라 "이 두 가지 엄격화 밖에서는 동일"로 바뀐다(§4.8 V12).
+- **배포·전환·롤백 순서 — 한 시점에 하나의 writer 집합.** 이 프로토콜을 모르는 송신 경로는 F3s·F4를 잡지 않으므로, 공존하는 동안 계속 막아 둔다. (1) **T4c만 배포된 사람 파일럿**: 사람 계획 송신을 켜기 전에 해당 sleeve의 기존 자동 dispatch를 기존 게이트 `ORDER_PROPOSALS_AUTO_APPROVE=false`(`app/core/config.py:1038`)로 멈추고 그 상태를 파일럿 내내 유지한다(키움 mock 제안 경로는 이미 사람 승인 전용이다). (2) **T5 전환**: 기존 자동 dispatch와 계측되지 않은 sleeve 송신(이미 나간 카드의 콜백 포함)을 멈추고 비운다. 공통 G 계산은 마지막 기존 자동 송신이 있을 수 있는 KST 일이 지난 뒤에 시작하고, 그 전의 sleeve 노출은 book으로 대사하거나 durable 잔여로 기록한 뒤에야 그 sleeve의 자동 admission을 연다. (3) **혼합 배포**: 공존 기간 내내 프로토콜을 모르는 송신 경로를 막는다. (4) **이전 이미지로의 완전 롤백**: 프로토콜을 아는 writer가 전부 멈추고, 그날의 적용 누계가 지나고, 미해결·미귀속 sleeve 노출이 0이 된 뒤에만 이전 경로를 다시 켠다. 계획 송신 경로를 남기면 T4c의 계획 가드는 그대로 둔다. 스위치 off만으로는 어느 조건도 되지 않는다. 이 순서는 체크리스트 C1·C4와 롤백 런북의 확인 항목이다.
+- 이 변경은 deviation record의 `consumer_paths`에 적는다(T5).
+
+**hk 4900과 hk 5438.** hk 4900의 측정 게시·동결·해제 writer는 F1(LF)을 배타로, 그 트랜잭션에서 다른 fence 영역 lock 없이 잡는다. lock 모드는 이 문서가 정하고 4900은 따른다. hk 5438(`docs/design/5438-go-execution-path.md` §4.5)의 Go 실행 경로 최소 위임장은 계획 결속 fence를 쓰지 않고 자기 pre-send hook으로 위임장을 재확인하므로 이 메커니즘의 적용 대상이 아니다. 그 경로가 나중에 계획 결속 fence를 쓰게 되면 5438 §4.5의 문장대로 이 절을 따른다.
 
 **acceptance(테스트 계약).** 사람 경로와 fence·계좌 결속의 항목은 T4c, 자동 경로와 누계의 항목은 T5가 맡는다. 실제 호출을 세는 가짜 브로커를 쓴다.
 
@@ -777,13 +859,50 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 - G와 B 독립: G만 넘는 경우, B만 넘는 경우 각각 사람 카드이고 사유 코드가 다르다.
 - 계좌 키(전역 cap 500만): (i) 일반 자동승인이 NULL 키로 400만을 쓴 뒤 계획 결속 200만은 걸린다. (ii) 그 역순도 걸린다. (iii) 계획 자동 fence 100만 뒤 서로 다른 키의 일반 자동승인 300만 두 건 중 두 번째는 걸린다. (iv) 세 경우 모두 동시에 돌려도 한도를 넘는 조합이 통과하지 않는다(L4a).
 - 스위치 off와 당일 fence(전역 cap 500만): 결과 불명인 계획 자동 전송 190만 두 건이 있는 날 스위치를 끈 뒤, 일반 자동승인 150만은 G(380 + 150 > 500)에서 걸린다. 다른 `broker_account_id` 키의 일반 자동승인을 동시에 돌려도 같다. 다음 KST 일에는 그 fence가 그날의 누계에 들어가지 않는다(회차 차단은 계속된다).
-- lock 순서: 계획 등록·배치 생성·dispatch·승인 콜백·투영·`released` 전이·동결 writer를 섞어 돌려도 교착이 없다. fence 트랜잭션이 LF 말고는 advisory lock을 잡지 않는다는 것을 테스트가 단언한다.
+- lock 순서: 계획 등록·배치 생성·dispatch·승인 콜백·투영·`released` 전이·동결 writer·프로필·조항·sleeve 버전 writer를 섞어 돌려도 교착이 없다(호출자 lock과의 순환은 `lock_timeout`으로 끝나고 전송 0). fence 트랜잭션이 F1~F4 말고는 lock을 잡지 않고 그 순서를 지킨다는 것, 문서에 적힌 다중 lock writer(송신 시도 트랜잭션의 부분집합, 바구니 소속 sleeve 버전 writer의 F2 → F3s, 계획 해제의 F3s → F3 → F4)는 그 순서를 지키고, 그 밖의 fence 영역 writer는 fence 영역 lock을 하나만 잡는다는 것을 테스트가 단언한다.
 - 기존 경로 회귀: 스위치가 꺼져 있고 그날 자동 fence가 없는 계좌 모드·시장에서 전역 누계 reader의 결과가 변경 전과 같다.
 
-**T4c 검증 계약에 그대로 넣는 두 사례(리뷰 5차).** 위 "요구사항"의 검증이다. 어떤 메커니즘으로 통과시킬지는 hk 5286이 정하고, 사례 자체는 바꾸지 않는다.
+**검증 계약에 그대로 넣는 두 사례(리뷰 5차).** 위 "요구사항"의 검증이다. 위 "직렬화 메커니즘"(hk 5286)으로 통과시키고, 사례 자체는 바꾸지 않는다. 누계 사례(첫째)는 자동 fence와 F3·F4를 구현하는 **T5**의 acceptance이고(T4c는 자동 경로가 없어 돌릴 수 없다), 프로필 철회 사례(둘째)는 F2와 프로필 트리거를 구현하는 **T4c**의 acceptance다(T4c는 자동 fence INSERT를 테스트 하네스로 직접 호출해 판정·트리거를 검증하고, T5가 실제 dispatch로 다시 돌린다). 시간순 재현은 위 "두 경쟁의 재현"에 있다.
 
 - **두 계획, 호출자 세션 상실, 누계**(r4618309254): 기존 G와 B가 각각 250만원이고 일일 상한이 500만원이다. 서로 다른 계획의 150만원 자동 주문 A와 B가 있다(각각 주문당 상한 200만원 안이고, 서로 다른 계획이라 `seq` 충돌이 없다). A가 판정을 통과한 뒤 호출자의 DB 세션을 잃고, 그 사이 B가 같은 판정을 통과한다. 두 fence 트랜잭션을 서로 커밋하기 전에 겹치게 돌린다. **하나의 fence만 커밋돼야 한다**(누계 400만원). 둘 다 250만원을 읽고 통과해 550만원이 자동 전송되면 실패다.
 - **세션 상실 뒤 프로필 철회가 먼저 커밋**(r4618309267): 자동 dispatch가 회차 상한 1인 활성화 프로필로 판정을 통과한 뒤 호출자의 DB 세션이 끊긴다. 그 다음 운영자가 `max_tranche_index = 0` 프로필을 커밋해 자동승인을 철회한다. 그 뒤에 도는 fence 트랜잭션은 이전 프로필 id로 fence를 커밋하지 못하고 **자동 매수의 브로커 호출은 0**이어야 한다. 철회 대신 조항·sleeve 상태의 변경이 먼저 커밋된 경우도 같다.
+
+**실패 방향 테스트 목록(hk 5286).** 위 두 사례에 더해 T4c(사람 경로·F1·F2·fence 트리거)와 T5(자동 경로·F3·F4·비계획 예약)가 넣는다. 경쟁 테스트는 CI의 실제 DB에서 두 세션을 열고 커밋 순서를 배리어로 고정한다. 각 테스트는 가짜 브로커의 호출 수를 단언한다.
+
+| # | 티켓 | 두 세션과 순서 | 기대 |
+|---|---|---|---|
+| X1 | T5 | fence A가 F4를 쥔 채 배리어, fence B 시작 → B가 F4에서 대기하는지 `pg_locks`로 확인 → A 커밋 → B 진행 | B가 A의 fence를 합에 넣고 거부, 호출 1 |
+| X2 | T5 | X1을 같은 바구니(F3 경쟁)와 다른 바구니·같은 계좌 모드(F4 경쟁) 각각으로 | 둘 다 한도를 넘는 조합 0 |
+| X3 | T5 | 비계획 예약과 자동 fence가 F4를 두고 경쟁, 양쪽 커밋 순서 둘 다 | 나중 쪽이 거부, 합계 ≤ cap |
+| X4 | T5 | dispatch 세션 종료 주입 뒤 fence 실행(r4618309254 그대로) | fence 1개만 커밋 |
+| X5 | T4c | 프로필 철회 커밋 → fence 시작 | 자동 fence 0, 호출 0 |
+| X6 | T4c | fence가 F2 공유를 쥔 채 배리어 → 철회 writer 시작(대기 확인) → fence 커밋 → writer 커밋 | fence는 P1으로 커밋, POST 1, 다음 fence는 거부 |
+| X7 | T4c | 철회 writer가 F2를 쥔 채 배리어 → fence 시작(대기 확인) → writer 커밋 | fence가 P2를 보고 거부, 호출 0 |
+| X8 | T4c | X5~X7을 조항 버전·sleeve 버전(`paused`)·스위치 off 재시작으로 | 같은 결과 |
+| X9 | T4c | F2를 건너뛰는 변이 구현으로 X5 | fence 트리거가 최신 프로필 불일치로 INSERT 거부 |
+| X10 | T4c | (a) dispatch가 L3을 쥔 채 fence 호출, 그 sleeve의 버전 writer 시작 → writer가 L3에서 대기하고 F2를 쥐지 않음을 `pg_locks`로 확인 → fence는 F2를 바로 얻어 진행. (b) 호출자가 그 계획의 이벤트 INSERT를 커밋하지 않은 채 fence 호출 | (a) 교착 없음, fence 결과 정상, writer는 dispatch 뒤 커밋. (b) fence가 `seq` 유니크 대기에서 `lock_timeout`으로 실패, 호출 0 |
+| X11 | T4c | fence 트랜잭션 INSERT 뒤 커밋 전 세션 종료 | fence 0, 누계 변화 0, 호출 0 |
+| X12 | T4c | 커밋 응답 유실 주입 | 호출 0, 커밋됐다면 그 회차의 다음 fence는 `mandate_tranche_uncertain` |
+| X13 | T4c | 동결 writer가 F1 배타를 쥔 채 배리어 → fence 대기 → 동결 커밋 | fence 0, 호출 0. 순서를 바꾸면 fence 1, POST 1 |
+| X14 | T5 | V12의 사례 전부(스위치 off, 다른 키 스탬프·해제된 fence·예약만 남은 날, 파킹 면제) | V12대로 — 엄격화 방향으로만 다르고 면제는 같다 |
+| X15 | T4c | T4c 이전 데이터(마이그레이션 전에 등록된 바구니)에서 마이그레이션 적용 → 권한 행 존재 확인. 행을 지운 fixture로 fence와 프로필 writer를 경쟁 | 백필 뒤 모든 바구니에 행이 있다. 행이 없으면 fence는 `mandate_unreadable`로 차단, writer의 0행 UPDATE는 실패 |
+| X16 | T4c | 같은 바구니 KIS sleeve 프로필 철회 커밋 → Toss sleeve의 새 허용 프로필 커밋 → KIS 계획의 자동 fence. 반대로 Toss가 새 프로필을 낸 뒤 KIS의 여전히 유효한 프로필로 fence | 첫째는 자동 fence 0(KIS의 최신은 철회). 둘째는 KIS 프로필로 fence 커밋(Toss가 더 새 것이어도 막지 않음) |
+| X17 | T5 | sleeve 예산 5M·사용 3.5M. dispatch A(1M) 판정 → 세션 상실 → 같은 sleeve 비계획 태그 제안 1M이 F3s 예약 커밋 → A의 fence | A는 F3s 아래에서 4.5 + 1 > 5로 거부, 호출은 비계획 1건 |
+| X18 | T5 | 두 프로세스: 비계획 dispatch(새 코드)와 계획 자동 fence가 G=250·cap 500·각 150으로 동시에, 첫 fence가 그날 처음인 경우 | 둘 다 F4를 잡으므로 하나만 통과, 합계 ≤ cap |
+| X20 | T4c·T5 | sleeve 예산 5M·사용 3.5M. 계획 P의 자동 fence가 F3s를 쥐고 사용액을 읽은 채 배리어 → 같은 sleeve 계획 Q의 사람 fence 1M 시작(F3s 대기 확인) → 자동 fence 커밋 → 사람 fence 커밋. 순서를 바꿔 사람 fence가 먼저 커밋 | 첫째: 사람 fence는 판정 없이 커밋(노출 5.5M은 사람 승인의 결과로 기록). 둘째: 자동 fence가 사람 fence를 사용액에 넣고 4.5 + 1 = 5.5 > 5로 거부 |
+| X21 | T5 | 사용 3.5M, 예산 5M, 계획 결속 rung 1M 하나의 일반 dispatch | 자동 fence 커밋(4.5M). 그 rung의 별도 sleeve 예약 행은 없다 |
+| X22 | T5 | 계획 결속이 아닌 sleeve 태그 rung 1M의 예약 커밋 → POST 전 거부(미전송 증명) → 다음 날 같은 sleeve 판정 | 종결 행이 기록되고 다음 날 sleeve 사용액에 1M이 없다. 같은 날 G에는 남아 있다. 결과 불명이면 대사 종결 전까지 사용액에 남는다 |
+| X23 | T5 | 스위치 off, 다른 키에 스탬프된 3M 두 건(합 6M, cap 5M) 뒤 자동 취소 | 취소는 자동승인되고 예약·F4 판정이 없다 |
+| X24 | T5 | 자동 fence 1.9M 두 건이 있는 날 T5 이전 이미지 프로세스를 띄움 | `ORDER_PROPOSALS_AUTO_APPROVE=false` 확인 전에는 그 이미지가 자동승인하지 않는다(배포 체크 스크립트·런북 단언) |
+| X25 | T4c·T5 | 미전송 증명으로 시도가 닫히고 rung이 `pending_approval`로 복원 → (a) 사람 재클릭, (b) 자동 재dispatch. 각각 새 시도 행 커밋 뒤 POST, 콜백 트랜잭션 롤백 주입 | 두 경로 모두 새 시도 행이 F3s 아래 커밋되고, 동시 자동 fence가 그 노출(4.5M)을 보고 1M을 거부 |
+| X26 | T4c·T5 | 계획 사람 송신 → 콜백 롤백으로 `broker_order_id` 유실 → T4b 대사가 durable 송신 증거로 체결을 찾아 `tranche_filled` 기록, book은 아직 귀속 못 함 → 같은 sleeve 자동 fence | 체결 금액이 노출로 남아 자동 fence가 예산 초과로 거부. book 귀속 뒤에만 오버레이가 사라진다 |
+| X27 | T5 | X17의 파킹 변형: 1M 파킹 sleeve 매수, POST 뒤 dispatch 세션 상실, 그 뒤 1M 계획 자동 fence | 파킹 시도의 `sleeve_exposure`=1M·`daily_cap_contribution`=0, 자동 fence는 5.5 > 5로 거부, G는 그 파킹 시도로 늘지 않는다 |
+| X28 | T5 | 계획 결속이 아닌 sleeve 태그 자동 rung 하나의 실제 submit 경로 | F3s → F4를 한 트랜잭션에서 잡고 시도 행 INSERT는 정확히 1번 |
+| X29 | T5 | wire에서 모호한 브로커 응답 주입 | 같은 시도로 어댑터가 다시 보내지 못한다. 시도는 남고 재시도는 앞선 시도 미해결로 거부 |
+| X30 | T5 | sleeve 태그 비계획 1M 매수 시도 커밋 → 미전송 증명 종결 → 같은 payload 재시도 → 1M 자동 fence(book 3.5M, 예산 5M) | 재시도는 닫힌 시도를 다시 쓰지 못하고 새 시도 행을 F3s 아래 커밋한다. 자동 fence는 그 노출을 보고 5.5 > 5로 거부 |
+| X31 | T5 | 태그 없는 KIS 제안의 자동 시도 커밋 → 브로커 접수 → dispatch 롤백(rung 대기) → 자동승인 off → 다음 거래일 사람 승인 | 사람 송신이 미해결 앞선 시도로 거부되어 POST 0(전체 1) |
+| X32 | T5 | 태그 없는 사람 시도 INSERT를 커밋하지 않은 채 배리어 → 두 번째 세션(nonce 재클릭 또는 자동 시도)이 같은 rung 시도 INSERT 시작(유니크 대기 확인) → 첫 세션 커밋 | 두 번째 INSERT는 유니크 위반으로 실패하고 재판정에서 미해결 앞선 시도로 거부, POST 1 |
+| X19 | T5 | 바구니 참고값 B가 4M일 때 이전 fence 해제가 커밋된 뒤 2M 주문(조항 cap 5M) | 분류기의 재판정 fence가 F3 아래에서 B=2M을 보고 자동 fence 커밋 |
 
 업종 35%의 분자·분모, 구성 sleeve 조항이 서로 다를 때의 처리, 편입액 산입 예제는 §3.8과 §3.1에 있다.
 
@@ -850,7 +969,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 | V9 | 취소 지연 | fault-injection | veto 취소가 늦거나 실패하거나 체결과 겹칠 때: fence 유지, 회차 재제안 차단, 누계 유지, 운영자 알림 |
 | V10 | 대사 지연 | fault-injection | 원장에 체결이 아직 없을 때: 회차는 `tranche_proposed`에 머물고 sleeve 사용액이 미기록 체결을 포함(§2.3 F5), `released` 불가 |
 | V11 | 알림 실패 | fault-injection | 자동승인 카드 발송 실패 시 기존 처리(attempt fence, 브로커 취소 보상, operator alert)가 계획 결속 제안에도 같고, fence·회차 상태가 §4.6대로 남는다 |
-| V12 | 스위치 off의 기존 경로 회귀 | 골든·정적 | `MANDATE_AUTO_APPROVE_ENABLED=false`(기본)이고 **그날 그 계좌 모드·시장에 해제되지 않은 자동 fence가 없을 때** 계획 결속이 없는 모든 제안의 분류 결과·감사 기록이 변경 전과 바이트 동일. 당일 자동 fence가 남아 있으면 스위치가 꺼져 있어도 그 금액이 전역 누계에 들어간다(§4.6의 스위치 off 사례가 이것을 단언한다). 스위치가 켜져 있어도 계획 결속이 없는 제안은 동일(해제되지 않은 자동 fence가 전역 누계에 더해지는 경우만 예외이고, 그것은 더 엄격한 방향이다) |
+| V12 | 스위치 off의 기존 경로 회귀 | 골든·정적 | `MANDATE_AUTO_APPROVE_ENABLED=false`(기본)이고 그날 그 계좌 모드·시장에 (가) 다른 `broker_account_id` 키의 스탬프, (나) 자동 fence, (다) 미전송 rung의 예약이 없을 때 계획 결속이 없는 모든 제안의 분류 결과·감사 기록이 변경 전과 같다(예약 행이 하나 더 생기는 것 말고). 추가 사례: 스위치 off + 다른 키의 스탬프 4M + 이 키의 2M(cap 5M)은 변경 전 통과·변경 후 `daily_cap_exceeded`, 스위치 off + 그날 해제된 fence만 있음, 스위치 off + 예약만 남은 미전송 rung — 각각 결과가 §4.6 (f)의 엄격화 방향으로만 다르다. 파킹 면제 rung은 모든 사례에서 변경 전과 같다(V15) |
 | V13 | D1 경계 | 단위 + 통합 | `allow_mandate_bound_buy`는 §4.4 "D1의 범위"의 네 조건이 전부 참일 때만 선다. 각 조건을 하나씩 거짓으로 만든 사례: 스위치 off(자동·사람 승인 모두 닫힘), 시장·계좌 allowlist 밖, 결속 없음, 차단 판정 실패, ask 없음·stale, 지정가가 상한 초과. 스위치 on에서 사람이 승인한 계획 결속 근접가 매수에는 선다. 상한은 ask × (1+N bp)의 호가 단위 내림. 파킹 예외 플래그와 서로 넓히지 않는다. 결속 없는 현재가 초과 매수는 기존대로 거부 |
 | V14 | D2 경계 | 단위 | `marketable_not_resting` 해제는 결속 + 근접가 조건에서만. `off` 모드, 매도, `replace`·`cancel`, 파킹 심볼, `exit_intent` 있는 제안에는 해제가 닿지 않는다 |
 | V15 | 파킹·cash-funding·손실매도 비간섭 | 단위 | 계획 결속 rung에 파킹 daily-cap 면제가 적용되지 않고 일 누계에 들어간다. 파킹 매도·cash-funding·`loss_cut` 경로의 결과가 변경 전과 같다 |
@@ -980,7 +1099,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 
 인터페이스(이 문서가 의존하는 유일한 지점):
 - 단일 판정 함수 `buy_freeze_state(session, *, account_mode, market, sleeve_id | None, now) -> FreezeVerdict(frozen: bool, reason: str, evidence: dict, observed_version, valid_until)`. 판정 실패는 `frozen=True`. `observed_version`은 판정이 읽은 측정·동결 기록의 버전이고, `valid_until`은 그 판정을 새로 읽지 않고 쓸 수 있는 마지막 시각이다(측정의 신선도 상한에서 나온다). `valid_until`이 지났거나 값이 없으면 동결로 본다.
-- **동결은 그 뒤에 커밋되는 fence만 막는다(I11).** 동결(측정 불가·stale 포함)이 커밋된 뒤에는 그 범위의 전송 fence가 커밋되지 않는다. 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고, 그 금액과 예약은 대사 때까지 남는다(§4.6). 순서는 이렇게 정한다. (1) fence 트랜잭션은 동결 범위 lock LF(전역, 그 바구니)를 공유로 잡은 채 `buy_freeze_state`를 읽고 fence를 쓴다. hk 4900의 측정 게시·동결·해제 writer는 같은 lock을 배타로 잡고 쓴다. lock은 그 짧은 트랜잭션 안에서만 쥔다. 게시가 먼저 커밋되면 fence 트랜잭션은 새 상태를 보고 fence를 쓰지 않는다. (2) fence 트랜잭션이 읽은 판정은 그 시점에 유효 기한 안이어야 한다 — 지났으면 동결로 보고 fence를 쓰지 않는다. (3) POST 직전에 판정과 유효 기한을 한 번 더 읽어 동결·기한 경과면 보내지 않고 fence를 해제한다. 이것은 best-effort이고 보장이 아니다: fence 커밋 뒤에 게시된 동결이나 그 사이에 지난 기한이 그 fence의 POST 한 번을 막지 못할 수 있다. lock 키와 유효 기한의 값은 4900이 정하고, 4900의 writer가 LF를 배타로 잡는 것은 4900 구현에 대한 요구다.
+- **동결은 그 뒤에 커밋되는 fence만 막는다(I11).** 동결(측정 불가·stale 포함)이 커밋된 뒤에는 그 범위의 전송 fence가 커밋되지 않는다. 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있고, 그 금액과 예약은 대사 때까지 남는다(§4.6). 순서는 이렇게 정한다. (1) fence 트랜잭션은 동결 범위 lock LF(§4.6 "직렬화 메커니즘"의 F1, 전역 다음 그 바구니)를 공유로 잡은 채 `buy_freeze_state`를 읽고 fence를 쓴다. hk 4900의 측정 게시·동결·해제 writer는 같은 lock을 배타로, 그 트랜잭션에서 다른 fence 영역 lock 없이 잡고 쓴다. lock은 그 짧은 트랜잭션 안에서만 쥔다. 게시가 먼저 커밋되면 fence 트랜잭션은 새 상태를 보고 fence를 쓰지 않는다. (2) fence 트랜잭션이 읽은 판정은 그 시점에 유효 기한 안이어야 한다 — 지났으면 동결로 보고 fence를 쓰지 않는다. (3) POST 직전에 판정과 유효 기한을 한 번 더 읽어 동결·기한 경과면 보내지 않고 fence를 해제한다. 이것은 best-effort이고 보장이 아니다: fence 커밋 뒤에 게시된 동결이나 그 사이에 지난 기한이 그 fence의 POST 한 번을 막지 못할 수 있다. lock 키와 유효 기한의 값은 4900이 정하고, 4900의 writer가 LF를 배타로 잡는 것은 4900 구현에 대한 요구다.
 - 계획 경로의 소비 지점 셋: 회차 제안 생성(I11 거부), dispatch 계획 게이트(§4.1 조건 9), 그리고 **공통 전송 직전 경계**(`revalidate_and_submit`, 수동·자동 승인 공통). 계획 제안이 동결 전에 사람 카드로 갔다가 동결 뒤 승인되면 승인 콜백이 분류기 없이 `revalidate_and_submit`로 가므로(`app/services/order_proposals/telegram_callback.py:893`, `app/services/order_proposals/revalidation.py:1361-1365`) dispatch 판정만으로는 막지 못한다. 그래서 계획 결속 매수 rung은 승인 방식과 무관하게 fence 트랜잭션에서 `buy_freeze_state`를 읽고, `frozen` 또는 판정 실패면 fence를 쓰지 않는다(`mandate_drawdown_frozen`). 이 배선은 T4c의 범위다(§4.3 (나), §4.6). 그 밖의 매수 경계(untagged 제안, 직접 매수·정정 도구)에 거는 일은 4900의 범위다.
 - **스텁과 실제 판정을 구분한다(리뷰 §5).** 4900 구현 전의 `buy_freeze_state`는 항상 `frozen=True`를 돌려주는 스텁이다. 차단 방향이라 안전하지만, 그 동안에는 **모든** 계획 결속 전송이 막힌다 — 모의 계좌도 사람 승인도 포함해서다. 그래서 스텁 상태에서는 "사람 카드로 끝까지 도는 것"을 실제 모의 계좌로 보일 수 없다. 테스트는 판정 함수를 주입한 fixture로 배선만 증명하고("fixture 통과"), 실제 키움 mock에서 끝까지 도는 것("모의 통합 통과", §8 Blocking의 (2))은 4900의 판정 구현이 머지된 뒤에만 완료로 적는다.
 - **T5의 선행 조건은 4900의 "구현" 머지다.** 4900의 설계 문서가 머지된 것으로는 부족하다. 위 요구 조건을 충족하는 판정 구현과 그 테스트가 머지돼야 T5를 머지할 수 있고(§8), 그 전까지 §4.1 조건 9는 참이 될 수 없다. 실전 활성화는 그 뒤의 별도 단계다(§4.5).
@@ -1064,7 +1183,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 | D1의 범위 | 스위치가 켜진 시장·계좌의 계획 결속 매수면 사람 승인에도 열린다. 스위치가 꺼져 있으면 닫힌다 | §4.4 |
 | 실전 단계 | 사람 카드 단계(계획 결속 제안 생성 계좌 설정)와 자동승인 단계(프로필 + 스위치)를 나누고, 돈과 관련된 체크리스트 항목은 앞 단계에 둔다 | §4.2, §4.5 |
 | 전송 fence | 자동·사람 모든 계획 결속 전송 앞에, 호출자와 다른 세션의 짧은 트랜잭션으로 판정과 함께 커밋. fence 하나에 POST 한 번 | §4.6 |
-| 전역 누계의 계좌 범위 | 당일 자동 fence는 스위치와 무관하게 모든 자동승인의 누계에 들어간다. 위임장 자동승인이 열렸거나 당일 fence가 남은 계좌 모드·시장에서는 모든 자동승인이 `broker_account_id` 키로 나누지 않은 같은 G를 읽는다. 새 lock L4a는 항상 | §4.6 |
+| 전역 누계의 계좌 범위 | 당일 자동 fence는 스위치와 무관하게 모든 자동승인의 누계에 들어간다. T5 이후 모든 자동승인이 계좌 모드·시장·스위치와 무관하게 `broker_account_id` 키로 나누지 않은 같은 G를 F4 아래에서 읽는다. 새 lock L4a는 항상 | §4.6 |
 | 계좌 결속 | 조항·계획에 실제 주문 계좌의 불투명한 참조를 고정하고, 실제 송신 요청의 계좌와 첫 mutation 직전에 대조 | §4.6 |
 | 권한의 단위 | 커밋된 전송 fence. 폐기·정지·논지 훼손·동결은 그 뒤에 커밋되는 fence만 막고, 그 전에 커밋된 fence는 POST 한 번까지 나갈 수 있다. advisory lock 보유는 권한의 근거가 아니다. POST 직전 재확인은 best-effort | §4.6 |
 | 보유 범위 계좌의 고정 | 계획 등록 때 범위의 각 실제 계좌 참조를 편입액 0이어도 고정하고, 보유 0의 증거는 그 참조와 일치하는 계좌의 조회만 받는다 | §3.2, §3.7 |
@@ -1085,15 +1204,15 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 | T1m-b | 모의 sleeve 조합 | sleeve 계좌 조합 DB CHECK와 런타임 어휘(`SLEEVE_ACCOUNT_MARKETS`, `app/models/strategy_sleeves.py:35-41`; `create_sleeve` 검사, `app/services/strategy_sleeves/store.py:303-308`)에 `kiwoom_mock`/`equity_kr` 추가, `LEDGER_IDENTITY`에 `kiwoom_mock → (kiwoom, mock)` 추가(`vocabulary.py:126-135`의 동치 단언 유지, `store.py:599` 로더). live 조합·게이트 불변. T1m-a의 귀속이 머지돼 있어야 이 조합의 사용액·손익이 측정된다 | T1m-a | T2 | A | DB CHECK·sleeve 어휘 | **있음** |
 | T4a | 계획 결속 제안 + 계획 게이트(판정만) | `order_proposal_create(mandate_plan_id, tranche_index)`와 생성 거부(§4.2), I15 재비교, dispatch 계획 게이트(§4.3 (가): 조항·승인 기록·활성화 프로필·회차 상한·업종·회차 조건 판정, 사유와 수치 기록), lock L2 → L3, 회차 이벤트 `tranche_armed`·`tranche_proposed`. 분류기 진입부의 거부 `mandate_not_eligible`(I23, §4.1 조건 0): 이 PR에서는 `mandate_binding`을 소비하는 코드가 없으므로 **모든** 계획 결속 rung이 이 거부로 사람 카드가 된다. 이 PR은 아무 게이트도 풀지 않는다. 🔴 계획 결속 제안을 만들 수 있는 계좌는 `MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES`(기본 빈 값)에 있는 것뿐이고, 이 PR의 코드는 그 값으로 `kiwoom_mock`만 받는다 | T1 | T2 | A | dispatch·분류기(판정과 거부 추가만, 완화 없음) | 없음 |
 | T4b | 체결 투영과 정리 | 원장 체결 → 회차 이벤트(`tranche_filled`·`tranche_partially_filled`·`tranche_unfilled`, 2b 기준값과 고정 예제 §3.2), `first_tranche_settled`·`exhausted`·`closed`(매수 주문 종결 + 계획 계좌 보유 0 확인), 보유 범위는 계획의 계좌 모드로, 보유 0의 증거는 `scope_account_refs`와 참조가 일치하는 계좌의 조회만(§3.7), 정리 이벤트(`orders_settled`·`holdings_disposed`·`released`)와 예약 해제(§3.7), 투영 CLI(기본 dry-run, 명시적 `--commit` 때만 쓰기). 원장에는 쓰지 않는다 | T4a | T2 | A | 계획 이벤트 쓰기(원장은 읽기만) | 없음 |
-| T4c | 계획 결속 전송 직전 경계와 손실 매도 가드 | §4.3 (나)의 여섯 재확인(수동·자동 승인 공통, 실패 = 전송 차단), 사람 승인 콜백의 nonce 소비 전 판정, §4.6의 fence 트랜잭션과 전송 순서(별도 세션의 짧은 트랜잭션에서 판정과 fence INSERT, fence 하나에 POST 한 번, 해제 writer, POST 직전의 best-effort 재확인과 계좌 참조 대조. I11·I15·I16·I24), 손실 매도 가드(I14, §5.2: `loss_cut` 제안 생성·승인 전·전송 직전의 `thesis_broken` 증거 결속, 계좌 무관 조회, 생성은 종목 lock 아래의 짧은 트랜잭션), `buy_freeze_state` 인터페이스와 스텁(4900 구현 전에는 항상 frozen). **이 PR이 머지돼야** 계획 결속 제안 생성 계좌로 live 계좌 값을 받는다(같은 PR에서 넓힌다. 그래도 설정 기본값은 빈 값이다). D4를 적은 deviation record 파일을 이 PR이 만든다(§4.5) | T4a, **hk 5286**(전송 fence 직렬화 메커니즘 확정 — 그 전에는 구현을 시작하지 않는다, §4.6 "미확정") | T2 | A | 전송 직전 경계(거부만), `loss_cut` 제안 생성·승인 경로(거부 추가만), live 계좌의 계획 결속 제안 생성(기본 off 설정 뒤) | 없음 |
+| T4c | 계획 결속 전송 직전 경계와 손실 매도 가드 | §4.3 (나)의 여섯 재확인(수동·자동 승인 공통, 실패 = 전송 차단), 사람 승인 콜백의 nonce 소비 전 판정, §4.6의 fence 트랜잭션과 전송 순서(별도 세션의 짧은 트랜잭션에서 판정과 fence INSERT, fence 하나에 POST 한 번, 해제 writer, POST 직전의 best-effort 재확인과 계좌 참조 대조. I11·I15·I16·I24), fence 영역 lock F1·F2와 `review.mandate_basket_authority`·`review.mandate_cap_mutex` 마이그레이션, 권한 행을 올리는 writer(프로필·조항·sleeve 버전·계획 등록), 자동 fence의 최신 프로필 트리거, §4.6 실패 방향 테스트 X5~X13·X15·X16, 프로필 철회 사례, 사람 fence의 F3s 획득과 시도 기록·노출 종결 계약(X20·X25·X26의 사람 쪽), T4c-only 사람 파일럿의 기존 자동 dispatch 정지 단언, 손실 매도 가드(I14, §5.2: `loss_cut` 제안 생성·승인 전·전송 직전의 `thesis_broken` 증거 결속, 계좌 무관 조회, 생성은 종목 lock 아래의 짧은 트랜잭션), `buy_freeze_state` 인터페이스와 스텁(4900 구현 전에는 항상 frozen). **이 PR이 머지돼야** 계획 결속 제안 생성 계좌로 live 계좌 값을 받는다(같은 PR에서 넓힌다. 그래도 설정 기본값은 빈 값이다). D4를 적은 deviation record 파일을 이 PR이 만든다(§4.5) | T4a, **hk 5286**(전송 fence 직렬화 메커니즘 확정, §4.6 "확정(hk 5286)" — 이 문서가 머지된 뒤 시작) | T2 | A | 전송 직전 경계(거부만), `loss_cut` 제안 생성·승인 경로(거부 추가만), live 계좌의 계획 결속 제안 생성(기본 off 설정 뒤) | 있음(`review.mandate_basket_authority`·`review.mandate_cap_mutex`, 기존 바구니 백필) |
 | T4d | 매도 1호가 소스 | venue별 호가 읽기(관측 시각·유한 양수·신선도 상한·fail-closed, 대체 없음), 계획 게이트와 분류기에 입력. Q10 증거 E1의 기록 | T4a | T2 | A | 읽기 전용 브로커 시세 | 없음 |
-| T5 | **분류기·preview 해제(게이트 완화)** | `mandate_binding` + D2 해제, D1 `allow_mandate_bound_buy`, 파킹 면제 비적용, 스위치 3개(기본 off), 자동 경로의 fence(`approval_mode='auto'`)와 두 누계(§4.6, I20), 전역 누계 reader 보강(당일 자동 fence는 스위치와 무관하게 항상 포함, 열렸거나 당일 fence가 남은 계좌 모드·시장에서는 모든 자동승인이 같은 G)과 항상 잡는 L4a lock, deviation record에 D1~D3 추가(파일은 T4c가 D4로 만든 것). **머지 조건: §4.8의 V1~V22가 이 PR 안에서 전부 통과** | T1m-a, T1m-b, T3a, T3b, T4a, T4b, T4c, T4d, T9, **hk 4900의 판정 구현 머지**(설계 문서 머지가 아니다), 키움 **모의 통합 통과** 보고(아래 Blocking의 (2). 4주·30건을 채우는 것은 머지 조건이 아니라 체크리스트 C3다) | **T3** | S | **자동승인·주문 게이트** | 없음 |
+| T5 | **분류기·preview 해제(게이트 완화)** | `mandate_binding` + D2 해제, D1 `allow_mandate_bound_buy`, 파킹 면제 비적용, 스위치 3개(기본 off), 자동 경로의 fence(`approval_mode='auto'`)와 두 누계(§4.6, I20), 전역 누계 reader 보강(당일 자동 fence는 스위치와 무관하게 항상 포함, T5 이후 모든 계좌 모드·시장에서 모든 자동승인이 F4 아래의 같은 G)과 항상 잡는 L4a lock, fence 트랜잭션의 F3·F4 누계 재확인, 모든 비계획 자동승인의 전송 전 예약(`review.auto_approve_send_reservations`, §4.6 (f)), sleeve 태그 제안의 전송 전 sleeve 예약(F3s), §4.6 누계 사례와 실패 방향 테스트 X1~X4·X14·X17~X32, 공통 비계획 송신 경계의 시도 행(F3s → F4 단일 INSERT), deviation record에 D1~D3 추가(파일은 T4c가 D4로 만든 것). **머지 조건: §4.8의 V1~V22가 이 PR 안에서 전부 통과** | T1m-a, T1m-b, T3a, T3b, T4a, T4b, T4c, T4d, T9, **hk 4900의 판정 구현 머지**(설계 문서 머지가 아니다), 키움 **모의 통합 통과** 보고(아래 Blocking의 (2). 4주·30건을 채우는 것은 머지 조건이 아니라 체크리스트 C3다) | **T3** | S | **자동승인·주문 게이트** | 있음(`review.auto_approve_send_reservations`) |
 | T6 | 낙폭 동결 | 설계·구현은 **hk 4900**. 이 문서는 `buy_freeze_state` 인터페이스와 요구 조건만 둔다(§5.4). 이 설계의 티켓이 아니다 | hk 4900 | 4900이 정한다(그 설계 문서 작업은 T1) | 4900이 정한다(그 설계 문서 작업은 S) | 매수 전송 경계(거부만) — 구현 티켓의 값은 4900이 정한다 | 4900이 정한다 |
 | T7 | 2·3차 트리거 | 가격·시간 조건 판정(I5·I6·I7, 2b 기준값) → armed → 제안 생성. scheduleless CLI. 활성화 프로필 상한이 1인 동안 이 제안은 사람 카드다(§3.6) | T4a, T4b | T2 | A | 제안 생성만 | 없음 |
 | T8 | 논지 훼손 판정과 매도 제안(1b) | 논지 훼손 판정의 자동화: `invalidation_conditions` + 결정론 검사 → `thesis_broken` 이벤트(`approved`·`active`·`suspended`·`exhausted`에서), 회고 기록, 72시간 뒤의 `thesis_evidence_refreshed`(폐기된 미해제 계획 포함), 증거의 순서(승인 이슈·회고 먼저, 그 두 id로 이벤트, 같은 id로 제안 — §5.2), 기존 `exit_intent='loss_cut'` 사람 승인 의식으로 제안(rationale에 계획·이벤트 id, 카드에 미결 매수 주문 수). 가드 자체는 T4c에 있다 — T8은 그 가드를 통과하는 증거를 만든다. 새 exit intent 없음. 시계를 옮겨도 사람 카드라는 테스트(§5.2) | T4a, T4c | T2 | A | 제안 생성만(완화 없음) | 없음 |
 | T9 | 알림·관측 | 카드에 계획·회차·조항 해시·활성화 프로필, 강등 카드의 사유와 수치(§6), 활성화 프로필 승인 카드의 승인 화면 표시 항목 렌더(§4.5), audit `mandate_*` 사유, retro/v1 읽기 연결 | T4a, T3b | T2 | B | 알림 | 없음 |
 
-새 테이블 수: T1 아홉 + T3a 둘 = 열하나(§3.4와 같다). T4a~T9는 테이블을 만들지 않는다.
+새 테이블 수: T1 아홉 + T3a 둘 + T4c 둘(`mandate_basket_authority`·`mandate_cap_mutex`) + T5 하나(`auto_approve_send_reservations`) = 열넷(§3.4와 같다). 그 밖의 T4a~T9는 테이블을 만들지 않는다.
 
 **불변식 소유 티켓.** 각 불변식을 어느 티켓이 구현하고 어디서 검증하는지다. 소유 티켓이 둘 이상이면 각 티켓이 자기 판정 지점을 맡고, 검증은 그 티켓 자신의 PR에 있는 테스트다. T5는 같은 사례를 완화가 들어간 코드에서 §4.8의 V 번호로 다시 통과시킨다.
 
@@ -1109,7 +1228,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 | I8 회차·계획 금액 | T4a(생성 거부·강등) + T4c(계획 전체 한도 차단) | T4a 단위·통합, T4c 통합 |
 | I9 회차당 열린 제안 1개, 불명이면 정지 | T1(이벤트 트리거) + T4a(생성 거부) + T4c(전송 직전) | T1 DB 경쟁(CI), T4c 통합 |
 | I10 체결은 원장 증거로만 | T4b | T4b 통합(원장 fixture, websocket 단독 행은 미확정) |
-| I11 낙폭 동결 | T4a(생성·dispatch) + T4c(fence 트랜잭션의 판정, LF), 판정·writer는 hk 4900 | T4a·T4c 통합(판정 함수와 시계 주입: 먼저 게시된 동결이면 fence 없음, 유효 기한 경과면 fence 없음, fence가 먼저면 POST 한 번). 실제 판정은 4900의 테스트 |
+| I11 낙폭 동결 | T4a(생성·dispatch) + T4c(fence 트랜잭션의 판정, F1), 판정·writer는 hk 4900(F1 배타) | T4a·T4c 통합(판정 함수와 시계 주입: 먼저 게시된 동결이면 fence 없음, 유효 기한 경과면 fence 없음, fence가 먼저면 POST 한 번). 실제 판정은 4900의 테스트 |
 | I12 live·만료 | T4a | T4a 단위 |
 | I13 행 불변 | T1(트리거, 아홉 테이블) + T3a(두 테이블) | 각 PR의 DB 테스트(CI) |
 | I14 손실 매도는 `thesis_broken` 뒤에만, 사람 카드 | T4c(가드: 생성·승인 전·전송 직전) + T1(계획 등록의 열린 `loss_cut` 거부, `loss_sell_mode` CHECK) + T8(판정·증거) + 기존 분류기(변경 없음) | T4c 통합(§5.2 테스트 계약 (a)~(g)), T1 DB, T8의 시계 이동 테스트 |
@@ -1118,7 +1237,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 | I17 파킹 심볼 제외 | T1(store) | T1 단위 |
 | I18 활성화 프로필 회차 상한 | T1(테이블·트리거) + T3b(승인) + T4a(판정) | T4a 단위·통합 |
 | I19 `released` 전 예약·예산 유지 | T1(트리거, `scope_account_refs`) + T4b(정리 이벤트, 참조 일치 확인) | T4b 통합(미결·불명·닫히지 않은 fence·보유 각각, 범위 계좌가 바뀐 경우의 거부), T1 DB |
-| I20 두 누계와 자동 전송 fence | T5(fence 이벤트·사람 경로 writer는 T4c가 먼저) | §4.6 acceptance, §4.8 V16(CI DB 경쟁) |
+| I20 두 누계와 자동 전송 fence | T5(F3·F4 재확인·비계획 예약. fence 이벤트·사람 경로 writer·F1·F2는 T4c가 먼저) | §4.6 acceptance·누계 사례와 실패 방향 테스트 X1~X4·X14·X17~X32, §4.8 V16(CI DB 경쟁) |
 | I24 권한의 단위는 커밋된 fence, fence 하나에 POST 한 번, 닫히지 않은 fence가 있으면 새 fence 없음 | T4c(fence 트랜잭션과 사람 경로) + T5(자동 경로) | §4.6 acceptance(순서·연결 상실·롤백·하위 재시도 금지), T4c 통합 |
 | I21 인증된 승인 기록 | T1(트리거) + T3b(콜백) + T4a·T4c(재확인) | T1 DB, T3b 통합(nonce 재사용·낡은 요청), T4a·T4c 통합 |
 | I22 배치 단일성 | T3a(UNIQUE + 트리거) | T3a DB(CI), §5.1 세션 예제 표를 그대로 단위 테스트로 |
@@ -1139,7 +1258,7 @@ T1m-a ── T1m-b
 ```
 
 - **모의 검증의 세 단계를 구분한다.** (1) fixture 통과: 각 PR의 테스트가 판정 함수와 브로커를 주입해 배선을 증명한다. 4900 구현 전에도 된다. (2) 모의 통합 통과: 실제 키움 mock 계좌에서 계획 등록 → 묶음 승인 → 제안 → 사람 카드 승인 → 전송 → 체결 투영 → 정리까지 돈다. T1m-a·T1m-b·T3a·T3b·T4a·T4b·T4c·T4d와 **hk 4900의 판정 구현**이 머지돼야 시작할 수 있다(그 전에는 스텁이 모든 계획 전송을 막는다, §5.4). "사람 카드로 끝까지 돈다"는 말은 (2)부터 쓴다. (3) 모의 검증 기간 충족: (2)를 4주 동안 30건 이상 돌려 기계 지표를 채운 것. T5의 머지 선행은 (2)이고, (3)은 실전 사람 카드 단계의 체크리스트 C3다(§4.5).
-- **T4c는 hk 5286에 blocked다.** 전송 fence 트랜잭션의 직렬화 메커니즘(공통 lock 키, DB 제약)을 hk 5286이 확정하기 전에는 T4c 구현을 시작하지 않는다(§4.6 "요구사항"·"미확정"). T4c의 검증 계약에는 §4.6의 두 사례(두 계획·세션 상실·누계, 세션 상실 뒤 프로필 철회)가 들어간다. T4c에 걸린 T5·T8과 실전 단계도 그만큼 뒤로 간다.
+- **T4c는 hk 5286 머지 뒤에 시작한다.** 전송 fence 트랜잭션의 직렬화 메커니즘은 hk 5286이 §4.6 "확정(hk 5286)"·"직렬화 메커니즘"으로 확정했다(fence 영역 lock F1~F4, 권한 행·누계 직렬화 행, 자동 fence의 최신 프로필 트리거). T4c의 검증 계약에는 §4.6의 프로필 철회 사례와 실패 방향 테스트 X5~X13·X15·X16이, T5의 검증 계약에는 누계 사례(두 계획·세션 상실)와 X1~X4·X14·X17~X32이 들어간다(X20·X25·X26의 사람 쪽 F3s·시도 기록·노출 종결 계약은 T4c가 먼저 넣는다). T4c에 걸린 T5·T8과 실전 단계도 그만큼 뒤로 간다.
 - **T4c 전에는 live 계좌에 계획 결속 제안이 생기지 않는다.** T4a의 코드가 live 계좌 값을 받지 않기 때문이고, 설정을 바꿔도 마찬가지다. 마지막 안전 경계(전송 직전 경계)가 없는 상태로 live에 노출되는 구간이 없다. T4c 뒤에도 `MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES`에 live 계좌를 넣는 것은 체크리스트의 "사람 카드" 항목을 채운 뒤의 운영자 승인 단계다(§4.5 4단계).
 - **T5는 위 선행이 전부 머지되고 모의 통합 통과(2) 보고가 있은 뒤에만 머지한다.** T5의 선행인 hk 4900은 판정 **구현과 테스트**의 머지다.
 - T8(논지 훼손 판정의 자동화)은 T5의 머지 선행이 아니다. 손실 매도 가드(I14)는 T8이 아니라 T4c에 있으므로 T8이 없어도 실전에서 `thesis_broken` 없는 손실 매도는 나가지 않는다. T8이 없을 때 달라지는 것은 판정과 증거를 운영자가 CLI로 직접 기록해야 한다는 점이고, 그 임시 절차와 운영자 기록을 체크리스트 C8이 요구한다(§4.5).
