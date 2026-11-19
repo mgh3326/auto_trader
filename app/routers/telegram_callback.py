@@ -36,7 +36,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.services.mandate.telegram_approval import (
+    handle_mandate_update,
+    is_mandate_update,
+)
 from app.services.order_proposals.callback_inbox.ingress import (
     CallbackInboxUnavailable,
     ingest_callback_update,
@@ -121,6 +126,12 @@ async def telegram_callback(body: dict[str, Any]) -> dict[str, Any]:
     internal result — Telegram only inspects the HTTP status.
     """
     _require_enabled()
+    if is_mandate_update(body):
+        outcome = await handle_mandate_update(
+            body, now=now_kst(), session_factory=AsyncSessionLocal
+        )
+        logger.info("mandate.telegram.callback", extra={"outcome": outcome})
+        return {"ok": True}
     if settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED:
         await _ingest_durably(body)
         return {"ok": True}

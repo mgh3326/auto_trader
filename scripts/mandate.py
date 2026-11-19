@@ -44,21 +44,30 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from html import escape
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.mandate import MandatePlan, MandatePlanTranche
+from app.core.config import settings
+from app.models.mandate import MandateApprovalRequest, MandatePlan, MandatePlanTranche
+from app.monitoring.trade_notifier.transports import (
+    edit_message_text,
+    send_telegram_message,
+)
 from app.services.mandate import store as ms
+from app.services.mandate import telegram_approval
 from app.services.mandate import vocabulary as v
 from app.services.mandate.fold import PlanState
 from app.services.strategy_sleeves import store as sleeve_store
 from app.services.strategy_sleeves.marks import latest_close_marks
 from app.services.strategy_sleeves.store import PreRegistration
 from app.services.trading_policy_service import load_trading_policy
+from app.telegram_contract import telegram_text_within_limit
 
 OPERATOR_PREFIX = "operator:"
 ACTOR_MAX = 128
@@ -513,6 +522,62 @@ async def _status(session: AsyncSession, args: argparse.Namespace) -> dict[str, 
     return {"sleeve_key": sleeve.sleeve_key, "plans": rows}
 
 
+async def _send_approval_card(
+    session: AsyncSession, args: argparse.Namespace, now: datetime
+) -> dict[str, Any]:
+    chat_id = args.chat_id
+    if not 0 < abs(chat_id) < 2**52 or str(chat_id) not in (
+        settings.order_proposals_telegram_chat_allowlist
+    ):
+        raise MandateCliError("chat_not_allowed")
+    request = await session.get(MandateApprovalRequest, args.request_id)
+    if request is None:
+        raise MandateCliError("mandate_request_not_found")
+    text = await telegram_approval.card_text(session, request)
+    markup_text = escape(text)
+    if not telegram_text_within_limit(markup_text):
+        raise MandateCliError("telegram_payload_too_long")
+    if not args.commit:
+        await session.rollback()
+        return {"mode": "preview", "text": text}
+    if not (
+        settings.ORDER_PROPOSALS_TELEGRAM_ENABLED
+        and settings.ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN
+    ):
+        raise MandateCliError("telegram_not_configured")
+    bot_token = settings.ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        message = await send_telegram_message(
+            http_client=client,
+            bot_token=bot_token,
+            chat_id=str(chat_id),
+            text="위임장 승인 카드 준비 중",
+            parse_mode=None,
+        )
+        if not message.ok or message.message_id is None:
+            raise MandateCliError("mandate_card_send_failed")
+        markup = telegram_approval.card_markup(
+            request, chat_id, message.message_id, now
+        )
+        published = await edit_message_text(
+            http_client=client,
+            bot_token=bot_token,
+            chat_id=str(chat_id),
+            message_id=message.message_id,
+            text=markup_text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+        if not published.ok:
+            raise MandateCliError("mandate_card_publish_failed")
+    await session.rollback()
+    return {
+        "mode": "published",
+        "request_id": args.request_id,
+        "message_id": message.message_id,
+    }
+
+
 async def _dispatch(
     session: AsyncSession, args: argparse.Namespace, now: datetime
 ) -> dict[str, Any]:
@@ -521,6 +586,8 @@ async def _dispatch(
         await session.rollback()
         return {"mode": "read", **payload}
     actor = _operator_actor(args.actor)
+    if args.command == "send-approval-card":
+        return await _send_approval_card(session, args, now)
     if args.command == "request-terms":
         body = await _request_terms(session, args, actor)
     elif args.command == "request-profile":
@@ -617,6 +684,12 @@ def _parser() -> argparse.ArgumentParser:
     profile.add_argument("--approval-ref", required=True)
     profile.add_argument("--actor", required=True, help="operator:<이름>")
     profile.add_argument("--commit", action="store_true")
+
+    card = sub.add_parser("send-approval-card", help="위임장 승인 Telegram 카드 발송")
+    card.add_argument("--request-id", type=_positive_int, required=True)
+    card.add_argument("--chat-id", type=int, required=True)
+    card.add_argument("--actor", required=True, help="operator:<이름>")
+    card.add_argument("--commit", action="store_true")
 
     register = sub.add_parser("register-plan", help="분할 매수 계획을 proposed로 등록")
     register.add_argument("--input", required=True, help="JSON 계획(닫힌 키)")
