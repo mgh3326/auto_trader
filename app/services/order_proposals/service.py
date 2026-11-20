@@ -37,6 +37,7 @@ from app.services.mandate import loss_guard as mandate_loss_guard
 from app.services.mandate import proposal_gate
 from app.services.mandate import store as mandate_store
 from app.services.mandate import vocabulary as vocab
+from app.services.order_proposals import mandate_quote
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
@@ -965,18 +966,27 @@ class OrderProposalsService:
                 or quantity <= 0
             ):
                 raise OrderProposalError("mandate_price_unavailable")
-            quote = await proposal_gate.load_proposal_quote(mandate)
+            quote = await proposal_gate.load_proposal_quote(
+                mandate, mandate_quote.read_plan_quote
+            )
             if quote is None:
                 raise OrderProposalError("mandate_ask_unavailable")
             if not quote.current_price.is_finite() or quote.current_price <= 0:
                 raise OrderProposalError("mandate_price_unavailable")
+            ask_checked_at = proposal_gate.ask_check_time(now, quote.read_at)
             band_refusal = proposal_gate.check_near_ask(
                 limit_price=limit,
                 best_ask=quote.best_ask,
                 observed_at=quote.ask_observed_at,
                 tick_size=quote.tick_size,
                 premium_bps=mandate.terms.entry_max_premium_bps,
-                now=now,
+                now=ask_checked_at,
+            )
+            mandate_quote.record_quote_use(
+                quote,
+                stage="create",
+                checked_at=ask_checked_at,
+                gate_result=band_refusal[0] if band_refusal else "accepted",
             )
             if band_refusal is not None:
                 raise OrderProposalError(band_refusal[0])
