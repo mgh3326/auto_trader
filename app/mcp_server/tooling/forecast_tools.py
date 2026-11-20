@@ -190,9 +190,8 @@ async def _record_declined_evidence(
     created_by: str,
     instrument_type: str,
     entry: DeclinedEntry | None,
-    decided_at: datetime | None = None,
 ) -> None:
-    now = decided_at or datetime.now(UTC)
+    now = datetime.now(UTC)
     if entry is None:
         evidence = _declined_evidence(
             row,
