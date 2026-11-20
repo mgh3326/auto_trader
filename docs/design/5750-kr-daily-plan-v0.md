@@ -113,7 +113,7 @@ head(market='kr', session_date=D, mode='plan_only')
 ### 3.1 위험 매도: 기계식 손절 shadow 판정을 그대로 읽는다
 
 - 판정 함수는 순수 `evaluate_lot`(`app/services/mechanical_loss_cut/rules.py:577`)이다: 평단 아래 → 기록된 손절가 아래 → 평단 대비 `unrealized_floor_pct` 이하 → `rising_compare_sessions_ago` 세션 전 종가보다 높지 않음 → 트리거 계열 조건 → 미체결 매도·보호 수량 차감 뒤 팔 수 있는 수량. 모든 증거 부족 경로는 `Skip`으로 끝난다. 닫힌 사유 어휘는 `SKIP_REASONS`(`app/services/mechanical_loss_cut/rules.py:34-55`)다.
-- 행의 `rule_verdict`에 `{result: cut|skip, skip_reason?, trigger_key?, close, stop, unrealized_pct, plan_version, policy_version, policy_content_hash}`를 싣는다. `cut`이면 `action=risk_sell`, `action_basis=rule`이다. 세션은 이 행의 `action`·`quantity`를 바꾸지 못하고, 서버가 같은 입력으로 다시 계산해 일치하지 않는 쓰기를 거부한다(§9 T1 검증).
+- 행의 `rule_verdict`에 `{result: cut|skip, skip_reason?, trigger_key?, close, stop, unrealized_pct, plan_version, policy_version, policy_content_hash}`를 싣는다. `cut`이면 `action=risk_sell`, `action_basis=rule`이다. 세션은 이 행의 `action`·`quantity`를 바꾸지 못하고, 서버가 같은 입력(버전의 `input_bundle_sha256`이 고정한 번들)으로 다시 계산해 일치하지 않는 쓰기를 거부한다(§9 T1 검증).
 - 🔴 증거 부족은 안전 확인이 아니다: `price_missing`·`price_stale`·`halted_suspect`·`position_unreadable`·`no_exit_plan`·`open_sell_unknown`·`protected_unknown`은 행을 `hold`+`rule_status=unknown`+같은 사유로 남긴다. `not_underwater`·`above_planned_stop`·`floor_not_reached`·`rising` 등 평가가 끝난 skip만 `rule_status=evaluated`다. 위험 상태를 모를 때 "위험 없음"으로 보이지 않게 한다.
 - 세션은 별도로 **논지 훼손 여부**만 기록한다: 행의 `thesis_status ∈ {intact, weakening, broken, unrecorded}`. 이 값은 정보이며 어떤 이벤트·제안·주문도 만들지 않는다. 위임장 쪽 `thesis_broken` 이벤트는 승인 이슈와 회고가 있어야 쓸 수 있고(`docs/design/3795-mandate.md` §5.2), v0는 그 경로를 부르지 않는다.
 - **읽기 전용 경로가 필요하다(현재 코드 사실)**: `evaluate_all_lots`는 읽기 전용이 아니다. lot에 계획이 없으면 backfill 계획을 쓰고(`app/services/mechanical_loss_cut/job.py:228-231`) 판정마다 shadow 행을 쓰며(`app/services/mechanical_loss_cut/job.py:275`), `commit=False`는 커밋만 건너뛴다(`app/services/mechanical_loss_cut/job.py:282-283`). 반환은 cut 판정 목록과 skip **개수**뿐이라 lot별 skip 사유가 나오지 않는다(`app/services/mechanical_loss_cut/job.py:250,289`). 또 `run_mechanical_loss_cut`은 `MECHANICAL_LOSS_CUT_SHADOW_ENABLED`가 꺼지면 `disabled`를 돌려준다(`app/services/mechanical_loss_cut/job.py:326`). 그래서 v0는 **스위치를 켜지 않고** 같은 순수 `evaluate_lot`을 읽기 포트(`held_lots`·`latest_plans`·`bars`·`open_sell_quantities`·`protected_quantities`)만으로 lot별로 부르는 읽기 전용 평가기를 새로 둔다(하드룰 19: 스위치 기본 off 유지·shadow 모듈은 브로커·주문 import 금지). 계획이 없는 lot은 backfill을 쓰지 않고 `no_exit_plan`(unknown)으로 남긴다. shadow 행을 테이블에 남기는 기존 수동 lever(`mechanical_loss_cut.evaluate`, 스케줄 없음, `app/tasks/mechanical_loss_cut_tasks.py:20`)는 별개이며 이 문서가 바꾸지 않는다(Q4).
@@ -149,9 +149,9 @@ head(market='kr', session_date=D, mode='plan_only')
   | PBR `pbr` | `market_valuation_snapshots`(`app/models/market_valuation_snapshot.py:52`) | 낮을수록 |
   | 외국인 순매수 5세션 합 `foreign_net` | `investor_flow_snapshots`(`app/models/investor_flow_snapshot.py:67`) | 클수록 |
 
-  `c_rank` = 풀 안 퍼센타일 순위의 동일 가중 평균. 부호는 기존 매수 후보 스크리너의 의미(지지선 근접·과매도·유동성)를 따른 **사전 선언**이며 데이터로 다시 맞추지 않는다. 결측 지표가 있는 후보는 C에서 제외하지 않고 해당 지표를 평균에서 빼되 결측 개수를 기록한다(Q2).
+  `c_rank` = 풀 안 퍼센타일 순위의 동일 가중 평균. 부호는 지지선 근접·과매도·유동성·저평가·외국인 매수라는 매수 후보 탐색의 통상 방향으로 **사전 선언**한 것이며 데이터로 다시 맞추지 않는다(기존 스크리너 정렬 방향과의 일치 여부는 이 문서에서 확인하지 못했다 `[모름]` — T2에서 대조하고 다르면 봉인 전에 목록을 고친다). 결측 지표가 있는 후보는 C에서 제외하지 않고 해당 지표를 평균에서 빼되 결측 개수를 기록한다(Q2).
 - 🔴 누수 방지: `c_rank`는 premarket 입력 번들 안에서 **세션이 보기 전에** 계산·저장되고(번들 행의 `created_at` < 버전 1의 `created_at`), 세션에게 주는 번들에서는 `c_rank`를 뺀다. 세션이 대조 순위에 앵커링하지 않게 한다. 번들의 입력은 모두 `available_at ≤ plan asof`다(§7).
-- 세 팔: **S**(세션 합성 등급 상위 N), **C**(`c_rank` 상위 N), **E**(풀 전체 동일 가중 평균, 참고). N = 10(Q2). 비교 풀 `P_t` = 세션 등급이 유효한 후보(오늘 판단했거나 이월 ≤ K=5세션) ∩ §2.1을 통과한 후보. C도 같은 `P_t`에서 상위 N을 고른다. 세션이 판단하는 집합 `J_t`가 `c_rank` 상위 N' (N' ≥ N, §6.2)를 포함하므로 `P_t`에서 C의 상위 N은 풀 전체 C의 상위 N과 같다.
+- 세 팔: **S**(세션 합성 등급 상위 N), **C**(`c_rank` 상위 N), **E**(풀 전체 동일 가중 평균, 참고). N = 10(Q2). 비교 풀 `P_t` = 세션 등급이 유효한 후보(오늘 판단했거나 이월 ≤ K=5세션) ∩ §2.1을 통과한 후보. C도 같은 `P_t`에서 상위 N을 고른다. 세션이 판단하는 집합 `J_t`가 §2.1을 통과한 후보 중 `c_rank` 상위 N' (N' ≥ N, §6.2)를 포함하므로 `P_t`에서 C의 상위 N은 §2.1 통과 후보 전체에서 C의 상위 N과 같다.
 
 ### 4.3 비교와 판정
 
