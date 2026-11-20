@@ -12,7 +12,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError
 
 from app.core.db import AsyncSessionLocal
 from app.models.market_events import (
@@ -239,6 +240,24 @@ async def test_commit_deletes_exactly_the_targets_and_dependents_in_one_row_batc
     assert report["mode"] == "commit"
     assert report["held_news_feeds_kept"] == ["http_naver_stock_aggregate"]
 
+    # Exact counts for this run's fixture rows only (the scope excludes other rows).
+    news = report["categories"]["news"]
+    assert news["articles_deleted"] == 2  # retired_a and retired_b; shared is protected
+    assert news["dependents_deleted"] == {
+        "symbol_news_relevance": 1,
+        "news_article_related_symbols": 1,
+        "news_analysis_results": 1,
+    }
+    tv = report["categories"]["market_events"]["tradingview/economic/global"]
+    assert tv["events_deleted"] == 1
+    assert tv["dependents_deleted"] == {"market_event_values": 1}
+    assert tv["partitions_deleted"] == 1
+    assert (
+        report["categories"]["market_events"]["wisefn/earnings/kr"]["events_deleted"]
+        == 0
+    )
+    assert report["categories"]["toss_valuation"]["toss_rows_deleted"] == 2
+
     async with AsyncSessionLocal() as session:
         # Retired article rows and every dependent of them are gone.
         assert (
@@ -353,32 +372,70 @@ async def test_second_commit_is_a_no_op(seeded) -> None:
         assert triple_report["partitions_deleted"] == 0
 
 
-async def test_mismatch_rolls_back_the_batch_and_keeps_its_rows(
-    seeded, monkeypatch
+async def test_failed_batch_rolls_back_while_the_earlier_batch_stays_committed(
+    seeded,
 ) -> None:
-    """A batch whose delete count disagrees raises inside its transaction, so the
-    rows it selected are still there afterwards (review r1 on the batch check)."""
+    """Batch 1 (retired_a) commits. Batch 2 (retired_b) gets a dependent delete
+    run first, then a test-local trigger refuses its parent delete. Batch 2 must
+    roll back entirely: retired_b and its dependent remain, and retired_a stays gone."""
 
-    def mismatch(selected: int, deleted: int) -> None:
-        raise RuntimeError(f"batch deleted {deleted} of {selected} selected rows")
-
-    monkeypatch.setattr(prune, "_require_all_deleted", mismatch)
-    with pytest.raises(RuntimeError, match="selected rows"):
-        await prune.run_commit(
-            AsyncSessionLocal, batch_size=1, only=["news"], scope=SCOPE
-        )
-
+    trigger = f"pytest_prune_block_{MARK.lower()}"
+    later_id = int(seeded["retired_b"])
     async with AsyncSessionLocal() as session:
-        assert await _ids(session, NewsArticle, [seeded["retired_a"]]) == {
-            seeded["retired_a"]
-        }
-        assert await _ids(session, NewsArticle, [seeded["retired_b"]]) == {
-            seeded["retired_b"]
-        }
-        assert (
-            await session.execute(
-                select(SymbolNewsRelevance.id).where(
-                    SymbolNewsRelevance.article_id == seeded["retired_a"]
-                )
+        await session.execute(
+            text(
+                f"CREATE OR REPLACE FUNCTION {trigger}() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
+                f"IF OLD.id = {later_id} THEN RAISE EXCEPTION 'prune rollback probe'; END IF; "
+                "RETURN OLD; END $$"
             )
-        ).first() is not None
+        )
+        await session.execute(
+            text(
+                f"CREATE TRIGGER {trigger} BEFORE DELETE ON news_articles "
+                f"FOR EACH ROW EXECUTE FUNCTION {trigger}()"
+            )
+        )
+        session.add(
+            SymbolNewsRelevance(
+                article_id=later_id,
+                market="kr",
+                symbol=f"P{MARK}",
+                feed_source=RETIRED_FEED,
+                first_seen_at=NOW_NAIVE,
+                status="pending",
+                created_at=NOW_NAIVE,
+                updated_at=NOW_NAIVE,
+            )
+        )
+        await session.commit()
+    try:
+        with pytest.raises(DBAPIError):
+            await prune.run_commit(
+                AsyncSessionLocal, batch_size=1, only=["news"], scope=SCOPE
+            )
+
+        async with AsyncSessionLocal() as session:  # fresh session reads what persisted
+            assert await _ids(session, NewsArticle, [seeded["retired_a"]]) == set()
+            assert (
+                await session.execute(
+                    select(SymbolNewsRelevance.id).where(
+                        SymbolNewsRelevance.article_id == seeded["retired_a"]
+                    )
+                )
+            ).first() is None
+            assert await _ids(session, NewsArticle, [later_id]) == {later_id}
+            assert (
+                await session.execute(
+                    select(SymbolNewsRelevance.id).where(
+                        SymbolNewsRelevance.article_id == later_id
+                    )
+                )
+            ).first() is not None
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                text(f"DROP TRIGGER IF EXISTS {trigger} ON news_articles")
+            )
+            await session.execute(text(f"DROP FUNCTION IF EXISTS {trigger}()"))
+            await session.commit()
