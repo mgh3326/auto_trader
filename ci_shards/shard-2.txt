@@ -12,6 +12,7 @@ tests/brokers/kis/mock_scalping_ws/test_quote_parsers.py
 tests/brokers/kis/mock_scalping_ws/test_quote_queue.py
 tests/brokers/kis/mock_scalping_ws/test_smoke_cli.py
 tests/brokers/kis/mock_scalping_ws/test_supervisor.py
+tests/ci/test_no_taskiq_enqueue.py
 tests/core/test_money.py
 tests/core/test_research_pipeline_flags.py
 tests/integration/services/test_forecast_read_window_candles.py
