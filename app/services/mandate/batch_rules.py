@@ -37,6 +37,8 @@ _CALLBACK_RE = re.compile(
     r"mpb:(?P<action>[ar]):(?P<member>[0-9a-z]{1,13}):(?P<nonce>[A-Za-z0-9_-]{22})"
 )
 MAX_CALLBACK_BYTES = 64
+#: card ids are signed bigints in the database
+MEMBER_ID_MAX = 2**63 - 1
 _NONCE_DOMAIN = b"mandate-plan-batch-nonce/v1:"
 
 
@@ -164,6 +166,8 @@ def build_callback_data(action: str, member_id: int, nonce: str) -> str:
         raise ValueError("action is approve or reject")
     if _NONCE_RE.fullmatch(nonce) is None:
         raise ValueError("a nonce is 22 URL-safe characters")
+    if not 1 <= member_id <= MEMBER_ID_MAX:
+        raise ValueError("a card id is a positive bigint")
     data = f"{CALLBACK_PREFIX}:{_ACTION_CODE[action]}:{_base36(member_id)}:{nonce}"
     if len(data.encode("ascii")) > MAX_CALLBACK_BYTES:
         raise ValueError("callback data exceeds 64 bytes")
@@ -177,13 +181,17 @@ def is_mandate_callback_data(data: object) -> bool:
 
 def parse_callback_data(data: object) -> ParsedCallback | None:
     """Parse ``mpb:<a|r>:<card id base36>:<nonce>``; None when it is not exactly that."""
-    if not isinstance(data, str) or len(data.encode("utf-8")) > MAX_CALLBACK_BYTES:
+    if (
+        not isinstance(data, str)
+        or not data.isascii()
+        or len(data) > MAX_CALLBACK_BYTES
+    ):
         return None
     match = _CALLBACK_RE.fullmatch(data)
     if match is None:
         return None
     member_id = int(match.group("member"), 36)
-    if member_id <= 0:
+    if not 1 <= member_id <= MEMBER_ID_MAX:
         return None
     return ParsedCallback(
         CALLBACK_ACTIONS[match.group("action")], member_id, match.group("nonce")

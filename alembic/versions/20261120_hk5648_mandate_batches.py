@@ -141,6 +141,7 @@ def _guard_ddl() -> tuple[str, ...]:
             first_card record;
             last_no integer;
             st text;
+            bound_terms bigint;
         BEGIN
             IF current_setting('transaction_isolation') <> 'read committed' THEN
                 RAISE EXCEPTION 'mandate batch cards need READ COMMITTED'
@@ -217,11 +218,25 @@ def _guard_ddl() -> tuple[str, ...]:
                         USING ERRCODE = 'restrict_violation';
                 END IF;
                 st := review.mandate_plan_auth_state(NEW.plan_id);
-                IF (NEW.kind = 'new_plan' AND st IS DISTINCT FROM 'proposed')
+                IF st IS NULL
+                   OR (NEW.kind = 'new_plan' AND st IS DISTINCT FROM 'proposed')
                    OR (NEW.kind = 'reapproval'
                        AND st NOT IN ('approved', 'active')) THEN
                     RAISE EXCEPTION 'the plan authority does not fit the card kind'
                         USING ERRCODE = 'restrict_violation';
+                END IF;
+                IF NEW.kind = 'reapproval' THEN
+                    -- the clause the plan is bound to now, from the event stream (the plan
+                    -- row keeps the clause of registration, which a rebind moves on from)
+                    SELECT e.terms_id INTO bound_terms
+                      FROM review.mandate_plan_events e
+                     WHERE e.plan_id = NEW.plan_id
+                       AND e.event IN ('approved', 'terms_rebound')
+                     ORDER BY e.seq DESC LIMIT 1;
+                    IF bound_terms IS NOT DISTINCT FROM NEW.terms_id THEN
+                        RAISE EXCEPTION 'a reapproval card needs a clause other than the bound one'
+                            USING ERRCODE = 'restrict_violation';
+                    END IF;
                 END IF;
             ELSE
                 IF NEW.card_no <> last_no + 1 THEN
@@ -276,7 +291,7 @@ def _guard_ddl() -> tuple[str, ...]:
             END IF;
             SELECT m.batch_id, m.plan_id, m.card_no, m.kind, m.terms_id,
                    m.terms_sha256, b.target_session, b.approval_deadline_at,
-                   b.expires_at, v.sleeve_id
+                   b.expires_at, b.realm, b.basket_key, v.sleeve_id
               INTO mem
               FROM review.mandate_plan_batch_members m
               JOIN review.mandate_plan_batches b ON b.id = m.batch_id
@@ -287,6 +302,11 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the answer names no card of this plan'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            -- lock order: basket (L2, as batch creation takes it), then sleeve (L3),
+            -- then the per-plan card lock; a successor batch is therefore created
+            -- either before this answer or after its commit, never beside it
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+                'mandate_basket:' || mem.realm || ':' || mem.basket_key, 0));
             -- the sleeve lock is the one every sleeve-version writer takes
             -- (review.strategy_sleeves:<id>); the clause is read after it, so a
             -- version change cannot slip in between the check and this insert
@@ -357,6 +377,11 @@ def _guard_ddl() -> tuple[str, ...]:
                     END IF;
                 END IF;
             END IF;
+            -- the reads above took time: expiry is judged again at the end
+            IF clock_timestamp() >= mem.expires_at THEN
+                RAISE EXCEPTION 'the batch has expired'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
@@ -390,7 +415,7 @@ DOWNGRADE_GUARD = """
                SELECT 1 FROM review.mandate_plan_events
                 WHERE batch_member_id IS NOT NULL
            ) THEN
-            RAISE EXCEPTION 'mandate batch tables hold rows; export them before downgrading'
+            RAISE EXCEPTION 'mandate batch tables hold rows; in-place downgrade is unavailable once a batch is recorded (the history is kept)'
                 USING ERRCODE = 'restrict_violation';
         END IF;
     END;

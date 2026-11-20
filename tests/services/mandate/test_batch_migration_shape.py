@@ -334,3 +334,31 @@ def test_expiry_and_the_deadline_are_read_from_the_wall_clock_not_the_transactio
     # the only writer-supplied value is a date (the session after the target)
     assert "current_setting('mandate.next_session', true)" in answer
     assert "NEW.effective_session := next_day" in answer
+
+
+def test_a_reapproval_card_needs_a_clause_other_than_the_bound_one_and_a_known_state() -> (
+    None
+):
+    body = _body("mandate_plan_batch_members_guard")
+    assert "IF st IS NULL" in body
+    assert (
+        "ORDER BY e.seq DESC LIMIT 1" in body
+    )  # the binding comes from the event stream
+    assert "e.event IN ('approved', 'terms_rebound')" in body
+    assert "a reapproval card needs a clause other than the bound one" in body
+    assert "bound_terms IS NOT DISTINCT FROM NEW.terms_id" in body
+
+
+def test_the_answer_takes_the_basket_lock_before_the_sleeve_lock_and_rechecks_expiry_last() -> (
+    None
+):
+    body = _body("mandate_plan_events_batch_guard")
+    basket = "'mandate_basket:' || mem.realm || ':' || mem.basket_key"
+    sleeve = "'review.strategy_sleeves:' || mem.sleeve_id"
+    member = "'mandate_batch_member:'"
+    assert body.index(basket) < body.index(sleeve) < body.index(member)
+    # a final expiry check after every read, just before the row is accepted
+    last = body.rindex("IF clock_timestamp() >= mem.expires_at THEN")
+    assert last > body.index("NEW.effective_session := next_day")
+    assert body.index("RETURN NEW;") > last
+    assert "in-place downgrade is unavailable" in _norm(_load().DOWNGRADE_GUARD)

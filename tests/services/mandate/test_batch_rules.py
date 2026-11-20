@@ -172,6 +172,9 @@ def test_callback_data_round_trips_and_fits_64_bytes_for_the_largest_card_id() -
         "mpb:a:1:" + "A" * 21 + "+",
         "mpb:a:1:" + "A" * 22 + "\n",
         "mpb:a:zzzzzzzzzzzzzz:" + "A" * 22,
+        "mpb:a:" + rules._base36(2**63) + ":" + "A" * 22,  # first id above a bigint
+        "mpb:a:1:" + "\ud800" * 22,  # a lone surrogate must not raise
+        "mpb:a:1:" + "é" * 22,
     ],
 )
 def test_callback_data_that_is_not_exactly_the_format_is_none(data) -> None:
@@ -186,6 +189,8 @@ def test_the_mpb_prefix_is_this_path_even_when_the_rest_is_malformed() -> None:
 
 
 def test_the_builder_refuses_bad_inputs() -> None:
+    with pytest.raises(ValueError):
+        rules.build_callback_data("approve", 2**63, "A" * 22)
     with pytest.raises(ValueError):
         rules.build_callback_data("approve", 0, "A" * 22)
     with pytest.raises(ValueError):

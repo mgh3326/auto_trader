@@ -144,6 +144,7 @@ async def scene(
     approved_first: bool = False,
     symbols: int = 1,
     market: str = "equity_kr",
+    times=None,
 ) -> Scene:
     """A mock-realm basket with ``symbols`` plans, one batch and card 1 of each plan."""
     syms = tuple(new_symbol() for _ in range(symbols))
@@ -156,7 +157,7 @@ async def scene(
         plans.append(plan)
         if approved_first:
             await seed.approve_plan(plan.id, terms)
-    return await open_batch(db, seed, sleeve, terms, plans, when=when)
+    return await open_batch(db, seed, sleeve, terms, plans, when=when, times=times)
 
 
 async def open_batch(
@@ -346,15 +347,18 @@ async def test_i22_one_batch_per_basket_and_target_session(db_session, seed) -> 
 async def test_i22_a_batch_with_nothing_to_answer_still_holds_the_session(
     db_session, seed
 ) -> None:
+    times = timeline("before")  # one timeline: both attempts target the same session
     sc = await scene(
-        db_session, seed, approved_first=True
+        db_session, seed, approved_first=True, times=times
     )  # approved on the live clause
     assert sc.cards == {}
     assert (
         await count(db_session, "mandate_plan_batches", "id = :b", b=sc.batch_id) == 1
     )
     with err(v.MandateRefusal.BATCH_OPEN):
-        await open_batch(db_session, seed, sc.sleeve, sc.terms, sc.plans, when="before")
+        await open_batch(
+            db_session, seed, sc.sleeve, sc.terms, sc.plans, when="before", times=times
+        )
     await db_session.rollback()
 
 
@@ -1049,7 +1053,7 @@ CARD = (
 BATCH = (
     "INSERT INTO review.mandate_plan_batches (realm, basket_key, market, "
     "target_session, approval_deadline_at, expires_at, created_by) VALUES "
-    "('mock', :k, 'equity_kr', current_date + :d, now() + interval '1 hour', "
+    "('mock', :k, 'equity_kr', current_date + CAST(:d AS integer), now() + interval '1 hour', "
     "now() + interval '7 hour', 'op') RETURNING id"
 )
 
@@ -1095,6 +1099,27 @@ async def _try(session, statement: str, **params) -> str | None:
         return str(exc)
 
 
+async def _wait_until_blocked(db, timeout: float = 10.0) -> None:
+    """Wait until PostgreSQL reports a backend waiting on a lock, so the contender really
+    is blocked by the holder (a task that has not started yet is also 'not done')."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        waiting = (
+            await db.execute(
+                sa.text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                    "AND pid <> pg_backend_pid()"
+                )
+            )
+        ).scalar_one()
+        await db.rollback()
+        if waiting:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("no backend became blocked on a lock")
+
+
 ANSWER = (
     "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
     "terms_sha256, effective_session, batch_member_id, actor) "
@@ -1131,7 +1156,7 @@ async def test_i22_an_answer_that_commits_first_blocks_a_concurrent_resend(
                 n=rules.nonce_digest(rules.new_nonce()),
             )
         )
-        await asyncio.sleep(1.0)
+        await _wait_until_blocked(db_session)
         assert not task.done(), "the resend did not wait for the answer"
         await holder.commit()
         message = await asyncio.wait_for(task, 15)
@@ -1170,7 +1195,7 @@ async def test_i22_a_resend_that_commits_first_blocks_a_concurrent_answer(
         task = asyncio.create_task(
             _try(other, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
         )
-        await asyncio.sleep(1.0)
+        await _wait_until_blocked(db_session)
         assert not task.done(), "the answer did not wait for the resend"
         await holder.commit()
         message = await asyncio.wait_for(task, 15)
@@ -1305,14 +1330,15 @@ async def test_i22_an_answer_whose_transaction_began_before_the_close_is_refused
         live,
         [plan],
         when="before",
-        times=(now, now + timedelta(seconds=1), now + timedelta(seconds=5)),
+        times=(now, now + timedelta(seconds=1), now + timedelta(seconds=8)),
     )
     old_card = old.cards[plan.id]
     assert old_card.kind == "reapproval"
     async with AsyncSessionLocal() as stale:
-        await stale.execute(
-            sa.text("SELECT 1")
-        )  # its transaction (and now()) starts here
+        started = (
+            await stale.execute(sa.text("SELECT transaction_timestamp()"))
+        ).scalar_one()  # its transaction (and now()) starts here
+        assert started < old.expires, "the stale transaction began after the close"
         await asyncio.sleep(
             max(0.0, (old.expires - datetime.now(UTC)).total_seconds()) + 0.5
         )
@@ -1415,3 +1441,123 @@ async def test_a_writer_supplied_time_cannot_pull_a_late_approval_onto_the_targe
         )
     assert message is not None and "takes effect after the target session" in message
     assert await events_of(db_session, plan.id) == ["proposed"]
+
+
+# ------------------------------------------------------ review round 3 (CodeRabbit)
+async def test_a_reapproval_card_for_the_clause_the_plan_is_already_bound_to_is_refused(
+    db_session, seed
+) -> None:
+    """Reject on such a card would retire a plan that §5.1 excludes from reapproval."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)  # bound to the live clause
+    batch_id = (
+        await db_session.execute(sa.text(BATCH), {"k": terms.basket_key, "d": 10})
+    ).scalar_one()
+    await refused(
+        db_session,
+        CARD.replace("'new_plan'", "'reapproval'"),
+        "a clause other than the bound one",
+        b=batch_id,
+        p=plan.id,
+        no=1,
+        h="a" * 64,
+        t=terms.id,
+        n=rules.nonce_digest(rules.new_nonce()),
+    )
+    # a candidate listing does not offer it either
+    sc = await open_batch(
+        db_session, seed, sleeve, terms, [plan], when="before", shift=3
+    )
+    assert sc.cards == {}
+
+
+async def test_a_reapproval_after_a_rebind_is_judged_against_the_event_stream(
+    db_session, seed
+) -> None:
+    """The plan row keeps the clause of registration; the binding is the last
+    approved/terms_rebound event, so a plan rebound to the live clause gets no card."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)
+    live = await second_live_terms(db_session, seed, sleeve, terms, (sym,))
+    first = await open_batch(db_session, seed, sleeve, live, [plan], when="before")
+    assert first.cards[plan.id].kind == "reapproval"
+    assert (await answer(first, first.cards[plan.id])).handled  # rebound to `live`
+    nxt = await open_batch(
+        db_session, seed, sleeve, live, [plan], when="before", shift=1
+    )
+    assert nxt.cards == {}  # bound to the live clause now: nothing to reapprove
+
+
+async def test_i22_a_successor_batch_waits_for_an_answer_that_is_still_open(
+    db_session, seed
+) -> None:
+    """The answer trigger takes the basket lock (L2) before the sleeve lock, so a
+    successor batch created after the close reads the plan only after the answer commits
+    (it never offers a new_plan card for a plan that was just approved)."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    now = datetime.now(UTC)
+    old = await open_batch(
+        db_session,
+        seed,
+        sleeve,
+        terms,
+        [plan],
+        when="before",
+        times=(now, now + timedelta(seconds=6), now + timedelta(seconds=8)),
+    )
+    card = old.cards[plan.id]
+    async with AsyncSessionLocal() as holder:
+        assert (
+            await _try(holder, ANSWER, p=plan.id, t=terms.id, e=old.target, m=card.id)
+            is None
+        )  # an approval inserted before the close, still uncommitted
+        await asyncio.sleep(
+            max(0.0, (old.expires - datetime.now(UTC)).total_seconds()) + 0.5
+        )
+        _, open_at, close_at = timeline("before")
+
+        async def successor():
+            async with AsyncSessionLocal() as session:
+                issued = await bt.create_batch(
+                    session,
+                    realm="mock",
+                    basket_key=terms.basket_key,
+                    actor=ACTOR,
+                    now=datetime.now(UTC),
+                    calendar=calendar(
+                        open_at + timedelta(days=1), close_at + timedelta(days=1)
+                    ),
+                )
+                cards_made = len(issued.cards)
+                seed.batch_ids.append(issued.batch.id)
+                await session.commit()
+                return cards_made
+
+        task = asyncio.create_task(successor())
+        await _wait_until_blocked(db_session)
+        assert not task.done(), "the successor did not wait for the open answer"
+        await holder.commit()
+        made = await asyncio.wait_for(task, 15)
+    assert made == 0  # the plan is approved: no new_plan card for it
+    assert await events_of(db_session, plan.id) == ["proposed", "approved"]
+
+
+async def test_a_plan_under_an_expired_live_clause_is_skipped_not_offered(
+    db_session, seed
+) -> None:
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(
+        symbols=(sym,),
+        account_mode="kiwoom_mock",
+        expires_at=datetime.now(UTC) + timedelta(seconds=3),
+    )
+    plan = await register(seed, sleeve, terms, sym)
+    await asyncio.sleep(3.5)
+    sc = await open_batch(db_session, seed, sleeve, terms, [plan], when="before")
+    assert sc.cards == {} and sc.skipped == [plan.id]

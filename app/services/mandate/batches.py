@@ -139,14 +139,15 @@ def plan_sha256(plan: MandatePlan) -> str:
 
 # --------------------------------------------------------------------------- reads
 async def candidates(
-    session: AsyncSession, *, realm: str, basket_key: str
+    session: AsyncSession, *, realm: str, basket_key: str, now: datetime
 ) -> tuple[list[Candidate], list[SkippedPlan]]:
     """Plans of the basket that need an answer now (§5.1 (a) and (b)).
 
     (a) ``proposed`` plans: approve under the sleeve's live clause.
     (b) ``approved``/``active`` plans whose bound clause is not the live clause.
     A plan whose account differs from the live clause's cannot be approved under it
-    (I15) and is reported as skipped, never offered.
+    (I15), and a plan under an expired clause cannot be answered at all (the callback
+    refuses both buttons): both are reported as skipped, never offered.
     """
     modes = [m for m, r in v.REALM_BY_ACCOUNT_MODE.items() if r == realm]
     sleeves = (
@@ -192,6 +193,9 @@ async def candidates(
             ):
                 kind = "reapproval"
             else:
+                continue
+            if terms.expires_at <= now:
+                skipped.append(SkippedPlan(plan.id, plan.symbol, "live_terms_expired"))
                 continue
             if terms.account_ref != plan.account_ref:
                 skipped.append(
@@ -334,7 +338,9 @@ async def create_batch(
             v.MandateRefusal.INVALID_FIELDS, f"unknown realm {realm!r}"
         )
     await acquire_basket_lock(session, realm, basket_key)
-    found, skipped = await candidates(session, realm=realm, basket_key=basket_key)
+    found, skipped = await candidates(
+        session, realm=realm, basket_key=basket_key, now=moment
+    )
     market = await _basket_market(session, realm, basket_key)
     calendar = calendar or rules.ExchangeCalendar()
     try:
@@ -421,6 +427,8 @@ async def reissue_cards(
         plan = await ms.get_plan(session, first.plan_id)
         terms = await session.get(MandateTerms, first.terms_id)
         assert plan is not None and terms is not None
+        if terms.expires_at <= moment:
+            continue  # an expired clause cannot be answered; the next batch re-offers it
         card = _card(
             batch, plan, first.kind, terms, card_no=last.card_no + 1, actor=who
         )
