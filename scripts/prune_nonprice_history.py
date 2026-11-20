@@ -227,7 +227,7 @@ async def run_batches(step: StepFn, batch_size: int) -> tuple[int, dict[str, int
     dependent_totals: dict[str, int] = {}
     while True:
         result = await step(after, batch_size)
-        if result.selected == 0:
+        if result.last_id is None:
             break
         if result.selected > batch_size:
             raise RuntimeError("batch exceeded its bound")
@@ -325,6 +325,39 @@ def _news_step(
             )
             if not ids:
                 return StepResult(selected=0, deleted=0, last_id=None)
+            candidate_last = ids[-1]
+            # Lock the candidate parents, then re-check the retained-link predicate
+            # under the locks (review r4). A retained-feed insert that references one of
+            # these rows either committed before the lock (seen by the re-check) or waits
+            # for this transaction and then fails its foreign key. The unlocked candidate
+            # query alone left a window between the check and the cascade.
+            locked = list(
+                (
+                    await session.execute(
+                        select(NewsArticle.id)
+                        .where(NewsArticle.id.in_(ids))
+                        .order_by(NewsArticle.id)
+                        .with_for_update()
+                    )
+                ).scalars()
+            )
+            ids = list(
+                (
+                    await session.execute(
+                        select(NewsArticle.id)
+                        .where(
+                            NewsArticle.id.in_(locked),
+                            NewsArticle.feed_source.in_(feeds),
+                            ~_retained_link_exists(),
+                            *_news_scope(scope),
+                        )
+                        .order_by(NewsArticle.id)
+                    )
+                ).scalars()
+            )
+            if not ids:
+                # Every candidate gained a retained link; skip the batch, advance the cursor.
+                return StepResult(selected=0, deleted=0, last_id=candidate_last)
             relevance = await session.execute(
                 delete(SymbolNewsRelevance).where(
                     SymbolNewsRelevance.article_id.in_(ids)
@@ -346,7 +379,7 @@ def _news_step(
             return StepResult(
                 selected=len(ids),
                 deleted=deleted,
-                last_id=ids[-1],
+                last_id=candidate_last,
                 dependents={
                     "symbol_news_relevance": relevance.rowcount or 0,
                     "news_article_related_symbols": related.rowcount or 0,

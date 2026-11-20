@@ -7,6 +7,7 @@ row, and a second run is a no-op.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -439,3 +440,46 @@ async def test_failed_batch_rolls_back_while_the_earlier_batch_stays_committed(
             )
             await session.execute(text(f"DROP FUNCTION IF EXISTS {trigger}()"))
             await session.commit()
+
+
+async def test_retained_link_committed_during_the_prune_is_kept(seeded) -> None:
+    """Review r4: a retained-feed link for retired_b that commits after the candidate
+    query but before the parent delete must protect retired_b. A holder session
+    inserts that link uncommitted; the prune waits on the candidate lock; the holder
+    commits; the re-check under the lock keeps retired_b and its link."""
+
+    later_id = int(seeded["retired_b"])
+    async with AsyncSessionLocal() as holder:
+        holder.add(
+            SymbolNewsRelevance(
+                article_id=later_id,
+                market="kr",
+                symbol=f"P{MARK}",
+                feed_source=KEPT_FEED,
+                first_seen_at=NOW_NAIVE,
+                status="pending",
+                created_at=NOW_NAIVE,
+                updated_at=NOW_NAIVE,
+            )
+        )
+        await holder.flush()  # uncommitted: holds the FK key-share lock on retired_b
+        prune_task = asyncio.create_task(
+            prune.run_commit(
+                AsyncSessionLocal, batch_size=1, only=["news"], scope=SCOPE
+            )
+        )
+        await asyncio.sleep(1.0)  # let the prune reach its candidate lock
+        await holder.commit()
+        await prune_task
+
+    async with AsyncSessionLocal() as session:
+        assert await _ids(session, NewsArticle, [later_id]) == {later_id}
+        link = (
+            await session.execute(
+                select(SymbolNewsRelevance.feed_source).where(
+                    SymbolNewsRelevance.article_id == later_id,
+                    SymbolNewsRelevance.feed_source == KEPT_FEED,
+                )
+            )
+        ).first()
+        assert link is not None
