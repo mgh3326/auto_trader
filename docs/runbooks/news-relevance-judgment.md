@@ -5,8 +5,9 @@
 get_news(KR)가 수집·저장한 기사의 종목 관련성 판정을 **외부 LLM Job**(Hermes류
 세션 또는 operator 수동 실행)이 수행해 write-back하는 절차. auto_trader는
 판정하지 않으며 어떤 기사도 자동 제외하지 않는다. recurring 스케줄러
-(cron/Prefect) 연결 없음 — ROB-506의 TaskIQ enqueue는 get_news 호출 시에만
-발생하며 default-off다. production 활성화는 별도 operator gate.
+(cron/Prefect) 연결 없음. hk 5753 이후 `get_news` 는 TaskIQ 를 enqueue 하지 않는다
+(판정 task 는 운영자 수동 호출만). pending 은 market 별 외부 polling 루프로 비운다.
+production 활성화는 별도 operator gate.
 
 - 데이터: `news_articles` + `symbol_news_relevance` (상태 `pending` →
   `confirmed`/`excluded`, 전이는 ingest 경로로만)
@@ -122,6 +123,26 @@ pending 유지 — excluded 로 오판정되는 경로는 없다.
 ingest 한다. 이 경로는 자동 제외를 하지 않고 LLM 판정도 레포 밖에서 한다(ROB-501).
 polling 주기와 호출 주체는 운영자 결정이다. 레포는 스케줄을 등록하지 않는다.
 
+`pending` 조회는 **market 하나만** 받는다(기본 `kr`). 한 번의 polling 은 `kr`, `us`,
+`crypto` 세 번 해야 한다. 한 시장만 돌리면 나머지 시장의 pending 은 영원히 남는다.
+
+```bash
+# 한 pass: 시장마다 fetch → 판정 → validate → submit (판정 파일이 없으면 그 시장은 건너뛴다)
+for market in kr us crypto; do
+  uv run python -m scripts.news_relevance_judge_smoke --mode fetch \
+    --market "$market" --limit 50 --host https://<host> > "pending-$market.json"
+  # 세션이 pending-$market.json 을 판정해 judgments-$market.json 을 작성한다 (pending 0건이면 생략)
+  [ -f "judgments-$market.json" ] || continue
+  uv run python -m scripts.news_relevance_judge_smoke --mode validate \
+    --file "judgments-$market.json"
+  uv run python -m scripts.news_relevance_judge_smoke --mode submit \
+    --file "judgments-$market.json" --host https://<host> --confirm
+done
+```
+
+pending 이 `no_pending` 으로 끝나면 적체가 없는 것이다. `excluded_count` 와 `pending` 수는
+`get_news` 재호출로 확인한다.
+
 ### 활성화 (default-off)
 
 | env | default | 의미 |
@@ -187,14 +208,12 @@ GET pending / POST ingest/bulk)은 market 파라미터로 이미 지원되며 �
   `degraded: true` + `fetch_error` + DB 기사(stale) 폴백.
 - degraded 폴백으로 DB에서 복원된 항목은 sentiment가 없을 수 있다
   (sentiment는 미영속 — 신선 fetch 응답에만 포함).
-- ROB-579: when `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, a `get_news`
-  call enqueues `news_relevance.judge_pending` if the canonical DB response
-  still contains visible `pending` rows. This covers both newly inserted links
-  and links created during an earlier worker/webhook outage. Duplicate enqueue
-  is acceptable: the job re-queries pending rows and exits `no_pending` after
-  another worker has applied judgments.
+- hk 5753 (replaces ROB-579): `get_news` no longer enqueues
+  `news_relevance.judge_pending`, whatever `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED`
+  says. Pending rows stay visible in the response until the external polling pass
+  above (for every market) ingests verdicts.
 
-US dry-run smoke:
+US dry-run check (manual, does not enqueue):
 
 Run this after a US `get_news` call has created pending rows for the symbol.
 
