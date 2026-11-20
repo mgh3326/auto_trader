@@ -729,6 +729,8 @@ async def order_proposal_create(
     candidate_ref: dict | None = None,
     decision_price_text: str | None = None,
     exit_handoff_id: int | None = None,
+    mandate_plan_id: int | None = None,
+    tranche_index: int | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
@@ -792,6 +794,8 @@ async def order_proposal_create(
                 is never auto-approved. Omit it for every other proposal.
         candidate_ref: optional {"call_id": UUID string, "symbol": DB symbol}.
         decision_price_text: optional exact decimal quote at decision time.
+        mandate_plan_id: optional mandate plan for a single limit buy.
+        tranche_index: tranche of the specified mandate plan, from 1 through 3.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -880,6 +884,8 @@ async def order_proposal_create(
                 candidate_ref=candidate_ref,
                 decision_price_text=decision_price_text,
                 exit_handoff_id=exit_handoff_id,
+                mandate_plan_id=mandate_plan_id,
+                tranche_index=tranche_index,
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
             if sup is not None:

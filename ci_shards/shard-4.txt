@@ -203,6 +203,8 @@ tests/services/kis_mock_runner/test_migration.py
 tests/services/kis_mock_runner/test_singleton.py
 tests/services/kis_websocket/test_approval_keys.py
 tests/services/kis_websocket/test_approval_keys_gatewayd.py
+tests/services/mandate/test_cli_db.py
+tests/services/mandate/test_projection_db.py
 tests/services/mandate/test_store_db.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/mechanical_loss_cut/test_plans.py
@@ -262,6 +264,7 @@ tests/services/research/test_rob984_cp6_diagnostics.py
 tests/services/research/test_rob984_cp7_fixture_closure.py
 tests/services/research/test_rob984_fix_r1.py
 tests/services/research/test_strategy_experiment_registry.py
+tests/services/retro_v1/test_block_reason.py
 tests/services/retro_v1/test_chain_readers.py
 tests/services/retro_v1/test_funnel_scope.py
 tests/services/retro_v1/test_other_readers.py

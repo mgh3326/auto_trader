@@ -130,6 +130,7 @@ tests/scripts/test_ncp_mcp_watchdog.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_bhost_deploy.py
+tests/scripts/test_pi_shiftgate_deploy.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
 tests/scripts/test_shiftgate_services_at.py

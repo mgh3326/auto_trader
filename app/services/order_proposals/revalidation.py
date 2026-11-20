@@ -1216,6 +1216,14 @@ def _default_correlation_mint(
     )
 
 
+def mandate_send_block_reason(group: object) -> str | None:
+    # T4a denies every plan-bound send until T4c replaces this check with the
+    # fence transaction. Keep this check before any broker work.
+    if getattr(group, "mandate_plan_id", None) is not None:
+        return "mandate_send_boundary_pending"
+    return None
+
+
 async def revalidate_and_submit(
     *,
     service: OrderProposalsService,
@@ -1242,6 +1250,13 @@ async def revalidate_and_submit(
     revalidation cycle from this call.
     """
     group, rungs = await service.get_proposal(proposal_id)
+    mandate_block = mandate_send_block_reason(group)
+    if mandate_block is not None:
+        return [
+            RungOutcome(rung.rung_index, "guard_blocked", {"reason": mandate_block})
+            for rung in rungs
+            if rung.state == "pending_approval"
+        ]
     block_reason = proposal_approval_block_reason(group)
     if block_reason is not None:
         return [

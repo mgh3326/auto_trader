@@ -112,6 +112,9 @@ def test_migration_columns_and_checks_match_the_model(model: type) -> None:
     checks = [c for c in table.constraints if isinstance(c, sa.CheckConstraint)]
     assert checks
     for check in checks:
+        if str(check.name).endswith("account_market"):
+            # Widened by 20261120_hk5637_sleeve_kiwoom (tests below).
+            continue
         assert str(check.sqltext) in block, str(check.sqltext)
         assert f"CONSTRAINT {check.name} CHECK" in block, check.name
 
@@ -279,3 +282,114 @@ def test_preregistration_rules_are_in_the_schema() -> None:
         "prereg_max_duration_days",
     ):
         assert f"v.{column} IS DISTINCT FROM NEW.{column}" in ddl, column
+
+
+# --- hk 5637 (3795 T1m-b): the Kiwoom mock combination ---------------------------
+
+KIWOOM_MIGRATION = ROOT / "alembic/versions/20261120_hk5637_sleeve_kiwoom.py"
+
+
+def _load_kiwoom_migration() -> Any:
+    spec = importlib.util.spec_from_file_location("hk5637_migration", KIWOOM_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _render_kiwoom(fn: str) -> str:
+    module = _load_kiwoom_migration()
+    buffer = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": buffer},
+    )
+    with Operations.context(context):
+        getattr(module, fn)()
+    return buffer.getvalue()
+
+
+def test_kiwoom_migration_follows_the_mandate_head() -> None:
+    module = _load_kiwoom_migration()
+    assert module.revision == "20261120_hk5637_sleeve_kiwoom"
+    assert module.down_revision == "20261120_hk5528_mandate"
+    assert len(module.revision) <= 32  # alembic_version.version_num
+
+
+def test_kiwoom_check_text_equals_the_model_and_only_adds_one_combination() -> None:
+    from app.models.strategy_sleeves import (
+        ACCOUNT_MARKET_SQL,
+        SLEEVE_ACCOUNT_MARKETS,
+    )
+
+    module = _load_kiwoom_migration()
+    assert module.ACCOUNT_MARKET_SQL == ACCOUNT_MARKET_SQL
+    # The previous CHECK is the original migration's literal, untouched.
+    previous = _load_migration()._ACCOUNT_MARKET_SQL
+    assert module._PREVIOUS_ACCOUNT_MARKET_SQL == previous
+    assert module.ACCOUNT_MARKET_SQL.startswith(previous + " OR ")
+    assert SLEEVE_ACCOUNT_MARKETS[-1] == ("kiwoom_mock", "equity_kr")
+    added = module.ACCOUNT_MARKET_SQL[len(previous) :]
+    assert added == " OR (account_mode = 'kiwoom_mock' AND market = 'equity_kr')"
+
+
+def test_kiwoom_migration_is_additive_and_grants_no_write_beyond_insert() -> None:
+    sql = _render_kiwoom("upgrade")
+    upper = sql.upper()
+    assert "DROP TABLE" not in upper
+    assert "DROP COLUMN" not in upper
+    assert "CREATE TABLE" not in upper
+    # Only the one CHECK of the sleeve identity table is touched.
+    for line in sql.splitlines():
+        if line.upper().startswith("ALTER TABLE"):
+            assert line.startswith("ALTER TABLE review.strategy_sleeves ")
+            assert "ck_strategy_sleeves_account_market" in line
+    assert "kiwoom_mock" in sql
+    grants = sql.split("DO $$ BEGIN IF EXISTS", 1)[1]
+    assert "pg_roles WHERE rolname = 'at_app'" in grants
+    assert "GRANT SELECT, INSERT ON review.strategy_sleeves TO at_app" in grants
+    assert "DELETE" not in grants
+    assert "UPDATE" not in grants
+
+
+def test_kiwoom_downgrade_refuses_kiwoom_sleeves_before_changing_the_check() -> None:
+    sql = _render_kiwoom("downgrade")
+    assert "LOCK TABLE review.strategy_sleeves" in sql
+    assert "account_mode = 'kiwoom_mock'" in sql
+    assert sql.index("RAISE EXCEPTION") < sql.index("DROP CONSTRAINT")
+    assert sql.index("DROP CONSTRAINT") < sql.index("ADD CONSTRAINT")
+    restored = sql.split("ADD CONSTRAINT", 1)[1]
+    assert "kiwoom_mock" not in restored
+
+
+def test_the_only_kiwoom_combination_is_mock_kr_and_no_live_one_changed() -> None:
+    from app.models.strategy_sleeves import SLEEVE_ACCOUNT_MARKETS
+    from app.services.strategy_sleeves import vocabulary
+
+    assert [c for c in SLEEVE_ACCOUNT_MARKETS if c[0].startswith("kiwoom")] == [
+        ("kiwoom_mock", "equity_kr")
+    ]
+    assert SLEEVE_ACCOUNT_MARKETS[:5] == (
+        ("kis_live", "equity_kr"),
+        ("kis_live", "equity_us"),
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
+        ("upbit", "crypto"),
+    )
+    assert vocabulary.LEDGER_IDENTITY == {
+        "kis_live": ("kis", "live"),
+        "toss_live": ("toss", "live"),
+        "upbit": ("upbit", "live"),
+        "kiwoom_mock": ("kiwoom", "mock"),
+    }
+    assert {m for m, _ in SLEEVE_ACCOUNT_MARKETS} == set(vocabulary.LEDGER_IDENTITY)
+
+
+def test_kiwoom_migration_passes_the_expand_contract_lint_for_its_task() -> None:
+    """The required PR lint refuses a non-trivial module without the task marker."""
+    from scripts.ci import migration_expand_contract_lint as lint
+
+    source = KIWOOM_MIGRATION.read_text(encoding="utf-8")
+    assert lint.violations(source, "5637") == []
+    # The marker names this task only.
+    assert lint.violations(source, "5638") != []
