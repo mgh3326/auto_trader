@@ -817,4 +817,4 @@ async def test_i14_the_first_loss_cut_click_checks_the_plan_before_preview_and_n
     source = inspect.getsource(cb._handle_loss_cut_first_click)
     guard = source.index("_mandate_pre_nonce_block(")
     assert guard < source.index("consume_published_proposal_callback")
-    assert guard < source.index("loss_cut_preview_fn")
+    assert guard < source.index("await loss_cut_preview_fn(")
