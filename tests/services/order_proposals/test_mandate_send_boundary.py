@@ -1035,3 +1035,44 @@ async def test_i14_a_refused_replacement_post_keeps_the_confirmed_cancellation(
     assert outcomes[0].detail["target_cancelled"] is True
     assert outcomes[0].detail["replacement_submitted"] is False
     service.record_cancelled.assert_awaited_once()
+
+
+async def test_a_kis_provider_rejection_reaches_the_response_as_typed_evidence():
+    """A business rejection in a <500 response marks the tracker NOT_CREATED; the generic
+    handler carries that to the response, while an untracked or 5xx failure has no marker."""
+    from app.mcp_server.tooling import order_execution as oe
+
+    class Rejected(RuntimeError):
+        pass
+
+    rejected = Rejected("APBK0013 rejected")
+    rejected.mandate_send_disposition = "not_created"  # set by the generic handler
+    marked = oe._augment_error_for_unknown_outcome(
+        {"success": False, "error": "x"},
+        rejected,
+        market_type="equity_kr",
+        is_mock=False,
+    )
+    assert marked["send_disposition"] == "not_created"
+    assert mandate_send.is_affirmative_rejection(marked) is True
+    plain = oe._augment_error_for_unknown_outcome(
+        {"success": False, "error": "x"},
+        RuntimeError("502"),
+        market_type="equity_kr",
+        is_mock=False,
+    )
+    assert mandate_send.is_affirmative_rejection(plain) is False
+
+
+async def test_a_plan_bound_kis_live_order_asks_for_a_real_quote_and_a_send_tracker():
+    from app.services.order_proposals.revalidation import _mandate_kis_kwargs
+
+    bound = _group(account_mode="kis_live")
+    preview = _mandate_kis_kwargs(bound, dry_run=True)
+    send = _mandate_kis_kwargs(bound, dry_run=False)
+    assert preview == {"require_fresh_quote": True}
+    assert send["require_fresh_quote"] is True and "send_outcome" in send
+    # nothing changes for any other proposal or account
+    assert _mandate_kis_kwargs(_group(mandate_plan_id=None), dry_run=False) == {}
+    assert _mandate_kis_kwargs(_group(account_mode="toss_live"), dry_run=False) == {}
+    assert _mandate_kis_kwargs(_group(account_mode="kiwoom_mock"), dry_run=False) == {}

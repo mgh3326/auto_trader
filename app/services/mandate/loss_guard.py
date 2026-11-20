@@ -21,6 +21,7 @@ broker module.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import exists, select
@@ -44,6 +45,13 @@ def _same(left: Any, right: Any) -> bool:
     return left is not None and right is not None and str(left) == str(right)
 
 
+#: Events written before the writer checked that the cited retrospective exists
+#: (hk 5651) carry no proof of the §5.2 evidence order and never qualify on their own;
+#: an operator appends a ``thesis_evidence_refreshed`` after this instant (verified at
+#: write time) to reopen a loss sale. Instants are database ``created_at`` values.
+EVIDENCE_ORDER_ENFORCED_FROM = datetime(2026, 11, 20, tzinfo=UTC)
+
+
 def matching_events(
     events: list[MandatePlanEvent],
     *,
@@ -59,6 +67,9 @@ def matching_events(
             for e in events
             if e.event == "thesis_evidence_refreshed" and e.thesis_seq == broken.seq
         ]:
+            written = getattr(event, "created_at", None)
+            if written is not None and written < EVIDENCE_ORDER_ENFORCED_FROM:
+                continue  # legacy: no proof the retrospective existed when it was cited
             evidence = event.evidence or {}
             if _same(evidence.get("retrospective_id"), retrospective_id) and _same(
                 evidence.get("approval_issue_id"), approval_issue_id

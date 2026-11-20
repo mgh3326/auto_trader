@@ -277,3 +277,27 @@ async def test_i14_i_the_event_writer_refuses_a_retrospective_that_does_not_exis
     source = inspect.getsource(store.append_plan_event)
     assert '"thesis_broken", "thesis_evidence_refreshed"' in source
     assert source.index("_require_cited_retrospective(") < source.index("apply_event(")
+
+
+async def test_i14_a_legacy_thesis_event_does_not_qualify_without_a_fresh_refresh(
+    monkeypatch,
+):
+    """Events written before the writer checked the cited retrospective carry no proof of
+    the §5.2 order (review r5); a refresh written after the cutoff reopens the sale."""
+    legacy_at = datetime(2026, 11, 19, 12, tzinfo=UTC)
+    legacy = _ev("thesis_broken", 2, EVIDENCE)
+    legacy.created_at = legacy_at
+    assert not loss_guard.evidence_matches(
+        [_ev("proposed", 1), legacy], retrospective_id=42, approval_issue_id="hk:9"
+    )
+    refresh = _ev(
+        "thesis_evidence_refreshed",
+        3,
+        {"retrospective_id": 77, "approval_issue_id": "hk:new"},
+        thesis_seq=2,
+    )
+    assert loss_guard.evidence_matches(
+        [_ev("proposed", 1), legacy, refresh],
+        retrospective_id=77,
+        approval_issue_id="hk:new",
+    )

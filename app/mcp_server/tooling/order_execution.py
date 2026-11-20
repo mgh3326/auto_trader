@@ -1469,6 +1469,15 @@ async def _execute_and_record(
     except Exception as exec_exc:
         # Not proven unsent: an arbitrary failure after the send boundary is
         # uncertainty, so the reservation is deliberately retained.
+        if (
+            send_outcome is not None
+            and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
+        ):
+            # hk 3795: the transport itself proved no order exists (a provider
+            # business rejection in a <500 response). Carry that as typed evidence
+            # to the response; the exception and the reservation handling are
+            # unchanged.
+            exec_exc.mandate_send_disposition = "not_created"  # type: ignore[attr-defined]
         await _release_reserved_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
@@ -1901,6 +1910,10 @@ def _augment_error_for_unknown_outcome(
         )
         return enriched
     if not isinstance(exc, OrderSendOutcomeUnknown):
+        if getattr(exc, "mandate_send_disposition", None) == "not_created":
+            marked = dict(base_error)
+            marked["send_disposition"] = "not_created"
+            return marked
         return base_error
 
     reconcile_tool = _reconcile_tool_for(market_type=market_type, is_mock=is_mock)
@@ -1973,6 +1986,7 @@ async def _place_order_impl(
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
     reserve_mock_derived_idempotency: bool = False,
+    require_fresh_quote: bool = False,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -2130,7 +2144,8 @@ async def _place_order_impl(
             order_type_lower,
             price,
             require_fresh_quote=(
-                allow_marketable_parking_buy
+                require_fresh_quote
+                or allow_marketable_parking_buy
                 or parking_sell_ctx is not None
                 or (
                     exit_intent == CASH_FUNDING_EXIT_INTENT
