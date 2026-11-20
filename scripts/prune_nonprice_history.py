@@ -49,6 +49,7 @@ import re
 import sys
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import sqlalchemy as sa
@@ -199,6 +200,19 @@ class StepResult:
 StepFn = Callable[[int, int], Awaitable[StepResult]]
 
 
+@dataclass(frozen=True)
+class PruneScope:
+    """Narrows a commit to rows the caller owns. The operator CLI never sets it.
+
+    The default (all None) means every row in the retired lists. The database
+    test sets ``marker`` and ``partition_dates`` so it deletes only its own
+    fixture rows on the shared test database (review r2 on shard-2).
+    """
+
+    marker: str | None = None
+    partition_dates: frozenset[date] | None = None
+
+
 async def run_batches(step: StepFn, batch_size: int) -> tuple[int, dict[str, int], int]:
     """Walk ids forward one committed batch at a time until nothing is selected.
 
@@ -236,6 +250,30 @@ async def run_batches(step: StepFn, batch_size: int) -> tuple[int, dict[str, int
 # ---------------------------------------------------------------------------
 
 
+def _news_scope(scope: PruneScope) -> list[sa.ColumnElement[bool]]:
+    return [NewsArticle.url.contains(scope.marker)] if scope.marker else []
+
+
+def _market_event_scope(scope: PruneScope) -> list[sa.ColumnElement[bool]]:
+    if not scope.marker:
+        return []
+    return [MarketEvent.source_event_id.contains(scope.marker)]
+
+
+def _partition_scope(scope: PruneScope) -> list[sa.ColumnElement[bool]]:
+    if scope.partition_dates is None:
+        return []
+    return [
+        MarketEventIngestionPartition.partition_date.in_(sorted(scope.partition_dates))
+    ]
+
+
+def _toss_scope(scope: PruneScope) -> list[sa.ColumnElement[bool]]:
+    return (
+        [MarketValuationSnapshot.symbol.contains(scope.marker)] if scope.marker else []
+    )
+
+
 def _require_all_deleted(selected: int, deleted: int) -> None:
     """Raised inside the batch transaction, so a mismatch rolls the batch back."""
 
@@ -264,7 +302,9 @@ def _retained_link_exists() -> sa.ColumnElement[bool]:
 
 
 def _news_step(
-    session_factory: async_sessionmaker[AsyncSession], feeds: Sequence[str]
+    session_factory: async_sessionmaker[AsyncSession],
+    feeds: Sequence[str],
+    scope: PruneScope,
 ) -> StepFn:
     async def step(after: int, size: int) -> StepResult:
         async with session_factory() as session, session.begin():
@@ -276,6 +316,7 @@ def _news_step(
                             NewsArticle.feed_source.in_(feeds),
                             NewsArticle.id > after,
                             ~_retained_link_exists(),
+                            *_news_scope(scope),
                         )
                         .order_by(NewsArticle.id)
                         .limit(size)
@@ -319,6 +360,7 @@ def _news_step(
 def _market_event_step(
     session_factory: async_sessionmaker[AsyncSession],
     triple: tuple[str, str, str],
+    scope: PruneScope,
 ) -> StepFn:
     source, category, market = triple
 
@@ -333,6 +375,7 @@ def _market_event_step(
                             MarketEvent.category == category,
                             MarketEvent.market == market,
                             MarketEvent.id > after,
+                            *_market_event_scope(scope),
                         )
                         .order_by(MarketEvent.id)
                         .limit(size)
@@ -362,6 +405,7 @@ def _market_event_step(
 def _partition_step(
     session_factory: async_sessionmaker[AsyncSession],
     triple: tuple[str, str, str],
+    scope: PruneScope,
 ) -> StepFn:
     source, category, market = triple
 
@@ -376,6 +420,7 @@ def _partition_step(
                             MarketEventIngestionPartition.category == category,
                             MarketEventIngestionPartition.market == market,
                             MarketEventIngestionPartition.id > after,
+                            *_partition_scope(scope),
                         )
                         .order_by(MarketEventIngestionPartition.id)
                         .limit(size)
@@ -396,7 +441,9 @@ def _partition_step(
     return step
 
 
-def _toss_valuation_step(session_factory: async_sessionmaker[AsyncSession]) -> StepFn:
+def _toss_valuation_step(
+    session_factory: async_sessionmaker[AsyncSession], scope: PruneScope
+) -> StepFn:
     async def step(after: int, size: int) -> StepResult:
         async with session_factory() as session, session.begin():
             ids = list(
@@ -407,6 +454,7 @@ def _toss_valuation_step(session_factory: async_sessionmaker[AsyncSession]) -> S
                             MarketValuationSnapshot.source == TOSS_VALUATION_SOURCE,
                             MarketValuationSnapshot.id > after,
                             superseded_by_newer_row(TOSS_VALUATION_SOURCE),
+                            *_toss_scope(scope),
                         )
                         .order_by(MarketValuationSnapshot.id)
                         .limit(size)
@@ -595,6 +643,7 @@ async def run_commit(
     batch_size: int,
     only: Sequence[str] | None = None,
     allow_held: Iterable[str] = (),
+    scope: PruneScope = PruneScope(),
 ) -> dict[str, Any]:
     categories = _selected_categories(only)
     allowed = tuple(allow_held)
@@ -608,7 +657,7 @@ async def run_commit(
     }
     if CATEGORY_NEWS in categories:
         deleted, dependents, batches = await run_batches(
-            _news_step(session_factory, feeds), batch_size
+            _news_step(session_factory, feeds, scope), batch_size
         )
         report["categories"][CATEGORY_NEWS] = {
             "articles_deleted": deleted,
@@ -621,10 +670,10 @@ async def run_commit(
         for triple in MARKET_EVENT_RETIRED_TRIPLES:
             key = "/".join(triple)
             events_deleted, dependents, batches = await run_batches(
-                _market_event_step(session_factory, triple), batch_size
+                _market_event_step(session_factory, triple, scope), batch_size
             )
             parts_deleted, _, parts_batches = await run_batches(
-                _partition_step(session_factory, triple), batch_size
+                _partition_step(session_factory, triple, scope), batch_size
             )
             events_report[key] = {
                 "events_deleted": events_deleted,
@@ -636,7 +685,7 @@ async def run_commit(
         report["categories"][CATEGORY_MARKET_EVENTS] = events_report
     if CATEGORY_TOSS_VALUATION in categories:
         deleted, _, batches = await run_batches(
-            _toss_valuation_step(session_factory), batch_size
+            _toss_valuation_step(session_factory, scope), batch_size
         )
         report["categories"][CATEGORY_TOSS_VALUATION] = {
             "toss_rows_deleted": deleted,

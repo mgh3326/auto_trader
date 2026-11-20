@@ -31,7 +31,10 @@ RETIRED_FEED = "rss_cnbc_finance"
 KEPT_FEED = "naver_item_news"
 NOW = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)  # timestamptz columns (MarketEvent)
 NOW_NAIVE = datetime(2026, 11, 20, 0, 0)  # timestamp-without-time-zone columns
-MARK = uuid.uuid4().hex[:8]  # keeps this run's symbols and urls apart from others
+MARK = uuid.uuid4().hex[:8].upper()  # tags this run's urls, event ids and symbols
+# A partition date no other fixture uses; partitions carry no marker of their own.
+PARTITION_DATE = date(2100, 1, 1) + timedelta(days=int(MARK, 16) % 3000)
+SCOPE = prune.PruneScope(marker=MARK, partition_dates=frozenset({PARTITION_DATE}))
 
 
 async def _seed(session) -> dict[str, object]:
@@ -52,7 +55,7 @@ async def _seed(session) -> dict[str, object]:
     session.add_all([retired_a, retired_b, shared, kept])
     await session.flush()
 
-    symbol = f"P{MARK[:5].upper()}"
+    symbol = f"P{MARK}"
     for art in (retired_a, shared, kept):
         session.add(
             SymbolNewsRelevance(
@@ -113,7 +116,7 @@ async def _seed(session) -> dict[str, object]:
             source="tradingview",
             category="economic",
             market="global",
-            partition_date=date(2026, 6, 1),
+            partition_date=PARTITION_DATE,
         )
     )
     session.add(
@@ -121,12 +124,12 @@ async def _seed(session) -> dict[str, object]:
             source="dart",
             category="disclosure",
             market="kr",
-            partition_date=date(2026, 6, 1),
+            partition_date=PARTITION_DATE,
         )
     )
 
-    toss_symbol = f"T{MARK[:5].upper()}"
-    single_symbol = f"S{MARK[:5].upper()}"
+    toss_symbol = f"T{MARK}"
+    single_symbol = f"S{MARK}"
     for offset in range(3):
         session.add(
             MarketValuationSnapshot(
@@ -182,15 +185,13 @@ async def _cleanup(session) -> None:
     )
     await session.execute(
         delete(MarketEventIngestionPartition).where(
-            MarketEventIngestionPartition.partition_date == date(2026, 6, 1),
+            MarketEventIngestionPartition.partition_date == PARTITION_DATE,
             MarketEventIngestionPartition.source.in_(["tradingview", "dart"]),
         )
     )
     await session.execute(
         delete(MarketValuationSnapshot).where(
-            MarketValuationSnapshot.symbol.in_(
-                [f"T{MARK[:5].upper()}", f"S{MARK[:5].upper()}"]
-            )
+            MarketValuationSnapshot.symbol.in_([f"T{MARK}", f"S{MARK}"])
         )
     )
     await session.commit()
@@ -234,7 +235,7 @@ async def test_preview_counts_our_rows_and_writes_nothing(seeded) -> None:
 async def test_commit_deletes_exactly_the_targets_and_dependents_in_one_row_batches(
     seeded,
 ) -> None:
-    report = await prune.run_commit(AsyncSessionLocal, batch_size=1)
+    report = await prune.run_commit(AsyncSessionLocal, batch_size=1, scope=SCOPE)
     assert report["mode"] == "commit"
     assert report["held_news_feeds_kept"] == ["http_naver_stock_aggregate"]
 
@@ -296,14 +297,16 @@ async def test_commit_deletes_exactly_the_targets_and_dependents_in_one_row_batc
         assert (
             await session.execute(
                 select(MarketEventIngestionPartition.id).where(
-                    MarketEventIngestionPartition.source == "tradingview"
+                    MarketEventIngestionPartition.source == "tradingview",
+                    MarketEventIngestionPartition.partition_date == PARTITION_DATE,
                 )
             )
         ).first() is None
         assert (
             await session.execute(
                 select(MarketEventIngestionPartition.id).where(
-                    MarketEventIngestionPartition.source == "dart"
+                    MarketEventIngestionPartition.source == "dart",
+                    MarketEventIngestionPartition.partition_date == PARTITION_DATE,
                 )
             )
         ).first() is not None
@@ -340,11 +343,42 @@ async def test_commit_deletes_exactly_the_targets_and_dependents_in_one_row_batc
 
 
 async def test_second_commit_is_a_no_op(seeded) -> None:
-    await prune.run_commit(AsyncSessionLocal, batch_size=1)
-    second = await prune.run_commit(AsyncSessionLocal, batch_size=1)
+    await prune.run_commit(AsyncSessionLocal, batch_size=1, scope=SCOPE)
+    second = await prune.run_commit(AsyncSessionLocal, batch_size=1, scope=SCOPE)
     assert second["categories"]["news"]["articles_deleted"] == 0
     assert second["categories"]["news"]["batches"] == 0
     assert second["categories"]["toss_valuation"]["toss_rows_deleted"] == 0
     for triple_report in second["categories"]["market_events"].values():
         assert triple_report["events_deleted"] == 0
         assert triple_report["partitions_deleted"] == 0
+
+
+async def test_mismatch_rolls_back_the_batch_and_keeps_its_rows(
+    seeded, monkeypatch
+) -> None:
+    """A batch whose delete count disagrees raises inside its transaction, so the
+    rows it selected are still there afterwards (review r1 on the batch check)."""
+
+    def mismatch(selected: int, deleted: int) -> None:
+        raise RuntimeError(f"batch deleted {deleted} of {selected} selected rows")
+
+    monkeypatch.setattr(prune, "_require_all_deleted", mismatch)
+    with pytest.raises(RuntimeError, match="selected rows"):
+        await prune.run_commit(
+            AsyncSessionLocal, batch_size=1, only=["news"], scope=SCOPE
+        )
+
+    async with AsyncSessionLocal() as session:
+        assert await _ids(session, NewsArticle, [seeded["retired_a"]]) == {
+            seeded["retired_a"]
+        }
+        assert await _ids(session, NewsArticle, [seeded["retired_b"]]) == {
+            seeded["retired_b"]
+        }
+        assert (
+            await session.execute(
+                select(SymbolNewsRelevance.id).where(
+                    SymbolNewsRelevance.article_id == seeded["retired_a"]
+                )
+            )
+        ).first() is not None
