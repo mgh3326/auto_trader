@@ -28,14 +28,12 @@ class MandateBasketAuthority(Base):
     __tablename__ = "mandate_basket_authority"
     __table_args__ = (
         PrimaryKeyConstraint("realm", "basket_key", name="pk_mandate_basket_authority"),
-        CheckConstraint(
-            "realm IN ('live','mock')", name="ck_mandate_basket_authority_realm"
-        ),
+        CheckConstraint("realm IN ('live','mock')", name="realm"),
         CheckConstraint(
             "char_length(btrim(basket_key)) BETWEEN 1 AND 120",
-            name="ck_mandate_basket_authority_basket_key",
+            name="basket_key",
         ),
-        CheckConstraint("authority_seq >= 0", name="ck_mandate_basket_authority_seq"),
+        CheckConstraint("authority_seq >= 0", name="seq"),
         {"schema": "review"},
     )
 
@@ -53,12 +51,8 @@ class MandateCapMutex(Base):
     __tablename__ = "mandate_cap_mutex"
     __table_args__ = (
         PrimaryKeyConstraint("mutex_key", name="pk_mandate_cap_mutex"),
-        CheckConstraint(
-            "scope IN ('sleeve','basket','global')", name="ck_mandate_cap_mutex_scope"
-        ),
-        CheckConstraint(
-            "char_length(mutex_key) BETWEEN 1 AND 400", name="ck_mandate_cap_mutex_key"
-        ),
+        CheckConstraint("scope IN ('sleeve','basket','global')", name="scope"),
+        CheckConstraint("char_length(mutex_key) BETWEEN 1 AND 400", name="key"),
         {"schema": "review"},
     )
 

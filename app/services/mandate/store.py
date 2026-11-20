@@ -874,13 +874,17 @@ def _parse_ts(text_: str) -> datetime:
 
 
 async def _bump_basket_authority(
-    session: AsyncSession, realm: str, basket_key: str
+    session: AsyncSession, realm: str, basket_key: str, *, create: bool
 ) -> None:
     """F2 as a writer (§4.6): a clause, profile or plan registration is a fact a send
-    fence reads, so its basket's authority row is created if new and counted up in
-    this same transaction. A row that cannot be updated fails the writer."""
+    fence reads, so its basket's authority row is counted up in this same transaction.
+
+    A clause or a plan registration may be the first to see its basket and creates the
+    row. A profile writer does not: zero rows updated means no fence could have
+    serialized against it, so it fails instead of writing."""
     try:
-        await fence_locks.ensure_authority_row(session, realm, basket_key)
+        if create:
+            await fence_locks.ensure_authority_row(session, realm, basket_key)
         await fence_locks.bump_authority(session, realm, basket_key)
     except fence_locks.AuthorityRowMissing as exc:
         raise MandateError(
@@ -946,7 +950,9 @@ async def _write_terms(
     await _flush(session)
     await session.refresh(terms)
     await session.refresh(version)
-    await _bump_basket_authority(session, realm_and_market(sleeve)[0], terms.basket_key)
+    await _bump_basket_authority(
+        session, realm_and_market(sleeve)[0], terms.basket_key, create=True
+    )
     if (
         hashing.content_sha256(terms_content_from_rows(terms, version))
         != terms.content_sha256
@@ -982,7 +988,10 @@ async def _write_profile(
             v.MandateRefusal.BINDING_BROKEN, "the profile's clause row is missing"
         )
     await _bump_basket_authority(
-        session, realm_and_market(profile_sleeve)[0], profile_terms.basket_key
+        session,
+        realm_and_market(profile_sleeve)[0],
+        profile_terms.basket_key,
+        create=False,
     )
     if (
         hashing.content_sha256(profile_content_from_row(profile))
@@ -1333,7 +1342,7 @@ async def register_plan(
     )
     session.add(reservation)
     await _flush(session)
-    await _bump_basket_authority(session, realm, terms.basket_key)
+    await _bump_basket_authority(session, realm, terms.basket_key, create=True)
     return RegisteredPlan(plan, tranches, reservation, proposed)
 
 

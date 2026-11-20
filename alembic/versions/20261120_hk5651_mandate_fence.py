@@ -211,14 +211,14 @@ def _create_tables() -> None:
             "realm", "basket_key", name="pk_mandate_basket_authority"
         ),
         sa.CheckConstraint(
-            "realm IN ('live','mock')", name="ck_mandate_basket_authority_realm"
+            "realm IN ('live','mock')", name=op.f("ck_mandate_basket_authority_realm")
         ),
         sa.CheckConstraint(
             "char_length(btrim(basket_key)) BETWEEN 1 AND 120",
-            name="ck_mandate_basket_authority_basket_key",
+            name=op.f("ck_mandate_basket_authority_basket_key"),
         ),
         sa.CheckConstraint(
-            "authority_seq >= 0", name="ck_mandate_basket_authority_seq"
+            "authority_seq >= 0", name=op.f("ck_mandate_basket_authority_seq")
         ),
         schema="review",
     )
@@ -229,11 +229,12 @@ def _create_tables() -> None:
         _ts(),
         sa.PrimaryKeyConstraint("mutex_key", name="pk_mandate_cap_mutex"),
         sa.CheckConstraint(
-            "scope IN ('sleeve','basket','global')", name="ck_mandate_cap_mutex_scope"
+            "scope IN ('sleeve','basket','global')",
+            name=op.f("ck_mandate_cap_mutex_scope"),
         ),
         sa.CheckConstraint(
             "char_length(mutex_key) BETWEEN 1 AND 400",
-            name="ck_mandate_cap_mutex_key",
+            name=op.f("ck_mandate_cap_mutex_key"),
         ),
         schema="review",
     )
