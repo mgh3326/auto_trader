@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# pi 싱글턴 컨테이너(at-worker, at-upbit-ws) 교체 (hk 5617).
+# pi 싱글턴 컨테이너(at-upbit-ws) 교체 (hk 5617, hk 5753 에서 at-worker 제외).
 #
-# shiftgate 는 HTTP 서비스(binds + health 필수)만 다룬다. worker 와 upbit websocket 은 한 번에 하나만
-# 있어야 하는 싱글턴이라 shiftgate 범위 밖이고(shiftgate docs/design.md "gap"), 현재 at-swap 동작 그대로
+# TaskIQ worker(at-worker)는 hk 5753 에 은퇴해 이 스크립트가 더 이상 다루지 않는다. 남은 싱글턴은 upbit websocket
+# 하나다(hk 5758 전까지 범위 밖). shiftgate 는 HTTP 서비스(binds + health 필수)만 다루고, upbit websocket 은 한 번에
+# 하나만 있어야 하는 싱글턴이라 shiftgate 범위 밖이다(shiftgate docs/design.md "gap"). 현재 at-swap 동작 그대로
 # 이 스크립트가 같은 digest 로 교체한다:
 #   옛 컨테이너 정지(-t 60) → <이름>-prev 로 보관 → 새 digest 로 docker run → 로그/상태 확인.
 #   어느 하나라도 실패하면 이미 바꾼 것까지 역순으로 옛 컨테이너를 복원하고 exit 1.
@@ -23,7 +24,7 @@ STOP_TIMEOUT_SECONDS=60
 usage() {
   cat >&2 <<'USAGE'
 usage: swap-singletons.sh [--wait-attempts N] <ghcr.io/mgh3326/auto_trader@sha256:DIGEST>
-  at-worker 와 at-upbit-ws 를 주어진 불변 이미지로 교체한다. 실패하면 옛 컨테이너를 복원하고 exit 1.
+  at-upbit-ws 를 주어진 불변 이미지로 교체한다. 실패하면 옛 컨테이너를 복원하고 exit 1.
   환경 변수: AT_RUN_DIR AT_ENV_API AT_ENV_SCHEDULER AT_SWAP_WAIT_ATTEMPTS AT_SWAP_WAIT_SLEEP
 USAGE
 }
@@ -39,16 +40,14 @@ while (($#)); do
 done
 [[ "$IMAGE" =~ ^${IMAGE_REPOSITORY}@sha256:[0-9a-f]{64}$ ]] || { usage; printf 'image must be %s@sha256:<64hex>\n' "$IMAGE_REPOSITORY" >&2; exit 2; }
 
-SINGLETONS=(at-worker at-upbit-ws)
+SINGLETONS=(at-upbit-ws)
 log_pattern() {
   case "$1" in
-    at-worker) printf 'Listening started' ;;
     at-upbit-ws) printf 'connected=True' ;;
   esac
 }
 run_command() {
   case "$1" in
-    at-worker) printf '%s\n' '/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1' ;;
     at-upbit-ws) printf '%s\n' '/app/.venv/bin/python websocket_monitor.py --mode upbit' ;;
   esac
 }

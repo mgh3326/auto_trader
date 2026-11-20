@@ -7,12 +7,14 @@
 #      실패하면 exit 78 로 끝나며 이 단계에서는 어떤 컨테이너도 건드리지 않는다.
 #   2. shiftgate deploy at-api / at-mcp  : blue/green 교체. 이미 그 digest 가 활성인 서비스는 건너뛴다
 #      (shiftgate 는 같은 digest 라도 비활성 색을 지우고 다시 만들어 보관된 롤백 대상을 잃는다).
-#   3. swap-singletons.sh                : at-worker, at-upbit-ws 를 같은 digest 로 교체(이미 그 이미지면 건너뜀).
-#   4. 네 컴포넌트가 모두 그 digest 인지 다시 확인한 뒤에만 /root/at-run/deployed-digest 를 갱신한다.
+#   3. swap-singletons.sh                : at-upbit-ws 를 같은 digest 로 교체(이미 그 이미지면 건너뜀).
+#      at-worker 는 hk 5753 에 TaskIQ worker 은퇴로 이 배포 경로에서 빠졌다. 컨테이너 정지는 설계 세션이 한다.
+#   4. 세 컴포넌트(at-api, at-mcp, at-upbit-ws)가 모두 그 digest 인지 다시 확인한 뒤에만
+#      /root/at-run/deployed-digest 를 갱신한다.
 #   중간에 실패하면 거기서 멈추고 상태를 출력한다. 같은 명령을 다시 실행하면 이미 끝난 컴포넌트는 건너뛰고
 #   나머지만 이어서 한다(보관된 이전 컨테이너와 deployed-digest.previous 는 그대로 보존된다).
 # 복구: deploy.sh --rollback
-#   deployed-digest(마지막으로 네 컴포넌트가 모두 끝난 릴리스)와 다른 컴포넌트가 있으면 그것들만 그 digest 로
+#   deployed-digest(마지막으로 세 컴포넌트가 모두 끝난 릴리스)와 다른 컴포넌트가 있으면 그것들만 그 digest 로
 #   되돌린다(마커는 그대로). 전부 같으면 deployed-digest.previous 로 완결 롤백하고 마커를 맞바꾼다.
 #   롤백 경로는 CI 게이트를 보지 않는다(긴급 경로).
 # 스케줄러·follow 타이머는 등록하지 않는다. 수동 실행만.
@@ -28,7 +30,7 @@ PYTHON="${AT_DEPLOY_GATE_PYTHON:-python3}"
 DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 DEPLOYED_DIGEST_PREVIOUS_FILE="${DEPLOYED_DIGEST_FILE}.previous"
 readonly SHIFTGATE_SERVICES=(at-api at-mcp)
-readonly SINGLETONS=(at-worker at-upbit-ws)
+readonly SINGLETONS=(at-upbit-ws)
 
 usage() {
   cat >&2 <<'USAGE'
@@ -37,7 +39,7 @@ usage: deploy.sh [--allow-unverified REASON] <tag>
   <tag>  ghcr.io/mgh3326/auto_trader 의 태그(예: main). 게이트가 그 태그를 불변 digest 로 고정한다.
          digest 를 직접 받지 않는다: 게이트는 태그만 받아 이미지의 SHA 를 확인한다.
   --allow-unverified REASON  CI 증거만 면제하는 기록되는 우회(이미지 고정은 그대로).
-  --rollback  네 컴포넌트를 deployed-digest 로 수렴시키고, 이미 같으면 deployed-digest.previous 로 되돌린다.
+  --rollback  세 컴포넌트(at-api, at-mcp, at-upbit-ws)를 deployed-digest 로 수렴시키고, 이미 같으면 deployed-digest.previous 로 되돌린다.
   환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR
   종료 코드: 2 사용법 · 75 다른 배포가 잠금을 잡음 · 78 게이트/설정 거부 · 그 밖은 실패한 단계의 코드(3 = shiftgate recover 필요)
 USAGE
@@ -123,7 +125,7 @@ singleton_image() {
   printf '%s\n' "$image"
 }
 
-# 네 컴포넌트가 모두 ref 의 digest 인지 확인한다. 어긋난 이름을 stderr 로 알리고 어긋남이 있으면 1.
+# 세 컴포넌트가 모두 ref 의 digest 인지 확인한다. 어긋난 이름을 stderr 로 알리고 어긋남이 있으면 1.
 all_at() {
   local ref="$1" digest="${1#*@}" name rc=0 active
   for name in "${SHIFTGATE_SERVICES[@]}"; do

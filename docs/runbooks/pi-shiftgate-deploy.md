@@ -1,12 +1,12 @@
 # pi 배포를 shiftgate 로 (hk 5617)
 
-pi(Debian 12, aarch64)의 AT 앱 컨테이너 네 개를 `shiftgate`(https://github.com/mgh3326/shiftgate, 고정 커밋 `f8a11c6`)와 어댑터 스크립트로 배포한다.
+pi(Debian 12, aarch64)의 AT 앱 컨테이너를 `shiftgate`(https://github.com/mgh3326/shiftgate, 고정 커밋 `f8a11c6`)와 어댑터 스크립트로 배포한다. hk 5753 이후 배포 대상은 세 개다(`at-worker` 는 은퇴, 아래 「hk 5753 — at-worker 은퇴」).
 
 | 컨테이너 | 방식 | 노출 |
 |---|---|---|
 | `at-api` | shiftgate blue/green (`shiftgate-at-api-blue/green`, 색 포트 18000/28000, 호스트 네트워크) | HAProxy `127.0.0.1:8000` (cloudflared 터널 앞단) |
 | `at-mcp` | shiftgate blue/green (`shiftgate-at-mcp-blue/green`, 색 포트 18765/28765, 호스트 네트워크) | HAProxy `100.90.137.33:8765` (tailnet 전용) |
-| `at-worker`, `at-upbit-ws` | shiftgate 범위 밖 싱글턴(HTTP 아님 — shiftgate docs/design.md "gap"). `swap-singletons.sh` 가 이름 보관·정지·새 run·상태 확인·실패 시 복원 | 없음 |
+| `at-upbit-ws` | shiftgate 범위 밖 싱글턴(HTTP 아님 — shiftgate docs/design.md "gap"). `swap-singletons.sh` 가 이름 보관·정지·새 run·상태 확인·실패 시 복원 | 없음 |
 
 레포 파일(운영자가 호스트에 복사한다. 레포는 아무것도 설치·실행·스케줄하지 않는다):
 
@@ -82,11 +82,11 @@ shiftgate render
 
 ```bash
 cat /root/at-run/deployed-digest
-docker inspect --format '{{.Config.Image}}' at-api at-mcp at-worker at-upbit-ws
+docker inspect --format '{{.Config.Image}}' at-api at-mcp at-upbit-ws
 docker ps --filter name=at- --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 ```
 
-네 컨테이너의 이미지가 모두 같은 `ghcr.io/mgh3326/auto_trader@sha256:…` 인지 본다. 다르면 보고하고 멈춘다. 같으면 그 digest 를 셸 변수에 담고 모양을 확인한다(다음 명령이 이 변수를 쓰므로 같은 셸에서 이어서 한다):
+세 컨테이너(`at-api`, `at-mcp`, `at-upbit-ws`)의 이미지가 모두 같은 `ghcr.io/mgh3326/auto_trader@sha256:…` 인지 본다. 아직 `at-worker` 가 돌고 있으면 그 이미지는 이 비교에 넣지 않는다(은퇴 절차는 아래 「hk 5753 — at-worker 은퇴」). 다르면 보고하고 멈춘다. 같으면 그 digest 를 셸 변수에 담고 모양을 확인한다(다음 명령이 이 변수를 쓰므로 같은 셸에서 이어서 한다):
 
 ```bash
 DIGEST="$(docker inspect --format '{{.Config.Image}}' at-api | sed 's/^[^@]*@//')"
@@ -99,7 +99,7 @@ DIGEST="$(docker inspect --format '{{.Config.Image}}' at-api | sed 's/^[^@]*@//'
 
 기존 `at-api`·`at-mcp` 는 호스트 네트워크에서 `127.0.0.1:8000`, `100.90.137.33:8765` 를 직접 잡고 있어 HAProxy 가 같은 주소를 바인드할 수 없다. 그래서 두 단계로 옮긴다.
 
-**다운타임**: 1단계는 기존 컨테이너가 계속 서비스하므로 **다운타임이 없다**. 2단계 전환만 끊긴다 — 기존 컨테이너 정지부터 HAProxy 가 주소를 이어받을 때까지 **수 초~1분 미만**: cloudflared 경유 at-api 요청은 그동안 502 를 받을 수 있고, tailnet MCP 클라이언트는 연결이 끊겼다가 재연결한다. 진행 중이던 MCP 도구 호출은 중단된다. 거래 시간(KR/US 정규장)과 진행 중인 승인 콜백·주문 도구 호출이 없는 시간에 한다. `at-worker`·`at-upbit-ws` 는 컷오버에서 건드리지 않는다.
+**다운타임**: 1단계는 기존 컨테이너가 계속 서비스하므로 **다운타임이 없다**. 2단계 전환만 끊긴다 — 기존 컨테이너 정지부터 HAProxy 가 주소를 이어받을 때까지 **수 초~1분 미만**: cloudflared 경유 at-api 요청은 그동안 502 를 받을 수 있고, tailnet MCP 클라이언트는 연결이 끊겼다가 재연결한다. 진행 중이던 MCP 도구 호출은 중단된다. 거래 시간(KR/US 정규장)과 진행 중인 승인 콜백·주문 도구 호출이 없는 시간에 한다. `at-upbit-ws` 는 컷오버에서 건드리지 않는다. `at-worker` 는 이 절차와 무관하다(hk 5753).
 
 ### 3.1 1단계 — 임시 포트에 shiftgate 첫 색 올리기 (다운타임 없음)
 
@@ -171,7 +171,7 @@ docker rm at-api at-mcp
 /root/at-run/shiftgate-pi/deploy.sh main
 ```
 
-순서: 호스트 잠금 → 게이트 → `at-api` → `at-mcp` → 싱글턴 → 네 컴포넌트 digest 재확인 → `deployed-digest` 갱신(모두 확인된 뒤 한 번, 모든 파일 작업을 확인). 다른 배포·롤백이 돌고 있으면 exit 75 로 끝난다(잠금은 `/root/at-run/shiftgate-deploy.lock`, 죽은 소유자의 잠금은 자동으로 치운다). 대기 시간은 `at-api` 드레인 최대 120초, `at-mcp` 드레인 최대 300초(서비스 잠금을 잡고 CLI 를 막는다)다.
+순서: 호스트 잠금 → 게이트 → `at-api` → `at-mcp` → 싱글턴(`at-upbit-ws`) → 세 컴포넌트 digest 재확인 → `deployed-digest` 갱신(모두 확인된 뒤 한 번, 모든 파일 작업을 확인). 다른 배포·롤백이 돌고 있으면 exit 75 로 끝난다(잠금은 `/root/at-run/shiftgate-deploy.lock`, 죽은 소유자의 잠금은 자동으로 치운다). 대기 시간은 `at-api` 드레인 최대 120초, `at-mcp` 드레인 최대 300초(서비스 잠금을 잡고 CLI 를 막는다)다.
 
 단계가 실패하면 거기서 멈추고 `shiftgate status` 와 컨테이너 표를 출력하며 `deployed-digest` 는 그대로다. **같은 명령을 다시 실행하면 이어진다**: 이미 그 digest 인 서비스·싱글턴은 건너뛰므로 보관된 이전 색 컨테이너와 `deployed-digest.previous` 가 보존되고(shiftgate 는 같은 digest 라도 비활성 색을 지우고 다시 만들기 때문에 건너뛰지 않으면 롤백 대상을 잃는다), 모두 확인된 뒤에만 마커가 갱신된다. 이미 전부 그 digest 이고 마커도 같으면 아무것도 하지 않는다. exit 3 이면 `shiftgate recover <service>` 를 먼저 한다(§5). `--allow-unverified REASON` 은 CI 증거만 면제하는 기록되는 우회이며 이미지 digest 고정은 그대로다:
 
@@ -183,10 +183,10 @@ docker rm at-api at-mcp
 
 ## 5. 롤백과 복구
 
-모든 롤백은 `deploy.sh --rollback` 하나로 한다(호스트 잠금을 잡고, 게이트는 보지 않는 긴급 경로). 기준은 `deployed-digest` — **마지막으로 네 컴포넌트가 모두 끝난 릴리스**다:
+모든 롤백은 `deploy.sh --rollback` 하나로 한다(호스트 잠금을 잡고, 게이트는 보지 않는 긴급 경로). 기준은 `deployed-digest` — **마지막으로 세 컴포넌트(`at-api`, `at-mcp`, `at-upbit-ws`)가 모두 끝난 릴리스**다:
 
 - 어떤 컴포넌트가 그 digest 와 다르면(전진 배포가 중간에 실패한 경우) **다른 컴포넌트만** 그 digest 로 되돌린다. 보관된 이전 색이 그 digest 이면 pull 없이 `shiftgate rollback`, 아니면 그 digest 로 `shiftgate deploy`. 이미 맞는 컴포넌트와 `deployed-digest` 는 건드리지 않는다.
-- 네 컴포넌트가 모두 그 digest 이면(끝난 릴리스를 되돌릴 때) `deployed-digest.previous` 로 완결 롤백하고, 네 컴포넌트를 확인한 **뒤에** 마커를 맞바꾼다(`previous` 가 없으면 exit 78).
+- 세 컴포넌트가 모두 그 digest 이면(끝난 릴리스를 되돌릴 때) `deployed-digest.previous` 로 완결 롤백하고, 세 컴포넌트를 확인한 **뒤에** 마커를 맞바꾼다(`previous` 가 없으면 exit 78).
 
 ```bash
 /root/at-run/shiftgate-pi/deploy.sh --rollback
@@ -199,7 +199,7 @@ shiftgate recover at-api
 shiftgate recover at-mcp
 ```
 
-싱글턴은 `swap-singletons.sh` 가 이전 컨테이너를 `<이름>-prev` 로 보관한다(한 세대). 실패한 교체는 스크립트가 알아서 복원한다. 교체가 옛 컨테이너를 보관한 직후 끊겨 `at-worker`(또는 `at-upbit-ws`)가 없고 `-prev` 만 있으면 스크립트가 거부하며 복구 명령을 출력한다 — 그 명령(`docker rename <이름>-prev <이름> && docker start <이름>`)을 실행한 뒤 다시 한다. 손으로 위의 롤백 단계를 흉내 내지 않는다(어느 세대가 최신인지 잘못 고르면 마커와 어긋난다).
+싱글턴은 `swap-singletons.sh` 가 이전 컨테이너를 `<이름>-prev` 로 보관한다(한 세대). 실패한 교체는 스크립트가 알아서 복원한다. 교체가 옛 컨테이너를 보관한 직후 끊겨 `at-upbit-ws` 가 없고 `-prev` 만 있으면 스크립트가 거부하며 복구 명령을 출력한다 — 그 명령(`docker rename <이름>-prev <이름> && docker start <이름>`)을 실행한 뒤 다시 한다. 손으로 위의 롤백 단계를 흉내 내지 않는다(어느 세대가 최신인지 잘못 고르면 마커와 어긋난다).
 
 ## 6. 확인 명령
 
@@ -214,11 +214,23 @@ curl -fsS http://127.0.0.1:8000/healthz
 curl -fsS http://100.90.137.33:8765/health
 curl -s -o /dev/null -w '%{http_code}\n' http://100.90.137.33:8765/mcp
 systemctl status haproxy --no-pager
-docker logs --tail 50 at-worker
 docker logs --tail 50 at-upbit-ws
 ```
 
 `check` 는 서비스마다 활성 색 컨테이너, 헬스, HAProxy ready/UP 를 본다. `/mcp` 는 토큰 없이 401 이어야 한다(200 이면 인증이 빠진 것이므로 즉시 보고).
+
+## hk 5753 — at-worker 은퇴
+
+TaskIQ worker 는 은퇴했다(운영자 결정 `decision/2026-11-20/at-direction-daily-plan-nonprice-go` 항목 7). 이 디렉터리의 `deploy.sh`·`swap-singletons.sh` 는 더 이상 `at-worker` 를 시작하거나 교체하지 않는다(정적 테스트가 실행 줄에서 그 이름을 막는다). 배포 뒤에는 **설계 세션이 한 번** 실행 중인 컨테이너를 멈춘다:
+
+```bash
+docker stop -t 60 at-worker
+docker ps -a --filter name=at-worker --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+```
+
+정지만 하고 `docker rm` 은 하지 않는다. `--restart unless-stopped` 컨테이너는 수동 정지 뒤 데몬 재시작으로 되살아나지 않으므로 별도 설정이 필요 없다. 지우는 것은 후속 정리다. `deployed-digest` 에는 `at-worker` 가 들어가지 않으므로 롤백 대상도 없다.
+
+W5 Telegram durable inbox 를 다시 켜려면 TaskIQ worker 복원이 먼저다(`docs/runbooks/telegram-callback-durable-inbox.md` §4).
 
 ## 7. 설계 선택과 한계
 
