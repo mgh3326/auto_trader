@@ -614,3 +614,9 @@ unchanged.
 ### US 지정가 깊이 연구 shadow 설계 (hk 3737)
 
 `docs/design/3737-us-limit-depth-shadow.md`는 후속 연구의 제안이며 구현·실험 활성화가 아니다. ROB-1474의 기록된 US 매수 진입 episode를 읽기 전용으로 비교하고, 1분봉 GET 파일의 불변 세대와 출처를 고정한다. 매수 반사실은 `low < limit`일 때만 체결 가정, 동등 접촉은 별도 계수하며 결과는 journal·브로커 체결과 별도 라벨이다. 사전등록·미결 설계 확정 후에만 후속 구현한다. 주문·원장 쓰기·소급·스케줄러 및 기존 시장가 실험 변경은 없다.
+
+### 스냅샷 일일 갱신 — dry-run 채움률과 스크리너 5거래일 보관 (hk 5752)
+
+스크리너·컨센서스·재무제표 빌더의 dry-run 결과는 `FILL_RATE_JSON {...}` 한 줄을 출력한다(`app/services/snapshot_fill_rate.py`, 핵심 필드별 `non_null`·`share`, 행 0이면 `share=null`). 이 줄은 등록 판단용 읽기 값이며 쓰기 경로와 게이트를 바꾸지 않는다. 재무제표 빌더의 설정되지 않은 DAG 분기는 `--estimate-only`이고 DART 를 호출하지 않는다.
+
+`--keep-trading-days N`(스크리너 CLI, 기본 생략)은 빌드 성공 뒤 같은 시장의 **최신 N개 서로 다른 snapshot_date** 밖 행을 지운다(`app/services/invest_screener_snapshots/retention.py`의 순수 컷오프, `app/jobs/invest_screener_snapshots.py::prune_snapshot_history`). dry-run 은 삭제 대상 개수만 세고, 커밋은 배치 삭제이며 컷오프를 삭제 전에 고정한다. 날짜가 N개 미만이면 아무것도 지우지 않는다. 읽기 경로(`latest_partition`)는 최신 날짜만 쓰므로 보관 뒤에도 같다. 보관은 `invest_screener_snapshots` 한 테이블에만 쓰며 다른 snapshot 테이블과 스케줄러 등록은 없다. DAG 등록과 채움률 기준은 `docs/runbooks/snapshot-refresh-dagu.md`를 따른다.
