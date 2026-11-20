@@ -104,3 +104,4 @@ $RUN scripts.build_financial_fundamentals_snapshots --market kr --limit 20 --ski
 - 스크리너 보관은 날짜 기준 최신 5개에 더해 **지원선(support-proximity) 파티션**을 항상 남긴다(`latest_support_computed_date`). 지원선 프리셋이 읽는 날짜가 일반 최신 5개보다 오래되었어도 지워지지 않는다. 그래서 보관 날짜 수는 최대 6개가 될 수 있다.
 - 종료 코드: 스크리너 `4` = 커밋이 행을 쓰지 않아 보관을 건너뛰었다. 재무제표 `3` = DART 일일 예산으로 커밋이 억제되었다. 둘 다 DAG 실패로 기록되며 journal `status=failure`가 남는다.
 - 재무제표 한 번의 실행은 종목당 최악 16회 DART 호출이다(연도 5 × 3 + 공시목록 1). `--limit 1000`이 이 상한에 맞춘 값이다.
+- 재무제표 DAG 는 재시도가 없다. 재시도는 새 프로세스라 DART 요청 카운터가 0 부터 다시 시작해, 같은 날 예산을 두 번 쓸 수 있다. 실패는 journal `status=failure`로 보고 다음 날 `--skip-existing`이 이어서 수집한다.

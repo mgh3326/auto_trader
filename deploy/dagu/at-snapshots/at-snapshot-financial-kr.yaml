@@ -3,6 +3,7 @@
 # 예산: 종목당 DART 호출은 연도 5 × (연결 1 + 개별 대체 1 + 배당 1) + 공시목록 1 = 최악 16회다. --limit 1000 --skip-existing 의 최악은 16,000 으로 일일 예산 18,000 안에 든다(평균 11회면 11,000). 아직 수집되지 않은 종목만 고르므로 전부 채워지면 매일 0건이다.
 # 🔴 dry-run 은 DART 를 호출하지 않는 --estimate-only 다(빌더의 일반 dry-run 은 DART 를 호출해 예산을 쓴다). 채움률 확인은 런북의 수동 명령(--limit 20)으로 한다.
 # 🔴 commit 은 --allow-partial 과 함께만 쓴다(빌더가 증분 백필이라 요구한다).
+# 🔴 재시도 없음(retry_policy 생략). 재시도는 새 프로세스라 DART 요청 카운터가 0 부터 다시 센다. 예산이 소진된 날 재시도하면 같은 날 예산을 한 번 더 쓴다. 실패한 날은 다음 날 --skip-existing 이 이어서 수집한다.
 # commit 게이트: AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED 가 참일 때만 --commit --allow-partial. 미설정 = --estimate-only.
 # 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
 # 환경: dotenv 파일에서만 읽는다. 값은 이 파일과 레포에 없다.
@@ -18,9 +19,6 @@ steps:
   - name: build
     command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_financial_fundamentals_snapshots --market kr --limit 1000 --skip-existing $(case "$(printf %s "${AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED}" | tr A-Z a-z)" in 1|true|yes|on) echo --commit --allow-partial;; *) echo --estimate-only;; esac)
     timeout_sec: 7200
-    retry_policy:
-      limit: 1
-      interval_sec: 300
 handler_on:
   success:
     command: 'logger -t at-dagu-batch "dag=at-snapshot-financial-kr status=success"; [ -z "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR}"'

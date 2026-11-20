@@ -182,7 +182,12 @@ def test_worker_single_flight_and_retry_bounds(stem: str) -> None:
     assert len(dag["steps"]) == 1
     step = dag["steps"][0]
     assert step["timeout_sec"] == JOBS[stem]["timeout"]
-    assert step["retry_policy"]["limit"] == 1
+    if stem == "at-snapshot-financial-kr":
+        # A retry is a new process whose DART counter starts at zero, so it could
+        # spend a second full day's budget. This DAG must not retry.
+        assert "retry_policy" not in step
+    else:
+        assert step["retry_policy"]["limit"] == 1
     assert "continue_on" not in step
 
 
@@ -363,3 +368,8 @@ def test_financial_batch_is_within_the_daily_dart_budget_at_worst_case() -> None
     _, dag = _load("at-snapshot-financial-kr")
     limit = int(dag["steps"][0]["command"].split("--limit ")[1].split()[0])
     assert limit * worst_calls_per_symbol <= budget
+
+
+def test_financial_dag_has_no_retry_because_a_retry_resets_the_budget() -> None:
+    _, dag = _load("at-snapshot-financial-kr")
+    assert "retry_policy" not in dag["steps"][0]
