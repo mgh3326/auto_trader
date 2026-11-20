@@ -497,3 +497,7 @@ that approval on record):
    for the covered dates reach `succeeded`/`failed` as expected — a `failed`
    row with the zero-filings `last_error` above is the intended failure mode,
    not a scheduling bug.
+
+## 정리 대상 트리플 (hk 5751)
+
+`(tradingview, economic, global)`·`(forexfactory, economic, global)`·`(wisefn, earnings, kr)` 행과 그 파티션은 `scripts/prune_nonprice_history.py --only market_events` 로 정리된다. 정리 뒤 같은 트리플을 다시 적재하면 새 행이 생긴다. 절차는 `docs/runbooks/nonprice-history-prune.md`.

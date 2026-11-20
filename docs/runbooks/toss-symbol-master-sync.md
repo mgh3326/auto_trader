@@ -58,3 +58,7 @@ WHERE source = 'toss_openapi'
 ~~~
 
 Do not delete existing `naver_finance` or `yahoo` valuation rows.
+
+## 시가총액 행 보존 (hk 5751)
+
+`--commit`은 이제 써 넣은 심볼의 더 오래된 `toss_openapi` 행을 같은 트랜잭션에서 지운다. 따라서 Toss 행은 `(market, symbol)`마다 최신 한 개만 남는다. 다른 소스(`naver_finance`·`yahoo`·`tvscreener`) 행은 건드리지 않는다. 과거 누적분은 `scripts/prune_nonprice_history.py --only toss_valuation` 으로 정리한다(`docs/runbooks/nonprice-history-prune.md`).

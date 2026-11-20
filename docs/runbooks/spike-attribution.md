@@ -80,6 +80,8 @@ MCP 로는 `get_spike_attribution(symbols, session_date, market, created_by)` �
    인지는 인제스터마다 다르다. `materials.FEED_CLOCKS` 에 **확인된** 피드만 적격 시각을
    얻고, 나머지는 `timestamp_unknown` 으로 보이되 원인이 되지 못한다.
    - 확인됨: `http_naver_stock_aggregate` = KST exact (2026-08 발행시각 히스토그램).
+> hk 5751: `http_naver_stock_aggregate` 는 이 귀속의 유일한 KR 정확 시각 근거라 `scripts/prune_nonprice_history.py` 의 보류 목록에 있다. `--allow-held-feed` 없이 지우지 않는다.
+
    - 날짜만: `browser_naver_research_*`, `naver_item_news` (전 행 00:00:00).
    - **US 피드는 tz 미확인** → 현재 전부 부적격. US 경로는 "구조적으로 지원되나 미검증".
 4. **KR 공시 심볼 연결은 회사명 정확일치다.** 이 DB 의 DART 행은 `market_events.symbol`
