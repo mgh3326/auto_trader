@@ -399,8 +399,10 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
         s.add("orders_settled")
 
 
-def _late_approval_history():
-    """proposed -> approved for the NEXT session -> suspended (as plain event rows)."""
+def _late_approval_history(batch_member_id: int | None = 7):
+    """proposed -> approved for the NEXT session -> suspended (as plain event rows).
+
+    By default the approval answers a morning-batch card (``batch_member_id`` set)."""
     later = date(SESSION.year, SESSION.month, SESSION.day + 1)
     history = [
         ev("proposed", seq=1),
@@ -410,6 +412,7 @@ def _late_approval_history():
             terms_id=1,
             terms_sha256="a" * 64,
             effective_session=later,
+            batch_member_id=batch_member_id,
         ),
         ev("suspended", seq=3),
     ]
@@ -457,3 +460,50 @@ def test_histories_written_before_the_floor_existed_still_replay() -> None:
     assert state.effective_session == SESSION and state.authority == "approved"
     state = apply_event(state, ev("retired", seq=7))
     assert state.authority == "retired"
+
+
+def test_a_legacy_approval_keeps_its_old_resume_behaviour_for_new_resumes_too() -> None:
+    """Pre-upgrade history: a non-batch approval effective later, a resume for an earlier
+    day, a second suspension. A NEW resume is checked against the latest binding approval
+    only when that approval answers a batch card, so the operator's path back (here a
+    resume for any date, including before the approval) is unchanged."""
+    from app.services.mandate.fold import check_resume_floor, fold_plan_events
+
+    history, later = _late_approval_history(batch_member_id=None)  # legacy approval
+    history += [_resume(4, SESSION), ev("suspended", seq=5)]
+    fold_plan_events(history)  # replays
+    check_resume_floor(history, _resume(6, later + (later - SESSION)))  # a later date
+    check_resume_floor(history, _resume(6, SESSION))  # and an earlier one: no floor
+    # the same history with a batch-backed approval is floored
+    batch_history, _ = _late_approval_history(batch_member_id=7)
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(batch_history, _resume(4, SESSION))
+
+
+def test_the_floor_follows_the_latest_binding_event() -> None:
+    """A later non-batch rebind lifts the floor; a later batch rebind sets a new one."""
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history(batch_member_id=7)
+    legacy_rebind = ev(
+        "terms_rebound",
+        seq=4,
+        terms_id=2,
+        terms_sha256="b" * 64,
+        effective_session=later,
+    )
+    history = [*history, legacy_rebind, _resume(5, later), ev("suspended", seq=6)]
+    check_resume_floor(
+        history, _resume(7, SESSION)
+    )  # latest binding is not batch-backed
+    batch_rebind = ev(
+        "terms_rebound",
+        seq=7,
+        terms_id=3,
+        terms_sha256="c" * 64,
+        effective_session=later,
+        batch_member_id=9,
+    )
+    history = [*history, batch_rebind, ev("suspended", seq=8)]
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(9, SESSION))

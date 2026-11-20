@@ -861,7 +861,7 @@ def test_every_answer_with_a_card_id_passes_the_writers_own_checks_and_the_fold(
         actor="operator:telegram:1",
         fields=fields,
     )
-    assert not hasattr(candidate, "batch_member_id")
+    assert candidate.batch_member_id == 7  # carried into the fold event (resume floor)
     after = apply_event(state, candidate)
     assert after.last_seq == state.last_seq + 1
 

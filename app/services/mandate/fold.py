@@ -55,6 +55,8 @@ class PlanEvent:
     first_fill_amount: Decimal | None = None
     first_fill_quantity: Decimal | None = None
     activation_profile_id: int | None = None
+    #: the morning-batch card an approval/rebind answers (None for a non-batch approval)
+    batch_member_id: int | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     actor: str = ""
 
@@ -522,26 +524,26 @@ def _trade_date(event: PlanEvent) -> date | None:
 
 
 def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> None:
-    """Refuse a NEW ``resumed`` event dated before the approval it follows (§5.1).
+    """Refuse a NEW ``resumed`` event dated before the batch approval it follows (§5.1).
 
-    The floor is the effective session of the last ``approved``/``terms_rebound`` event:
-    a resume may move the date around (suspend, resume, correct) but never pull the plan
-    back before the session its approval was recorded for. This is a write-time check
-    only; ``fold_plan_events`` replays rows committed before it existed unchanged, so a
-    stream that was valid then stays readable (and retire-able) now.
+    The floor applies only when the plan's latest ``approved``/``terms_rebound`` event
+    answers a morning-batch card (``batch_member_id`` set): that approval was recorded
+    for a session after the bell, and a resume must not pull the plan back before it.
+    A non-batch (legacy) approval keeps the behaviour it always had, so an operator can
+    still resume such a plan to any date. A resume may otherwise move its own date around.
+    This is a write-time check only; ``fold_plan_events`` replays stored rows unchanged.
     """
     if candidate.event != "resumed" or candidate.effective_session is None:
         return
-    floor = next(
-        (
-            e.effective_session
-            for e in reversed(history)
-            if e.event in ("approved", "terms_rebound")
-        ),
+    binding = next(
+        (e for e in reversed(history) if e.event in ("approved", "terms_rebound")),
         None,
     )
+    if binding is None or binding.batch_member_id is None:
+        return
     _require(
-        floor is None or candidate.effective_session >= floor,
+        binding.effective_session is None
+        or candidate.effective_session >= binding.effective_session,
         v.MandateRefusal.INVALID_TRANSITION,
         "a resume cannot take effect before the approval it follows",
     )

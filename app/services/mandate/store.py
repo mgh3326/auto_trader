@@ -320,6 +320,7 @@ def event_to_fold(row: MandatePlanEvent) -> PlanEvent:
             else Decimal(str(row.first_fill_quantity))
         ),
         activation_profile_id=row.activation_profile_id,
+        batch_member_id=row.batch_member_id,
         evidence=dict(row.evidence or {}),
         actor=row.actor,
     )
@@ -1392,10 +1393,6 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     return None
 
 
-#: Columns of ``mandate_plan_events`` that are stored but not read by the fold.
-_PERSISTED_ONLY = frozenset({"batch_member_id"})
-
-
 def fold_candidate(
     *,
     event: str,
@@ -1404,14 +1401,9 @@ def fold_candidate(
     actor: str,
     fields: Mapping[str, Any],
 ) -> PlanEvent:
-    """The fold's view of an event about to be written.
-
-    ``batch_member_id`` (the card an answer belongs to) is persisted on the row but is
-    not an input of the fold, so it is left out here and kept on the row.
-    """
-    folded = {k: val for k, val in fields.items() if k not in _PERSISTED_ONLY}
+    """The fold's view of an event about to be written."""
     return PlanEvent(
-        event=event, seq=seq, evidence=dict(evidence), actor=actor, **folded
+        event=event, seq=seq, evidence=dict(evidence), actor=actor, **fields
     )
 
 

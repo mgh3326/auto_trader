@@ -368,6 +368,7 @@ def test_a_resume_keeps_the_approval_date_as_its_lower_bound_in_the_database() -
     ddl = _ddl()
     body = _body("mandate_plan_events_resume_guard")
     assert "e.event IN ('approved', 'terms_rebound')" in body  # not an earlier resume
+    assert "floor_member IS NOT NULL" in body  # only a batch-backed approval/rebind
     assert "NEW.effective_session < floor_day" in body
     assert "a resume cannot take effect before the approval it follows" in body
     # no function call in WHEN: other events never run trigger code (#789 Stage 4)

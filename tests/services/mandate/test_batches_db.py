@@ -1630,3 +1630,29 @@ async def test_a_late_approval_cannot_be_pulled_back_by_a_same_day_suspend_and_r
         effective_session=later,
     )
     await db_session.commit()
+
+
+async def test_a_legacy_approval_can_still_be_resumed_to_an_earlier_date(
+    db_session, seed
+) -> None:
+    """A non-batch approval has no floor, in the store and in the trigger: an operator
+    appends a new resume to a persisted legacy history exactly as before."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)  # no batch card: effective 2026-11-23
+    earlier = d.EFFECTIVE - timedelta(days=3)
+    for day in (d.EFFECTIVE + timedelta(days=4), earlier):
+        await ms.append_plan_event(
+            db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+        )
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="resumed",
+            actor="operator:test",
+            resume_target="approved",
+            effective_session=day,
+        )
+    await db_session.commit()
+    assert (await events_of(db_session, plan.id))[-1] == "resumed"
