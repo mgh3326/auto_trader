@@ -290,6 +290,7 @@ tests/services/order_proposals/test_cash_funding_service.py
 tests/services/order_proposals/test_defensive_ttl.py
 tests/services/order_proposals/test_dispatch.py
 tests/services/order_proposals/test_loss_cut_approval_migration.py
+tests/services/order_proposals/test_mandate_ask_probe.py
 tests/services/order_proposals/test_no_repository_imports.py
 tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_rob1284_sweep_seams.py
