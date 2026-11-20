@@ -80,6 +80,10 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
 )
+from app.services.order_proposals.exit_handoff_card import (
+    card_unsent_reason,
+    exit_handoff_place_fn,
+)
 from app.services.order_proposals.parking_sell_exemption import (
     ParkingSellContext,
     bind_parking_sell_context,
@@ -1527,6 +1531,10 @@ async def _revalidate_place_rung(
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
+    # hk 5441 (design 5438 S5 d): an exit handoff card's live send is fenced on
+    # its handoff and re-checks the account before the POST. Any other proposal
+    # gets ``place_order_fn`` back unchanged.
+    place_order_fn = exit_handoff_place_fn(group, place_order_fn)
     proposal_client_order_id = (
         _toss_proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "toss_live"
@@ -1997,6 +2005,29 @@ async def _revalidate_place_rung(
             idempotency_key=preview.get("idempotency_key"),
         )
         return RungOutcome(rung_index, "unverified", {"submit": submit})
+
+    # hk 5441 (design 5438 O1): an exit handoff card whose send provably made
+    # no request ends here, in this approval's transaction, on the proof its
+    # own send boundary returned. No identifier lookup: there is no order to
+    # find, and a failed lookup would leave the rung ``unverified`` with a key,
+    # which a card that never posted must not look like. The rung is rejected
+    # with no key and no broker id; the nonce this approval consumed stays
+    # consumed, so the card cannot be approved again.
+    unsent_reason = card_unsent_reason(group, submit)
+    if unsent_reason is not None:
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+        await service.record_rejected(
+            proposal_id, rung_index, reason=unsent_reason, now=now
+        )
+        return RungOutcome(
+            rung_index,
+            "error",
+            {"error": unsent_reason, "exit_handoff_proven_unsent": True},
+        )
 
     outcome = await _classify_submit(
         service=service,

@@ -136,6 +136,8 @@ def test_no_route_creates_an_intent() -> None:
     assert methods == {
         ("POST", "/execution-intents/children"),
         ("GET", "/execution-intents/children/{idempotency_key}"),
+        # hk 5441: a read-only list of open intents for the executor's poll.
+        ("GET", "/execution-intents/intents"),
         ("GET", "/execution-intents/intents/{intent_id}"),
         ("GET", "/execution-intents/intents/{intent_id}/fills"),
     }

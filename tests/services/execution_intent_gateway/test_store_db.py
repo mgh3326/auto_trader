@@ -38,6 +38,7 @@ from tests.services.execution_intent_gateway.support import (
     ENABLED,
     FakeBroker,
     FakeKillSwitch,
+    journal_tables_lock,
 )
 
 validate_run_owned_database_url(engine.url)
@@ -57,6 +58,23 @@ def _load_migration() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_hk5441_guards() -> tuple[str, ...]:
+    path = _MIGRATION.with_name("20261120_hk5441_upbit_intent_gateway.py")
+    spec = importlib.util.spec_from_file_location("hk5441_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Only the two functions this fixture's 20261101 statements just replaced:
+    # no trigger of another table is dropped or created from a test fixture.
+    return tuple(
+        statement
+        for statement in module.GUARD_DDL
+        if "CREATE OR REPLACE FUNCTION review.execution_intents_guard()" in statement
+        or "CREATE OR REPLACE FUNCTION review.execution_child_requests_guard()"
+        in statement
+    )
 
 
 def _now() -> datetime:
@@ -100,17 +118,27 @@ def _submit(intent: ExecutionIntentV1, key: str, quantity: int = 1) -> SubmitChi
 
 @pytest_asyncio.fixture(autouse=True)
 async def _schema_and_cleanup() -> Any:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all, tables=_TABLES, checkfirst=True)
-        for statement in _load_migration().GUARD_DDL:
-            await conn.execute(text(statement))
-    yield
-    # The row guards refuse DELETE by design.
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            text("TRUNCATE review.execution_child_requests, review.execution_intents")
-        )
-        await session.commit()
+    # hk 5441: another file now writes these two tables on another xdist
+    # worker; the TRUNCATE below must not run under one of its tests.
+    async with journal_tables_lock():
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                Base.metadata.create_all, tables=_TABLES, checkfirst=True
+            )
+            for statement in _load_migration().GUARD_DDL:
+                await conn.execute(text(statement))
+            # hk 5441 replaced both guard functions; leave the current ones.
+            for statement in _load_hk5441_guards():
+                await conn.execute(text(statement))
+        yield
+        # The row guards refuse DELETE by design.
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                text(
+                    "TRUNCATE review.execution_child_requests, review.execution_intents"
+                )
+            )
+            await session.commit()
 
 
 @pytest.fixture
@@ -236,6 +264,33 @@ async def test_concurrent_children_cannot_spend_one_cap_twice(
     states = [row.state for row in await _rows(intent)]
     assert states.count("accepted") == 3
     assert states.count("refused") == 5
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_waits_for_the_journal_key(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    """hk 5441 (PR 2486 review 65wMjP): the journal is shared with upbit_live,
+    whose shape refusal decides on a key while holding its lock. A kis_mock
+    reservation takes the same lock first, so it cannot insert the key under a
+    decision that is being made about it. Nothing else of the path changes."""
+    from app.services.execution_intent_gateway.store import lock_child_key
+
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    broker = FakeBroker()
+    gateway = _gateway(store, broker)
+    async with AsyncSessionLocal() as holder:
+        await lock_child_key(holder, "child-0001")
+        waiting = asyncio.create_task(
+            gateway.handle(_submit(intent, "child-0001"), confirm=True)
+        )
+        _done, pending = await asyncio.wait({waiting}, timeout=0.5)
+        assert waiting in pending and broker.calls == []
+        await holder.rollback()
+    outcome = await waiting
+    assert outcome.status == "accepted"
+    assert broker.calls == [("submit", "child-0001")]
 
 
 @pytest.mark.asyncio

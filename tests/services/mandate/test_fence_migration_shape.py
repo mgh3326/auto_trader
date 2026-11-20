@@ -54,10 +54,10 @@ def _norm(sql: str) -> str:
     return re.sub(r"\s+", " ", sql).strip()
 
 
-def test_revision_chain_follows_the_sleeve_kiwoom_head() -> None:
+def test_revision_chain_follows_the_upbit_gateway_head() -> None:
     m = _load()
     assert m.revision == "20261120_hk5651_mandate_fence"
-    assert m.down_revision == "20261120_hk5637_sleeve_kiwoom"
+    assert m.down_revision == "20261120_hk5441_upbit_gw"
     assert len(m.revision) <= 32
 
 

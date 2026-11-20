@@ -33,7 +33,7 @@ only make the trigger refuse a fence the Python check allowed (the safe directio
 Downgrade drops the two tables and the trigger; they hold no authority value.
 
 Revision ID: 20261120_hk5651_mandate_fence
-Revises: 20261120_hk5637_sleeve_kiwoom
+Revises: 20261120_hk5441_upbit_gw
 Create Date: 2026-11-20
 """
 
@@ -47,7 +47,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261120_hk5651_mandate_fence"
-down_revision: str | Sequence[str] | None = "20261120_hk5637_sleeve_kiwoom"
+down_revision: str | Sequence[str] | None = "20261120_hk5441_upbit_gw"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Final, Protocol
 from uuid import UUID
 
@@ -94,7 +95,31 @@ class GatewayStore(Protocol):
     ) -> bool: ...
 
 
+async def lock_child_key(session: AsyncSession, idempotency_key: str) -> None:
+    """Serialize every decision about one journal key until the transaction ends.
+
+    The journal's keys are unique across all intents and both accounts, so the
+    lock is on the key alone. It is the **first** lock a transaction takes:
+
+    * a reservation (kis_mock or upbit_live) takes it before it reads anything
+      and holds it until its ``sending`` or ``refused`` row is committed;
+    * the Upbit shape refusal (design 5438 §3.3), which journals nothing, takes
+      it before it looks the key up.
+
+    So a reader that holds the lock sees either the committed row of that key
+    or the certainty that no reservation of it is in flight. Without it, a
+    refusal could be answered for a key whose row was inserted and not yet
+    committed, and the caller would believe nothing was sent under it.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"review.execution_child_requests.idempotency_key:{idempotency_key}"},
+    )
+
+
 def _intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
+    if row.schema_version != 1:
+        return _v2_intent_snapshot(row)
     return IntentSnapshot(
         intent_id=row.id,
         strategy=row.strategy,
@@ -113,6 +138,45 @@ def _intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
     )
 
 
+def _exact(value: Any) -> Decimal | None:
+    return None if value is None else Decimal(str(value))
+
+
+def _v2_intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
+    """An upbit_live row. Its whole-share fields are NULL and are read as 0;
+    no rule for this account reads them.
+    """
+    return IntentSnapshot(
+        intent_id=row.id,
+        strategy=row.strategy,
+        account=row.account,
+        venue=row.venue,
+        symbol=row.symbol,
+        side=row.side,
+        max_quantity=0,
+        max_notional_krw=row.max_notional_krw,
+        limit_price_krw=row.limit_price_krw,
+        max_slippage_bps=row.max_slippage_bps,
+        position_at_authorization=0,
+        min_position_after=0,
+        max_position_after=0,
+        expires_at=row.expires_at,
+        schema_version=row.schema_version,
+        execution_mode=row.execution_mode,
+        mandate_id=row.mandate_id,
+        sleeve_id=row.sleeve_id,
+        strategy_code_sha=row.strategy_code_sha,
+        decision_ref=row.decision_ref,
+        origin=row.origin,
+        operator_exit_id=row.operator_exit_id,
+        max_quantity_decimal=_exact(row.max_quantity_decimal),
+        position_at_authorization_decimal=_exact(row.position_at_authorization_decimal),
+        min_position_after_decimal=_exact(row.min_position_after_decimal),
+        max_position_after_decimal=_exact(row.max_position_after_decimal),
+        created_at=row.created_at,
+    )
+
+
 def _child_snapshot(row: ExecutionChildRequest) -> ChildSnapshot:
     return ChildSnapshot(
         child_id=row.id,
@@ -127,6 +191,8 @@ def _child_snapshot(row: ExecutionChildRequest) -> ChildSnapshot:
         broker_order_id=row.broker_order_id,
         result=row.result,
         created_at=row.created_at,
+        quantity_decimal=_exact(row.quantity_decimal),
+        finished_at=row.finished_at,
     )
 
 
@@ -200,6 +266,9 @@ class SqlAlchemyGatewayStore:
     ) -> Reservation:
         key = request.idempotency_key
         async with self._session_factory() as session:
+            # hk 5441: the journal is shared with upbit_live. The key lock comes
+            # first and is held until this reservation commits.
+            await lock_child_key(session, key)
             intent_row = await session.scalar(
                 select(ExecutionIntent)
                 .where(ExecutionIntent.id == request.intent_id)

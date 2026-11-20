@@ -29,6 +29,14 @@ from .execution_ledger import (
     ExecutionLedgerQuarantineEvent,
     ExecutionLedgerReconcileRun,
 )
+from .execution_mandates import (
+    ExecutionAccountControl,
+    ExecutionChildOrderEvidence,
+    ExecutionExitHandoff,
+    ExecutionMandate,
+    ExecutionMandateRevocation,
+    ExecutionOperatorExit,
+)
 from .fill_watch_context_outcome import FillWatchContextOutcome
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .funding_advisory import (
@@ -240,8 +248,14 @@ __all__ = [
     "ScalpTradeAnalytics",
     "ScalpingDailyReview",
     "ScalpingReviewAction",
+    "ExecutionAccountControl",
+    "ExecutionChildOrderEvidence",
     "ExecutionChildRequest",
+    "ExecutionExitHandoff",
     "ExecutionIntent",
+    "ExecutionMandate",
+    "ExecutionMandateRevocation",
+    "ExecutionOperatorExit",
     "MandateActivationProfile",
     "MandateApproval",
     "MandateApprovalRequest",

@@ -22,6 +22,11 @@ what keeps one sleeve's results apart from every other book.
   its ``pending_approval`` rungs are not open-order states, so the gate adds
   them once as the order under evaluation, while its rungs already at the
   broker stay in ``used``.
+* An order marked ``fill_unproven`` (hk 5441) may have traded an amount the
+  ledger and the broker do not agree on, or that nobody could read. The lots
+  above may then be missing a fill, so the whole sleeve's P&L and cash used are
+  unknown -- not only that symbol's -- and every gate that reads them closes.
+  The loader sets the mark; nothing here decides it.
 """
 
 from __future__ import annotations
@@ -68,6 +73,8 @@ class SleeveOrder:
     #: ladders, revisions and partial fills of one root are one signal.
     signal_key: str | None = None
     signal_at: datetime | None = None
+    #: The order's fills cannot be proven complete (see the module docstring).
+    fill_unproven: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,26 @@ class SleeveFill:
     price: Decimal
     fee: Decimal
     filled_at: datetime
+    #: hk 5441: the place of a *virtual* fill in the FIFO, when the fill has no
+    #: ledger time of its own. A shadow child's fill carries its journal id
+    #: here, which is handed out under the sleeve lock and is therefore the
+    #: order the reservations were actually made in. ``None`` for every ledger
+    #: fill: those keep their ledger time.
+    fifo_rank: int | None = None
+
+
+def _fifo_key(fill: SleeveFill) -> tuple[bool, int, datetime, int]:
+    """Ledger fills by their time, then their id; ranked fills by their rank.
+
+    A list holds one kind or the other. Ranked fills sort before unranked ones
+    only so that the order is total.
+    """
+    return (
+        fill.fifo_rank is None,
+        fill.fifo_rank if fill.fifo_rank is not None else 0,
+        fill.filled_at,
+        fill.ledger_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -109,6 +136,9 @@ class SleeveBook:
     missing_marks: tuple[str, ...] = ()
     unmeasured_orders: tuple[int, ...] = field(default=())
     unattributed_rungs: tuple[int, ...] = field(default=())
+    #: Orders whose fills cannot be proven complete; any entry makes
+    #: ``net_pnl`` and ``used`` unknown.
+    unproven_orders: tuple[int, ...] = field(default=())
 
     @property
     def loss(self) -> Decimal | None:
@@ -141,7 +171,7 @@ def compute_sleeve_book(
     unattributed_rungs: Collection[int] = (),
 ) -> SleeveBook:
     """Fold one sleeve's orders and attributed fills into its book."""
-    fill_list = sorted(fills, key=lambda f: (f.filled_at, f.ledger_id))
+    fill_list = sorted(fills, key=_fifo_key)
     attributed_qty: dict[int, Decimal] = defaultdict(lambda: ZERO)
     attributed_notional: dict[int, Decimal] = defaultdict(lambda: ZERO)
     queues: dict[str, deque[list[Decimal]]] = defaultdict(deque)
@@ -230,8 +260,13 @@ def compute_sleeve_book(
             unbooked += gap * price
 
     unattributed = tuple(sorted(set(unattributed_rungs)))
-    net = None if unrealized is None or unattributed else realized + unrealized - fees
-    used = None if unmeasured else held_cost + open_notional + unbooked
+    unproven = tuple(sorted({order.rung_id for order in orders if order.fill_unproven}))
+    net = (
+        None
+        if unrealized is None or unattributed or unproven
+        else realized + unrealized - fees
+    )
+    used = None if unmeasured or unproven else held_cost + open_notional + unbooked
     return SleeveBook(
         positions=tuple(positions),
         held_cost_basis=held_cost,
@@ -247,4 +282,5 @@ def compute_sleeve_book(
         missing_marks=tuple(missing),
         unmeasured_orders=tuple(sorted(unmeasured)),
         unattributed_rungs=unattributed,
+        unproven_orders=unproven,
     )
