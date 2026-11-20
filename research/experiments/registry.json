@@ -211,6 +211,21 @@
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "HK-5852",
+      "title": "Upbit KRW 코인 shadow: 추세 대 눌림목 진입, 레짐 게이트 켬 대 끔",
+      "tracker": "hk 5852",
+      "markets": [
+        "crypto"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-21",
+      "manifest": "research/experiments/manifests/hk-5852-upbit-krw-shadow.json",
+      "manifest_sha256": "17c8202c7f374f6028f1dd83efdfc1a8371672653f12a4b96902d662910f38d9",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }
