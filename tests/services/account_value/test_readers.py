@@ -135,6 +135,54 @@ async def test_kis_reader_us_cash_missing_field_stays_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("us_fields", "expected"),
+    [
+        ({"frcr_dncl_amt1": "5856.200000"}, Decimal("5856.200000")),
+        ({"frcr_dncl_amt1": 0, "frcr_dncl_amt_2": "123"}, Decimal(0)),
+        ({"frcr_dncl_amt1": "bad", "frcr_dncl_amt_2": "0"}, Decimal(0)),
+        ({"frcr_dncl_amt1": "bad", "frcr_ord_psbl_amt1": "500"}, None),
+        ({"frcr_dncl_amt1": True}, None),
+        ({}, None),
+    ],
+)
+async def test_kis_reader_uses_us_cash_row_from_margin_response(
+    monkeypatch, us_fields, expected
+):
+    from unittest.mock import AsyncMock
+
+    from app.services.brokers.kis.account import AccountClient
+
+    parent = SimpleNamespace(
+        _settings=SimpleNamespace(kis_access_token="fixture"),
+        _hdr_base={},
+        _ensure_token=AsyncMock(),
+        _kis_url=lambda path: path,
+        _request_with_rate_limit=AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output": [
+                    {"natn_name": "영국", "crcy_cd": "USD", "frcr_dncl_amt1": "5856.2"},
+                    {"natn_name": "미국", "crcy_cd": "USD", **us_fields},
+                ],
+            }
+        ),
+        close=AsyncMock(),
+    )
+    parent.account = AccountClient(parent)
+    monkeypatch.setattr(
+        parent.account, "_resolve_account_parts", lambda: ("12345678", "01")
+    )
+    monkeypatch.setattr(
+        parent.account,
+        "fetch_my_stocks_with_completion",
+        AsyncMock(return_value={"rows": [], "complete": True}),
+    )
+    observation = await _read_kis(monkeypatch, "us", lambda: parent)
+    assert observation.cash == {"USD": expected}
+
+
+@pytest.mark.asyncio
 async def test_upbit_reader_includes_locked_cash_and_missing_mark(monkeypatch):
     from app.services.brokers.upbit import client
 
@@ -158,10 +206,31 @@ async def test_upbit_reader_includes_locked_cash_and_missing_mark(monkeypatch):
     assert observation.holdings[0].mark is None
 
 
+def test_existing_broker_fingerprints_keep_their_bytes(monkeypatch):
+    from app.core.config import settings
+    from app.services.account_value.readers import (
+        kis_live_identity,
+        upbit_live_identity,
+    )
+
+    monkeypatch.setattr(settings, "kis_account_no", "12345678-01")
+    monkeypatch.setattr(settings, "kis_app_key", "synthetic-kis-key")
+    monkeypatch.setattr(settings, "kis_app_secret", "synthetic-secret")
+    monkeypatch.setattr(settings, "upbit_access_key", "synthetic-upbit-key")
+    monkeypatch.setattr(settings, "upbit_secret_key", "synthetic-secret")
+
+    assert (
+        kis_live_identity()
+        == "kis:kis_live:59b49e7d572cd7970280bc1285d772dbd538eae770c9f05ab1b35c138726492c"
+    )
+    assert (
+        upbit_live_identity()
+        == "upbit:upbit:41f5d7293b237022756e7528477d910388d44299c1b0949ed3e196c486847248"
+    )
+
+
 @pytest.mark.asyncio
 async def test_toss_fingerprint_uses_response_and_hides_account(monkeypatch):
-    from pydantic import SecretStr
-
     from app.core.config import settings
     from app.services.brokers.toss.client import TossReadClient
 
@@ -176,13 +245,19 @@ async def test_toss_fingerprint_uses_response_and_hides_account(monkeypatch):
             pass
 
     monkeypatch.setattr(TossReadClient, "from_settings", lambda: Client())
-    monkeypatch.setattr(settings, "toss_api_client_secret", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "toss_api_client_secret", None)
+    monkeypatch.setattr(settings, "SECRET_KEY", "synthetic-test-secret")
     monkeypatch.setattr(settings, "toss_api_account_seq", 123)
     reader = BrokerReader(None, "toss", "us")
     [observation] = await reader.read()
-    assert observation.account.startswith("toss:toss_live:")
+    assert (
+        observation.account
+        == "toss:toss_live:"
+        + "f356d2f7d721f36e0a73826bd7b4ee838fb3922308ee7ca911461dc9493cf655"
+    )
     assert "account-example" not in observation.account
-    assert "123" not in observation.account[:15]
+    assert "synthetic-test-secret" not in repr(observation)
+    assert observation.cash == {"USD": None}
     assert "account_identity_unknown" not in observation.reasons
     assert "cash_allocation_unknown" in observation.reasons
 
@@ -235,7 +310,7 @@ async def test_toss_automatic_selection_does_not_claim_an_identity(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_toss_fingerprint_only_consumer_does_not_claim_account_identity(
+async def test_toss_fingerprint_rejects_configured_account_absent_from_response(
     monkeypatch,
 ):
     from app.core.config import settings
@@ -253,7 +328,7 @@ async def test_toss_fingerprint_only_consumer_does_not_claim_account_identity(
 
     monkeypatch.setattr(TossReadClient, "from_settings", lambda: Client())
     monkeypatch.setattr(settings, "toss_api_client_secret", None)
-    monkeypatch.setattr(settings, "toss_api_account_seq", 123)
+    monkeypatch.setattr(settings, "toss_api_account_seq", 456)
     monkeypatch.setattr(settings, "toss_token_namespace_fp", "0123456789abcdef")
 
     [observation] = await BrokerReader(None, "toss", "us").read()

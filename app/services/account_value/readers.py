@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -54,15 +55,14 @@ async def toss_live_identity(view) -> str | None:
 
     accounts = await view.accounts()
     selected = settings.toss_api_account_seq
-    secret = settings.toss_api_client_secret
+    secret = settings.SECRET_KEY
     if (
         selected is not None
         and any(account.account_seq == selected for account in accounts)
-        and secret is not None
+        and secret
     ):
-        return configured_fingerprint(
-            "toss", "toss_live", str(selected), secret.get_secret_value()
-        )
+        key = hmac.digest(secret.encode(), b"account-value-fingerprint:toss", "sha256")
+        return configured_fingerprint("toss", "toss_live", str(selected), key)
     return None
 
 
@@ -184,6 +184,13 @@ class BrokerReader:
                         include_field_presence=True
                     )
                     matches = [row for row in rows if row.get("crcy_cd") == "USD"]
+                    us_matches = [
+                        row
+                        for row in matches
+                        if str(row.get("natn_name") or "").strip().upper()
+                        in {"미국", "US", "USA"}
+                    ]
+                    matches = us_matches or matches
                     if len(matches) == 1:
                         amount = _decimal(matches[0].get("frcr_dncl_amt1"))
                         # A broker-supplied zero is cash 0; only an absent or

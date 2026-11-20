@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-from pydantic import SecretStr
 
 from app.core.config import settings
 from app.services.account_value.identity import configured_fingerprint
@@ -39,7 +38,7 @@ async def _snapshot_account(broker, monkeypatch):
         return (await _read_kis(monkeypatch, "kr", client)).account
     if broker == "toss":
         monkeypatch.setattr(settings, "toss_api_account_seq", 7)
-        monkeypatch.setattr(settings, "toss_api_client_secret", SecretStr("secret"))
+        monkeypatch.setattr(settings, "toss_api_client_secret", None)
         monkeypatch.setattr(
             TossReadClient, "from_settings", lambda *args, **kwargs: FakeToss()
         )

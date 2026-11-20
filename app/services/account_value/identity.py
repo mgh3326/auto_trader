@@ -24,7 +24,7 @@ def valid_account_market(account: str, market: str) -> bool:
 
 
 def configured_fingerprint(
-    broker: str, mode: str, identifier: str, secret: str
+    broker: str, mode: str, identifier: str, secret: str | bytes
 ) -> str | None:
     import hashlib
     import hmac
@@ -32,5 +32,6 @@ def configured_fingerprint(
     if not identifier or not secret:
         return None
     material = f"account-value-v1\0{broker}\0{mode}\0{identifier}".encode()
-    digest = hmac.new(secret.encode(), material, hashlib.sha256).hexdigest()
+    key = secret.encode() if isinstance(secret, str) else secret
+    digest = hmac.new(key, material, hashlib.sha256).hexdigest()
     return f"{broker}:{mode}:{digest}"
