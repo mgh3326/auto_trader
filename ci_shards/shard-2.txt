@@ -121,6 +121,8 @@ tests/scripts/test_ncp_job_timers_golden.py
 tests/scripts/test_perf_compare_sentry.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_protected_positions.py
+tests/scripts/test_prune_nonprice_history.py
+tests/scripts/test_prune_nonprice_history_db.py
 tests/scripts/test_r4_p0_readiness.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_record_strategy_learning_event.py
