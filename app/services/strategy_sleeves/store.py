@@ -934,6 +934,106 @@ async def _mark_unmeasured_handoff_cards(
     return marked
 
 
+@dataclass(frozen=True)
+class RecoveredKiwoomCandidate:
+    """A rung that lost its order number (a rolled-back approval) but kept a send key."""
+
+    rung: OrderProposalRung
+    proposal: OrderProposal
+    send_key: str
+
+
+@dataclass(frozen=True)
+class RecoveredKiwoomOrder:
+    order_id: str
+    trading_day: str
+    fills: tuple[SleeveFill, ...]
+
+
+async def recover_kiwoom_orders(
+    session: AsyncSession,
+    sleeve: StrategySleeve,
+    candidates: Sequence[RecoveredKiwoomCandidate],
+) -> dict[int, RecoveredKiwoomOrder]:
+    """rung id -> the order the rung's send key proves and its attributed fills.
+
+    Read-only. The send key is the Kiwoom mock ``client_order_id``: a place row of the
+    sleeve's own account with that key and one order number and trading day ties the
+    order to the rung; the fills are then attributed by the very rule the sleeve book
+    uses. No row, an unreadable row or more than one order for the key gives nothing
+    (the absence of evidence is not an unsent order).
+    """
+    broker, ledger_mode = LEDGER_IDENTITY[sleeve.account_mode]
+    if broker != "kiwoom" or not candidates:
+        return {}
+    keys = sorted({c.send_key for c in candidates})
+    rows = await place_rows_for_idempotency_keys(
+        session, account_mode=sleeve.account_mode, idempotency_keys=keys
+    )
+    proven: dict[int, tuple[str, str]] = {}
+    for cand in candidates:
+        found = {
+            (normalize_order_id(r.broker_order_id), _key_text(r.trading_day))
+            for r in rows
+            if r.account_mode == sleeve.account_mode
+            and getattr(r, "operation_kind", "place") == "place"
+            and _key_text(r.idempotency_key) == cand.send_key
+        }
+        if len(found) == 1:
+            order_id, day = next(iter(found))
+            if order_id and day:
+                proven[cand.rung.id] = (order_id, day)
+    if not proven:
+        return {}
+    by_order_id: dict[str, list[_RungRef]] = defaultdict(list)
+    for cand in candidates:
+        if cand.rung.id not in proven:
+            continue
+        order_id, day = proven[cand.rung.id]
+        by_order_id[order_id].append(
+            _RungRef(
+                SleeveOrder(
+                    proposal_pk=cand.proposal.id,
+                    rung_id=cand.rung.id,
+                    symbol=sleeve_symbol(cand.proposal.symbol, sleeve.market),
+                    side=cand.rung.side,
+                    state=cand.rung.state,
+                    quantity=_dec(cand.rung.quantity) or ZERO,
+                    limit_price=_dec(cand.rung.limit_price),
+                    notional=_dec(cand.rung.notional),
+                    rung_filled_qty=_dec(cand.rung.filled_qty),
+                    signal_key=str(cand.proposal.root_proposal_id),
+                    signal_at=cand.proposal.created_at,
+                ),
+                cand.proposal.created_at,
+                day,
+            )
+        )
+    ledger_rows = await session.execute(
+        select(ExecutionLedger).where(
+            execution_ledger_in_effect(),
+            ExecutionLedger.broker == broker,
+            ExecutionLedger.account_mode == ledger_mode,
+            ExecutionLedger.source.in_(AUTHORITATIVE_SOURCES),
+            func.ltrim(ExecutionLedger.broker_order_id, "0").in_(
+                sorted({key.lstrip("0") for key in by_order_id})
+            ),
+        )
+    )
+    fills, _skipped, _unattributed = attribute_fills(
+        rows=list(ledger_rows.scalars().all()),
+        by_order_id=by_order_id,
+        sleeve=sleeve,
+    )
+    by_rung: dict[int, list[SleeveFill]] = defaultdict(list)
+    for fill in fills:
+        by_rung[fill.rung_id].append(fill)
+    return {
+        rung_id: RecoveredKiwoomOrder(order_id, day, tuple(by_rung.get(rung_id, ())))
+        for rung_id, (order_id, day) in proven.items()
+    }
+
+
 def attribute_fills(
     *,
     rows: Sequence[ExecutionLedger],

@@ -123,6 +123,9 @@ class FenceRequest:
     actual_account_ref: str | None
     now: datetime
     attempt_id: UUID = field(default_factory=uuid4)
+    #: the broker's deterministic send key of the order this fence allows (Kiwoom mock),
+    #: committed with the fence so a rolled-back callback can still be tied to the order
+    send_key: str | None = None
     auto: AutoFenceInputs | None = None
     #: the decision clock, sampled by the fence **after** its locks (I11: a measurement
     #: that expired while the fence waited must not authorize it); ``None`` = real time
@@ -461,7 +464,7 @@ async def _fence_once(
         plan_id=loaded.plan.id,
         seq=seq,
         event="tranche_send_fenced",
-        evidence={},
+        evidence={v.SEND_KEY: req.send_key} if req.send_key else {},
         actor=f"system:mandate_fence:{req.approval_mode}",
         **fields,
     )

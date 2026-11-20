@@ -184,7 +184,12 @@ EVIDENCE_KEYS: tuple[str, ...] = (
 #: (§5.2 "증거의 순서", I14). Events without it never qualify a loss sale.
 PROOF_KEY = "retrospective_verified"
 #: Every key the stored ``evidence`` may hold (the DB CHECK of migration hk5651).
-STORED_EVIDENCE_KEYS: tuple[str, ...] = (*EVIDENCE_KEYS, PROOF_KEY)
+#: The broker send key a human fence records before the POST (X26): the Kiwoom mock
+#: ``client_order_id`` is deterministic per rung, so a rolled-back callback that loses the
+#: rung's order number can still be tied to the order through this key. Written by the
+#: fence only, never a caller input.
+SEND_KEY = "send_key"
+STORED_EVIDENCE_KEYS: tuple[str, ...] = (*EVIDENCE_KEYS, PROOF_KEY, SEND_KEY)
 
 #: Column group -> (required events, allowed events). Outside ``allowed`` the
 #: columns must be NULL; inside ``required`` they must be set.

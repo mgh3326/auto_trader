@@ -16,12 +16,14 @@ import pytest
 from app.services.mandate.fold import PlanState
 from app.services.mandate.projection_rules import (
     FillFact,
+    Hold,
     HoldingsReading,
     PlanFacts,
     ProjectionHold,
     ProposalFact,
     RungFact,
     project,
+    proposal_outcome,
     rung_status,
     tranche_event_for,
 )
@@ -732,3 +734,238 @@ def test_every_projected_event_is_accepted_by_the_fold_in_order():
     apply(s, plan)
     assert s.state.authority == plan.final_state.authority == "active"
     assert s.state.effective_session == SESSION
+
+
+# ----------------------------------------------------------------------------------
+# X26, human side (hk 5651 T4c): a rolled-back approval keeps the order through its key
+# ----------------------------------------------------------------------------------
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _Session:
+    def __init__(self, ledger_rows):
+        self.ledger_rows = ledger_rows
+        self.executed = 0
+
+    async def execute(self, _stmt):
+        self.executed += 1
+        return _Rows(self.ledger_rows)
+
+
+def _candidate(key: str, *, rung_id: int = 7, quantity: str = "10"):
+    from types import SimpleNamespace
+
+    from app.services.strategy_sleeves import store as sleeve_store
+
+    created = datetime(2026, 11, 20, 1, tzinfo=UTC)
+    proposal = SimpleNamespace(
+        id=1, symbol="005930", root_proposal_id=uuid4(), created_at=created
+    )
+    rung_row = SimpleNamespace(
+        id=rung_id,
+        side="buy",
+        state="pending_approval",  # the approval transaction rolled back
+        quantity=Decimal(quantity),
+        limit_price=Decimal("70000"),
+        notional=None,
+        filled_qty=None,
+        broker_order_id=None,
+        idempotency_key=None,
+    )
+    return sleeve_store.RecoveredKiwoomCandidate(rung_row, proposal, key)
+
+
+def _ledger_fill(order_id: str, qty: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=900,
+        currency="KRW",
+        broker_order_id=order_id,
+        symbol="005930",
+        raw_symbol=None,
+        instrument_type="equity_kr",
+        side="buy",
+        filled_at=datetime(2026, 11, 20, 2, tzinfo=UTC),
+        filled_qty=Decimal(qty),
+        filled_price=Decimal("70000"),
+        fee_amount=None,
+        fee_currency=None,
+        broker="kiwoom",
+    )
+
+
+def _sleeve():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        account_mode="kiwoom_mock", market="equity_kr", currency="KRW"
+    )
+
+
+def _place_row(key: str, order_id: str | None, day: str = "20261120"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        broker_order_id=order_id,
+        idempotency_key=key,
+        trading_day=day,
+        account_mode="kiwoom_mock",
+        operation_kind="place",
+    )
+
+
+@pytest.mark.asyncio
+async def test_x26_a_rolled_back_approval_is_tied_to_its_fill_by_the_fence_send_key(
+    monkeypatch,
+):
+    from app.services.strategy_sleeves import store as sleeve_store
+
+    async def place_rows(session, *, account_mode, idempotency_keys):
+        return [_place_row("kwoomm-aaaa", "0000123")]
+
+    monkeypatch.setattr(sleeve_store, "place_rows_for_idempotency_keys", place_rows)
+    recovered = await sleeve_store.recover_kiwoom_orders(
+        _Session([_ledger_fill("123", "10")]), _sleeve(), [_candidate("kwoomm-aaaa")]
+    )
+    order = recovered[7]
+    assert order.order_id == "123"
+    assert [f.quantity for f in order.fills] == [Decimal("10")]
+
+
+@pytest.mark.asyncio
+async def test_x26_no_ledger_evidence_for_the_key_changes_nothing(monkeypatch):
+    from app.services.strategy_sleeves import store as sleeve_store
+
+    session = _Session([_ledger_fill("123", "10")])
+
+    async def no_rows(session, *, account_mode, idempotency_keys):
+        return []
+
+    monkeypatch.setattr(sleeve_store, "place_rows_for_idempotency_keys", no_rows)
+    assert (
+        await sleeve_store.recover_kiwoom_orders(
+            session, _sleeve(), [_candidate("kwoomm-aaaa")]
+        )
+        == {}
+    )
+    assert session.executed == 0  # nothing to look up without an order number
+
+    async def unreadable(session, *, account_mode, idempotency_keys):
+        return [_place_row("kwoomm-aaaa", None)]  # a row with no order number
+
+    monkeypatch.setattr(sleeve_store, "place_rows_for_idempotency_keys", unreadable)
+    assert (
+        await sleeve_store.recover_kiwoom_orders(
+            session, _sleeve(), [_candidate("kwoomm-aaaa")]
+        )
+        == {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_x26_another_rungs_key_never_claims_the_order(monkeypatch):
+    """Control: the ledger row is of another key; the candidate gets nothing."""
+    from app.services.strategy_sleeves import store as sleeve_store
+
+    async def other_key(session, *, account_mode, idempotency_keys):
+        return [_place_row("kwoomm-bbbb", "123")]
+
+    monkeypatch.setattr(sleeve_store, "place_rows_for_idempotency_keys", other_key)
+    assert (
+        await sleeve_store.recover_kiwoom_orders(
+            _Session([_ledger_fill("123", "10")]),
+            _sleeve(),
+            [_candidate("kwoomm-aaaa")],
+        )
+        == {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_x26_the_fully_booked_rung_settles_and_a_partial_one_stays_open(
+    monkeypatch,
+):
+    from app.services.mandate import projection
+    from app.services.strategy_sleeves import store as sleeve_store
+
+    async def place_rows(session, *, account_mode, idempotency_keys):
+        return [_place_row("kwoomm-aaaa", "123")]
+
+    monkeypatch.setattr(sleeve_store, "place_rows_for_idempotency_keys", place_rows)
+    base = rung(7, "pending_approval", order_id=None, key=None)
+    for booked, expected_state in (("10", "filled"), ("4", "pending_approval")):
+        recovered = await sleeve_store.recover_kiwoom_orders(
+            _Session([_ledger_fill("123", booked)]),
+            _sleeve(),
+            [_candidate("kwoomm-aaaa", rung_id=base.rung_id)],
+        )
+        fact, fills = projection._with_recovered_order(
+            base, recovered[base.rung_id], "equity_kr"
+        )
+        assert fact.broker_order_id == "123"
+        assert fact.state == expected_state
+        assert sum((f.quantity for f in fills), Decimal("0")) == Decimal(booked)
+        outcome = proposal_outcome(
+            ProposalFact(
+                proposal_id=uuid4(),
+                rungs=(fact,),
+                fills=tuple(fills),
+                unattributed_rung_ids=frozenset(),
+            ),
+            unclosed_fence=True,
+        )
+        # settled only when the whole order is booked; otherwise the order may still rest
+        assert isinstance(outcome, Hold) is (expected_state != "filled")
+
+
+def test_x26_the_fence_send_key_is_the_one_the_kiwoom_place_function_derives():
+    from types import SimpleNamespace
+
+    from app.services.kiwoom_mock_order_ledger_service import build_client_order_id
+    from app.services.order_proposals import mandate_send
+
+    now = datetime(2026, 11, 20, 1, 30, tzinfo=UTC)  # 10:30 KST
+    group = SimpleNamespace(
+        account_mode="kiwoom_mock",
+        symbol=" 005930 ",
+        mandate_plan_id=1,
+        mandate_tranche_index=1,
+        proposal_id=uuid4(),
+    )
+    rung_row = SimpleNamespace(
+        side="buy", quantity=Decimal("10"), limit_price=Decimal("70000"), rung_index=0
+    )
+    expected = build_client_order_id(
+        symbol="005930",
+        side="buy",
+        quantity=10,
+        price=70000,
+        exchange="KRX",
+        trading_day="20261120",
+        rung=0,
+    )
+    assert mandate_send.kiwoom_send_key(group, rung_row, now) == expected
+    # controls: another rung, another account, a fractional price never share the key
+    other_rung = SimpleNamespace(**{**vars(rung_row), "rung_index": 1})
+    assert mandate_send.kiwoom_send_key(group, other_rung, now) != expected
+    assert (
+        mandate_send.kiwoom_send_key(
+            SimpleNamespace(account_mode="toss_live", symbol="005930"), rung_row, now
+        )
+        is None
+    )
+    fractional = SimpleNamespace(
+        **{**vars(rung_row), "limit_price": Decimal("70000.5")}
+    )
+    assert mandate_send.kiwoom_send_key(group, fractional, now) is None
+    request = mandate_send._request(group, Decimal("1"), "ref", now, "human", expected)
+    assert request.send_key == expected

@@ -277,12 +277,47 @@ async def pre_preview_refusal(
     )
 
 
+def kiwoom_send_key(group: Any, rung: Any, now: datetime) -> str | None:
+    """The Kiwoom mock ``client_order_id`` this rung's send will use, or ``None``.
+
+    It is the same deterministic derivation ``place_kiwoom_mock_order`` applies to the
+    adapter's arguments (KRX, integer quantity and price, the KST trading day, the rung
+    index), so it can be committed with the fence before the POST (X26).
+    """
+    if getattr(group, "account_mode", None) != "kiwoom_mock":
+        return None
+    try:
+        quantity = Decimal(str(rung.quantity))
+        price = Decimal(str(rung.limit_price))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    for value in (quantity, price):
+        if not value.is_finite() or value <= 0 or value != value.to_integral_value():
+            return None
+    from app.services.brokers.kiwoom import constants as kiwoom_constants
+    from app.services.kiwoom_mock_order_ledger_service import (
+        build_client_order_id,
+        kr_trading_day,
+    )
+
+    return build_client_order_id(
+        symbol=str(group.symbol or "").strip(),
+        side=str(rung.side),
+        quantity=int(quantity),
+        price=int(price),
+        exchange=str(kiwoom_constants.MOCK_EXCHANGE_KRX).strip().upper(),
+        trading_day=kr_trading_day(now),
+        rung=rung.rung_index,
+    )
+
+
 def _request(
     group: Any,
     notional: Decimal,
     account_ref: str | None,
     now: datetime,
     mode: str,
+    send_key: str | None = None,
 ) -> fence.FenceRequest:
     return fence.FenceRequest(
         plan_id=int(group.mandate_plan_id),
@@ -292,6 +327,7 @@ def _request(
         notional=notional,
         actual_account_ref=account_ref,
         now=now,
+        send_key=send_key,
     )
 
 
@@ -405,7 +441,9 @@ async def commit_fence_for_rung(
         account_ref = await port.account_ref_resolver(group)
     except Exception:  # noqa: BLE001
         account_ref = None
-    request = _request(group, notional, account_ref, now, "human")
+    request = _request(
+        group, notional, account_ref, now, "human", kiwoom_send_key(group, rung, now)
+    )
     outcome = await port.commit_fence(request)
     if not outcome.fenced or outcome.seq is None:
         return outcome
