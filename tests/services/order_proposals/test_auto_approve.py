@@ -353,6 +353,9 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
         AsyncMock(return_value="mandate_plan_not_active"),
     )
     monkeypatch.setattr(
+        mandate_send.settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "1"
+    )
+    monkeypatch.setattr(
         mandate_send.DEFAULT_PORT,
         "account_ref_resolver",
         AsyncMock(return_value="acct-ref"),

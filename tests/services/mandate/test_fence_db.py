@@ -65,7 +65,7 @@ class Freeze:
             frozen=self.frozen,
             reason="fixture",
             evidence={},
-            valid_until=NOW + timedelta(hours=1),
+            valid_until=datetime.now(UTC) + timedelta(hours=1),
         )
 
 

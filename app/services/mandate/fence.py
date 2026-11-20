@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -119,6 +119,11 @@ class FenceRequest:
     now: datetime
     attempt_id: UUID = field(default_factory=uuid4)
     auto: AutoFenceInputs | None = None
+    #: the decision clock, sampled by the fence **after** its locks (I11: a measurement
+    #: that expired while the fence waited must not authorize it); ``None`` = real time
+    clock: Callable[[], datetime] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -166,6 +171,10 @@ def _frozen(verdict: Any, now: datetime) -> bool:
         or verdict.valid_until.utcoffset() is None
         or verdict.valid_until <= now
     )
+
+
+def _real_now() -> datetime:
+    return datetime.now(UTC)
 
 
 async def _read_freeze(
@@ -302,7 +311,9 @@ async def gather_send_facts(
         account_binding_ok=bound_ok,
         actual_account_ref=req.actual_account_ref,
         plan_account_ref=loaded.plan.account_ref,
-        frozen=await _read_freeze(session, loaded.sleeve, req.now, freeze_fn),
+        frozen=await _read_freeze(
+            session, loaded.sleeve, (req.clock or _real_now)(), freeze_fn
+        ),
     )
     return facts, terms, state
 
@@ -518,7 +529,7 @@ class ReleaseOutcome:
     reason: str
 
 
-async def release_send_fence(
+async def _release_once(
     plan_id: int,
     fenced_seq: int,
     *,
@@ -592,6 +603,37 @@ async def release_send_fence(
         return ReleaseOutcome(False, "release_failed")
     finally:
         await _quiet_close(session)
+
+
+#: A release that loses a ``seq`` race to another event writer is re-read and tried
+#: again: a fence known never to have sent must not stay open for want of one retry.
+MAX_RELEASE_ATTEMPTS = 3
+
+
+async def release_send_fence(
+    plan_id: int,
+    fenced_seq: int,
+    *,
+    reason_code: str,
+    session_factory: SessionFactory | None = None,
+) -> ReleaseOutcome:
+    """Close a fence as *proven unsent* or *explicitly rejected* — nothing else.
+
+    See ``_release_once``; ``released`` is true only for a committed release, and
+    ``already_closed`` means someone else closed it. ``release_failed`` after every
+    attempt leaves the fence open (the safe direction) and the caller logs it.
+    """
+    outcome = ReleaseOutcome(False, "release_failed")
+    for _attempt in range(MAX_RELEASE_ATTEMPTS):
+        outcome = await _release_once(
+            plan_id,
+            fenced_seq,
+            reason_code=reason_code,
+            session_factory=session_factory,
+        )
+        if outcome.reason != "release_failed":
+            return outcome
+    return outcome
 
 
 # --------------------------------------------------------- best-effort rechecks

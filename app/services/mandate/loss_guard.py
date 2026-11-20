@@ -31,6 +31,7 @@ from app.models.mandate import (
     MandateSymbolReservation,
     MandateSymbolReservationRelease,
 )
+from app.models.review import TradeRetrospective
 from app.services.mandate import store
 from app.services.mandate import vocabulary as v
 from app.services.mandate.locks import acquire_symbol_lock
@@ -43,6 +44,29 @@ def _same(left: Any, right: Any) -> bool:
     return left is not None and right is not None and str(left) == str(right)
 
 
+def matching_events(
+    events: list[MandatePlanEvent],
+    *,
+    retrospective_id: Any,
+    approval_issue_id: Any,
+) -> list[MandatePlanEvent]:
+    """The ``thesis_broken`` event, or the refresh that points at it, whose evidence
+    carries **both** ids (one event: ids are never mixed across events)."""
+    found: list[MandatePlanEvent] = []
+    for broken in (e for e in events if e.event == "thesis_broken"):
+        for event in [broken] + [
+            e
+            for e in events
+            if e.event == "thesis_evidence_refreshed" and e.thesis_seq == broken.seq
+        ]:
+            evidence = event.evidence or {}
+            if _same(evidence.get("retrospective_id"), retrospective_id) and _same(
+                evidence.get("approval_issue_id"), approval_issue_id
+            ):
+                found.append(event)
+    return found
+
+
 def evidence_matches(
     events: list[MandatePlanEvent],
     *,
@@ -50,18 +74,25 @@ def evidence_matches(
     approval_issue_id: Any,
 ) -> bool:
     """Both ids are in one ``thesis_broken`` event's evidence or in a refresh of it."""
-    for broken in (e for e in events if e.event == "thesis_broken"):
-        pool = [broken.evidence or {}] + [
-            e.evidence or {}
-            for e in events
-            if e.event == "thesis_evidence_refreshed" and e.thesis_seq == broken.seq
-        ]
-        for evidence in pool:
-            if _same(evidence.get("retrospective_id"), retrospective_id) and _same(
-                evidence.get("approval_issue_id"), approval_issue_id
-            ):
-                return True
-    return False
+    return bool(
+        matching_events(
+            events,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
+        )
+    )
+
+
+async def _retrospective_created_at(session: AsyncSession, retrospective_id: Any):
+    """When the stored retrospective was written; ``None`` if there is no such row."""
+    try:
+        rid = int(retrospective_id)
+    except (TypeError, ValueError):
+        return None
+    row = await session.execute(
+        select(TradeRetrospective.created_at).where(TradeRetrospective.id == rid)
+    )
+    return row.scalar_one_or_none()
 
 
 async def unreleased_live_plan_ids(
@@ -102,10 +133,21 @@ async def loss_cut_refusal(
     plan_ids = await unreleased_live_plan_ids(session, market=market, symbol=norm)
     for plan_id in plan_ids:
         events = await store.list_plan_events(session, plan_id)
-        if not evidence_matches(
+        candidates = matching_events(
             events,
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
+        )
+        # §5.2 "증거의 순서": the retrospective must already exist when the event that
+        # cites it was written. An id issued to a later row does not qualify.
+        created = (
+            await _retrospective_created_at(session, retrospective_id)
+            if candidates
+            else None
+        )
+        if created is None or not any(
+            event.created_at is not None and created <= event.created_at
+            for event in candidates
         ):
             return v.MandateRefusal.THESIS_NOT_BROKEN.value
     return None

@@ -913,6 +913,10 @@ async def _write_terms(
         horizon_sessions=s["prereg_horizon_sessions"],
         max_duration_days=s["prereg_max_duration_days"],
     )
+    # F2 of every basket this approval touches is taken once, ascending, with the
+    # sleeve version (§4.6): the destination basket's row exists before it is bumped.
+    destination = (realm_and_market(sleeve)[0], c["basket_key"])
+    await fence_locks.ensure_authority_row(session, *destination)
     try:
         version = await sleeve_store.append_version_with_terms(
             session,
@@ -924,6 +928,7 @@ async def _write_terms(
             prereg=prereg,
             reason=f"mandate terms approved: {request.approval_ref}"[:500],
             set_by=f"operator:telegram:{principal}",
+            extra_baskets=(destination,),
         )
     except SleeveError as exc:
         raise MandateError(v.MandateRefusal.REQUEST_STALE, str(exc)) from exc
@@ -950,9 +955,6 @@ async def _write_terms(
     await _flush(session)
     await session.refresh(terms)
     await session.refresh(version)
-    await _bump_basket_authority(
-        session, realm_and_market(sleeve)[0], terms.basket_key, create=True
-    )
     if (
         hashing.content_sha256(terms_content_from_rows(terms, version))
         != terms.content_sha256

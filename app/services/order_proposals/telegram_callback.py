@@ -735,19 +735,29 @@ async def _handle_auto_veto(
 
 
 async def _mandate_pre_nonce_block(
-    service: OrderProposalsService, group: Any, rungs: list[Any], *, now: datetime
+    service: OrderProposalsService,
+    group: Any,
+    rungs: list[Any],
+    *,
+    now_fn: Clock,
+    principal: str | None,
 ) -> str | None:
     """hk 3795 T4c: refusals that must leave the single-use nonce unspent.
 
-    A plan-bound send that the fence would refuse (§4.7 blocking codes) and a loss
-    sale without its plan's ``thesis_broken`` evidence (I14). Fast, lock-free advice;
-    the fence transaction and the pre-send check decide again. Only ever refuses, and
-    returns ``None`` at once for a proposal with neither a plan nor a loss_cut.
+    For a plan-bound card: the operator principal (§3.5, authority) and the send
+    boundary the fence would apply (§4.7 blocking codes, lock-free advice). For a
+    ``loss_cut``: the plan's ``thesis_broken`` evidence (I14). Only ever refuses; an
+    ordinary proposal returns ``None`` without any call, clock sample or read.
     """
-    block = await mandate_send.pre_nonce_refusal(group, rungs, now=now)
-    if block is None:
-        block = await service.mandate_loss_cut_refusal(group)
-    return block
+    if getattr(group, "mandate_plan_id", None) is not None:
+        block = await mandate_send.pre_nonce_refusal(
+            group, rungs, now=now_fn(), principal=principal
+        )
+        if block is not None:
+            return block
+    if getattr(group, "exit_intent", None) == "loss_cut":
+        return await service.mandate_loss_cut_refusal(group)
+    return None
 
 
 async def _handle_approve(
@@ -788,7 +798,11 @@ async def _handle_approve(
     # proposal-scoped commit lease alone cannot prevent a double mutation.
     target_group, target_rungs = await service.get_proposal(proposal_id)
     mandate_block = await _mandate_pre_nonce_block(
-        service, target_group, target_rungs, now=now_fn()
+        service,
+        target_group,
+        target_rungs,
+        now_fn=now_fn,
+        principal=telegram_user_id if actor_channel == "telegram" else actor_subject,
     )
     if mandate_block is not None:
         await session.commit()
@@ -967,6 +981,27 @@ async def _handle_approve(
                 (first_window.detail or {}).get("error") or "approval_window_blocked"
             ),
             "operator_reason": operator_reason,
+            "proposal_id": str(proposal_id),
+            "results": [outcome.result for outcome in outcomes],
+            "rung_results": _serialize_rung_outcomes(outcomes),
+        }
+
+    fence_retryable = [
+        o
+        for o in outcomes
+        if o.result == "guard_blocked"
+        and (o.detail or {}).get("reason") == "mandate_fence_unavailable"
+    ]
+    if fence_retryable and len(fence_retryable) == len(outcomes):
+        # hk 3795 §4.6: a fence that timed out or could not confirm its commit sent
+        # nothing, and the approval stays usable: restore the nonce and answer.
+        await service.restore_approval_after_window_block(
+            proposal_id, nonce=callback.nonce, expired=False
+        )
+        await session.commit()
+        return {
+            "handled": False,
+            "reason": "mandate_fence_unavailable",
             "proposal_id": str(proposal_id),
             "results": [outcome.result for outcome in outcomes],
             "rung_results": _serialize_rung_outcomes(outcomes),
@@ -1231,7 +1266,11 @@ async def _handle_batch_approve(
             return {"handled": False, "reason": "approval_batch_too_small"}
         for group, member_rungs in proposals:
             mandate_block = await _mandate_pre_nonce_block(
-                service, group, member_rungs, now=gate_now
+                service,
+                group,
+                member_rungs,
+                now_fn=lambda: gate_now,
+                principal=telegram_user_id,
             )
             if mandate_block is not None:
                 await session.commit()

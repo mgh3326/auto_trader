@@ -30,7 +30,33 @@ validate_run_owned_database_url(engine.url)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-EVIDENCE = {"retrospective_id": 42, "approval_issue_id": "ROB-800"}
+
+async def _retro(db, symbol: str, *, created_at=None, row_id=None) -> int:
+    """A stored retrospective; the guard checks it existed when the event cited it."""
+    from datetime import timedelta
+
+    from app.models.review import TradeRetrospective
+
+    row = TradeRetrospective(
+        **({"id": row_id} if row_id is not None else {}),
+        symbol=symbol,
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        market="kr",
+        outcome="filled",
+        side="sell",
+        correlation_id=f"live:{uuid.uuid4()}",
+        realized_pnl=Decimal("-100"),
+        realized_pnl_currency="KRW",
+        pnl_pct=Decimal("-1.0"),
+        trigger_type="stop_loss",
+        created_at=created_at or datetime.now(UTC) - timedelta(hours=1),
+    )
+    db.add(row)
+    await db.flush()
+    rid = row.id
+    await db.commit()
+    return rid
 
 
 def new_kr_symbol() -> str:
@@ -141,28 +167,32 @@ async def test_i14_f_the_ids_of_the_thesis_broken_event_open_the_loss_cut(
 ) -> None:
     sym, _s, _t, plan = await _planned(seed, db_session)
     retro["symbol"] = sym
+    first = await _retro(db_session, sym)
     broken = await ms.append_plan_event(
         db_session,
         plan_id=plan.id,
         event="thesis_broken",
         actor="operator:test",
-        evidence=EVIDENCE,
+        evidence={"retrospective_id": first, "approval_issue_id": "ROB-800"},
     )
     broken_seq = broken.seq
     await db_session.commit()
     service = OrderProposalsService(db_session)
     with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
-        await service.create_proposal(**_loss_cut(sym, retro_id=43))
+        await service.create_proposal(**_loss_cut(sym, retro_id=first + 100000))
     await db_session.rollback()
-    group = await service.create_proposal(**_loss_cut(sym))
+    group = await service.create_proposal(**_loss_cut(sym, retro_id=first))
     await db_session.commit()
     seed.proposal_pks.append(group.id)
-    assert group.retrospective_id == 42
+    assert group.retrospective_id == first
 
     # 72 hours later: the new retrospective needs the refresh event, not a new proposal
     await db_session.rollback()
+    second = await _retro(db_session, sym)
     with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
-        await service.create_proposal(**_loss_cut(sym, retro_id=77, issue="ROB-900"))
+        await service.create_proposal(
+            **_loss_cut(sym, retro_id=second, issue="ROB-900")
+        )
     await db_session.rollback()
     await ms.append_plan_event(
         db_session,
@@ -170,11 +200,11 @@ async def test_i14_f_the_ids_of_the_thesis_broken_event_open_the_loss_cut(
         event="thesis_evidence_refreshed",
         actor="operator:test",
         thesis_seq=broken_seq,
-        evidence={"retrospective_id": 77, "approval_issue_id": "ROB-900"},
+        evidence={"retrospective_id": second, "approval_issue_id": "ROB-900"},
     )
     await db_session.commit()
     again = await service.create_proposal(
-        **_loss_cut(sym, retro_id=77, issue="ROB-900")
+        **_loss_cut(sym, retro_id=second, issue="ROB-900")
     )
     await db_session.commit()
     seed.proposal_pks.append(again.id)
@@ -185,21 +215,25 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
 ) -> None:
     sym, _s, _t, plan = await _planned(seed, db_session)
     retro["symbol"] = sym
+    first = await _retro(db_session, sym)
     broken = await ms.append_plan_event(
         db_session,
         plan_id=plan.id,
         event="thesis_broken",
         actor="operator:test",
-        evidence=EVIDENCE,
+        evidence={"retrospective_id": first, "approval_issue_id": "ROB-800"},
     )
     broken_seq = broken.seq
     await ms.append_plan_event(
         db_session, plan_id=plan.id, event="retired", actor="operator:test"
     )
     await db_session.commit()
+    second = await _retro(db_session, sym)
     service = OrderProposalsService(db_session)
     with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
-        await service.create_proposal(**_loss_cut(sym, retro_id=88, issue="ROB-901"))
+        await service.create_proposal(
+            **_loss_cut(sym, retro_id=second, issue="ROB-901")
+        )
     await db_session.rollback()
     await ms.append_plan_event(
         db_session,
@@ -207,11 +241,11 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
         event="thesis_evidence_refreshed",
         actor="operator:test",
         thesis_seq=broken_seq,
-        evidence={"retrospective_id": 88, "approval_issue_id": "ROB-901"},
+        evidence={"retrospective_id": second, "approval_issue_id": "ROB-901"},
     )
     await db_session.commit()
     group = await service.create_proposal(
-        **_loss_cut(sym, retro_id=88, issue="ROB-901")
+        **_loss_cut(sym, retro_id=second, issue="ROB-901")
     )
     await db_session.commit()
     seed.proposal_pks.append(group.id)
@@ -219,23 +253,36 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
     assert state.authority == "retired" and state.cleanup != "released"
 
 
-async def test_i14_i_an_event_written_before_its_retrospective_exists_refuses(
+async def test_i14_i_a_retrospective_created_after_its_event_does_not_qualify(
     db_session, seed, retro
 ) -> None:
+    """The same id and issue, reversed creation order: the event cites an id that is
+    issued to a retrospective only afterwards (§5.2 (i))."""
+    from sqlalchemy import delete
+
+    from app.models.review import TradeRetrospective
+
     sym, _s, _t, plan = await _planned(seed, db_session)
     retro["symbol"] = sym
+    placeholder = await _retro(db_session, sym)
+    await db_session.execute(
+        delete(TradeRetrospective).where(TradeRetrospective.id == placeholder)
+    )
+    await db_session.commit()
     await ms.append_plan_event(
         db_session,
         plan_id=plan.id,
         event="thesis_broken",
         actor="operator:test",
-        evidence={"retrospective_id": 1, "approval_issue_id": "ROB-1"},
+        evidence={"retrospective_id": placeholder, "approval_issue_id": "ROB-1"},
     )
     await db_session.commit()
-    # the retrospective that was made later has another id than the one in the event
+    await asyncio.sleep(0.05)
+    # the retrospective now gets that very id, written after the event
+    await _retro(db_session, sym, row_id=placeholder, created_at=datetime.now(UTC))
     with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
         await OrderProposalsService(db_session).create_proposal(
-            **_loss_cut(sym, retro_id=2, issue="ROB-1")
+            **_loss_cut(sym, retro_id=placeholder, issue="ROB-1")
         )
 
 
@@ -249,7 +296,9 @@ async def test_i14_c_a_card_from_before_the_guard_is_refused_before_its_nonce(
     used_before = card.approval_nonce_used_at
     service = OrderProposalsService(db_session)
 
-    block = await _mandate_pre_nonce_block(service, card, [], now=datetime.now(UTC))
+    block = await _mandate_pre_nonce_block(
+        service, card, [], now_fn=lambda: datetime.now(UTC), principal="1"
+    )
 
     assert block == "mandate_thesis_not_broken"
     assert card.approval_nonce_used_at == used_before

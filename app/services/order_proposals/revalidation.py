@@ -1912,6 +1912,25 @@ async def _revalidate_place_rung(
             restore_pre_send_state=True,
         )
 
+    if (
+        send_fence is not None
+        and isinstance(submit, dict)
+        and submit.get("success") is False
+        and not mandate_send.is_affirmative_rejection(submit)
+    ):
+        # An untyped failure or an unknown outcome (a timeout after the request left,
+        # ``outcome_unknown``) proves nothing about the broker (§4.6): the rung stays
+        # unverified and the fence stays open, never released.
+        await service.record_unverified(
+            proposal_id,
+            rung_index,
+            reason=f"mandate_submit_unproven:{_truncate_submit_diagnostic(submit.get('error') or 'failure')}",
+            now=now,
+            correlation_id=corr,
+            idempotency_key=preview.get("idempotency_key"),
+        )
+        return RungOutcome(rung_index, "unverified", {"submit": submit})
+
     outcome = await _classify_submit(
         service=service,
         proposal_id=proposal_id,

@@ -137,6 +137,14 @@ def _rung(**over):
     return SimpleNamespace(**base)
 
 
+@pytest.fixture(autouse=True)
+def operators(monkeypatch):
+    monkeypatch.setattr(
+        mandate_send.settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "7"
+    )
+    monkeypatch.setattr(mandate_send.settings, "ORDER_PROPOSALS_AUTO_APPROVE", False)
+
+
 @pytest.fixture
 def harness(monkeypatch):
     async def allowed(*_a, **_k):
@@ -266,7 +274,9 @@ async def test_pre_send_recheck_refusal_sends_nothing_and_closes_the_fence(harne
 
 
 async def test_an_explicit_rejection_closes_the_fence(harness):
-    broker = Broker({"success": False, "error": "price out of band"})
+    broker = Broker(
+        {"success": False, "broker_status": "rejected", "error": "price out of band"}
+    )
     port = Port()
 
     outcomes = await harness.run(harness.build(_group(), _rung()), broker, port)
@@ -420,12 +430,16 @@ async def test_callback_check_refuses_before_the_nonce_and_never_for_an_untagged
     port = Port(boundary="mandate_tranche_uncertain")
     plan_bound = _group()
     assert (
-        await mandate_send.pre_nonce_refusal(plan_bound, [_rung()], now=NOW, port=port)
+        await mandate_send.pre_nonce_refusal(
+            plan_bound, [_rung()], now=NOW, principal="7", port=port
+        )
         == "mandate_tranche_uncertain"
     )
     untagged = _group(mandate_plan_id=None, mandate_tranche_index=None)
     assert (
-        await mandate_send.pre_nonce_refusal(untagged, [_rung()], now=NOW, port=port)
+        await mandate_send.pre_nonce_refusal(
+            untagged, [_rung()], now=NOW, principal="7", port=port
+        )
         is None
     )
     assert len(port.boundary_calls) == 1  # only the plan-bound group was asked
@@ -446,7 +460,7 @@ async def test_callback_check_cannot_be_overridden_by_a_failing_account_lookup()
 
     port.boundary_refusal = boundary
     result = await mandate_send.pre_nonce_refusal(
-        _group(), [_rung()], now=NOW, port=port
+        _group(), [_rung()], now=NOW, principal="7", port=port
     )
     assert result == "mandate_account_mismatch"
     assert seen["account"] is None  # cannot compute -> the rules block it
@@ -478,3 +492,253 @@ async def test_the_batch_and_single_approval_handlers_check_before_any_nonce_use
     batch = inspect.getsource(cb._handle_batch_approve)
     assert single.index("_mandate_pre_nonce_block(") < single.index("consume_")
     assert batch.index("_mandate_pre_nonce_block(") < batch.index("consume_")
+
+
+# ------------------------------------------------------- review round 1 (PR #2499)
+async def test_i24_a_timeout_after_the_request_left_never_releases_the_fence(harness):
+    """The real KIS live timeout shape: success False, outcome_unknown True."""
+    broker = Broker(
+        {
+            "success": False,
+            "error": "ReadTimeout",
+            "outcome_unknown": True,
+            "error_code": "send_outcome_unknown",
+        }
+    )
+    port = Port()
+    service = harness.build(_group(), _rung())
+
+    outcomes = await harness.run(service, broker, port)
+
+    assert broker.sent == 1
+    assert outcomes[0].result == "unverified"
+    assert port.released == []
+    service.record_rejected.assert_not_called()
+    service.record_unverified.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{"success": False, "error": "something"}, {"success": False}],
+    ids=["untyped-with-message", "untyped-bare"],
+)
+async def test_i24_an_untyped_failure_keeps_the_fence(harness, reply):
+    port = Port()
+    outcomes = await harness.run(harness.build(_group(), _rung()), Broker(reply), port)
+    assert outcomes[0].result == "unverified"
+    assert port.released == []
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"success": False, "broker_status": "rejected", "error": "no"},
+        {"success": False, "error_code": "price_band", "error": "no"},
+        {"success": False, "ledger_status": "rejected", "error": "no"},
+        {"success": False, "mutation_sent": False, "error": "refused before send"},
+    ],
+    ids=["live-rejected", "error-code", "kiwoom-rejected", "not-sent"],
+)
+async def test_an_affirmative_typed_rejection_closes_the_fence(harness, reply):
+    port = Port()
+    outcomes = await harness.run(harness.build(_group(), _rung()), Broker(reply), port)
+    assert outcomes[0].result == "error"
+    assert port.released == [(7, 4, "explicit_rejection")]
+
+
+async def test_i15_an_unlisted_sender_cannot_spend_a_plan_bound_card():
+    for principal in (None, "8", ""):
+        port = Port()
+        out = await mandate_send.pre_nonce_refusal(
+            _group(), [_rung()], now=NOW, principal=principal, port=port
+        )
+        assert out == "mandate_approver_not_allowed"
+        assert port.boundary_calls == []  # refused before anything else was read
+
+
+async def test_a_reconfirmation_card_passes_the_pre_nonce_shape_check():
+    port = Port()
+    out = await mandate_send.pre_nonce_refusal(
+        _group(), [_rung(state="needs_reconfirm")], now=NOW, principal="7", port=port
+    )
+    assert out is None and len(port.boundary_calls) == 1
+    # the send itself still needs pending_approval
+    assert (
+        mandate_send.unsupported_shape_refusal(
+            _group(), [_rung(state="needs_reconfirm")]
+        )
+        == "mandate_binding_mismatch"
+    )
+
+
+async def test_the_legacy_auto_dispatch_blocks_a_live_card_that_predates_the_setting(
+    harness, monkeypatch
+):
+    monkeypatch.setattr(mandate_send.settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    group = _group(account_mode="kis_live")
+    port = Port()
+    broker = Broker()
+
+    assert (
+        await mandate_send.pre_nonce_refusal(
+            group, [_rung()], now=NOW, principal="7", port=port
+        )
+        == "mandate_auto_dispatch_active"
+    )
+    outcomes = await harness.run(harness.build(group, _rung()), broker, port)
+    assert outcomes[0].detail["reason"] == "mandate_auto_dispatch_active"
+    assert broker.sent == 0 and port.committed == []
+
+
+async def test_the_edge_check_uses_the_account_of_the_prepared_request(monkeypatch):
+    from app.services.brokers.pre_send_account import PRE_SEND_ACCOUNT
+
+    monkeypatch.setattr(mandate_send.settings, "SECRET_KEY", "k" * 40)
+    seen: list[str | None] = []
+    port = Port()
+
+    async def boundary(request, *, fenced_seq=None, **_):
+        seen.append(request.actual_account_ref)
+        return None
+
+    port.boundary_refusal = boundary
+    send = mandate_send.SendFence(
+        port=port,
+        plan_id=7,
+        seq=4,
+        group=_group(account_mode="toss_live"),
+        request=mf.FenceRequest(
+            plan_id=7,
+            tranche_index=1,
+            proposal_id=uuid.uuid4(),
+            approval_mode="human",
+            notional=Decimal("1"),
+            actual_account_ref="ref-from-settings",
+            now=NOW,
+        ),
+    )
+    token = PRE_SEND_ACCOUNT.set(
+        "12345"
+    )  # the transport publishes its request's account
+    try:
+        await send.hook(None)()
+    finally:
+        PRE_SEND_ACCOUNT.reset(token)
+    other = mandate_send.SendFence(
+        port=port, plan_id=7, seq=5, group=send.group, request=send.request
+    )
+    await other.hook(None)()  # a transport that publishes nothing: the settings value
+
+    assert seen[0] is not None and seen[0] != "ref-from-settings"
+    assert seen[0].startswith("acct_")
+    assert seen[1] == "ref-from-settings"
+
+
+async def test_toss_publishes_the_request_account_to_the_hook(monkeypatch):
+    """The transport side: the hook sees the account header of the request it releases."""
+    import httpx
+
+    from app.services.brokers.pre_send_account import PRE_SEND_ACCOUNT
+    from app.services.brokers.toss import client as toss_client
+
+    source = __import__("inspect").getsource(toss_client.TossReadClient._request)
+    assert "PRE_SEND_ACCOUNT.set(" in source and "X-Tossinvest-Account" in source
+    assert httpx is not None and PRE_SEND_ACCOUNT.get() is None
+
+
+async def test_the_window_check_is_the_last_thing_before_the_request(harness):
+    """The fence recheck's database read comes first; the approval window runs after it,
+    so a read returning after valid_until cannot be followed by a send."""
+    order: list[str] = []
+
+    async def inner():
+        order.append("window")
+
+    port = Port()
+
+    async def boundary(request, *, fenced_seq=None, **_):
+        order.append("mandate_read")
+        return None
+
+    port.boundary_refusal = boundary
+    send = mandate_send.SendFence(
+        port=port,
+        plan_id=7,
+        seq=4,
+        group=_group(),
+        request=mf.FenceRequest(
+            plan_id=7,
+            tranche_index=1,
+            proposal_id=uuid.uuid4(),
+            approval_mode="human",
+            notional=Decimal("1"),
+            actual_account_ref="a",
+            now=NOW,
+        ),
+    )
+    await send.hook(inner)()
+    assert order == ["mandate_read", "window"]
+
+    order.clear()
+
+    async def refusal():
+        order.append("loss_read")
+        return None
+
+    hook = mandate_send.LossCutGuardHook(inner=inner, refusal_fn=refusal)
+    await hook()
+    assert order == ["loss_read", "window"]
+
+
+async def test_a_window_that_closes_during_the_read_stops_the_send(harness):
+    port = Port()
+    send = mandate_send.SendFence(
+        port=port,
+        plan_id=7,
+        seq=4,
+        group=_group(),
+        request=mf.FenceRequest(
+            plan_id=7,
+            tranche_index=1,
+            proposal_id=uuid.uuid4(),
+            approval_mode="human",
+            notional=Decimal("1"),
+            actual_account_ref="a",
+            now=NOW,
+        ),
+    )
+
+    async def closed():
+        raise PreSendFreshnessError(("approval_window:expired",))
+
+    with pytest.raises(PreSendFreshnessError):
+        await send.hook(closed)()
+    assert send.started is False  # nothing was sent: a release is still legal
+    await send.close_unsent("pre_send_refused")
+    assert port.released == [(7, 4, "pre_send_refused")]
+
+
+async def test_a_failed_release_is_not_reported_as_closed_and_is_logged(caplog):
+    class Failing(Port):
+        async def _noop(self):
+            return None
+
+    port = Port()
+
+    async def release_fence(plan_id, seq, *, reason_code):
+        return mf.ReleaseOutcome(False, "release_failed")
+
+    port.release_fence = release_fence
+    send = mandate_send.SendFence(port=port, plan_id=7, seq=4)
+    with caplog.at_level("ERROR"):
+        assert await send.close_unsent("pre_send_refused") is False
+    assert send.closed is False
+    assert "was not released" in caplog.text
+
+
+async def test_the_kiwoom_quote_price_counts_toward_the_fence_amount():
+    """Limit 95, quote 100, quantity 10 is 1000, not 950 (I8 against a 975 remainder)."""
+    rung = _rung(limit_price=Decimal("95"), quantity=Decimal("10"))
+    preview = {"estimated_evidence": {"quote_price": 100}}
+    assert mandate_send.fence_notional(rung, preview) == Decimal("1000")
+    assert mandate_send.fence_notional(rung, {"current_price": "98"}) == Decimal("980")

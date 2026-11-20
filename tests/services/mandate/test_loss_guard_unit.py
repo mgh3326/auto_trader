@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,9 +13,17 @@ from app.services.mandate.account_ref import derive_account_ref
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
+EVENT_AT = datetime(2026, 11, 20, 12, tzinfo=UTC)
+RETRO_AT = datetime(2026, 11, 20, 11, tzinfo=UTC)
+
+
 def _ev(event: str, seq: int, evidence=None, thesis_seq=None):
     return SimpleNamespace(
-        event=event, seq=seq, evidence=evidence or {}, thesis_seq=thesis_seq
+        event=event,
+        seq=seq,
+        evidence=evidence or {},
+        thesis_seq=thesis_seq,
+        created_at=EVENT_AT,
     )
 
 
@@ -103,8 +112,12 @@ async def test_i14_h_a_retired_plan_is_judged_by_the_same_evidence(monkeypatch):
     async def history(session, plan_id):
         return events
 
+    async def created(session, retrospective_id):
+        return RETRO_AT
+
     monkeypatch.setattr(loss_guard, "unreleased_live_plan_ids", plans)
     monkeypatch.setattr(loss_guard.store, "list_plan_events", history)
+    monkeypatch.setattr(loss_guard, "_retrospective_created_at", created)
 
     refused = await loss_guard.loss_cut_refusal(
         None,
@@ -220,3 +233,43 @@ async def test_account_ref_is_opaque_stable_and_mode_bound():
     assert a != derive_account_ref("kis_live", "12345678-01", secret="other")
     assert derive_account_ref("kis_live", "", secret="s") is None
     assert derive_account_ref("kis_live", "x", secret="") is None
+
+
+async def test_i14_i_a_retrospective_written_after_the_event_does_not_qualify(
+    monkeypatch,
+):
+    """Same ids, reversed creation order: the id was issued to a row that did not exist
+    when the thesis_broken event cited it (§5.2 (i))."""
+    events = [_ev("proposed", 1), _ev("thesis_broken", 2, EVIDENCE)]
+
+    async def plans(session, *, market, symbol):
+        return [11]
+
+    async def history(session, plan_id):
+        return events
+
+    monkeypatch.setattr(loss_guard, "unreleased_live_plan_ids", plans)
+    monkeypatch.setattr(loss_guard.store, "list_plan_events", history)
+
+    async def later(session, retrospective_id):
+        return datetime(2026, 11, 20, 13, tzinfo=UTC)  # after the event
+
+    async def earlier(session, retrospective_id):
+        return RETRO_AT
+
+    async def missing(session, retrospective_id):
+        return None
+
+    args = {
+        "market": "equity_kr",
+        "symbol": "005930",
+        "retrospective_id": 42,
+        "approval_issue_id": "hk:9",
+    }
+    for lookup, expected in (
+        (later, "mandate_thesis_not_broken"),
+        (missing, "mandate_thesis_not_broken"),
+        (earlier, None),
+    ):
+        monkeypatch.setattr(loss_guard, "_retrospective_created_at", lookup)
+        assert await loss_guard.loss_cut_refusal(None, **args) == expected

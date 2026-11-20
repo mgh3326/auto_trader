@@ -255,7 +255,7 @@ async def test_a_fence_reads_facts_only_after_every_lock_it_takes():
 
 
 async def test_the_release_writer_takes_f3s_before_the_day_locks():
-    order = _calls_in_order(fence.release_send_fence)
+    order = _calls_in_order(fence._release_once)
     mutex_keys = [n for n in order if n.endswith("mutex_key")]
     assert mutex_keys == [
         "sleeve_mutex_key",
@@ -346,3 +346,66 @@ async def test_the_fence_modules_import_no_order_proposal_or_broker_module():
                         "app.mcp_server",
                     )
                 ), (name, module)
+
+
+async def test_a_release_that_loses_a_seq_race_is_tried_again(monkeypatch):
+    """A fence known never to have sent is closed on a retry, not left open (review r1)."""
+    calls = {"n": 0}
+
+    async def flaky(plan_id, fenced_seq, *, reason_code, session_factory=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return fence.ReleaseOutcome(False, "release_failed")
+        return fence.ReleaseOutcome(True, reason_code)
+
+    monkeypatch.setattr(fence, "_release_once", flaky)
+    out = await fence.release_send_fence(1, 2, reason_code="pre_send_refused")
+    assert out.released is True and calls["n"] == 3
+
+    async def always(plan_id, fenced_seq, *, reason_code, session_factory=None):
+        calls["n"] += 1
+        return fence.ReleaseOutcome(False, "release_failed")
+
+    calls["n"] = 0
+    monkeypatch.setattr(fence, "_release_once", always)
+    out = await fence.release_send_fence(1, 2, reason_code="pre_send_refused")
+    assert out.released is False and calls["n"] == fence.MAX_RELEASE_ATTEMPTS
+
+
+async def test_i11_the_freeze_is_judged_on_a_clock_sampled_after_the_locks(monkeypatch):
+    """A measurement that expired while the fence waited cannot authorize it."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from app.services.mandate.buy_freeze import FreezeVerdict
+
+    valid_until = NOW + timedelta(minutes=1)
+
+    async def verdict(session, **_kw):
+        return FreezeVerdict(False, "fixture", {}, valid_until=valid_until)
+
+    sleeve = SimpleNamespace(account_mode="kis_live", market="equity_kr", id=1)
+    early = await fence._read_freeze(None, sleeve, NOW, verdict)  # type: ignore[arg-type]
+    late = await fence._read_freeze(
+        None,
+        sleeve,
+        NOW + timedelta(minutes=2),
+        verdict,  # type: ignore[arg-type]
+    )
+    assert (early, late) == (False, True)
+    req = _request(clock=lambda: NOW + timedelta(minutes=2))
+    assert req.clock() > valid_until  # type: ignore[misc]
+    source = inspect.getsource(fence.gather_send_facts)
+    assert "(req.clock or _real_now)()" in source  # sampled where the freeze is read
+
+
+async def test_a_clause_that_moves_a_sleeve_takes_every_f2_once_in_order():
+    """Two sleeves swapping baskets must not hold one F2 each (review r1)."""
+    from app.services.mandate import store
+
+    source = inspect.getsource(store._write_terms)
+    assert "extra_baskets=(destination,)" in source
+    assert "_bump_basket_authority(" not in source  # no second, out-of-order bump
+    lock_src = inspect.getsource(fence_locks.bump_for_sleeve_version)
+    assert "sorted(" in lock_src
+    assert lock_src.index("bump_authority(") < lock_src.index("lock_mutex(")

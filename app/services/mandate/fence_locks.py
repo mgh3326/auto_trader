@@ -177,13 +177,22 @@ async def sleeve_baskets(
     return sorted((str(r[0]), str(r[1])) for r in rows)
 
 
-async def bump_for_sleeve_version(session: AsyncSession, sleeve_id: int) -> None:
-    """A sleeve version was appended: F2 of its baskets (ascending), then F3s.
+async def bump_for_sleeve_version(
+    session: AsyncSession,
+    sleeve_id: int,
+    *,
+    extra_baskets: tuple[tuple[str, str], ...] = (),
+) -> None:
+    """A sleeve version was appended: F2 of **every** basket it touches, once, in
+    ascending order, then F3s.
 
-    A sleeve with no clause yet belongs to no basket: nothing is bumped and nothing
-    changes for it. The sleeve advisory lock (L3) is already held by the caller.
+    The set is the baskets the sleeve has had a clause in plus ``extra_baskets`` (the
+    destination of a clause that moves the sleeve to another basket), so two sleeves
+    swapping baskets cannot each hold one row and wait on the other (§4.6 "교착이 없는
+    이유"). A sleeve with no clause yet belongs to no basket: nothing is bumped. The
+    sleeve advisory lock (L3) is already held by the caller.
     """
-    baskets = await sleeve_baskets(session, sleeve_id)
+    baskets = sorted(set(await sleeve_baskets(session, sleeve_id)) | set(extra_baskets))
     if not baskets:
         return
     for realm, basket_key in baskets:
