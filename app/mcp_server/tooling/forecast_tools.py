@@ -67,12 +67,15 @@ async def forecast_save(
     report_item_uuid: str | None = None,
     correlation_id: str | None = None,
     decision_bucket: str | None = None,
-    declined_limit_price: str | float | int | None = None,
-    declined_quantity: str | float | int | None = None,
-    declined_notional: str | float | int | None = None,
-    declined_quote_price: str | float | int | None = None,
-    declined_quote_asof: str | None = None,
-    declined_account_mode: str | None = None,
+    # Untyped on purpose: the MCP layer's lax coercion would turn true into 1,
+    # reject arrays before this function runs, and parse a fractional JSON
+    # number as a binary float. parse_declined_entry owns every rejection.
+    declined_limit_price: Any = None,
+    declined_quantity: Any = None,
+    declined_notional: Any = None,
+    declined_quote_price: Any = None,
+    declined_quote_asof: Any = None,
+    declined_account_mode: Any = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:

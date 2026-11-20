@@ -103,7 +103,7 @@ ROB-1301 A/B 채점기가 필요로 하는 (코호트, 결과, 귀속)은 전부
 forecast_save(
     ...,                                  # 2절과 같은 필수 인자
     decision_bucket="deferred_no_action",
-    declined_limit_price="70000",         # 정확한 decimal (문자열 또는 숫자)
+    declined_limit_price="70000",         # 정확한 decimal 문자열 또는 정수 (소수는 문자열로; 부동소수 JSON 숫자는 거부)
     declined_quantity="3",                # 또는 declined_notional — 정확히 하나
     declined_quote_price="69500",         # 선택: 결정 시점 시세. 아래 시각과 함께만
     declined_quote_asof="2026-11-20T09:00:00+09:00",  # 시각대 포함 ISO

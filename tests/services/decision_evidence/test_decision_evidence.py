@@ -549,7 +549,7 @@ def test_no_declined_input_keeps_legacy_path():
 
 def test_complete_would_be_entry_parses_to_exact_decimals():
     entry = _parse(
-        quote_price=69500.5,
+        quote_price="69500.5",
         quote_asof="2026-11-20T09:00:00+09:00",
     )
     assert entry == DeclinedEntry(
@@ -583,6 +583,9 @@ def test_notional_sizing_and_bucket_whitespace_are_accepted():
         ({"limit_price": "NaN"}, "declined_value_invalid"),
         ({"limit_price": float("inf")}, "declined_value_invalid"),
         ({"limit_price": True}, "declined_value_invalid"),
+        ({"limit_price": 70000.0}, "declined_value_invalid"),
+        ({"quantity": 1.5}, "declined_value_invalid"),
+        ({"quantity": 9007199254740992.1}, "declined_value_invalid"),
         ({"limit_price": "abc"}, "declined_value_invalid"),
         ({"limit_price": "1e30"}, "declined_value_invalid"),
         ({"limit_price": "1.0000000000001"}, "declined_value_invalid"),

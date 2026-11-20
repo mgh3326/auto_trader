@@ -148,15 +148,13 @@ class DeclinedEntry:
 
 
 def _declined_decimal(value: object) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    # A JSON number that carries a fraction is already a binary float by the
+    # time it reaches here, so floats are rejected; callers send decimal text
+    # or an exact integer.
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise DeclinedEntryError("declined_value_invalid")
     try:
-        if isinstance(value, float):
-            number = Decimal(repr(value))
-        elif isinstance(value, str):
-            number = Decimal(value.strip())
-        else:
-            number = Decimal(value)
+        number = Decimal(value.strip()) if isinstance(value, str) else Decimal(value)
     except (InvalidOperation, ValueError):
         raise DeclinedEntryError("declined_value_invalid") from None
     if not number.is_finite() or number <= 0:

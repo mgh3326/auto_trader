@@ -266,7 +266,9 @@ async def test_declined_would_be_entry_round_trips_exact_rows(db_session: AsyncS
 
     from app.mcp_server.tooling.forecast_tools import forecast_save
 
-    symbol = f"T5719{uuid.uuid4().hex[:6].upper()}"
+    # Crypto symbols without a market dash are stored as KRW-<base>; use the
+    # canonical form so the query matches what the write path stores.
+    symbol = f"KRW-T5719{uuid.uuid4().hex[:6].upper()}"
     result = await forecast_save(
         created_by="kr-open-trade",
         symbol=symbol,
