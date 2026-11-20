@@ -83,6 +83,8 @@ class Port(mandate_send.MandateSendPort):
 
         async def boundary_refusal(request, *, fenced_seq=None, **_):
             self.boundary_calls.append(fenced_seq)
+            if callable(self._boundary):
+                return self._boundary(fenced_seq)
             return self._boundary
 
         async def resolver(_group):
@@ -244,7 +246,8 @@ async def test_a_clean_submit_keeps_the_fence_and_records_one_ack(harness):
     assert broker.sent == 1
     assert outcomes[0].result == "submitted_acked"
     assert port.released == []
-    assert port.boundary_calls == [4]  # the recheck at the edge named this fence
+    # the read before the preview (no fence yet), then the recheck at the edge
+    assert port.boundary_calls == [None, 4]
 
 
 async def test_pre_send_recheck_refusal_sends_nothing_and_closes_the_fence(harness):
@@ -261,7 +264,10 @@ async def test_pre_send_recheck_refusal_sends_nothing_and_closes_the_fence(harne
             return self.reply
 
     broker = Edge()
-    port = Port(boundary="mandate_drawdown_frozen")
+    # the advisory read before the preview passes; the freeze lands before the POST
+    port = Port(
+        boundary=lambda seq: "mandate_drawdown_frozen" if seq is not None else None
+    )
 
     outcomes = await harness.run(service, broker, port)
 
@@ -742,3 +748,73 @@ async def test_the_kiwoom_quote_price_counts_toward_the_fence_amount():
     preview = {"estimated_evidence": {"quote_price": 100}}
     assert mandate_send.fence_notional(rung, preview) == Decimal("1000")
     assert mandate_send.fence_notional(rung, {"current_price": "98"}) == Decimal("980")
+
+
+async def test_a_plan_that_became_blocked_reaches_neither_preview_nor_send(harness):
+    """§4.3 (나): the predicate runs before the broker-backed preview."""
+    group, rung = _group(), _rung()
+    service = harness.build(group, rung)
+    broker = Broker()
+    port = Port(boundary="mandate_plan_not_active")
+
+    outcomes = await harness.run(service, broker, port)
+
+    assert broker.preview_calls == 0 and broker.sent == 0
+    assert outcomes[0] == RungOutcome(
+        0, "guard_blocked", {"reason": "mandate_plan_not_active"}
+    )
+    assert port.committed == []
+    service.transition_rung.assert_any_await(
+        group.proposal_id, 0, new_state="pending_approval"
+    )
+
+
+async def test_i14_a_replacement_loss_sale_is_checked_before_its_first_mutation(
+    harness, monkeypatch
+):
+    async def target_ok(**_kw):
+        return None
+
+    monkeypatch.setattr(revalidation, "_validate_target_action", target_ok)
+    group = _group(
+        mandate_plan_id=None,
+        mandate_tranche_index=None,
+        exit_intent="loss_cut",
+        action="replace",
+        target_broker_order_id="T1",
+    )
+    rung = _rung(side="sell")
+    service = harness.build(group, rung)
+    service.mandate_loss_cut_refusal = AsyncMock(
+        return_value="mandate_thesis_not_broken"
+    )
+    cancel = AsyncMock(side_effect=AssertionError("no cancel may be sent"))
+
+    async def fetch_target(**_kw):
+        raise AssertionError("not reached")
+
+    outcomes = await revalidation.revalidate_and_submit(
+        service=service,
+        proposal_id=uuid.uuid4(),
+        now=NOW,
+        place_order_fn=Broker(),
+        cancel_target_fn=cancel,
+        fetch_target_fn=AsyncMock(),
+        expected_policy_stamp="stamp",
+        now_fn=lambda: NOW,
+    )
+
+    assert outcomes[0].detail == {"reason": "mandate_thesis_not_broken"}, outcomes
+    cancel.assert_not_called()
+
+
+async def test_i14_the_first_loss_cut_click_checks_the_plan_before_preview_and_nonce():
+    """The legacy-card case of §5.2 (c): the original nonce survives a refused first click."""
+    import inspect
+
+    from app.services.order_proposals import telegram_callback as cb
+
+    source = inspect.getsource(cb._handle_loss_cut_first_click)
+    guard = source.index("_mandate_pre_nonce_block(")
+    assert guard < source.index("consume_published_proposal_callback")
+    assert guard < source.index("loss_cut_preview_fn")

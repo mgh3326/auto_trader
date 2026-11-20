@@ -240,6 +240,26 @@ async def pre_nonce_refusal(
     )
 
 
+async def pre_preview_refusal(
+    group: Any,
+    rung: Any,
+    *,
+    now: datetime,
+    port: MandateSendPort = DEFAULT_PORT,
+) -> str | None:
+    """The send boundary's predicate right before the broker preview (§4.3 (나))."""
+    notional = fence_notional(rung)
+    if notional is None:
+        return v.MandateRefusal.UNREADABLE.value
+    try:
+        account_ref = await port.account_ref_resolver(group)
+    except Exception:  # noqa: BLE001 - an account that cannot be resolved blocks
+        account_ref = None
+    return await port.boundary_refusal(
+        _request(group, notional, account_ref, now, "human")
+    )
+
+
 def _request(
     group: Any,
     notional: Decimal,

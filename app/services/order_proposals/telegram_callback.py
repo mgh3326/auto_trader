@@ -1616,6 +1616,19 @@ async def _handle_loss_cut_first_click(
         proposal_id,
         callback=callback,
     )
+    # hk 3795 T4c, I14 (§5.2): the first click previews and spends the published
+    # nonce, so a loss sale without its plan's thesis_broken evidence is refused here,
+    # before either, and the original nonce stays unspent.
+    first_click_block = await _mandate_pre_nonce_block(
+        service, group, [], now_fn=now_fn, principal=None
+    )
+    if first_click_block is not None:
+        await session.commit()
+        return {
+            "handled": False,
+            "reason": first_click_block,
+            "proposal_id": str(proposal_id),
+        }
     # #1116: rung shape is immutable per proposal; read once for every gate,
     # and only when a Toss US extended session is enabled (the default key
     # keeps the exit exemption I/O-free, exactly as before).

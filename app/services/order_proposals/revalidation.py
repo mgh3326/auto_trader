@@ -1488,6 +1488,19 @@ async def _revalidate_place_rung(
 
     await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
 
+    if mandate_send.is_plan_bound(group):
+        # hk 3795 §4.3 (나): the same best-effort blocking predicate runs before any
+        # broker-backed preview, so a plan that became blocked after the callback's
+        # read reaches neither preview nor mutation. Advice; the fence decides.
+        early = await mandate_send.pre_preview_refusal(
+            group, rung, now=now_fn(), port=mandate_port or mandate_send.DEFAULT_PORT
+        )
+        if early is not None:
+            await service.transition_rung(
+                proposal_id, rung_index, new_state="pending_approval"
+            )
+            return RungOutcome(rung_index, "guard_blocked", {"reason": early})
+
     # #1116 r4: the transition is awaited, so the session can roll across it.
     # The gate therefore runs after it, immediately before the broker preview
     # (a block restores the rung to pending_approval).
@@ -2422,6 +2435,18 @@ async def _revalidate_replace_rung(
     if target_outcome is not None:
         return target_outcome
 
+    if group.exit_intent == "loss_cut":
+        # hk 3795 T4c, I14: a replacement loss sale is checked against its plan before
+        # the first broker mutation (the cancel of the target), fail closed.
+        loss_refusal = await service.mandate_loss_cut_refusal(group)
+        if loss_refusal is not None:
+            await service.restore_rung_after_pre_send_block(
+                group.proposal_id, rung.rung_index, now=now, expired=False
+            )
+            return RungOutcome(
+                rung.rung_index, "guard_blocked", {"reason": loss_refusal}
+            )
+
     window_outcome = await _pre_mutation_window_gate(
         service=service,
         group=group,
@@ -2582,7 +2607,14 @@ async def _revalidate_replace_rung(
                         if proposal_client_order_id is not None
                         else {}
                     ),
-                    pre_send_hook=transport_gate,
+                    pre_send_hook=(
+                        mandate_send.LossCutGuardHook(
+                            inner=transport_gate,
+                            refusal_fn=lambda: service.mandate_loss_cut_refusal(group),
+                        )
+                        if group.exit_intent == "loss_cut"
+                        else transport_gate
+                    ),
                 )
             )
     except Exception as exc:

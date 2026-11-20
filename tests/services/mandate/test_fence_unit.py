@@ -409,3 +409,43 @@ async def test_a_clause_that_moves_a_sleeve_takes_every_f2_once_in_order():
     lock_src = inspect.getsource(fence_locks.bump_for_sleeve_version)
     assert "sorted(" in lock_src
     assert lock_src.index("bump_authority(") < lock_src.index("lock_mutex(")
+
+
+async def test_x26_the_projection_closes_fences_under_f3s():
+    """The closing writer takes the fence's sleeve mutex before it appends (review r2)."""
+    from app.services.mandate import projection
+
+    source = inspect.getsource(projection.project_plan)
+    assert source.index("lock_mutex(") < source.index("append_plan_event(")
+    assert source.index("acquire_in_order(") < source.index("lock_mutex(")
+
+
+async def test_a_plan_bound_order_is_sent_in_the_regular_session_only():
+    """§4.4: NXT / after-market / Toss US pre-post never carry a plan-bound order."""
+    from types import SimpleNamespace
+
+    from app.services.order_proposals import approval_window as aw
+
+    def allowed(at):
+        return aw.ApprovalWindowDecision(
+            code=aw.ApprovalWindowCode.ALLOW,
+            observed_at=at,
+            valid_until=None,
+            policy_stamp="s",
+            market="equity_kr",
+            account_mode="kis_live",
+            action="place",
+            order_type="limit",
+        )
+
+    bound = SimpleNamespace(mandate_plan_id=7, market="equity_kr")
+    plain = SimpleNamespace(mandate_plan_id=None, market="equity_kr")
+    regular = datetime(2026, 11, 23, 1, 0, tzinfo=UTC)  # 10:00 KST Monday
+    nxt_after = datetime(2026, 11, 23, 9, 30, tzinfo=UTC)  # 18:30 KST
+
+    assert aw._plan_bound_regular_only(bound, allowed(regular)).allowed is True
+    out = aw._plan_bound_regular_only(bound, allowed(nxt_after))
+    assert out.allowed is False
+    assert out.code is aw.ApprovalWindowCode.DEFER_SESSION_CLOSED
+    # an ordinary proposal is untouched
+    assert aw._plan_bound_regular_only(plain, allowed(nxt_after)).allowed is True
