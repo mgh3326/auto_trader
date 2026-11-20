@@ -83,7 +83,7 @@ JOBS: dict[str, dict] = {
     },
     "at-snapshot-financial-kr": {
         "module": "scripts.build_financial_fundamentals_snapshots",
-        "args": "--market kr --limit 1500 --skip-existing",
+        "args": "--market kr --limit 1000 --skip-existing",
         "gate": "AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED",
         "on": "--commit --allow-partial",
         "off": "--estimate-only",
@@ -354,3 +354,12 @@ def test_runbook_covers_the_dry_run_threshold_registration_and_stop() -> None:
     assert "채움률" in text
     assert "정지" in text
     assert "dry-run" in text
+
+
+def test_financial_batch_is_within_the_daily_dart_budget_at_worst_case() -> None:
+    """Worst case per symbol: 5 years × (CFS + OFS fallback + dividend) + 1 listing call."""
+    budget = 18_000
+    worst_calls_per_symbol = 5 * 3 + 1
+    _, dag = _load("at-snapshot-financial-kr")
+    limit = int(dag["steps"][0]["command"].split("--limit ")[1].split()[0])
+    assert limit * worst_calls_per_symbol <= budget

@@ -58,3 +58,31 @@ def test_cli_flag_defaults_off_and_rejects_zero() -> None:
     )
     with pytest.raises(SystemExit):
         cli.parse_args(["--market", "kr", "--keep-trading-days", "0"])
+
+
+def test_projected_cutoff_includes_pending_build_dates() -> None:
+    """A dry-run must see the newer date the build is about to write (hk 5752 r1)."""
+    from app.services.invest_screener_snapshots.retention import (
+        projected_retention_cutoff,
+    )
+
+    persisted = NEWEST_FIRST[1:6]  # five stored dates, newest is 11-19
+    pending = [NEWEST_FIRST[0]]  # the build writes a newer sixth date, 11-20
+
+    cutoff = projected_retention_cutoff(persisted, pending, keep=5)
+
+    # Union newest-first: 11-20, 11-19, 11-18, 11-17, 11-16, 11-15. Keep the newest
+    # five, so the 5th newest (11-16) is the cutoff. Without pending, the cutoff
+    # would be 11-15 and the preview would show nothing to delete.
+    assert cutoff == NEWEST_FIRST[4]
+    kept = sorted(set(persisted) | set(pending), reverse=True)
+    assert _kept(kept, cutoff) == kept[:5]
+
+
+def test_projected_cutoff_without_pending_matches_persisted_only() -> None:
+    from app.services.invest_screener_snapshots.retention import (
+        projected_retention_cutoff,
+    )
+
+    assert projected_retention_cutoff(NEWEST_FIRST[:5], [], keep=5) == NEWEST_FIRST[4]
+    assert projected_retention_cutoff(NEWEST_FIRST[:3], [], keep=5) is None

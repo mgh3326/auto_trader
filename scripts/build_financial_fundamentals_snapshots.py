@@ -177,6 +177,12 @@ async def run(args: argparse.Namespace) -> int:
         print(f"\nCOMMIT BLOCKED: {exc}\n")
         return 2
     _print_result(result)
+    if args.commit and result.commit_suppressed:
+        print(
+            "\nCOMMIT SUPPRESSED: DART daily request budget exhausted; no rows written. "
+            "Re-run after the budget resets.\n"
+        )
+        return 3
     return 0
 
 

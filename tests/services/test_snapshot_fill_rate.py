@@ -115,3 +115,10 @@ def test_financial_cli_prints_nothing_when_no_fill_rate(capsys) -> None:
     cli._print_result(_Result())
 
     assert FILL_RATE_LINE_PREFIX not in capsys.readouterr().out
+
+
+def test_screener_gate_excludes_market_cap_the_builder_never_writes() -> None:
+    """The ordinary builder does not set market_cap, so a gate on it always fails (hk 5752 r1)."""
+    from app.jobs.invest_screener_snapshots import SCREENER_FILL_RATE_FIELDS
+
+    assert "market_cap" not in SCREENER_FILL_RATE_FIELDS

@@ -133,3 +133,67 @@ async def test_huge_keep_is_a_no_op(shared_session) -> None:
     assert result.cutoff is None
     assert result.rows == 0
     assert (await _our_dates(shared_session)) == dates
+
+
+def _support_payload(day: dt.date) -> SnapshotUpsert:
+    return SnapshotUpsert(
+        market="us",
+        symbol=SYMBOL,
+        snapshot_date=day,
+        latest_close=Decimal("10"),
+        source="yahoo",
+        support_price=Decimal("9"),
+        support_kind="bb_lower",
+        support_strength="strong",
+        support_computed_at=dt.datetime(2090, 1, 1, tzinfo=dt.UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_support_partition_is_never_deleted(shared_session) -> None:
+    """The support-proximity preset reads the newest support-computed partition, so
+    retention keeps it even when it is older than the five newest ordinary dates
+    (hk 5752 r1)."""
+    dates = [BASE + dt.timedelta(days=i) for i in range(7)]
+    repo = InvestScreenerSnapshotsRepository(shared_session)
+    await repo.upsert(_support_payload(dates[0]))  # the only support-computed row
+    for day in dates[1:]:
+        await repo.upsert(_payload(day))
+    await shared_session.flush()
+
+    result = await job.prune_snapshot_history(
+        "us", keep_trading_days=5, commit=True, batch_size=2
+    )
+
+    assert result.preserved_support_date == dates[0]
+    assert (await _our_dates(shared_session)) == [dates[0], *dates[2:]]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_with_pending_dates_matches_the_commit(shared_session) -> None:
+    """A dry-run whose build writes a newer date projects the same cutoff the commit
+    computes after writing (hk 5752 r1)."""
+    dates = await _seed(shared_session, days=5)  # five stored dates, all kept
+    pending_day = BASE + dt.timedelta(days=5)
+
+    preview = await job.prune_snapshot_history(
+        "us",
+        keep_trading_days=5,
+        commit=False,
+        pending_dates={pending_day: 1},
+    )
+
+    assert preview.cutoff == dates[1]  # union newest-five: pending + dates[1:]
+    assert preview.pending_rows_upper_bound == 0  # pending day is newer than cutoff
+    assert (await _our_dates(shared_session)) == dates  # dry-run deleted nothing
+
+    await _seed_one(shared_session, pending_day)
+    committed = await job.prune_snapshot_history("us", keep_trading_days=5, commit=True)
+
+    assert committed.cutoff == preview.cutoff
+    assert (await _our_dates(shared_session)) == dates[1:] + [pending_day]
+
+
+async def _seed_one(session, day: dt.date) -> None:
+    await InvestScreenerSnapshotsRepository(session).upsert(_payload(day))
+    await session.flush()

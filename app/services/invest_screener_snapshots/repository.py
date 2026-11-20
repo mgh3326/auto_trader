@@ -132,29 +132,56 @@ class InvestScreenerSnapshotsRepository:
         )
         return [row[0] for row in result.all()]
 
-    async def count_before(self, *, market: str, cutoff: dt.date) -> int:
+    async def latest_support_computed_date(self, *, market: str) -> dt.date | None:
+        """Newest snapshot date that carries support-proximity data (hk 5752 r1).
+
+        The support-proximity preset reads this partition, so retention must
+        never delete it, even when it is older than the newest ordinary dates.
+        """
         result = await self._session.execute(
-            select(func.count()).where(
+            select(func.max(InvestScreenerSnapshot.snapshot_date)).where(
                 InvestScreenerSnapshot.market == market,
-                InvestScreenerSnapshot.snapshot_date < cutoff,
+                InvestScreenerSnapshot.support_computed_at.is_not(None),
             )
         )
+        return result.scalar_one_or_none()
+
+    async def count_before(
+        self, *, market: str, cutoff: dt.date, keep_date: dt.date | None = None
+    ) -> int:
+        """Rows older than ``cutoff``, excluding ``keep_date`` (the preserved partition)."""
+        conditions = [
+            InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date < cutoff,
+        ]
+        if keep_date is not None:
+            conditions.append(InvestScreenerSnapshot.snapshot_date != keep_date)
+        result = await self._session.execute(select(func.count()).where(*conditions))
         return int(result.scalar_one() or 0)
 
     async def delete_before_batch(
-        self, *, market: str, cutoff: dt.date, batch_size: int
+        self,
+        *,
+        market: str,
+        cutoff: dt.date,
+        batch_size: int,
+        keep_date: dt.date | None = None,
     ) -> int:
         """Delete up to ``batch_size`` rows older than ``cutoff``; return the count.
 
+        ``keep_date`` (the preserved support-proximity partition) is never deleted.
         The caller commits each batch and repeats while the count equals
         ``batch_size``. Re-running after completion deletes nothing.
         """
+        conditions = [
+            InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date < cutoff,
+        ]
+        if keep_date is not None:
+            conditions.append(InvestScreenerSnapshot.snapshot_date != keep_date)
         doomed = (
             select(InvestScreenerSnapshot.id)
-            .where(
-                InvestScreenerSnapshot.market == market,
-                InvestScreenerSnapshot.snapshot_date < cutoff,
-            )
+            .where(*conditions)
             .order_by(InvestScreenerSnapshot.id)
             .limit(batch_size)
         )

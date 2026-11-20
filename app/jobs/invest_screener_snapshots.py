@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 import sqlalchemy as sa
@@ -26,7 +27,9 @@ from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
     SnapshotUpsert,
 )
-from app.services.invest_screener_snapshots.retention import retention_cutoff
+from app.services.invest_screener_snapshots.retention import (
+    projected_retention_cutoff,
+)
 from app.services.snapshot_fill_rate import FillRateTally
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,6 @@ SCREENER_FILL_RATE_FIELDS: tuple[str, ...] = (
     "week_change_rate",
     "daily_volume",
     "daily_turnover",
-    "market_cap",
 )
 RETENTION_DELETE_BATCH = 1000
 
@@ -90,8 +92,13 @@ class RetentionResult:
     market: str
     keep_trading_days: int
     cutoff: dt.date | None
-    rows: int  # rows that would be deleted (dry-run) or were deleted (commit)
+    rows: int  # dry-run: db_rows + pending_rows_upper_bound; commit: rows deleted
     committed: bool
+    preserved_support_date: dt.date | None = None
+    db_rows: int = 0
+    # Upper bound: pending build rows below the cutoff. A pending row for a symbol
+    # already stored is an upsert, not a new row, so this can over-count.
+    pending_rows_upper_bound: int = 0
 
 
 def _validate_market(market: str) -> None:
@@ -318,20 +325,30 @@ async def prune_snapshot_history(
     *,
     keep_trading_days: int,
     commit: bool,
+    pending_dates: Mapping[dt.date, int] | None = None,
     batch_size: int = RETENTION_DELETE_BATCH,
 ) -> RetentionResult:
     """Keep only the newest ``keep_trading_days`` snapshot dates for a market (hk 5752).
 
-    Dry-run (``commit=False``) only counts the rows that would go. Commit deletes
-    them in committed batches. The cutoff is fixed before the first delete, so
-    rows from a concurrent build that are newer than the cutoff are never
-    removed. Re-running after completion deletes nothing.
+    ``pending_dates`` is the dry-run build's date→row-count map. A dry-run has not
+    written those rows yet, so the cutoff must include their dates to match what a
+    commit (which prunes after writing) would delete. The support-proximity
+    partition (newest date with ``support_computed_at``) is never deleted.
+
+    Dry-run (``commit=False``) only counts. Commit deletes in committed batches,
+    with the cutoff fixed before the first delete. Re-running deletes nothing.
     """
     _validate_market(market)
+    pending = dict(pending_dates or {})
     async with AsyncSessionLocal() as session:
         repo = InvestScreenerSnapshotsRepository(session)
-        dates = await repo.recent_snapshot_dates(market=market, limit=keep_trading_days)
-        cutoff = retention_cutoff(dates, keep_trading_days)
+        persisted = await repo.recent_snapshot_dates(
+            market=market, limit=keep_trading_days
+        )
+        cutoff = projected_retention_cutoff(
+            persisted, pending.keys(), keep_trading_days
+        )
+        preserved = await repo.latest_support_computed_date(market=market)
         if cutoff is None:
             return RetentionResult(
                 market=market,
@@ -339,15 +356,26 @@ async def prune_snapshot_history(
                 cutoff=None,
                 rows=0,
                 committed=commit,
+                preserved_support_date=preserved,
             )
         if not commit:
-            would_delete = await repo.count_before(market=market, cutoff=cutoff)
+            db_rows = await repo.count_before(
+                market=market, cutoff=cutoff, keep_date=preserved
+            )
+            pending_rows = sum(
+                count
+                for day, count in pending.items()
+                if day < cutoff and day != preserved
+            )
             return RetentionResult(
                 market=market,
                 keep_trading_days=keep_trading_days,
                 cutoff=cutoff,
-                rows=would_delete,
+                rows=db_rows + pending_rows,
                 committed=False,
+                preserved_support_date=preserved,
+                db_rows=db_rows,
+                pending_rows_upper_bound=pending_rows,
             )
 
     deleted = 0
@@ -355,16 +383,23 @@ async def prune_snapshot_history(
         async with AsyncSessionLocal() as session:
             batch_deleted = await InvestScreenerSnapshotsRepository(
                 session
-            ).delete_before_batch(market=market, cutoff=cutoff, batch_size=batch_size)
+            ).delete_before_batch(
+                market=market,
+                cutoff=cutoff,
+                batch_size=batch_size,
+                keep_date=preserved,
+            )
             await session.commit()
         deleted += batch_deleted
         if batch_deleted < batch_size:
             break
     logger.info(
-        "pruned invest_screener_snapshots: market=%s keep=%d cutoff=%s deleted=%d",
+        "pruned invest_screener_snapshots: market=%s keep=%d cutoff=%s "
+        "preserved_support=%s deleted=%d",
         market,
         keep_trading_days,
         cutoff,
+        preserved,
         deleted,
     )
     return RetentionResult(
@@ -373,6 +408,7 @@ async def prune_snapshot_history(
         cutoff=cutoff,
         rows=deleted,
         committed=True,
+        preserved_support_date=preserved,
     )
 
 

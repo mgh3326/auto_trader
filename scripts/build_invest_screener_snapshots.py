@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import date
 
 from app.core.cli import setup_logging_and_sentry
 from app.jobs import invest_screener_snapshots as snapshot_job
@@ -160,11 +161,17 @@ def _print_result(result) -> None:
 
 def _print_retention(result: snapshot_job.RetentionResult) -> None:
     verb = "deleted" if result.committed else "would delete"
+    cutoff = result.cutoff.isoformat() if result.cutoff else None
     print(
         f"retention: market={result.market} keep={result.keep_trading_days} "
-        f"cutoff={result.cutoff.isoformat() if result.cutoff else None} "
+        f"cutoff={cutoff} preserved_support={result.preserved_support_date} "
         f"{verb}={result.rows}"
     )
+    if not result.committed:
+        print(
+            f"retention: db_rows={result.db_rows} "
+            f"pending_rows_upper_bound={result.pending_rows_upper_bound}"
+        )
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -193,11 +200,30 @@ async def run(args: argparse.Namespace) -> int:
         print(f"\nCOMMIT BLOCKED: {exc}\n")
         return 2
     _print_result(result)
-    if args.keep_trading_days is not None:
+    if args.keep_trading_days is None:
+        return 0
+    if not args.commit:
+        # Dry-run: the rows are not written yet, so their dates join the cutoff.
+        pending = {
+            date.fromisoformat(day): count
+            for day, count in result.snapshot_date_distribution.items()
+        }
         retention = await snapshot_job.prune_snapshot_history(
-            args.market, keep_trading_days=args.keep_trading_days, commit=args.commit
+            args.market,
+            keep_trading_days=args.keep_trading_days,
+            commit=False,
+            pending_dates=pending,
         )
         _print_retention(retention)
+        return 0
+    if not (result.committed and result.snapshots_built > 0):
+        # A commit that wrote nothing must not trigger a market-wide delete.
+        print("retention: skipped (the commit wrote no rows; history left untouched)")
+        return 4
+    retention = await snapshot_job.prune_snapshot_history(
+        args.market, keep_trading_days=args.keep_trading_days, commit=True
+    )
+    _print_retention(retention)
     return 0
 
 

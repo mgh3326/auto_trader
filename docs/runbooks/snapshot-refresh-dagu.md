@@ -15,7 +15,7 @@
 | `at-snapshot-screener-us` | `CRON_TZ=UTC 30 1 * * 2-6` | 화–토 10:30 | `build_invest_screener_snapshots --market us --all --common-stocks-only --keep-trading-days 5` | `AT_SNAPSHOT_SCREENER_US_COMMIT_ENABLED` |
 | `at-snapshot-consensus-kr` | `CRON_TZ=UTC 30 12 * * 1-5` | 월–금 21:30 | `build_analyst_consensus_snapshots --market kr` | `AT_SNAPSHOT_CONSENSUS_KR_COMMIT_ENABLED` |
 | `at-snapshot-consensus-us` | `CRON_TZ=UTC 0 3 * * 2-6` | 화–토 12:00 | `build_analyst_consensus_snapshots --market us` | `AT_SNAPSHOT_CONSENSUS_US_COMMIT_ENABLED` |
-| `at-snapshot-financial-kr` | `CRON_TZ=UTC 0 14 * * *` | 매일 23:00 | `build_financial_fundamentals_snapshots --market kr --limit 1500 --skip-existing` | `AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED` (`--commit --allow-partial`) |
+| `at-snapshot-financial-kr` | `CRON_TZ=UTC 0 14 * * *` | 매일 23:00 | `build_financial_fundamentals_snapshots --market kr --limit 1000 --skip-existing` | `AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED` (`--commit --allow-partial`) |
 
 - 모든 DAG는 `host: pi` 워커, 배포 이미지 digest, `/root/at-secrets/.env.api`, `dotenv: /root/at-secrets/.env.dagu-at-batch`를 쓴다.
 - 게이트가 **설정되지 않으면** 기본 동작은 dry-run이다. 단 `at-snapshot-financial-kr`은 예외로 `--estimate-only`다.
@@ -36,25 +36,31 @@
 
 채움률 확인은 호스트에서 한 번 실행한다. 명령은 저장소 DAG와 같은 이미지 digest를 쓰고 `--commit`을 붙이지 않는다.
 각 실행은 마지막에 `FILL_RATE_JSON {...}` 한 줄을 출력한다. `job`, `rows`, 그리고 핵심 필드별 `non_null`과 `share`가 들어 있다.
-행이 0이면 `share`는 `null`이다.
+행이 0이면 `share`는 `null`이다. 스크리너 출력의 `built N/M`에서 `M`(`symbols_resolved`)이 등록 기준의 분모다.
+
+두 종류의 실행이 있다.
+
+- **스모크(참고용)**: `--limit 20`. 명령과 필드가 동작하는지만 본다. 등록 기준으로 쓰지 않는다.
+- **등록 게이트 dry-run(전체 범위)**: 아래 전체 범위 명령. 이 결과의 `share`와 `built N/M`으로 등록을 정한다.
 
 ```bash
 IMG="$(cat /root/at-run/deployed-digest)"
-docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$IMG" \
-  /app/.venv/bin/python -m scripts.build_invest_screener_snapshots --market kr --limit 20 --keep-trading-days 5
-docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$IMG" \
-  /app/.venv/bin/python -m scripts.build_invest_screener_snapshots --market us --limit 20 --common-stocks-only --keep-trading-days 5
-docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$IMG" \
-  /app/.venv/bin/python -m scripts.build_analyst_consensus_snapshots --market kr
-docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$IMG" \
-  /app/.venv/bin/python -m scripts.build_analyst_consensus_snapshots --market us
-docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$IMG" \
-  /app/.venv/bin/python -m scripts.build_financial_fundamentals_snapshots --market kr --limit 20 --skip-existing
+RUN="docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api $IMG /app/.venv/bin/python -m"
+# 등록 게이트: 전체 범위 (--all 과 보관 플래그를 그대로 쓴다)
+$RUN scripts.build_invest_screener_snapshots --market kr --all --keep-trading-days 5
+$RUN scripts.build_invest_screener_snapshots --market us --all --common-stocks-only --keep-trading-days 5
+$RUN scripts.build_analyst_consensus_snapshots --market kr
+$RUN scripts.build_analyst_consensus_snapshots --market us
+# 재무제표: 하루 DART 예산을 한 번 쓰는 실행이다(최악 16,000회). 등록 직전 한 번만 한다.
+$RUN scripts.build_financial_fundamentals_snapshots --market kr --limit 1000 --skip-existing
+# 스모크(참고용)
+$RUN scripts.build_invest_screener_snapshots --market kr --limit 20 --keep-trading-days 5
+$RUN scripts.build_financial_fundamentals_snapshots --market kr --limit 20 --skip-existing
 ```
 
-- 스크리너 `--limit 20`은 KR·US 각각 활성 유니버스 앞 20개만 본다. 전체 채움률이 아니라 필드 채움 방식의 확인이다.
-- 재무제표 `--limit 20 --skip-existing`은 DART 약 220회를 쓴다(20 × 11). 아직 수집되지 않은 종목 20개만 고르므로 전부 채워졌으면 행 0이다.
-- 스크리너 출력의 `retention:` 줄은 `--keep-trading-days 5`일 때 dry-run으로 지워질 행 수를 보여 준다. 기록하지 않는다.
+- 컨센서스의 기본 범위는 보유 ∪ 활성 관심 종목 전체다. 별도의 `--all`이 없고, 위 명령이 곧 전체 범위다.
+- 스크리너 `--keep-trading-days 5`의 dry-run 출력 `retention:` 줄은 지워질 행 수의 상한과 컷오프를 보여 준다. 컷오프에는 이번 빌드의 날짜가 포함되므로 커밋 결과와 같은 기준이다. `preserved_support`는 보존되는 지원선 날짜다. 기록하지 않는다.
+- 재무제표 dry-run은 DART를 호출하고 예산을 쓴다. 그래서 등록 전 한 번만 돌리고, 등록 뒤 매일 실행의 기본 분기는 `--estimate-only`다(DART 미호출).
 
 ### 등록 기준 (제안, 설계 세션이 실측 후 확정)
 
@@ -62,11 +68,11 @@ docker run --rm --init --network host --workdir /app --env-file /root/at-secrets
 |---|---|---|---|
 | 스크리너 | `latest_close`, `prev_close`, `change_rate`, `week_change_rate` | 0.98 | OHLCV에서 바로 계산된다 |
 | 스크리너 | `daily_volume`, `daily_turnover` | 0.95 | 일봉 거래량·거래대금 |
-| 스크리너 | `market_cap` | 0.80 | 외부 시가총액 소스에 의존한다 |
-| 스크리너 | 행 수 | 기준 유니버스의 0.9 이상 | 한 날짜만 채워지면 보관 정책이 이전 날을 지운다 |
+| 스크리너 | 행 수 | 전체 범위 `built N/M`에서 N/M ≥ 0.9, 최신 날짜 행 수 기준 | 한 날짜만 채워지면 보관 정책이 이전 날을 지운다 |
 | 컨센서스 | `total_count`, `target_mean`, `current_price` | 0.50 | 보유·관심 종목은 커버리지가 좁다. 채움이 낮으면 등록하지 않고 원인을 본다 |
 | 재무제표 | `revenue`, `net_income`, `filing_date` | 0.90 | DART 연간 보고서 기준 |
 
+- `market_cap`은 기준에서 뺐다. 이 빌더(`app/services/invest_screener_snapshots/builder.py`)는 `market_cap`을 쓰지 않으므로 채움률이 항상 0이다. 시가총액 채움은 다른 경로(가치평가 보강)의 몫이며 이 DAG의 등록 조건이 아니다.
 - 위 기준 중 하나라도 밑돌면 해당 DAG를 등록하지 않는다. 원인(소스 누락, 필드 매핑)을 먼저 본다.
 - `consecutive_up_days`, `payout_ratio`, `roe` 같은 희소 필드는 기준 없이 참고만 한다.
 
@@ -95,3 +101,6 @@ docker run --rm --init --network host --workdir /app --env-file /root/at-secrets
 - 재무제표 `--skip-existing`은 새 종목만 채운다. 이미 수집된 종목은 갱신하지 않는다. 기존 동작이며 이 변경에서 바꾸지 않았다.
 - 스크리너 보관은 날짜 기준 최신 5개를 남긴다. 어떤 날짜가 부분 빌드로 행이 적으면 그 날도 한 날짜로 센다.
 - 컨센서스 범위는 보유 ∪ 활성 관심 종목이다. 전체 유니버스 옵션은 없다(빌더 설계).
+- 스크리너 보관은 날짜 기준 최신 5개에 더해 **지원선(support-proximity) 파티션**을 항상 남긴다(`latest_support_computed_date`). 지원선 프리셋이 읽는 날짜가 일반 최신 5개보다 오래되었어도 지워지지 않는다. 그래서 보관 날짜 수는 최대 6개가 될 수 있다.
+- 종료 코드: 스크리너 `4` = 커밋이 행을 쓰지 않아 보관을 건너뛰었다. 재무제표 `3` = DART 일일 예산으로 커밋이 억제되었다. 둘 다 DAG 실패로 기록되며 journal `status=failure`가 남는다.
+- 재무제표 한 번의 실행은 종목당 최악 16회 DART 호출이다(연도 5 × 3 + 공시목록 1). `--limit 1000`이 이 상한에 맞춘 값이다.

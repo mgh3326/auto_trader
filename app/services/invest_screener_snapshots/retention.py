@@ -7,7 +7,7 @@ supplies the dates, newest first, and performs the delete.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 
 def retention_cutoff(
@@ -25,3 +25,18 @@ def retention_cutoff(
     if len(trading_dates_desc) < keep:
         return None
     return trading_dates_desc[keep - 1]
+
+
+def projected_retention_cutoff(
+    persisted_dates_desc: Sequence[dt.date],
+    pending_dates: Iterable[dt.date],
+    keep: int,
+) -> dt.date | None:
+    """Cutoff computed over persisted dates plus the dates a build is about to write.
+
+    A dry-run cannot read the rows it has not written yet, so it must add the
+    build's dates itself. Otherwise its cutoff differs from the one a commit
+    computes after writing, and the preview under-reports what the commit deletes.
+    """
+    union = sorted(set(persisted_dates_desc) | set(pending_dates), reverse=True)
+    return retention_cutoff(union, keep)
