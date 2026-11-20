@@ -468,6 +468,132 @@ def test_s6_the_exit_intent_lives_no_longer_than_the_mandate_lets_an_intent_live
     )
 
 
+class _ExitSession(_Session):
+    """A session whose rows expire at commit, as the real one's do."""
+
+    def __init__(self, mandate_row: Any) -> None:
+        super().__init__()
+        self._mandate_row = mandate_row
+
+    async def get(self, _model: Any, _key: Any) -> Any:
+        return self._mandate_row
+
+
+class _ExpiringRow:
+    """Stands in for an ORM row: reading it after the commit is an error."""
+
+    def __init__(self, session: _Session, **values: Any) -> None:
+        object.__setattr__(self, "_session", session)
+        object.__setattr__(self, "_values", values)
+
+    def __getattr__(self, name: str) -> Any:
+        if self._session.committed:
+            raise AssertionError(f"{name} was read from a row the commit expired")
+        return self._values[name]
+
+
+@pytest.mark.asyncio
+async def test_s6_a_committed_exit_intent_starts_its_lifetime_when_it_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR 2486 review (65wMjR): the mandate lets an intent live one second. The
+    command started at NOW; committing the exit row, reading the kill row and
+    waiting for the store's locks took three seconds. An expiry of NOW + 1s is
+    over before the INSERT and the operator is left with an exit row and no
+    intent. The intent is built by the store, from the clock it reads under its
+    locks, and the command reports the expiry that was stored."""
+    from app.services.kis_mock_runner.control import KillMode
+
+    ttl = timedelta(seconds=1)
+    stored_at = NOW + timedelta(seconds=3)
+    mandate_id = uuid4()
+    session = _ExitSession(None)
+    exit_row = _ExpiringRow(
+        session,
+        id=uuid4(),
+        symbol="KRW-XRP",
+        max_quantity=Decimal("10"),
+        expires_at=NOW + timedelta(hours=1),
+    )
+    session._mandate_row = _ExpiringRow(
+        session,
+        id=mandate_id,
+        strategy="upbit-trend-long-v1",
+        mode="live",
+        sleeve_id=7,
+        strategy_code_sha=SHA,
+        max_intent_ttl=ttl,
+    )
+    calls: list[dict[str, Any]] = []
+
+    async def create_operator_exit(_session: Any, **_kwargs: Any) -> Any:
+        return exit_row
+
+    async def kill_row(_store: Any) -> Any:
+        return SimpleNamespace(mode=KillMode.ACTIVE)
+
+    class _Store:
+        def __init__(self, _factory: Any) -> None:
+            pass
+
+        async def store_intent_for_operator_exit(
+            self, build: Any, **kwargs: Any
+        ) -> Any:
+            calls.append(kwargs)
+            return build(stored_at)
+
+    monkeypatch.setattr(cli, "create_operator_exit", create_operator_exit)
+    monkeypatch.setattr(cli, "read_effective_kill_switch", kill_row)
+    monkeypatch.setattr(cli, "PostgresAccountControlStore", lambda *_a: None)
+    monkeypatch.setattr(cli, "UpbitGatewayStore", _Store)
+
+    def args(commit: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            mandate=str(mandate_id),
+            symbol="KRW-XRP",
+            max_quantity="10",
+            reason="r",
+            actor="robin",
+            limit_price_krw="3000",
+            max_slippage_bps="30",
+            commit=commit,
+        )
+
+    preview = await cli._exit(
+        session,  # type: ignore[arg-type]
+        args(False),
+        now=NOW,
+        session_factory=None,
+        environment={},
+    )
+    assert calls == [] and session.rolled_back == 1
+    # The preview shows what a store at the time of the preview would give.
+    assert ExecutionIntentV2.model_validate(preview["intent"]).expires_at == NOW + ttl
+
+    committed = await cli._exit(
+        session,  # type: ignore[arg-type]
+        args(True),
+        now=NOW,
+        session_factory=None,
+        environment={},
+    )
+
+    assert session.committed == 1
+    assert committed["intent_stored"] is True
+    # Stored at NOW + 3s with one second to live: not NOW + 1s, which is past.
+    stored = ExecutionIntentV2.model_validate(committed["intent"])
+    assert stored.expires_at == stored_at + ttl
+    assert stored.expires_at > stored_at
+    assert calls == [
+        {
+            "sleeve_id": 7,
+            "mandate_id": mandate_id,
+            "reads": calls[0]["reads"],
+        }
+    ]
+    assert calls[0]["reads"].kill_mode is KillMode.ACTIVE
+
+
 def test_the_database_url_is_never_echoed(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

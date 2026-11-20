@@ -497,8 +497,18 @@ GUARD_DDL: tuple[str, ...] = (
                             {_RESTRICT};
                     END IF;
                     -- S6 sets aside the mandate's expiry and revocation only:
-                    -- its price band and intent lifetime still bind.
-                    IF NEW.expires_at > now() + m.max_intent_ttl
+                    -- its price band and intent lifetime still bind. The
+                    -- lifetime runs from created_at, the instant the row is
+                    -- stored: every later check measures it from there too.
+                    -- created_at defaults to the transaction's start; a
+                    -- writer that waited for its locks may set it to the
+                    -- clock it read after the wait, and it is believed only
+                    -- inside this transaction's own time. An expiry already
+                    -- past at the INSERT is refused by the same clock.
+                    IF NEW.created_at < now()
+                       OR NEW.created_at > clock_timestamp()
+                       OR NEW.expires_at <= clock_timestamp()
+                       OR NEW.expires_at > NEW.created_at + m.max_intent_ttl
                        OR NEW.max_slippage_bps > m.price_band_bps THEN
                         RAISE EXCEPTION 'review.execution_intents operator exit intent exceeds its mandate'
                             {_RESTRICT};

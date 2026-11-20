@@ -35,6 +35,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -317,8 +318,14 @@ def _whole(raw: Any, name: str) -> int:
 
 
 def _exit_intent(
-    exit_row: Any, mandate: ExecutionMandate, args: argparse.Namespace, *, now: datetime
+    exit_row: Any, mandate: Any, args: argparse.Namespace, *, now: datetime
 ) -> ExecutionIntentV2:
+    """The sell intent of an operator exit whose lifetime starts at ``now``.
+
+    ``now`` is the instant the intent is stored: the store passes the clock it
+    read under its locks. For a preview it is the time of the preview, and the
+    expiry shown is what a store at that instant would give.
+    """
     quantity = format(Decimal(str(exit_row.max_quantity)).normalize(), "f")
     # The intent lives no longer than its exit row, and no longer than the
     # mandate lets any intent live: an operator exit keeps that term (S6), so a
@@ -373,20 +380,38 @@ async def _exit(
         actor=args.actor,
         now=now,
     )
-    mandate = await session.get(ExecutionMandate, mandate_id)
-    if mandate is None:  # pragma: no cover - create_operator_exit checked it
+    mandate_row = await session.get(ExecutionMandate, mandate_id)
+    if mandate_row is None:  # pragma: no cover - create_operator_exit checked it
         raise MandateError("mandate does not exist")
-    intent = _exit_intent(exit_row, mandate, args, now=now)
+    # Plain copies: the commit below expires the two ORM rows, and the intent
+    # is built after it, when the store has its locks.
+    exit_terms = SimpleNamespace(
+        id=exit_row.id,
+        symbol=exit_row.symbol,
+        max_quantity=exit_row.max_quantity,
+        expires_at=exit_row.expires_at,
+    )
+    mandate = SimpleNamespace(
+        id=mandate_row.id,
+        strategy=mandate_row.strategy,
+        mode=mandate_row.mode,
+        sleeve_id=mandate_row.sleeve_id,
+        strategy_code_sha=mandate_row.strategy_code_sha,
+        max_intent_ttl=mandate_row.max_intent_ttl,
+    )
     payload: dict[str, Any] = {
         "mode": _mode(args),
         "operator_exit": {
-            "id": str(exit_row.id),
+            "id": str(exit_terms.id),
             "mandate_id": str(mandate_id),
-            "symbol": exit_row.symbol,
-            "max_quantity": str(exit_row.max_quantity),
-            "expires_at": exit_row.expires_at.isoformat(),
+            "symbol": exit_terms.symbol,
+            "max_quantity": str(exit_terms.max_quantity),
+            "expires_at": exit_terms.expires_at.isoformat(),
         },
-        "intent": intent.model_dump(mode="json"),
+        # A preview: the expiry a store at this instant would give.
+        "intent": _exit_intent(exit_terms, mandate, args, now=now).model_dump(
+            mode="json"
+        ),
     }
     if not args.commit:
         await session.rollback()
@@ -396,9 +421,15 @@ async def _exit(
         PostgresAccountControlStore(UPBIT_LIVE_ACCOUNT, session_factory)
     )
     try:
-        await UpbitGatewayStore(session_factory).store_intent(
-            intent,
-            now=datetime.now(UTC),
+        # The intent's lifetime starts when it is stored, not when this command
+        # started: the commit above, the kill read and the wait for the store's
+        # locks must not use up a short ``max_intent_ttl`` (S6).
+        stored = await UpbitGatewayStore(
+            session_factory
+        ).store_intent_for_operator_exit(
+            lambda stored_at: _exit_intent(exit_terms, mandate, args, now=stored_at),
+            sleeve_id=mandate.sleeve_id,
+            mandate_id=mandate.id,
             reads=AccountReads(
                 kill_mode=kill.mode, live_enabled=live_enabled(environment)
             ),
@@ -408,6 +439,8 @@ async def _exit(
         payload["intent_stored"] = False
         payload["refusal"] = exc.refusal.value
         return payload
+    # What was stored, with the expiry it was stored with.
+    payload["intent"] = stored.model_dump(mode="json")
     payload["intent_stored"] = True
     return payload
 

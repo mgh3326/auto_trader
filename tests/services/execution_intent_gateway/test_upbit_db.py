@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.core.db import AsyncSessionLocal, engine
@@ -159,7 +159,9 @@ async def _sleeve(state: str, *, execution_path: str = "go") -> StrategySleeve:
         return sleeve
 
 
-async def _mandate(sleeve: StrategySleeve, mode: str) -> ExecutionMandate:
+async def _mandate(
+    sleeve: StrategySleeve, mode: str, *, max_intent_ttl_seconds: str = "43200"
+) -> ExecutionMandate:
     async with AsyncSessionLocal() as session:
         draft = await draft_mandate(
             session,
@@ -171,7 +173,7 @@ async def _mandate(sleeve: StrategySleeve, mode: str) -> ExecutionMandate:
             per_intent_max_notional_krw="480000",
             max_open_intents="4",
             price_band_bps="30",
-            max_intent_ttl_seconds="43200",
+            max_intent_ttl_seconds=max_intent_ttl_seconds,
             expires_at=_now() + timedelta(days=30),
             account_ref=ACCOUNT_REF if mode == "live" else None,
             now=_now(),
@@ -1779,3 +1781,148 @@ async def test_a_reservation_takes_its_key_before_any_other_lock() -> None:
         assert other.is_new is True
         await holder.rollback()
     assert (await waiting).is_new is True
+
+
+async def _operator_exit(mandate: ExecutionMandate) -> Any:
+    async with AsyncSessionLocal() as session:
+        exit_row = await create_operator_exit(
+            session,
+            mandate_id=mandate.id,
+            symbol=SYMBOL,
+            max_quantity="10",
+            reason="db test exit",
+            actor="test-operator",
+            now=_now(),
+        )
+        await session.commit()
+        return exit_row
+
+
+def _exit_intent_stored_at(
+    mandate: ExecutionMandate, exit_row: Any, stored_at: datetime, **overrides: Any
+) -> ExecutionIntentV2:
+    """What ``execution_mandates.py exit`` builds for the store's clock."""
+    values: dict[str, Any] = {
+        "side": "sell",
+        "origin": "operator_exit",
+        "operator_exit_id": exit_row.id,
+        "authorization_ref": f"operator-exit:{exit_row.id}",
+        "max_quantity_decimal": "10",
+        "expires_at": min(exit_row.expires_at, stored_at + mandate.max_intent_ttl),
+        "inventory": DecimalInventoryConstraint(
+            position_at_authorization="10",
+            min_position_after="0",
+            max_position_after="10",
+        ),
+    }
+    return _intent(mandate, **{**values, **overrides})
+
+
+async def _intent_row(intent_id: uuid.UUID) -> ExecutionIntent:
+    async with AsyncSessionLocal() as session:
+        row = await session.get(ExecutionIntent, intent_id)
+        assert row is not None
+        return row
+
+
+@pytest.mark.asyncio
+async def test_s6_the_wait_for_the_store_does_not_use_up_an_exit_intents_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR 2486 review (65wMjR): the mandate lets an intent live three seconds, and
+    the store waits longer than that for the sleeve lock. An expiry fixed
+    before the wait is past when the row is inserted. The intent is built from
+    the clock read after the wait, the row's ``created_at`` is that instant,
+    and the trigger measures the lifetime from it."""
+    sleeve = await _sleeve("shadow")
+    mandate = await _mandate(sleeve, "shadow", max_intent_ttl_seconds="3")
+    exit_row = await _operator_exit(mandate)
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    # The rule is out of the way: the trigger alone judges the row.
+    monkeypatch.setattr(
+        upbit_store_module, "check_storable", lambda *_a, **_k: UpbitDecision()
+    )
+    built: list[datetime] = []
+
+    def build(stored_at: datetime) -> ExecutionIntentV2:
+        built.append(stored_at)
+        return _exit_intent_stored_at(mandate, exit_row, stored_at)
+
+    async with AsyncSessionLocal() as holder:
+        locked_at = await holder.scalar(select(func.clock_timestamp()))
+        await sleeve_store.acquire_sleeve_lock(holder, sleeve.id)
+        storing = asyncio.create_task(
+            store.store_intent_for_operator_exit(
+                build, sleeve_id=sleeve.id, mandate_id=mandate.id, reads=_reads()
+            )
+        )
+        await asyncio.sleep(3.5)
+        assert not storing.done() and built == []
+        await holder.rollback()
+    stored = await storing
+
+    assert len(built) == 1
+    # The wait alone was longer than the intent may live.
+    assert built[0] - locked_at > mandate.max_intent_ttl
+    row = await _intent_row(stored.intent_id)
+    assert row.created_at == built[0]
+    assert row.expires_at == built[0] + mandate.max_intent_ttl == stored.expires_at
+
+
+@pytest.mark.asyncio
+async def test_s6_an_exit_intent_stored_at_the_stores_clock_can_then_be_sent() -> None:
+    """The stored ``created_at`` is what every later check measures the
+    lifetime from: an intent that lives exactly ``max_intent_ttl`` from its
+    storage is accepted by the rule and the trigger at the store, and by the
+    rule again when its child is reserved."""
+    sleeve = await _sleeve("shadow")
+    mandate = await _mandate(sleeve, "shadow", max_intent_ttl_seconds="60")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    buy = _intent(mandate, expires_at=_now() + timedelta(seconds=45))
+    await store.store_intent(buy, now=_now(), reads=_reads())
+    path, shadow, _live = _path(store, avg="2000")
+    assert (await path.handle(_submit(buy, _key(), quantity="10"))).status == "shadowed"
+    exit_row = await _operator_exit(mandate)
+
+    stored = await store.store_intent_for_operator_exit(
+        lambda stored_at: _exit_intent_stored_at(mandate, exit_row, stored_at),
+        sleeve_id=sleeve.id,
+        mandate_id=mandate.id,
+        reads=_reads(),
+    )
+
+    row = await _intent_row(stored.intent_id)
+    assert row.expires_at - row.created_at == mandate.max_intent_ttl
+    key = _key()
+    outcome = await path.handle(_submit(stored, key, quantity="10"))
+    assert outcome.status == "shadowed" and key in shadow.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shift", [timedelta(minutes=5), -timedelta(hours=1)])
+async def test_s6_the_trigger_believes_created_at_only_inside_its_own_transaction(
+    monkeypatch: pytest.MonkeyPatch, shift: timedelta
+) -> None:
+    """``created_at`` is what an exit intent's lifetime is measured from, so it
+    cannot be a time the writer made up: not later than the clock at the
+    INSERT, which would lengthen the lifetime, and not before the transaction
+    began."""
+    sleeve = await _sleeve("shadow")
+    mandate = await _mandate(sleeve, "shadow")
+    exit_row = await _operator_exit(mandate)
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    monkeypatch.setattr(
+        upbit_store_module, "check_storable", lambda *_a, **_k: UpbitDecision()
+    )
+    claimed = _now() + shift
+    intent = _exit_intent_stored_at(
+        mandate, exit_row, claimed, expires_at=_now() + timedelta(minutes=30)
+    )
+
+    with pytest.raises(DBAPIError):
+        async with AsyncSessionLocal() as session:
+            await store._store_locked(
+                session, intent, now=_now(), reads=_reads(), created_at=claimed
+            )
+    async with AsyncSessionLocal() as session:
+        assert await session.get(ExecutionIntent, intent.intent_id) is None

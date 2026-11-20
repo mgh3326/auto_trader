@@ -29,7 +29,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -233,6 +233,11 @@ def sleeve_symbol_views(
         open_buys,
         reserved,
     )
+
+
+def _check_expiry_window(intent: ExecutionIntentV2, *, now: datetime) -> None:
+    if intent.expires_at <= now or intent.expires_at - now > MAX_INTENT_LIFETIME:
+        raise IntentNotStorable("intent expiry is outside the allowed window")
 
 
 class UpbitGatewayStore:
@@ -554,67 +559,131 @@ class UpbitGatewayStore:
         ``IntentNotStorable`` for an expiry outside the window and
         ``IntentConflict`` for a different intent under the same id.
         """
-        if intent.expires_at <= now or intent.expires_at - now > MAX_INTENT_LIFETIME:
-            raise IntentNotStorable("intent expiry is outside the allowed window")
-        digest = contract_digest(intent)
-        snapshot = intent_snapshot_from_contract(intent, created_at=now)
-        inventory = intent.inventory
+        _check_expiry_window(intent, now=now)
         async with self._session_factory() as session:
             await self._lock_scope(
                 session, sleeve_id=intent.sleeve_id, mandate_id=intent.mandate_id
             )
-            stored = await session.scalar(
-                select(ExecutionIntent.intent_digest).where(
-                    ExecutionIntent.id == intent.intent_id
-                )
-            )
-            if stored is not None:
+            await self._store_locked(session, intent, now=now, reads=reads)
+
+    async def store_intent_for_operator_exit(
+        self,
+        build: Callable[[datetime], ExecutionIntentV2],
+        *,
+        sleeve_id: int,
+        mandate_id: UUID,
+        reads: AccountReads,
+    ) -> ExecutionIntentV2:
+        """Store an operator exit intent whose lifetime starts when it is stored.
+
+        S6 keeps the mandate's ``max_intent_ttl`` on an operator exit, and a
+        mandate may set it to seconds. An expiry computed when the command
+        started has already lost whatever the exit row's commit, the kill read
+        and the wait for the locks below took, and can be over before the
+        INSERT. So the intent is built here, under the locks, from one instant:
+
+        * ``stored_at`` is the database clock, read after the locks are held;
+        * ``build(stored_at)`` returns the intent, whose ``expires_at`` the
+          caller derives from that instant;
+        * the row's ``created_at`` is ``stored_at``, which is what the intent's
+          lifetime is measured from at every later check
+          (``evaluate_operator_exit``), and what the INSERT trigger measures it
+          from. The trigger believes ``created_at`` only inside this
+          transaction's own time, and refuses an expiry that is already past.
+
+        Returns the intent as stored. Raises as :meth:`store_intent` does; an
+        id that is already stored is a conflict unless the contents are equal.
+        """
+        async with self._session_factory() as session:
+            await self._lock_scope(session, sleeve_id=sleeve_id, mandate_id=mandate_id)
+            stored_at = await session.scalar(select(func.clock_timestamp()))
+            if stored_at is None:  # pragma: no cover - the database has a clock
+                raise IntentNotStorable("the storage time could not be read")
+            intent = build(stored_at)
+            if (
+                intent.origin != "operator_exit"
+                or intent.sleeve_id != sleeve_id
+                or intent.mandate_id != mandate_id
+            ):
                 await session.rollback()
-                if stored != digest:
-                    raise IntentConflict("intent id is stored with different contents")
-                return
-            facts = await self._load_facts(session, snapshot, now=now)
-            decision = check_storable(snapshot, facts=facts, reads=reads)
-            if decision.refusal is not None:
-                if decision.stop_sleeve is not None:
-                    await self._stop_sleeve(session, decision, intent.intent_id)
-                    await session.commit()
-                else:
-                    await session.rollback()
-                raise IntentRefused(decision.refusal)
-            await session.execute(
-                insert(ExecutionIntent).values(
-                    id=intent.intent_id,
-                    schema_version=intent.schema_version,
-                    strategy=intent.strategy,
-                    account=intent.account,
-                    venue=intent.venue,
-                    symbol=intent.symbol,
-                    side=intent.side,
-                    max_notional_krw=intent.max_notional_krw,
-                    limit_price_krw=intent.limit_price_krw,
-                    max_slippage_bps=intent.max_slippage_bps,
-                    policy_version=intent.policy_version,
-                    model_version=intent.model_version,
-                    authorization_ref=intent.authorization_ref,
-                    expires_at=intent.expires_at,
-                    intent_digest=digest,
-                    mandate_id=intent.mandate_id,
-                    sleeve_id=intent.sleeve_id,
-                    execution_mode=intent.execution_mode,
-                    strategy_code_sha=intent.strategy_code_sha,
-                    decision_ref=intent.decision_ref,
-                    origin=intent.origin,
-                    operator_exit_id=intent.operator_exit_id,
-                    max_quantity_decimal=Decimal(intent.max_quantity_decimal),
-                    position_at_authorization_decimal=Decimal(
-                        inventory.position_at_authorization
-                    ),
-                    min_position_after_decimal=Decimal(inventory.min_position_after),
-                    max_position_after_decimal=Decimal(inventory.max_position_after),
-                )
+                raise IntentNotStorable("not an operator exit intent of this mandate")
+            _check_expiry_window(intent, now=stored_at)
+            await self._store_locked(
+                session, intent, now=stored_at, reads=reads, created_at=stored_at
             )
-            await session.commit()
+            return intent
+
+    async def _store_locked(
+        self,
+        session: AsyncSession,
+        intent: ExecutionIntentV2,
+        *,
+        now: datetime,
+        reads: AccountReads,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Judge and insert ``intent``; the caller holds the scope locks.
+
+        Commits or rolls back. ``created_at`` is passed only by
+        :meth:`store_intent_for_operator_exit`; otherwise the column default (the
+        transaction's start) applies, as it always has.
+        """
+        digest = contract_digest(intent)
+        snapshot = intent_snapshot_from_contract(intent, created_at=now)
+        inventory = intent.inventory
+        stored = await session.scalar(
+            select(ExecutionIntent.intent_digest).where(
+                ExecutionIntent.id == intent.intent_id
+            )
+        )
+        if stored is not None:
+            await session.rollback()
+            if stored != digest:
+                raise IntentConflict("intent id is stored with different contents")
+            return
+        facts = await self._load_facts(session, snapshot, now=now)
+        decision = check_storable(snapshot, facts=facts, reads=reads)
+        if decision.refusal is not None:
+            if decision.stop_sleeve is not None:
+                await self._stop_sleeve(session, decision, intent.intent_id)
+                await session.commit()
+            else:
+                await session.rollback()
+            raise IntentRefused(decision.refusal)
+        values: dict[str, Any] = {
+            "id": intent.intent_id,
+            "schema_version": intent.schema_version,
+            "strategy": intent.strategy,
+            "account": intent.account,
+            "venue": intent.venue,
+            "symbol": intent.symbol,
+            "side": intent.side,
+            "max_notional_krw": intent.max_notional_krw,
+            "limit_price_krw": intent.limit_price_krw,
+            "max_slippage_bps": intent.max_slippage_bps,
+            "policy_version": intent.policy_version,
+            "model_version": intent.model_version,
+            "authorization_ref": intent.authorization_ref,
+            "expires_at": intent.expires_at,
+            "intent_digest": digest,
+            "mandate_id": intent.mandate_id,
+            "sleeve_id": intent.sleeve_id,
+            "execution_mode": intent.execution_mode,
+            "strategy_code_sha": intent.strategy_code_sha,
+            "decision_ref": intent.decision_ref,
+            "origin": intent.origin,
+            "operator_exit_id": intent.operator_exit_id,
+            "max_quantity_decimal": Decimal(intent.max_quantity_decimal),
+            "position_at_authorization_decimal": Decimal(
+                inventory.position_at_authorization
+            ),
+            "min_position_after_decimal": Decimal(inventory.min_position_after),
+            "max_position_after_decimal": Decimal(inventory.max_position_after),
+        }
+        if created_at is not None:
+            values["created_at"] = created_at
+        await session.execute(insert(ExecutionIntent).values(**values))
+        await session.commit()
 
     async def _stop_sleeve(
         self, session: AsyncSession, decision: UpbitDecision, intent_id: UUID
