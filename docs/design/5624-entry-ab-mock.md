@@ -2,6 +2,8 @@
 
 같은 매수 결정에 기존 깊은 지정가와 첫 정규장 시가 지정가를 각각 적용해 모의 계좌에서 비교한다. 이 문서와 ROB-1429 등록은 초안이며, 구현과 봉인은 후속 작업에서 한다.
 
+버전 2(hk 5719): §2의 짝 모집단을 기각 판단에 기록된 '샀다면 넣었을' 지정가까지 넓혔다. KIS 미러의 `report_item_uuid` 경로는 원천이 2026-07-28 이후 없어 제외했다(hk:doc reports/2026-11-20/at-5715-kis-mirror-gap). 운영자 결정은 hk:doc decision/2026-11-20/at-5624-entry-ab-decisions.
+
 ## 1. 가설과 비교 조건
 
 **가설 하나** — 첫 정규장 시가 지정가는 기존 깊은 지정가보다 동일 후보·동일 예약자본 기준 비용 차감 5거래일 평가손익률을 높인다. 주 지표의 최소 효과는 시장별 평균 짝 차이 +0.25%p로 제안한다.
@@ -15,7 +17,12 @@ hk 5624의 11/13 거절 후보 11건 회고에서 첫 시가 대비 −3% 접촉
 
 ## 2. 짝과 상태
 
-짝 키는 `(epoch_id, market, review.decision_evidence.decision_id)`다. 결정에 저장된 BUY 방향, 심볼, 정책 버전·해시, `decided_at`, 원본 `proposal_id` 또는 `report_item_uuid`를 보존한다. 제안은 저장된 `order_proposals.decision_id`로, KIS 미러는 결정의 `report_item_uuid`로 연결한다. 종목·날짜·가격 유사도 추정은 결속에 사용하지 않는다. 같은 결정의 제안 재발행은 기존 짝에 귀속한다. 저장된 링크가 없거나 충돌하면 차단 사유로 집계한다.
+짝 키는 `(epoch_id, market, review.decision_evidence.decision_id)`다. 짝의 모집단은 **저장된 매수 지정가와 수량 또는 금액을 가진 BUY 결정**이며, 두 경로 중 하나로 들어온다.
+
+- **제안 경로**: `order_proposals.decision_id`로 결속된 제안. 결정 rung 의 `limit_price`와 `planned_quantity` 또는 `planned_notional`을 쓴다.
+- **기각 경로**: `decision_kind='declined'` 판단. `forecast_save(decision_bucket='deferred_no_action', declined_limit_price, declined_quantity 또는 declined_notional, …)`로 기록된 '샀다면 넣었을' rung 과 `limit` 참조가를 쓴다(hk 5719). 기록 이전의 기각은 소급하지 않는다.
+
+두 경로 모두 결정에 저장된 BUY 방향, 심볼, 정책 버전·해시, `decided_at`을 보존한다. 종목·날짜·가격 유사도 추정은 결속에 사용하지 않는다. 같은 결정의 제안 재발행은 기존 짝에 귀속한다. 저장된 링크가 없거나 충돌하면 차단 사유로 집계한다. KIS 미러의 `report_item_uuid` 경로는 쓰지 않는다.
 
 대상은 기존 필터를 적용한 뒤 저장된 BUY 결정 중 원본 깊은 지정가와 승인 가능 수량 또는 금액이 확인되는 단일 주문 후보로 한정한다. 분할 주문을 한 주문으로 합치지 않는다. 링크 누락, 단일 주문 조건 불충족, 양쪽 계좌의 공통 정규장·호가·종목·잔고 조건 불충족은 원본 모집 흐름에서 별도 집계한다. 과거 거절 후보를 다시 내지 않는다. 두 계좌의 같은 종목에 이미 열린 실험 포지션이나 미확정 주문이 있으면 신규 짝은 공통 차단한다.
 
@@ -36,7 +43,7 @@ hk 5624의 11/13 거절 후보 11건 회고에서 첫 시가 대비 −3% 접촉
 
 | 시장·다리 | 승인된 계좌 | 귀속과 주문·체결 출처 |
 | --- | --- | --- |
-| KR A | KIS 모의 | `mirror_cohort="mock_counterfactual"`, 동일 `report_item_uuid`, 기존 미러 전략과 `review.kis_mock_signal_ledger` 선커밋. `review.kis_mock_order_ledger`와 기존 대사 증거. |
+| KR A | KIS 모의 | `mirror_cohort="mock_counterfactual"`, 결정에 저장된 같은 `decision_id`의 지정가(§2), 기존 미러 전략과 `review.kis_mock_signal_ledger` 선커밋. `review.kis_mock_order_ledger`와 기존 대사 증거. |
 | KR B | 키움 국내 모의 | `kiwoom_mock`, KRX. `review.kiwoom_mock_signal_ledger` 선커밋, `order_send_intents` 예약, `review.kiwoom_mock_order_ledger`와 기존 대사 증거. |
 | US A | Alpaca paper | ROB-1474 정리 확인 뒤, 11/23 이후에만 개시 준비. 기존 paper endpoint와 예상 계좌 검증·승인 결속, `review.alpaca_paper_order_ledger`와 기존 대사 증거. ROB-1474 전략 CLI는 자체 동결 전략용이다. |
 | US B | 키움 해외 모의 | `kiwoom_mock_us`, 별도 승인 USD 모의 계좌 및 전용 자격 범위. 키움 신호 원장·예약·주문 원장과 US에서 검증된 기존 대사 증거. 기존 US 대사 목록의 평균 체결가 부재와 fill booking 미지원 때문에, 정확한 주문 ID로 결속한 양성 체결 수량·가격 확보를 시작 전에 입증해야 한다. 그러지 못하면 US를 시작하지 않는다. |

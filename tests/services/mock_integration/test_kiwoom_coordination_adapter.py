@@ -1302,8 +1302,12 @@ def test_no_j3a_sql_or_reason_enum_copied() -> None:
     assert "class CoordinationReasonCode" not in source
 
 
+# hk 5651 (3795 T4c): re-pinned after one reviewed addition to ``_send_api_once`` — an
+# opt-in pre-dispatch hook (``PRE_DISPATCH_HOOK``, unset for every existing caller) run
+# right before ``client.send`` so a plan-bound mandate recheck sees the world after the
+# token and rate-limit waits. No host, path, credential, redirect or retry change.
 _KIWOOM_CLIENT_PY_SHA256: str = (
-    "02997f518d6ce3fd8efa544aae049dfb9418fa16406a0d7f276741825dbe96c7"
+    "49f1f58a9137c0f944d17c111fe37a77c277de7ccb9c67ee247c20b53ebf2f92"
 )
 
 

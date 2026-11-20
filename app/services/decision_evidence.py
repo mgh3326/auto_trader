@@ -8,8 +8,8 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
-from typing import Literal
+from decimal import Decimal, InvalidOperation
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -113,6 +113,124 @@ def _check_reference_price(price: ReferencePrice) -> None:
     _check_decimals(price.price)
     if price.asof is not None and price.asof.utcoffset() is None:
         raise ValueError("asof must be timezone-aware")
+
+
+DECLINED_ENTRY_ACCOUNT_MARKETS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("kis_live", "equity_kr"),
+        ("kis_live", "equity_us"),
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
+        ("upbit", "crypto"),
+    }
+)
+DECLINED_ENTRY_MARKETS = frozenset({"equity_kr", "equity_us", "crypto"})
+
+
+class DeclinedEntryError(ValueError):
+    """Closed rejection of would-be entry inputs; carries only the code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclinedEntry:
+    """The would-be BUY a session would have placed on a declined decision."""
+
+    limit_price: Decimal
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    quote_price: Decimal | None = None
+    quote_asof: datetime | None = None
+    account_mode: Literal["kis_live", "toss_live", "upbit"] | None = None
+
+
+def _declined_decimal(value: object) -> Decimal:
+    # A JSON number that carries a fraction is already a binary float by the
+    # time it reaches here, so floats are rejected; callers send decimal text
+    # or an exact integer.
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise DeclinedEntryError("declined_value_invalid")
+    try:
+        number = Decimal(value.strip()) if isinstance(value, str) else Decimal(value)
+    except (InvalidOperation, ValueError):
+        raise DeclinedEntryError("declined_value_invalid") from None
+    if not number.is_finite() or number <= 0:
+        raise DeclinedEntryError("declined_value_invalid")
+    try:
+        _check_decimals(number)
+    except ValueError:
+        raise DeclinedEntryError("declined_value_invalid") from None
+    return number
+
+
+def parse_declined_entry(
+    *,
+    instrument_type: str,
+    bucket: str | None,
+    limit_price: object = None,
+    quantity: object = None,
+    notional: object = None,
+    quote_price: object = None,
+    quote_asof: object = None,
+    account_mode: object = None,
+) -> DeclinedEntry | None:
+    """Validate the optional would-be entry inputs before anything is written.
+
+    Returns ``None`` when no input is supplied, which keeps the legacy
+    declined write. Any supplied input must form a complete would-be BUY on a
+    ``deferred_no_action`` forecast for an equity or crypto market.
+    """
+    supplied = (
+        limit_price,
+        quantity,
+        notional,
+        quote_price,
+        quote_asof,
+        account_mode,
+    )
+    if all(value is None for value in supplied):
+        return None
+    if (bucket.strip() if isinstance(bucket, str) else bucket) != "deferred_no_action":
+        raise DeclinedEntryError("declined_bucket_required")
+    if instrument_type not in DECLINED_ENTRY_MARKETS:
+        raise DeclinedEntryError("declined_market_unsupported")
+    if limit_price is None:
+        raise DeclinedEntryError("declined_limit_price_required")
+    if quantity is not None and notional is not None:
+        raise DeclinedEntryError("declined_size_ambiguous")
+    if quantity is None and notional is None:
+        raise DeclinedEntryError("declined_size_required")
+    if (quote_price is None) != (quote_asof is None):
+        raise DeclinedEntryError("declined_quote_incomplete")
+    if account_mode is not None and (
+        not isinstance(account_mode, str)
+        or (account_mode, instrument_type) not in DECLINED_ENTRY_ACCOUNT_MARKETS
+    ):
+        raise DeclinedEntryError("declined_account_mode_invalid")
+
+    asof: datetime | None = None
+    if quote_asof is not None:
+        if not isinstance(quote_asof, str):
+            raise DeclinedEntryError("declined_value_invalid")
+        try:
+            asof = datetime.fromisoformat(quote_asof.strip())
+        except ValueError:
+            raise DeclinedEntryError("declined_value_invalid") from None
+        if asof.utcoffset() is None:
+            raise DeclinedEntryError("declined_value_invalid")
+    return DeclinedEntry(
+        limit_price=_declined_decimal(limit_price),
+        quantity=None if quantity is None else _declined_decimal(quantity),
+        notional=None if notional is None else _declined_decimal(notional),
+        quote_price=None if quote_price is None else _declined_decimal(quote_price),
+        quote_asof=asof,
+        account_mode=cast(
+            Literal["kis_live", "toss_live", "upbit"] | None, account_mode
+        ),
+    )
 
 
 def account_scope(account_mode: Literal["kis_live", "toss_live", "upbit"]) -> str:

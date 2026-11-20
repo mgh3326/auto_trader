@@ -163,6 +163,15 @@ HOLDINGS_DISPOSITIONS: tuple[str, ...] = (
 #: Closed ``evidence`` keys of a plan event (§3.2). ``holdings_account_refs`` is the
 #: set of account references the holdings check read: I19 compares it with the
 #: ``scope_account_refs`` fixed at registration.
+#: Why a send fence may be closed without a ledger reconcile (§4.6): only a send that
+#: provably never started, or one the broker explicitly rejected. Nothing else
+#: (a timeout, a lost result, a crash, an ambiguous reply) closes a fence.
+RELEASE_REASONS: tuple[str, ...] = (
+    "pre_send_refused",
+    "explicit_rejection",
+    "pre_post_failure",
+)
+
 EVIDENCE_KEYS: tuple[str, ...] = (
     "ledger_row_ids",
     "trade_date",
@@ -176,6 +185,13 @@ EVIDENCE_KEYS: tuple[str, ...] = (
     "holdings_account_refs",
     "holdings_disposition",
 )
+
+#: The proof the checked event writer adds itself (never a caller input): the retrospective
+#: an ``evidence`` cites existed in the writer's snapshot when the event was written
+#: (§5.2 "증거의 순서", I14). Events without it never qualify a loss sale.
+PROOF_KEY = "retrospective_verified"
+#: Every key the stored ``evidence`` may hold (the DB CHECK of migration hk5651).
+STORED_EVIDENCE_KEYS: tuple[str, ...] = (*EVIDENCE_KEYS, PROOF_KEY)
 
 #: Column group -> (required events, allowed events). Outside ``allowed`` the
 #: columns must be NULL; inside ``required`` they must be set.
@@ -271,3 +287,12 @@ class MandateRefusal(StrEnum):
     CARD_SUPERSEDED = "mandate_card_superseded"
     NONCE_MISMATCH = "mandate_nonce_mismatch"
     CALENDAR_UNKNOWN = "mandate_calendar_unknown"
+    UNREADABLE = "mandate_unreadable"
+    FENCE_UNAVAILABLE = "mandate_fence_unavailable"
+    DRAWDOWN_FROZEN = "mandate_drawdown_frozen"
+    PLAN_AMOUNT_EXCEEDED = "mandate_plan_amount_exceeded"
+    THESIS_NOT_BROKEN = "mandate_thesis_not_broken"
+    ACTIVATION_MISSING = "mandate_activation_missing"
+    TRANCHE_NOT_ACTIVATED = "mandate_tranche_not_activated"
+    TERMS_MISSING = "mandate_terms_missing"
+    SWITCH_OFF = "mandate_switch_off"

@@ -606,3 +606,229 @@ async def test_updated_forecast_does_not_backfill_decision(monkeypatch):
     assert result["success"] and result["action"] == "updated"
     record.assert_not_awaited()
     db.commit.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# hk 5719 — declined decision carries the would-be BUY (DB-free mocks)
+# --------------------------------------------------------------------------- #
+def _declined_harness(monkeypatch, *, action="created", bucket="deferred_no_action"):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from uuid import UUID
+
+    from app.mcp_server.tooling import forecast_tools
+
+    row = SimpleNamespace(
+        symbol="005930",
+        forecast_id=UUID(int=1),
+        report_item_uuid=None,
+        policy_version="v1",
+        decision_bucket=bucket,
+    )
+    events: list[str] = []
+    db = SimpleNamespace(
+        commit=AsyncMock(side_effect=lambda: events.append("commit")),
+        rollback=AsyncMock(side_effect=lambda: events.append("rollback")),
+        refresh=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    save = AsyncMock(return_value=(action, row))
+    record = AsyncMock(side_effect=lambda *args: events.append("record"))
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: session)
+    monkeypatch.setattr(forecast_tools, "save_forecast", save)
+    monkeypatch.setattr(
+        forecast_tools,
+        "serialize_forecast",
+        lambda _: {"decision_bucket": bucket},
+    )
+    monkeypatch.setattr(forecast_tools.DecisionEvidenceService, "record", record)
+    return forecast_tools, db, save, record, events
+
+
+async def _save_declined(forecast_tools, **overrides):
+    values = {
+        "created_by": "session",
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "forecast_target": {},
+        "probability": 0.5,
+        "review_date": "2026-11-27",
+        "decision_bucket": "deferred_no_action",
+        "declined_limit_price": "70000",
+        "declined_quantity": "3",
+        "declined_account_mode": "kis_live",
+    }
+    values.update(overrides)
+    return await forecast_tools.forecast_save(**values)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides,code",
+    [
+        ({"decision_bucket": "new_buy_candidate"}, "declined_bucket_required"),
+        ({"decision_bucket": None}, "declined_bucket_required"),
+        ({"instrument_type": "forex"}, "declined_market_unsupported"),
+        ({"declined_limit_price": None}, "declined_limit_price_required"),
+        ({"declined_quantity": None}, "declined_size_required"),
+        ({"declined_notional": "1"}, "declined_size_ambiguous"),
+        ({"declined_quote_price": "69000"}, "declined_quote_incomplete"),
+        ({"declined_limit_price": "-70000"}, "declined_value_invalid"),
+        ({"declined_quantity": "NaN"}, "declined_value_invalid"),
+        ({"declined_account_mode": "upbit"}, "declined_account_mode_invalid"),
+    ],
+)
+async def test_invalid_declined_shape_writes_nothing(monkeypatch, overrides, code):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await _save_declined(forecast_tools, **overrides)
+    assert result == {"success": False, "error": code, "error_code": code}
+    save.assert_not_awaited()
+    record.assert_not_awaited()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_declined_inputs_on_an_updated_forecast_roll_back(monkeypatch):
+    forecast_tools, db, save, record, events = _declined_harness(
+        monkeypatch, action="updated"
+    )
+    result = await _save_declined(forecast_tools)
+    assert result["success"] is False
+    assert result["error_code"] == "declined_not_created"
+    assert events == ["rollback"]
+    record.assert_not_awaited()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declined_entry_writes_rung_limit_size_quote_and_account(monkeypatch):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await _save_declined(
+        forecast_tools,
+        declined_quote_price="69500.5",
+        declined_quote_asof="2026-11-20T09:00:00+09:00",
+    )
+    assert result["success"] is True
+    assert events == ["record", "commit"]
+    evidence, rungs, prices = record.await_args.args
+    assert evidence.account_mode == "kis_live"
+    assert evidence.side == "buy" and evidence.decision_kind == "declined"
+    (rung,) = rungs
+    assert rung.rung_index == 0 and rung.side == "buy"
+    assert rung.limit_price == Decimal("70000")
+    assert rung.planned_quantity == Decimal("3") and rung.planned_notional is None
+    limit, quote = prices
+    assert (limit.kind, limit.price, limit.rung_index) == (
+        "limit",
+        Decimal("70000"),
+        0,
+    )
+    assert (quote.kind, quote.price) == ("quote_at_decision", Decimal("69500.5"))
+    assert quote.asof == datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_legacy_declined_evidence_is_unchanged_without_new_inputs(monkeypatch):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+
+    from app.services.decision_evidence import evidence_hash
+
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-27",
+        decision_bucket="deferred_no_action",
+    )
+    assert result["success"] is True
+    evidence, rungs, prices = record.await_args.args
+    assert rungs == [forecast_tools.DecisionRung(rung_index=0, side="buy")]
+    assert prices == []
+    assert evidence.account_mode is None
+    pinned = replace(evidence, decided_at=datetime(2026, 11, 20, 1, 0, tzinfo=UTC))
+    assert (
+        evidence_hash(pinned)
+        == "ee5f44d3aed074413d32e01788c25d974856a6992ede9ad76f4ee702fcaf7afb"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "quantity,code",
+    [
+        (True, "declined_value_invalid"),
+        ([1], "declined_value_invalid"),
+        (1.5, "declined_value_invalid"),
+    ],
+)
+async def test_registered_tool_rejects_raw_declined_shapes_before_write(
+    monkeypatch, quantity, code
+):
+    from fastmcp import FastMCP
+
+    from app.mcp_server.tooling.forecast_registration import register_forecast_tools
+
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    mcp = FastMCP(name="declined-probe", on_duplicate="error")
+    register_forecast_tools(mcp)
+    result = await mcp.call_tool(
+        "forecast_save",
+        {
+            "created_by": "session",
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "forecast_target": {},
+            "probability": 0.5,
+            "review_date": "2026-11-27",
+            "decision_bucket": "deferred_no_action",
+            "declined_limit_price": "70000",
+            "declined_quantity": quantity,
+        },
+    )
+    payload = result.structured_content
+    assert payload == {"success": False, "error": code, "error_code": code}
+    save.assert_not_awaited()
+    record.assert_not_awaited()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_registered_tool_passes_decimal_text_through_to_evidence(monkeypatch):
+    from decimal import Decimal
+
+    from fastmcp import FastMCP
+
+    from app.mcp_server.tooling.forecast_registration import register_forecast_tools
+
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    mcp = FastMCP(name="declined-accept", on_duplicate="error")
+    register_forecast_tools(mcp)
+    result = await mcp.call_tool(
+        "forecast_save",
+        {
+            "created_by": "session",
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "forecast_target": {},
+            "probability": 0.5,
+            "review_date": "2026-11-27",
+            "decision_bucket": "deferred_no_action",
+            "declined_limit_price": "70000.5",
+            "declined_quantity": "3",
+        },
+    )
+    assert result.structured_content["success"] is True
+    _, rungs, _ = record.await_args.args
+    assert rungs[0].limit_price == Decimal("70000.5")
+    assert rungs[0].planned_quantity == Decimal("3")

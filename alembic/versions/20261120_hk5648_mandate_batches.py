@@ -48,7 +48,7 @@ The app role gets SELECT and INSERT only (hard rule 18).
 Downgrade refuses while any batch row exists.
 
 Revision ID: 20261120_hk5648_mandate_batches
-Revises: 20261120_hk5441_upbit_gw
+Revises: 20261120_hk5651_mandate_fence
 Create Date: 2026-11-20
 """
 
@@ -63,7 +63,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261120_hk5648_mandate_batches"
-down_revision: str | Sequence[str] | None = "20261120_hk5441_upbit_gw"
+down_revision: str | Sequence[str] | None = "20261120_hk5651_mandate_fence"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -279,7 +279,24 @@ class MandateSeed(SleeveSeed):
                 "DELETE FROM review.mandate_approvals WHERE request_id IN "
                 "(SELECT id FROM review.mandate_approval_requests WHERE sleeve_id = ANY(:ids))",
                 "DELETE FROM review.mandate_approval_requests WHERE sleeve_id = ANY(:ids)",
+                "DELETE FROM review.mandate_cap_mutex WHERE mutex_key LIKE 'sleeve:%' "
+                "AND substring(mutex_key FROM 8)::bigint = ANY(:ids)",
             ):
                 await self.db.execute(sa.text(statement), ids)
+            if self.basket_keys:
+                await self.db.execute(
+                    sa.text(
+                        "DELETE FROM review.mandate_basket_authority "
+                        "WHERE basket_key = ANY(:keys)"
+                    ),
+                    {"keys": self.basket_keys},
+                )
+                await self.db.execute(
+                    sa.text(
+                        "DELETE FROM review.mandate_cap_mutex WHERE scope <> 'sleeve' "
+                        "AND split_part(mutex_key, ':', 3) = ANY(:keys)"
+                    ),
+                    {"keys": self.basket_keys},
+                )
         await self.db.commit()
         await super().cleanup()

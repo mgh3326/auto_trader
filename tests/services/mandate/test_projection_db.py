@@ -9,6 +9,7 @@ live sleeve: the same attribution the sleeve book uses, T1m-a).
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -283,6 +284,25 @@ async def test_closed_needs_the_plan_accounts_zero_read_after_thesis_broken(
     await seed.fill(order_id=sent.order_id, symbol=symbol, quantity="9", price="100000")
     now = _later()
     await _project(plan.id, write=True, now=now)
+    # hk 5651: the event may only cite a retrospective that already exists
+    from app.models.review import TradeRetrospective
+
+    retro = TradeRetrospective(
+        symbol=symbol,
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        market="kr",
+        outcome="filled",
+        side="sell",
+        correlation_id=f"live:{uuid.uuid4()}",
+        realized_pnl=Decimal("-100"),
+        realized_pnl_currency="KRW",
+        pnl_pct=Decimal("-1.0"),
+        trigger_type="thesis_change",
+    )
+    db_session.add(retro)
+    await db_session.flush()
+    retro_id = retro.id
     await ms.append_plan_event(
         db_session,
         plan_id=plan.id,
@@ -290,7 +310,7 @@ async def test_closed_needs_the_plan_accounts_zero_read_after_thesis_broken(
         actor="operator:test",
         evidence={
             "reason_code": "test",
-            "retrospective_id": 1,
+            "retrospective_id": retro_id,
             "approval_issue_id": "hk:1",
         },
     )

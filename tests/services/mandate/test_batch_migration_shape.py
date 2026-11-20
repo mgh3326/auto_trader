@@ -61,10 +61,10 @@ def _ddl() -> str:
     return _norm("\n".join(_load().GUARD_DDL))
 
 
-def test_revision_chain_is_a_single_step_after_the_upbit_gateway_migration() -> None:
+def test_revision_chain_is_a_single_step_after_the_mandate_fence_migration() -> None:
     m = _load()
     assert m.revision == "20261120_hk5648_mandate_batches"
-    assert m.down_revision == "20261120_hk5441_upbit_gw"
+    assert m.down_revision == "20261120_hk5651_mandate_fence"
     assert len(m.revision) <= 32
 
 

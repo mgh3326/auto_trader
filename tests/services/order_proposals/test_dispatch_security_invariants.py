@@ -737,6 +737,9 @@ async def test_loss_cut_preview_to_consume_toctou_fails_closed(
 
     repo = Repo()
     service = _service_with_repo(repo)
+    # hk 3795 T4c: the first loss-cut click asks the mandate guard, which reads the
+    # database; this fake-session test has no plan, so the guard answers "none".
+    service.mandate_loss_cut_refusal = AsyncMock(return_value=None)
     session = SimpleNamespace(commit=AsyncMock())
     submit = AsyncMock()
     cancel = AsyncMock()

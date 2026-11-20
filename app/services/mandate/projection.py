@@ -28,6 +28,7 @@ from app.core.timezone import KST
 from app.models.mandate import MandatePlan, MandatePlanEvent, MandatePlanTranche
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.strategy_sleeves import StrategySleeve
+from app.services.mandate import fence_locks
 from app.services.mandate import store as ms
 from app.services.mandate import vocabulary as v
 from app.services.mandate.fold import PlanState
@@ -278,6 +279,13 @@ async def project_plan(
     )
     if not write or not projection.events:
         return base
+    # hk 3795 §4.6 / X26: the events that close a fence and set its durable exposure
+    # (tranche_filled / _partially_filled / _unfilled, and the rest of this write) go in
+    # under F3s, the lock a send fence and its release take, so a fence and its closing
+    # event never interleave. Caller locks (L1, L3) are already held, as for any writer.
+    await fence_locks.lock_mutex(
+        session, fence_locks.sleeve_mutex_key(sleeve.id), "sleeve"
+    )
     seqs: list[int] = []
     for planned in projection.events:
         try:

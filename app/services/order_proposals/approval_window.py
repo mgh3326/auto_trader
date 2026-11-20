@@ -1327,7 +1327,31 @@ async def evaluate_approval_window_boundary(
         decision = apply_toss_us_extended_order_shape(
             decision, group=group, rungs=rungs
         )
-    return recheck_approval_window_decision(group, decision, now=now_fn())
+    decision = recheck_approval_window_decision(group, decision, now=now_fn())
+    return _plan_bound_regular_only(group, decision)
+
+
+def _plan_bound_regular_only(
+    group: Any, decision: ApprovalWindowDecision
+) -> ApprovalWindowDecision:
+    """hk 3795 §4.4: a plan-bound order is sent in the regular session only.
+
+    The ordinary resolver also opens NXT, KRX after-market and (when enabled) Toss US
+    pre/post sessions. For a mandate-bound proposal every caller of this common
+    boundary — dispatch, callback, revalidation and the pre-send hook — refuses
+    anything outside the regular session. Only refuses; other proposals are untouched.
+    """
+    if getattr(group, "mandate_plan_id", None) is None or not decision.allowed:
+        return decision
+    from app.services.mechanical_loss_cut.gate import regular_session_open
+
+    if regular_session_open(group.market, decision.observed_at):
+        return decision
+    return replace(
+        decision,
+        code=ApprovalWindowCode.DEFER_SESSION_CLOSED,
+        detail="mandate_regular_session_only",
+    )
 
 
 def approval_window_operator_text(decision: ApprovalWindowDecision) -> str:

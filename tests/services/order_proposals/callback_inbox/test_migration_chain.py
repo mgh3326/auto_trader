@@ -166,6 +166,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # order_proposals mandate columns referencing the plans drop before).
     "review.mandate_plan_batch_members",
     "review.mandate_plan_batches",
+    "review.mandate_cap_mutex",
+    "review.mandate_basket_authority",
     "review.mandate_symbol_reservation_releases",
     "review.mandate_symbol_reservations",
     "review.mandate_plan_events",

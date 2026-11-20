@@ -59,6 +59,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.fill_notification import resolve_display_name_db
+from app.services.order_proposals import mandate_send
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
@@ -114,7 +115,6 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
-    mandate_send_block_reason,
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import (
@@ -734,6 +734,32 @@ async def _handle_auto_veto(
     }
 
 
+async def _mandate_pre_nonce_block(
+    service: OrderProposalsService,
+    group: Any,
+    rungs: list[Any],
+    *,
+    now_fn: Clock,
+    principal: str | None,
+) -> str | None:
+    """hk 3795 T4c: refusals that must leave the single-use nonce unspent.
+
+    For a plan-bound card: the operator principal (§3.5, authority) and the send
+    boundary the fence would apply (§4.7 blocking codes, lock-free advice). For a
+    ``loss_cut``: the plan's ``thesis_broken`` evidence (I14). Only ever refuses; an
+    ordinary proposal returns ``None`` without any call, clock sample or read.
+    """
+    if getattr(group, "mandate_plan_id", None) is not None:
+        block = await mandate_send.pre_nonce_refusal(
+            group, rungs, now=now_fn(), principal=principal
+        )
+        if block is not None:
+            return block
+    if getattr(group, "exit_intent", None) == "loss_cut":
+        return await service.mandate_loss_cut_refusal(group)
+    return None
+
+
 async def _handle_approve(
     *,
     session: AsyncSession,
@@ -771,7 +797,13 @@ async def _handle_approve(
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
     target_group, target_rungs = await service.get_proposal(proposal_id)
-    mandate_block = mandate_send_block_reason(target_group)
+    mandate_block = await _mandate_pre_nonce_block(
+        service,
+        target_group,
+        target_rungs,
+        now_fn=now_fn,
+        principal=telegram_user_id if actor_channel == "telegram" else actor_subject,
+    )
     if mandate_block is not None:
         await session.commit()
         return {
@@ -949,6 +981,27 @@ async def _handle_approve(
                 (first_window.detail or {}).get("error") or "approval_window_blocked"
             ),
             "operator_reason": operator_reason,
+            "proposal_id": str(proposal_id),
+            "results": [outcome.result for outcome in outcomes],
+            "rung_results": _serialize_rung_outcomes(outcomes),
+        }
+
+    fence_retryable = [
+        o
+        for o in outcomes
+        if o.result == "guard_blocked"
+        and (o.detail or {}).get("reason") == "mandate_fence_unavailable"
+    ]
+    if fence_retryable and len(fence_retryable) == len(outcomes):
+        # hk 3795 §4.6: a fence that timed out or could not confirm its commit sent
+        # nothing, and the approval stays usable: restore the nonce and answer.
+        await service.restore_approval_after_window_block(
+            proposal_id, nonce=callback.nonce, expired=False
+        )
+        await session.commit()
+        return {
+            "handled": False,
+            "reason": "mandate_fence_unavailable",
             "proposal_id": str(proposal_id),
             "results": [outcome.result for outcome in outcomes],
             "rung_results": _serialize_rung_outcomes(outcomes),
@@ -1211,8 +1264,14 @@ async def _handle_batch_approve(
         if len(proposals) < 2:
             await session.commit()
             return {"handled": False, "reason": "approval_batch_too_small"}
-        for group, _rungs in proposals:
-            mandate_block = mandate_send_block_reason(group)
+        for group, member_rungs in proposals:
+            mandate_block = await _mandate_pre_nonce_block(
+                service,
+                group,
+                member_rungs,
+                now_fn=lambda: gate_now,
+                principal=telegram_user_id,
+            )
             if mandate_block is not None:
                 await session.commit()
                 return {"handled": False, "reason": mandate_block}
@@ -1557,6 +1616,19 @@ async def _handle_loss_cut_first_click(
         proposal_id,
         callback=callback,
     )
+    # hk 3795 T4c, I14 (§5.2): the first click previews and spends the published
+    # nonce, so a loss sale without its plan's thesis_broken evidence is refused here,
+    # before either, and the original nonce stays unspent.
+    first_click_block = await _mandate_pre_nonce_block(
+        service, group, [], now_fn=now_fn, principal=None
+    )
+    if first_click_block is not None:
+        await session.commit()
+        return {
+            "handled": False,
+            "reason": first_click_block,
+            "proposal_id": str(proposal_id),
+        }
     # #1116: rung shape is immutable per proposal; read once for every gate,
     # and only when a Toss US extended session is enabled (the default key
     # keeps the exit exemption I/O-free, exactly as before).

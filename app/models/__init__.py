@@ -97,6 +97,7 @@ from .mandate import (
     MandateSymbolReservationRelease,
     MandateTerms,
 )
+from .mandate_fence import MandateBasketAuthority, MandateCapMutex
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -268,6 +269,8 @@ __all__ = [
     "MandateSymbolReservation",
     "MandateSymbolReservationRelease",
     "MandateTerms",
+    "MandateBasketAuthority",
+    "MandateCapMutex",
     "StrategySleeve",
     "StrategySleeveVersion",
     "ExecutionLedger",

@@ -60,6 +60,7 @@ from app.services.brokers.kiwoom.us_orders import (
     build_us_place_order_body,
     validate_us_order_id,
 )
+from app.services.brokers.pre_send_account import PRE_DISPATCH_HOOK
 from app.services.kiwoom_mock_attribution import (
     ACCOUNT_SCOPE_US,
     KiwoomMockAttribution,
@@ -720,6 +721,15 @@ async def record_place_outcome(
     }
 
 
+async def _post_with_edge_hook(post: Any, edge_hook: Any) -> Any:
+    """Run the order POST with the transport-edge pre-send hook published to the client."""
+    token = PRE_DISPATCH_HOOK.set(edge_hook)
+    try:
+        return await post()
+    finally:
+        PRE_DISPATCH_HOOK.reset(token)
+
+
 async def place_kiwoom_mock_order(
     *,
     symbol: Any,
@@ -1159,7 +1169,14 @@ async def _execute_reserved_send(
         )
         return response
 
-    if pre_send_hook is not None:
+    # hk 3795 T4c: a hook that asks to run at the transport edge is run by the Kiwoom
+    # client right before ``send`` (after token and rate-limit waits), not here.
+    edge_hook = (
+        pre_send_hook
+        if getattr(pre_send_hook, "run_at_transport_edge", False)
+        else None
+    )
+    if pre_send_hook is not None and edge_hook is None:
         try:
             await pre_send_hook()
         except BaseException as hook_exc:
@@ -1183,7 +1200,7 @@ async def _execute_reserved_send(
             raise
 
     try:
-        broker_response = await post()
+        broker_response = await _post_with_edge_hook(post, edge_hook)
     except KiwoomPreDispatchError as exc:
         # Provably never sent: no ledger row, and the same key may retry.
         released = await release_after_pre_dispatch_error(recorder, reservation)
