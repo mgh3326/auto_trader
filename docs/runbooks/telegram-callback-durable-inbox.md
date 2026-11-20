@@ -254,7 +254,7 @@ The persistent pytest test-schema bootstrap is now v39 and covers both `review.t
 > (`deploy/shiftgate/pi` 의 at-worker 배포 경로도 제거됨), durable ingress 는 기본 kick 을
 > 갖지 않는다. 따라서 아래 절차를 시작하기 **전에** 작업을 소비할 drain 을 먼저 복원해야
 > 한다 — 복원은 별도 운영자 결정이다. 복원 없이 게이트만 켜면 `_require_durable_consumers`
-> 는 설정 플래그 두 개만 보므로 통과하고, 그 뒤 ACK 된 행은 아무도 가져가지 않는다. 이 가드는
+> 는 설정 플래그 두 개만 본다. 이 릴리스에서는 상수 `TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED`(`False`)를 먼저 본다. 그래서 게이트를 켜도 요청은 persistence 전에 503 으로 거부된다. 이 상수는 드레인을 되살리는 검토된 변경에서만 `True` 가 된다. 그 전에 상수를 바꾸면 ACK 된 행을 아무도 가져가지 않는다. 이 가드는
 > 프로세스 생존을 증명하지 않는다(런북 §4 의 확인 절차 참조). 게이트 3종은 모두 default false 를 유지한다.
 
 Strictly in order. Each step is independently reversible.

@@ -79,6 +79,13 @@ def _armed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "42", raising=False
     )
+    # hk 5753: the armed-path tests model a release that has a supported drain.
+    # The shipped constant is False; see the no-drain test below.
+    from app.routers import telegram_callback as telegram_callback_router
+
+    monkeypatch.setattr(
+        telegram_callback_router, "TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED", True
+    )
 
 
 async def _post(app: FastAPI, payload: dict[str, Any]):
@@ -207,8 +214,12 @@ async def test_durable_route_503s_when_the_consumers_are_not_both_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mutant: worker-gate bypass. Ingress must refuse traffic it cannot drain."""
+    from app.routers import telegram_callback as telegram_callback_router
     from app.services.order_proposals.callback_inbox.ingress import IngressResult
 
+    monkeypatch.setattr(
+        telegram_callback_router, "TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED", True
+    )
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True, raising=False
     )
@@ -250,6 +261,44 @@ async def test_durable_route_503s_when_the_consumers_are_not_both_armed(
         assert response.status_code == 503, (worker_on, recovery_on)
         ingest.assert_not_awaited()
         inline.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_durable_route_refuses_every_armed_gate_set_when_no_drain_ships(
+    _armed: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hk 5753 — all three gates armed, but this release has no supported drain.
+
+    Previously the ACK was committed and returned 200 with nothing to drain it
+    (no worker, no kick). Now the route refuses before any persistence: sanitized
+    503, zero rows, zero inline handling.
+    """
+    from app.routers import telegram_callback as telegram_callback_router
+    from app.services.order_proposals.callback_inbox.ingress import IngressResult
+
+    monkeypatch.setattr(
+        telegram_callback_router, "TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED", False
+    )
+    ingest = AsyncMock(
+        return_value=IngressResult(
+            accepted=True,
+            duplicate=False,
+            job_id=uuid.uuid4(),
+            reason="queued",
+            enqueued=False,
+        )
+    )
+    inline = AsyncMock()
+    with (
+        patch("app.routers.telegram_callback.ingest_callback_update", ingest),
+        patch("app.routers.telegram_callback.handle_callback_update", inline),
+    ):
+        response = await _post(_build_app(), _VALID_UPDATE)
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"error": "telegram_callback_unavailable"}}
+    ingest.assert_not_awaited()
+    inline.assert_not_awaited()
 
 
 @pytest.mark.unit
