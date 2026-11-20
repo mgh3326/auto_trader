@@ -32,6 +32,7 @@ Row semantics (the table is shared with the fanout A-record):
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import logging
@@ -72,6 +73,10 @@ _RECORDED_MARKETS = frozenset({"kr", "us"})
 _KR_ALIASES = frozenset({"kr", "kospi", "kosdaq", "konex", "all"})
 _SELF_PATH = Path(__file__).resolve()
 _LABEL_PRICE = re.compile(r"^\$?([0-9][0-9,]*(?:\.[0-9]+)?)(?:원)?$")
+
+# The MCP tool deadline is 120s; the optional insert gets far less so a stalled
+# database can never eat the deadline of a screen that already succeeded.
+WRITE_TIMEOUT_SECONDS = 10.0
 
 WriteRows = Callable[[Sequence[ScreenerPickRow]], Awaitable[None]]
 
@@ -407,7 +412,12 @@ def extract_snapshot_rows(
         reason: str,
         seq: int | None,
     ) -> ScreenerPickRow:
-        freshness = freshness_by_preset.get(preset)
+        # The merged row's displayed price comes from the FIRST matched preset, so
+        # every row carrying that price takes its provenance (data_asof/fetched_at)
+        # from that preset too. This row's own preset freshness is kept separately.
+        names = sources_for(item)
+        price_preset = names[0] if names else preset
+        freshness = freshness_by_preset.get(price_preset)
         primary = (
             freshness.get("primary")
             if isinstance(freshness, Mapping)
@@ -447,6 +457,8 @@ def extract_snapshot_rows(
                 "request": _request_context(request),
                 "preset": preset,
                 "kind": "snapshot_preset",
+                "price_provenance_preset": price_preset,
+                "matched_preset_freshness": freshness_context.get(preset, {}),
             },
             call_context=call_context,
             code_sha256=digest,
@@ -507,7 +519,11 @@ async def _write_and_tag(
 ) -> dict[str, Any] | None:
     if not rows:
         return None
-    await (write_rows or _default_write)(rows)
+    # Observer timeout -> TimeoutError -> the callers' fail-open path returns the
+    # untagged result. Caller cancellation is not an Exception and still propagates.
+    await asyncio.wait_for(
+        (write_rows or _default_write)(rows), timeout=WRITE_TIMEOUT_SECONDS
+    )
     return {**result, "pick_log_call_id": str(call_id)}
 
 

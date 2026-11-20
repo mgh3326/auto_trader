@@ -501,7 +501,7 @@ async def _build_snapshot_page(
         max_val = float(max_market_cap_eok) * 100_000_000
         merged_results = _drop_rows(
             merged_results,
-            lambda r: (r.get("marketCapValue") or 0) > max_val,
+            lambda r: not ((r.get("marketCapValue") or 0) <= max_val),
             "above_max_market_cap",
             dropped_rows,
         )

@@ -191,7 +191,14 @@ def test_snapshot_rows_one_per_matched_preset_with_drops_and_freshness() -> None
     assert first.data_asof == "2026-11-19" and first.source_preset == "double_buy"
     second = key[("screen_stocks_snapshot:support_proximity", "BRK.B")]
     assert second.rank is None  # the merged row keeps only the first preset's rank
-    assert second.data_asof == "2026-11-18"
+    # price/provenance belong to the first matched preset on every row carrying it
+    assert second.data_asof == "2026-11-19"
+    assert second.decision_price_text == "1234.50"
+    assert second.source_params["price_provenance_preset"] == "double_buy"
+    assert (
+        second.source_params["matched_preset_freshness"]["primary"]["snapshotDate"]
+        == "2026-11-18"
+    )
     assert second.call_context is not None
     assert second.call_context["freshness"]["support_proximity"]["dataState"] == "stale"
     assert (
@@ -541,3 +548,113 @@ def test_impls_and_fanout_never_import_the_pick_log() -> None:
             n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
         }
         assert not any("pick_log" in m for m in imported), name
+
+
+# --- hk 5622 review findings -------------------------------------------------
+
+
+def test_none_jsonb_columns_persist_as_sql_null_not_json_null() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    dialect = postgresql.dialect()
+    for name in ("raw_row", "gate_features", "call_context"):
+        column_type = ScreenerPickLog.__table__.c[name].type
+        processor = column_type.bind_processor(dialect)
+        # JSON ``null`` would fail the *_object CHECK and roll back the whole batch.
+        assert processor is None or processor(None) is None, name
+    # both observers really emit gate_features=None
+    rows = mod.extract_screen_stocks_rows(
+        _screen_result(), request={}, call_id=uuid.uuid4(), code_sha256=_SHA
+    )
+    assert all(r.gate_features is None for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_stalled_write_is_bounded_and_returns_the_untagged_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(mod, "WRITE_TIMEOUT_SECONDS", 0.05)
+
+    async def stall(_rows: Any) -> None:
+        await asyncio.sleep(30)
+
+    result = _screen_result()
+    out = await asyncio.wait_for(
+        mod.record_screen_stocks_picks(
+            result, request={"market": "kr"}, enabled=True, write_rows=stall
+        ),
+        timeout=5,
+    )
+    assert out is result
+    payload = _snapshot_payload()
+    out2 = await asyncio.wait_for(
+        mod.record_snapshot_picks(
+            payload,
+            request={"market": "us"},
+            observation=_OBSERVATION,
+            enabled=True,
+            write_rows=stall,
+        ),
+        timeout=5,
+    )
+    assert out2 is payload
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_still_propagates_through_the_observer() -> None:
+    import asyncio
+
+    started = asyncio.Event()
+
+    async def stall(_rows: Any) -> None:
+        started.set()
+        await asyncio.sleep(30)
+
+    task = asyncio.ensure_future(
+        mod.record_screen_stocks_picks(
+            _screen_result(), request={"market": "kr"}, enabled=True, write_rows=stall
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_non_finite_max_market_cap_keeps_the_old_empty_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import screener_snapshot_tool as tool
+
+    async def fake_build(**_: Any) -> Any:
+        return SimpleNamespace(
+            model_dump=lambda mode="json": {
+                "results": [
+                    {"rank": 1, "symbol": "AAA", "market": "us", "marketCapValue": 5.0}
+                ],
+                "warnings": [],
+            }
+        )
+
+    class _Ctx:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        fake_build,
+    )
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _Ctx())
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="p", market="us", max_market_cap_eok=float("nan")
+    )
+    # `cap <= NaN` is false for every row, so the original filter dropped them all.
+    assert out["results"] == []

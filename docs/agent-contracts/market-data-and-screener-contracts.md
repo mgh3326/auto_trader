@@ -155,6 +155,11 @@ KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다
 - **call id**: 도구 호출마다 `call_id` 하나. 게이트가 켜져 있고 행을 하나 이상 썼을 때만 응답 최상위에 선택 키 `pick_log_call_id`가 붙는다
   (꺼짐·0행·오류 응답·기록 실패는 키 생략, 출력은 바이트 동일). 세션은 이를 `decision_evidence` 후보 ref로 인용한다.
   🔴 `decision_evidence`는 후보 ref 없는 같은 KST 날짜 매수 place에서 `admitted` 행을 `inference`로 연결하므로, 세션이 반환받은 후보는 이제 그 추론 대상이 된다.
+- **스냅샷 provenance**: 병합 행의 표시 가격은 첫 매칭 preset의 것이므로, 그 가격을 싣는 모든 행의 `data_asof`/`fetched_at`도 첫 매칭 preset 기준이다
+  (`source_params.price_provenance_preset`). 행 자신의 preset freshness는 `source_params.matched_preset_freshness`에 따로 둔다.
+- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다.
+  초과하면 태그 없는 원 응답을 돌려주고, 호출자 취소는 그대로 전파된다. `raw_row`/`gate_features`/`call_context`는 `JSONB(none_as_null=True)`라
+  파이썬 None이 JSON `null`이 아니라 SQL NULL로 저장된다(`*_object` CHECK는 SQL NULL 또는 객체만 허용).
 - **fanout 규칙은 그대로**: `funnel-a1` A-record(소스 top-10 전수·admission·`dropped_preselection`)는 `discover_buy_candidates_fanout` 전용이고 이 두 도구는 위 규칙을 따른다.
 - 테스트: `tests/services/screener_pick_log/test_screener_tool_pick_log.py`(순수·fail-open·게이트 off 동일성·등록 배선·경계), `..._db.py`(CI DB 왕복).
 
