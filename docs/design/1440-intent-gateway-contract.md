@@ -310,6 +310,10 @@ The live forwarder checks the live switch, the kill row, the intent's expiry, th
 
 Stored only through `UpbitGatewayStore.store_intent`, under the sleeve lock and the mandate row lock. The same contents again is a no-op.
 
+An operator exit intent is stored through `UpbitGatewayStore.store_intent_for_operator_exit` instead. Its lifetime starts when it is stored, not when the command that makes it started: the store takes the same two locks, reads the database clock, and builds the intent from that instant, with `expires_at` the earlier of the exit row's expiry and that instant plus the mandate's `max_intent_ttl`. The row's `created_at` is the same instant, and every later check of the lifetime measures from `created_at`. The INSERT trigger accepts a `created_at` only between the transaction's start and the clock at the INSERT, and refuses an expiry that is already past.
+
+**Lock order.** The journal key (`lock_child_key`, an advisory lock on the idempotency key), then the sleeve lock, then the mandate row, then the intent row. Both accounts' reservations take the key lock first and hold it until the reserved row is committed.
+
 | Field | Rule |
 |---|---|
 | `schema_version` | Exactly `2` |
@@ -341,7 +345,7 @@ Stored only through `UpbitGatewayStore.store_intent`, under the sleeve lock and 
 ```
 
 - The account of the stored intent decides the field set. A submit that carries `quantity_decimal` is read as the Upbit shape; every other body is validated exactly as before.
-- A child whose shape does not match its intent's account is refused `child_shape_invalid_for_account` and leaves no row. So does a key longer than 40 characters: the key is the Upbit `identifier` and cannot be shortened. This holds for a kis_mock-shaped submit (integer `quantity`, or no `quantity_decimal`) that fails kis_mock validation — for example a price above the kis_mock ceiling: the route reads the common fields, looks the intent up, and answers the refusal when the intent is an `upbit_live` one. With the gateway off or the confirm header missing nothing is read and the answer is 422, as it is for any other intent. If the key already names a child the answer is `conflict` (`idempotency_key_reused`), as for any changed body under a used key.
+- A child whose shape does not match its intent's account is refused `child_shape_invalid_for_account` and leaves no row. So does a key longer than 40 characters: the key is the Upbit `identifier` and cannot be shortened. This holds for a kis_mock-shaped submit (integer `quantity`, or no `quantity_decimal`) that fails kis_mock validation — for example a price above the kis_mock ceiling: the route reads the common fields, looks the intent up, and answers the refusal when the intent is an `upbit_live` one. With the gateway off or the confirm header missing nothing is read and the answer is 422, as it is for any other intent. If the key already names a child the answer is `conflict` (`idempotency_key_reused`), as for any changed body under a used key. The lookup waits for the key's lock, so it cannot answer the refusal while a reservation of the same key has inserted its row and not committed: it then finds that row and answers `conflict`. If the lock cannot be had within five seconds, or the read fails, the answer is 503, never a refusal.
 - There is no amend. `POST /children` answers 422 `amend_unsupported_for_account`; a replacement is a cancel and a new submit under a new key.
 - `quantity_decimal × limit_price_krw` is computed exactly. Nothing is rounded.
 
@@ -354,7 +358,7 @@ Stored only through `UpbitGatewayStore.store_intent`, under the sleeve lock and 
 
 The other statuses are unchanged. A `not_sent` row replays as `refused` with its reason. A shadow child left `sending` (its outcome write failed) is finished as `shadowed` when the same key is sent again: a shadow child never reached a broker, so nothing about it is unknown. Until then `GET /intents/<id>` reports it unresolved (`no_ledger_evidence`, `view: null`): the query says what the journal recorded. A live `sending` row is never forwarded again.
 
-**What proves a non-send.** The order layer calls the pre-send hook immediately before the HTTP request and nowhere else. If the hook did not return normally, no request was made: a guard below refused first (`lower_guard_refused`), the approved price or volume differed from what was about to be posted (`price_normalization_mismatch`), or the hook's own recheck refused (its reason). The hook judges expiry against the clock as it is after its own reads, immediately before the request. Once the hook has returned, any failure or exception is `uncertain`, as for kis_mock. A reason outside the closed list is recorded as `lower_guard_refused`, so a proven non-send can never be left `sending`. A cancel checks only whose account it is going to (`account_mismatch`) and is `not_sent` when that does not match the mandate. A DB trigger accepts `sending → not_sent` only for a v2 intent, with no broker order id and a reason from the closed list in `upbit_decisions.NOT_SENT_REASONS`.
+**What proves a non-send.** The order layer calls the pre-send hook immediately before the HTTP request and nowhere else. If the hook did not return normally, no request was made: a guard below refused first (`lower_guard_refused`), the approved price or volume differed from what was about to be posted (`price_normalization_mismatch`), or the hook's own recheck refused (its reason). The hook judges expiry against the clock as it is after its own reads, immediately before the request. Once the hook has returned, any failure or exception is `uncertain`, as for kis_mock. A reason outside the closed list is recorded as `lower_guard_refused`, so a proven non-send can never be left `sending`. A cancel checks only whose account it is going to (`account_mismatch`). The check is made twice: before the order layer is entered, and again in the transport's pre-send hook, after the rate limiter has admitted the request and immediately before the DELETE. If the hook did not return normally no DELETE was made and the child is `not_sent` (`account_mismatch`, or `lower_guard_refused` when the order layer stopped below the hook); after it returned, anything short of success is `uncertain`. A DB trigger accepts `sending → not_sent` only for a v2 intent, with no broker order id and a reason from the closed list in `upbit_decisions.NOT_SENT_REASONS`.
 
 ### Refusal reasons added
 
@@ -389,7 +393,7 @@ An Upbit order is one uuid for life, so there are no day identities and no linea
 | Case | Answer |
 |---|---|
 | A submit that was refused or is `not_sent` | Left out of the view, kept in `children`. A retry after a lost answer never sees a `not_sent` submit as a working order |
-| A `shadowed` submit | Not working. Counted as filled in full |
+| A `shadowed` submit | Not working. Counted as filled in full. In the sleeve's virtual book the fills fold in the order of their journal ids, which are handed out under the sleeve lock; `created_at` is the start of the reserving transaction and can be out of that order |
 | An accepted submit with no end | The working order |
 | `review.execution_child_order_evidence` shows a final broker state | Not working. `filled_qty` still comes from the ledger only |
 | A `sending` or `uncertain` submit, no evidence | `no_ledger_evidence`, `view: null` |
