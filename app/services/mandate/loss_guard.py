@@ -88,16 +88,18 @@ def evidence_matches(
     )
 
 
-async def _retrospective_created_at(session: AsyncSession, retrospective_id: Any):
-    """When the stored retrospective was written; ``None`` if there is no such row."""
+async def _retrospective_row(session: AsyncSession, retrospective_id: Any):
+    """The stored retrospective (``trigger_type``, ``symbol``); ``None`` if there is none."""
     try:
         rid = int(retrospective_id)
     except (TypeError, ValueError):
         return None
     row = await session.execute(
-        select(TradeRetrospective.created_at).where(TradeRetrospective.id == rid)
+        select(TradeRetrospective.trigger_type, TradeRetrospective.symbol).where(
+            TradeRetrospective.id == rid
+        )
     )
-    return row.scalar_one_or_none()
+    return row.first()
 
 
 async def unreleased_live_plan_ids(
@@ -146,11 +148,16 @@ async def loss_cut_refusal(
         # §5.2 "증거의 순서": the event writer (``store.append_plan_event``) refuses to
         # record an event whose cited retrospective does not exist yet, so the order of
         # the writes is enforced there. Here the row must still exist.
-        created = (
-            await _retrospective_created_at(session, retrospective_id)
-            if candidates
-            else None
+        retro = (
+            await _retrospective_row(session, retrospective_id) if candidates else None
         )
-        if created is None:
+        # §5.2 also at read time, for events already carrying the proof: the cited
+        # retrospective must be a thesis_change of this plan's own symbol
+        if retro is None or (
+            store.retrospective_defect(
+                retro[0], retro[1], plan_symbol=norm, market=market
+            )
+            is not None
+        ):
             return v.MandateRefusal.THESIS_NOT_BROKEN.value
     return None

@@ -14,7 +14,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
 EVENT_AT = datetime(2026, 11, 20, 12, tzinfo=UTC)
-RETRO_AT = datetime(2026, 11, 20, 11, tzinfo=UTC)
+RETRO_ROW = ("thesis_change", "005930")  # (trigger_type, symbol) of the stored row
 
 
 def _ev(event: str, seq: int, evidence=None, thesis_seq=None):
@@ -141,11 +141,11 @@ async def test_i14_h_a_retired_plan_is_judged_by_the_same_evidence(monkeypatch):
         return events
 
     async def created(session, retrospective_id):
-        return RETRO_AT
+        return RETRO_ROW
 
     monkeypatch.setattr(loss_guard, "unreleased_live_plan_ids", plans)
     monkeypatch.setattr(loss_guard.store, "list_plan_events", history)
-    monkeypatch.setattr(loss_guard, "_retrospective_created_at", created)
+    monkeypatch.setattr(loss_guard, "_retrospective_row", created)
 
     refused = await loss_guard.loss_cut_refusal(
         None,
@@ -283,9 +283,9 @@ async def test_i14_i_the_cited_retrospective_must_still_exist_when_read(monkeypa
     }
     for lookup, expected in (
         (_lookup(None), "mandate_thesis_not_broken"),
-        (_lookup(RETRO_AT), None),
+        (_lookup(RETRO_ROW), None),
     ):
-        monkeypatch.setattr(loss_guard, "_retrospective_created_at", lookup)
+        monkeypatch.setattr(loss_guard, "_retrospective_row", lookup)
         assert await loss_guard.loss_cut_refusal(None, **args) == expected
 
 
@@ -344,3 +344,55 @@ async def test_the_proof_key_is_set_by_the_writer_and_cannot_be_supplied():
     source = inspect.getsource(store.append_plan_event)
     assert "clean_evidence[v.PROOF_KEY] = True" in source
     assert source.index("bad_keys") < source.index("clean_evidence[v.PROOF_KEY]")
+
+
+@pytest.mark.parametrize(
+    ("trigger", "symbol", "market", "plan_symbol", "ok"),
+    [
+        ("thesis_change", "005930", "equity_kr", "005930", True),
+        ("thesis_change", "brk-b", "equity_us", "BRK.B", True),
+        ("stop_loss", "005930", "equity_kr", "005930", False),  # not a thesis change
+        (None, "005930", "equity_kr", "005930", False),
+        ("thesis_change", "000660", "equity_kr", "005930", False),  # another symbol
+        ("thesis_change", None, "equity_kr", "005930", False),
+    ],
+)
+async def test_i14_the_retrospective_must_be_a_thesis_change_of_the_plans_symbol(
+    trigger, symbol, market, plan_symbol, ok
+):
+    from app.services.mandate import store
+
+    defect = store.retrospective_defect(
+        trigger, symbol, plan_symbol=plan_symbol, market=market
+    )
+    assert (defect is None) is ok
+
+
+async def test_i14_a_marked_event_citing_a_stop_loss_retrospective_is_refused_at_read_time(
+    monkeypatch,
+):
+    """Events already carrying the proof are re-judged by the retrospective's type and
+    symbol (review): a fresh, matching stop_loss row never opens the loss sale."""
+    events = [_ev("proposed", 1), _ev("thesis_broken", 2, EVIDENCE)]
+
+    async def plans(session, *, market, symbol):
+        return [11]
+
+    async def history(session, plan_id):
+        return events
+
+    monkeypatch.setattr(loss_guard, "unreleased_live_plan_ids", plans)
+    monkeypatch.setattr(loss_guard.store, "list_plan_events", history)
+    args = {
+        "market": "equity_kr",
+        "symbol": "005930",
+        "retrospective_id": 42,
+        "approval_issue_id": "hk:9",
+    }
+    for row, expected in (
+        (("stop_loss", "005930"), "mandate_thesis_not_broken"),
+        (("thesis_change", "000660"), "mandate_thesis_not_broken"),
+        (("thesis_change", "005930"), None),
+    ):
+        monkeypatch.setattr(loss_guard, "_retrospective_row", _lookup(row))
+        assert await loss_guard.loss_cut_refusal(None, **args) == expected

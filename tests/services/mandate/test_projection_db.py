@@ -298,7 +298,7 @@ async def test_closed_needs_the_plan_accounts_zero_read_after_thesis_broken(
         realized_pnl=Decimal("-100"),
         realized_pnl_currency="KRW",
         pnl_pct=Decimal("-1.0"),
-        trigger_type="stop_loss",
+        trigger_type="thesis_change",
     )
     db_session.add(retro)
     await db_session.flush()

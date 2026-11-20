@@ -1429,8 +1429,34 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     return None
 
 
+#: §5.2: only a thesis-change retrospective of the plan's own symbol evidences a broken
+#: thesis. The generic loss-cut validators also accept ``stop_loss``; the mandate does not.
+THESIS_RETROSPECTIVE_TRIGGER = "thesis_change"
+
+
+def retrospective_defect(
+    trigger_type: Any, retro_symbol: Any, *, plan_symbol: str, market: str
+) -> str | None:
+    """Why a stored retrospective cannot evidence a broken thesis of this plan, or None.
+
+    Shared by the event writer (before it sets the proof) and the loss guard (at read
+    time, for events already marked), so both judge the same two facts.
+    """
+    if trigger_type != THESIS_RETROSPECTIVE_TRIGGER:
+        return (
+            f"the retrospective's trigger_type must be {THESIS_RETROSPECTIVE_TRIGGER!r}"
+        )
+    if sleeve_store.sleeve_symbol(str(retro_symbol or ""), market) != plan_symbol:
+        return "the retrospective is of another symbol"
+    return None
+
+
 async def _require_cited_retrospective(
-    session: AsyncSession, evidence: Mapping[str, Any]
+    session: AsyncSession,
+    evidence: Mapping[str, Any],
+    *,
+    plan_symbol: str,
+    market: str,
 ) -> None:
     raw = evidence.get("retrospective_id")
     try:
@@ -1442,7 +1468,9 @@ async def _require_cited_retrospective(
         if retro_id is None
         else (
             await session.execute(
-                select(TradeRetrospective.id).where(TradeRetrospective.id == retro_id)
+                select(
+                    TradeRetrospective.trigger_type, TradeRetrospective.symbol
+                ).where(TradeRetrospective.id == retro_id)
             )
         ).first()
     )
@@ -1451,6 +1479,11 @@ async def _require_cited_retrospective(
             v.MandateRefusal.INVALID_FIELDS,
             "the cited retrospective does not exist yet; create it before the event",
         )
+    defect = retrospective_defect(
+        found[0], found[1], plan_symbol=plan_symbol, market=market
+    )
+    if defect is not None:
+        raise MandateError(v.MandateRefusal.INVALID_FIELDS, defect)
 
 
 async def append_plan_event(
@@ -1541,7 +1574,10 @@ async def append_plan_event(
         # §5.2 "증거의 순서": the retrospective the event cites must already exist in
         # this writer's snapshot. A write-time visibility check orders the writes
         # themselves; the transaction-start ``created_at`` defaults cannot.
-        await _require_cited_retrospective(session, clean_evidence)
+        _realm, plan_market = realm_and_market(await _sleeve(session, plan.sleeve_id))
+        await _require_cited_retrospective(
+            session, clean_evidence, plan_symbol=plan.symbol, market=plan_market
+        )
         # durable proof, written by this writer only (callers cannot send the key)
         clean_evidence[v.PROOF_KEY] = True
     if event == "holdings_disposed":

@@ -31,7 +31,9 @@ validate_run_owned_database_url(engine.url)
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
-async def _retro(db, symbol: str, *, created_at=None, row_id=None) -> int:
+async def _retro(
+    db, symbol: str, *, created_at=None, row_id=None, trigger_type="thesis_change"
+) -> int:
     """A stored retrospective; the guard checks it existed when the event cited it."""
     from datetime import timedelta
 
@@ -49,7 +51,7 @@ async def _retro(db, symbol: str, *, created_at=None, row_id=None) -> int:
         realized_pnl=Decimal("-100"),
         realized_pnl_currency="KRW",
         pnl_pct=Decimal("-1.0"),
-        trigger_type="stop_loss",
+        trigger_type=trigger_type,
         created_at=created_at or datetime.now(UTC) - timedelta(hours=1),
     )
     db.add(row)
@@ -80,7 +82,7 @@ def retro(monkeypatch):
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(
             symbol=state["symbol"],
-            trigger_type="stop_loss",
+            trigger_type="stop_loss",  # the generic validators accept it; the mandate does not
             created_at=datetime.now(UTC),
         )
 
@@ -351,3 +353,25 @@ async def test_i14_e_creating_a_loss_cut_and_registering_a_plan_race_to_one_winn
         assert "mandate_thesis_not_broken" in str(loser)
     created = [r for r in results if isinstance(r, int)]
     seed.proposal_pks.extend(created)
+
+
+async def test_i14_j_the_writer_refuses_a_fresh_matching_stop_loss_retrospective(
+    db_session, seed, retro
+) -> None:
+    """§5.2: a same-symbol stop_loss retrospective exists and is fresh, but it is not a
+    thesis_change — the event is refused, and so is one citing another symbol's."""
+    sym, _s, _t, plan = await _planned(seed, db_session)
+    retro["symbol"] = sym
+    stop = await _retro(db_session, sym, trigger_type="stop_loss")
+    other = await _retro(db_session, new_kr_symbol())
+    for rid in (stop, other):
+        with pytest.raises(ms.MandateError) as caught:
+            await ms.append_plan_event(
+                db_session,
+                plan_id=plan.id,
+                event="thesis_broken",
+                actor="operator:test",
+                evidence={"retrospective_id": rid, "approval_issue_id": "ROB-2"},
+            )
+        assert caught.value.code is v.MandateRefusal.INVALID_FIELDS
+        await db_session.rollback()
