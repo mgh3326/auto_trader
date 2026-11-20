@@ -116,8 +116,11 @@ Telegram card remains executable.
    A rejection here means **200, no row, no kick** — the same external effect
    the inline path has today for the same input.
 3. Insert the normalized envelope and **commit**.
-4. Bounded, best-effort Redis kick
+4. Bounded, best-effort kick, **only when a producer is injected**
    (`ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS`, default 2 s).
+   🔴 hk 5753: the production route injects **no** producer. The TaskIQ worker
+   is retired, so step 4 is skipped and nothing reaches the broker. The row is
+   the whole acknowledgement and drains only through the recovery sweep.
 5. `200 {"ok": true}`.
 
 A failure at step 3 raises `CallbackInboxUnavailable`, the route answers a
@@ -246,6 +249,13 @@ The persistent pytest test-schema bootstrap is now v39 and covers both `review.t
 ---
 
 ## 4. Activation (operator-only; not performed in this PR)
+
+> 🔴 **hk 5753 — 워커가 없으면 W5 를 켤 수 없다.** 레포의 TaskIQ worker 는 은퇴했고
+> (`deploy/shiftgate/pi` 의 at-worker 배포 경로도 제거됨), durable ingress 는 기본 kick 을
+> 갖지 않는다. 따라서 아래 절차를 시작하기 **전에** 작업을 소비할 drain 을 먼저 복원해야
+> 한다 — 복원은 별도 운영자 결정이다. 복원 없이 게이트만 켜면 `_require_durable_consumers`
+> 는 설정 플래그 두 개만 보므로 통과하고, 그 뒤 ACK 된 행은 아무도 가져가지 않는다. 이 가드는
+> 프로세스 생존을 증명하지 않는다(런북 §4 의 확인 절차 참조). 게이트 3종은 모두 default false 를 유지한다.
 
 Strictly in order. Each step is independently reversible.
 

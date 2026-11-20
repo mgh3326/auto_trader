@@ -9,7 +9,9 @@ The order is the contract:
    :func:`normalize_callback_update`. The R37 identifier boundary is new; the
    action vocabulary remains unchanged;
 3. insert the normalized envelope and **commit**;
-4. a bounded, best-effort Redis kick;
+4. a bounded, best-effort kick **only when a producer is injected**. The
+   default ingress has none (hk 5753: the TaskIQ worker is retired), so this
+   step is skipped and nothing reaches the broker;
 5. 200.
 
 A failure at step 3 raises :class:`CallbackInboxUnavailable`, the caller
@@ -86,13 +88,6 @@ class IngressResult:
     job_id: uuid.UUID | None
     reason: str
     enqueued: bool
-
-
-async def _default_enqueue(job_id: uuid.UUID) -> None:
-    """Kick the per-job worker. Imported lazily to avoid an import cycle."""
-    from app.tasks.telegram_callback_inbox_tasks import run_telegram_callback_job
-
-    await run_telegram_callback_job.kiq(str(job_id))
 
 
 def _valid_enqueue_timeout_seconds(timeout_seconds: object) -> float | None:
@@ -258,9 +253,14 @@ async def ingest_callback_update(
     if duplicate:
         return IngressResult(True, True, job_id, "duplicate", False)
 
+    if enqueue_fn is None:
+        # hk 5753: no TaskIQ worker is deployed, so there is no producer to kick.
+        # The committed row is the acknowledgement; nothing reaches the broker.
+        return IngressResult(True, False, job_id, "queued", False)
+
     enqueued = await _kick(
         job_id,
-        enqueue_fn=enqueue_fn or _default_enqueue,
+        enqueue_fn=enqueue_fn,
         timeout_seconds=(
             enqueue_timeout_seconds
             if enqueue_timeout_seconds is not None

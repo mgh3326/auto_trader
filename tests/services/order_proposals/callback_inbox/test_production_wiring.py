@@ -23,10 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
-import time
 import uuid
-from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -402,19 +399,18 @@ async def test_cancelling_a_worker_mid_handler_frees_the_key(
 
 
 # ---------------------------------------------------------------------------
-# B6 — the default Redis producer serialises one opaque UUID
+# B6 (hk 5753) — no default producer: the committed row is the whole ACK
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_the_default_producer_serialises_only_a_job_uuid(
+async def test_the_default_ingress_commits_and_never_reaches_the_broker(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
 ) -> None:
-    """R4 B6 — no ``enqueue_fn`` override; a fake transport under the broker.
+    """hk 5753 — the TaskIQ worker is retired, so ingress has no kick to make.
 
-    ``kiq`` serialises through the broker's own formatter and calls
-    ``broker.kick``, so intercepting ``kick`` captures exactly the bytes a real
-    Redis would have received.
+    No ``enqueue_fn`` override. The broker transport is still faked, so any
+    ``kiq`` that slipped back in would be captured here and fail the test.
     """
     from app.core.config import settings
     from app.core.taskiq_broker import broker
@@ -429,11 +425,7 @@ async def test_the_default_producer_serialises_only_a_job_uuid(
 
     monkeypatch.setattr(broker, "kick", _fake_transport)
 
-    # Deliberately long and distinctive. Short ids like "42" collide with any
-    # random UUID, which would make a substring scan meaningless.
     chat_id = -1009998887776
-    user_id = 4242424242424
-    message_id = 987654321
     monkeypatch.setattr(
         settings,
         "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
@@ -441,89 +433,24 @@ async def test_the_default_producer_serialises_only_a_job_uuid(
         raising=False,
     )
 
-    nonce = "kicknonce12"
     update_id = 980_000 + uuid.uuid4().int % 10_000
     callback_id = f"cbq-sentinel-{update_id}"
     update = make_update(
-        data=_synthetic_data(nonce),
+        data=_synthetic_data("kicknonce12"),
         update_id=update_id,
         callback_id=callback_id,
         chat_id=chat_id,
-        user_id=user_id,
-        message_id=message_id,
+        user_id=4242424242424,
+        message_id=987654321,
     )
 
     result = await ingest_callback_update(update, now=now_kst())
     assert result.job_id is not None
     inbox_cleanup.append(result.job_id)
-    assert result.enqueued is True
-
-    assert len(sent) == 1, sent
-    raw = sent[0].message.decode()
-    payload = json.loads(raw)
-
-    # The complete shape, not just a spot check: any extra field would be a
-    # new channel for something to travel on.
-    assert set(payload) == {
-        "task_id",
-        "task_name",
-        "labels",
-        "labels_types",
-        "args",
-        "kwargs",
-    }, payload
-    assert payload["task_name"] == "order_proposals.telegram_callback_job"
-    assert payload["args"] == [str(result.job_id)]
-    assert payload["kwargs"] == {}
-    assert payload["labels"] == {}
-
-    # And nothing from the update appears anywhere in the serialized bytes.
-    for leaked in (
-        nonce,
-        callback_id,
-        str(chat_id),
-        str(user_id),
-        str(message_id),
-        str(update_id),
-        update["callback_query"]["data"],
-        "callback_query",
-        "chat",
-        "message_id",
-        "nonce",
-        "digest",
-    ):
-        assert leaked not in raw, f"the queue payload leaked {leaked!r}: {raw}"
-
-
-@pytest.mark.asyncio
-async def test_a_broker_failure_leaves_the_row_pending_and_still_acks(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
-) -> None:
-    """R4 B6 — commit succeeded, the real producer failed: still a durable ACK."""
-    from app.core.taskiq_broker import broker
-    from app.services.order_proposals.callback_inbox.ingress import (
-        ingest_callback_update,
-    )
-
-    async def _dead_transport(message):
-        raise ConnectionError("redis is gone")
-
-    monkeypatch.setattr(broker, "kick", _dead_transport)
-
-    update_id = 990_000 + uuid.uuid4().int % 10_000
-    result = await ingest_callback_update(
-        make_update(
-            data=_synthetic_data(),
-            update_id=update_id,
-            callback_id=f"cbq-{update_id}",
-        ),
-        now=now_kst(),
-    )
-    assert result.job_id is not None
-    inbox_cleanup.append(result.job_id)
-
     assert result.accepted is True
     assert result.enqueued is False
+    assert sent == [], sent
+
     row = await load_job(result.job_id)
     assert row is not None
     assert row.state == "pending"
@@ -609,200 +536,3 @@ async def test_a_rejected_update_never_reaches_the_real_producer(
         result = await ingest_callback_update(update, now=now_kst())
         assert result.accepted is False
     assert sent == []
-
-
-@pytest.mark.asyncio
-async def test_default_kiq_producer_ack_deadline_survives_cancellation_resistance(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
-) -> None:
-    """R33 — the real ``.kiq`` seam cannot hold a webhook ACK hostage.
-
-    This intentionally replaces the old implementation pin on
-    ``asyncio.wait_for``.  The fake is below the TaskIQ formatter, so the
-    default producer still serialises and calls ``.kiq`` exactly as production
-    does; it simply keeps running after the deadline's cancellation request.
-    """
-
-    from app.core.config import settings
-    from app.core.taskiq_broker import broker
-    from app.services.order_proposals.callback_inbox.ingress import (
-        ingest_callback_update,
-    )
-
-    configured = 0.02
-    monkeypatch.setattr(
-        settings,
-        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
-        configured,
-        raising=False,
-    )
-
-    started = asyncio.Event()
-    cancel_requested = asyncio.Event()
-    release = asyncio.Event()
-    late_failure_seen = asyncio.Event()
-    sent_job_ids: list[uuid.UUID] = []
-    producer_started_at = 0.0
-    loop_errors: list[dict[str, object]] = []
-    loop = asyncio.get_running_loop()
-    previous_handler = loop.get_exception_handler()
-
-    def _capture_loop_error(
-        _loop: asyncio.AbstractEventLoop, context: dict[str, object]
-    ) -> None:
-        loop_errors.append(context)
-
-    loop.set_exception_handler(_capture_loop_error)
-
-    async def _resistant_transport(message: Any) -> None:
-        nonlocal producer_started_at
-        payload = json.loads(message.message.decode())
-        sent_job_ids.append(uuid.UUID(payload["args"][0]))
-        producer_started_at = time.monotonic()
-        started.set()
-        while not release.is_set():
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                cancel_requested.set()
-        late_failure_seen.set()
-        raise RuntimeError("late broker enqueue failure")
-
-    monkeypatch.setattr(broker, "kick", _resistant_transport)
-
-    update_id = 994_000 + uuid.uuid4().int % 10_000
-    request = asyncio.create_task(
-        ingest_callback_update(
-            make_update(
-                data=_synthetic_data(),
-                update_id=update_id,
-                callback_id=f"cbq-{update_id}",
-            ),
-            now=now_kst(),
-        )
-    )
-    try:
-        await asyncio.wait_for(started.wait(), timeout=2.0)
-        result = await asyncio.wait_for(asyncio.shield(request), timeout=0.15)
-        elapsed = time.monotonic() - producer_started_at
-        assert result.job_id is not None
-        inbox_cleanup.append(result.job_id)
-
-        assert result.accepted is True
-        assert result.enqueued is False
-        assert cancel_requested.is_set()
-        assert elapsed < 0.15, elapsed
-
-        row = await load_job(result.job_id)
-        assert row is not None
-        assert row.state == "pending"
-    finally:
-        release.set()
-        try:
-            await asyncio.wait_for(request, timeout=1.0)
-        except asyncio.CancelledError:
-            pass
-        await asyncio.sleep(0)
-        loop.set_exception_handler(previous_handler)
-        for job_id in sent_job_ids:
-            if job_id not in inbox_cleanup:
-                inbox_cleanup.append(job_id)
-
-    assert late_failure_seen.is_set()
-    assert not [
-        context
-        for context in loop_errors
-        if "Task exception was never retrieved" in str(context.get("message", ""))
-    ], loop_errors
-
-
-@pytest.mark.asyncio
-async def test_the_default_producer_gives_up_at_the_configured_timeout(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
-) -> None:
-    """R24 — and the real `.kiq` path really stops there, deterministically."""
-    from app.core.config import settings
-    from app.core.taskiq_broker import broker
-    from app.services.order_proposals.callback_inbox.ingress import (
-        ingest_callback_update,
-    )
-
-    configured = 0.3
-    monkeypatch.setattr(
-        settings,
-        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
-        configured,
-        raising=False,
-    )
-
-    entered = asyncio.Event()
-
-    async def _hangs(message):
-        entered.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(broker, "kick", _hangs)
-
-    update_id = 996_000 + uuid.uuid4().int % 10_000
-    began = time.monotonic()
-    result = await ingest_callback_update(
-        make_update(
-            data=_synthetic_data(),
-            update_id=update_id,
-            callback_id=f"cbq-{update_id}",
-        ),
-        now=now_kst(),
-    )
-    elapsed = time.monotonic() - began
-    assert result.job_id is not None
-    inbox_cleanup.append(result.job_id)
-
-    assert entered.is_set(), "the real producer was never reached"
-    assert result.accepted is True
-    assert result.enqueued is False
-    assert configured <= elapsed < configured + 1.0, elapsed
-
-    row = await load_job(result.job_id)
-    assert row is not None
-    assert row.state == "pending"
-
-
-@pytest.mark.asyncio
-async def test_the_enqueue_timeout_is_bounded_by_the_setting(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
-) -> None:
-    """A hung broker must not hold the webhook thread for the whole timeout."""
-    from app.core.config import settings
-    from app.core.taskiq_broker import broker
-    from app.services.order_proposals.callback_inbox.ingress import (
-        ingest_callback_update,
-    )
-
-    async def _hanging_transport(message):
-        await asyncio.sleep(60)
-
-    monkeypatch.setattr(broker, "kick", _hanging_transport)
-    monkeypatch.setattr(
-        settings,
-        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
-        0.05,
-        raising=False,
-    )
-
-    update_id = 993_000 + uuid.uuid4().int % 10_000
-    started = now_kst()
-    result = await ingest_callback_update(
-        make_update(
-            data=_synthetic_data(),
-            update_id=update_id,
-            callback_id=f"cbq-{update_id}",
-        ),
-        now=started,
-    )
-    elapsed = now_kst() - started
-    assert result.job_id is not None
-    inbox_cleanup.append(result.job_id)
-
-    assert result.accepted is True
-    assert result.enqueued is False
-    assert elapsed < timedelta(seconds=10), elapsed

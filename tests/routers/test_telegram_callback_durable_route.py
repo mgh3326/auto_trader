@@ -412,17 +412,15 @@ async def test_the_enable_gate_still_wins_over_the_durable_gate(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_the_route_end_to_end_enqueues_only_an_opaque_job_uuid(
+async def test_the_route_end_to_end_commits_and_never_reaches_the_broker(
     _armed: None, _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R6 strengthening 3 — the route, the real ingress, the real producer.
+    """R6 strengthening 3, restated for hk 5753 (no TaskIQ producer).
 
-    Nothing is patched between the HTTP request and ``kiq``: the only fake is
-    the broker's transport, so the bytes captured here are the bytes Redis
-    would have received. The route is exercised over ASGI, so this also pins
-    that the request thread's whole job is "commit, kick, 200".
+    The broker transport is still faked, so any kick attempt would be captured.
+    The route is exercised over ASGI: the request thread's whole job is
+    "commit, 200", and a committed row is the acknowledgement.
     """
-    import json
 
     from sqlalchemy import delete
 
@@ -492,33 +490,15 @@ async def test_the_route_end_to_end_enqueues_only_an_opaque_job_uuid(
         assert response.status_code == 200
         assert response.json() == {"ok": True}
 
-        assert len(sent) == 1, sent
-        raw = sent[0].message.decode()
-        payload = json.loads(raw)
-        assert payload["task_name"] == "order_proposals.telegram_callback_job"
-        assert payload["kwargs"] == {}
-        assert len(payload["args"]) == 1
-        job_id = uuid.UUID(payload["args"][0])  # opaque, and really a UUID
+        # hk 5753: no TaskIQ worker is deployed, so the ingress produces nothing
+        # on the broker. The committed row is the whole acknowledgement.
+        assert sent == [], sent
 
-        for leaked in (
-            nonce,
-            callback_id,
-            str(chat_id),
-            str(user_id),
-            str(message_id),
-            str(update_id),
-            data,
-            str(proposal_id),
-            "callback_query",
-        ):
-            assert leaked not in raw, f"the queue payload leaked {leaked!r}"
-
-        # The committed row is the ACK, and it is the job that was kicked.
         async with AsyncSessionLocal() as session:
             row = (
                 await session.execute(
                     select(TelegramCallbackInboxJob).where(
-                        TelegramCallbackInboxJob.job_id == job_id
+                        TelegramCallbackInboxJob.callback_query_id == callback_id
                     )
                 )
             ).scalar_one()
