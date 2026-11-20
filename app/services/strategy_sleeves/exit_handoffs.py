@@ -249,19 +249,38 @@ async def proven_holdings(
     return ZERO
 
 
+def _locked_statement(handoff_id: int) -> Any:
+    """The handoff row, locked against every other writer of it.
+
+    ``FOR NO KEY UPDATE``, not ``FOR UPDATE``. The card's proposal row
+    references this row (``order_proposals.exit_handoff_id``), and an approval
+    updates its proposal row more than once in one transaction; from the second
+    update on PostgreSQL re-checks that foreign key and holds ``FOR KEY SHARE``
+    on this row until the approval commits. ``FOR UPDATE`` conflicts with that
+    lock, so the send fence -- which runs in its own transaction *inside* that
+    approval -- waited for the approval that was waiting for it, hit its lock
+    timeout and refused every card. No statement here changes the row's key,
+    so the weaker lock is the right one: it still excludes every other writer
+    of the row (they all take it, as does a plain UPDATE) and lets the
+    referencing proposal keep its key share.
+
+    ``populate_existing``: callers load the row once to learn its sleeve, then
+    wait for the sleeve lock. Without it this SELECT would hand back the
+    attributes read before the wait, and a send fence committed meanwhile would
+    be invisible to the decision made under the lock.
+    """
+    return (
+        select(ExecutionExitHandoff)
+        .where(ExecutionExitHandoff.id == handoff_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
+
+
 async def _locked(
     session: AsyncSession, handoff_id: int
 ) -> ExecutionExitHandoff | None:
-    # ``populate_existing``: callers load the row once to learn its sleeve,
-    # then wait for the sleeve lock. Without it this SELECT would hand back the
-    # attributes read before the wait, and a send fence committed meanwhile
-    # would be invisible to the decision made under the lock.
-    return await session.scalar(
-        select(ExecutionExitHandoff)
-        .where(ExecutionExitHandoff.id == handoff_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
+    return await session.scalar(_locked_statement(handoff_id))
 
 
 async def advance_exit_handoff(

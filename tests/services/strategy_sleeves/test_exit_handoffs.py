@@ -297,3 +297,23 @@ def test_o1_a_named_order_is_never_proven_unsent_by_the_counters() -> None:
     filled = rung("voided_local_stale", key="oprop-abc", filled=Decimal("1"))
     assert card_proven_unsent(handoff(1, 1), ended, [named]) is False
     assert card_proven_unsent(handoff(1, 1), ended, [filled]) is False
+
+
+def test_the_handoff_row_lock_lets_the_cards_proposal_keep_its_key_share() -> None:
+    """PR 2486 (found by the real-callback O3 tests in CI): the send fence runs
+    in its own transaction inside the approval, and the approval holds
+    ``FOR KEY SHARE`` on the handoff row through its proposal's foreign key.
+    ``FOR UPDATE`` waits for that lock, so the fence timed out and no card could
+    be sent. The row is locked ``FOR NO KEY UPDATE``, which excludes the other
+    writers of the row and not the referencing proposal. The wait itself is
+    exercised against PostgreSQL in
+    ``callback_inbox/test_exit_handoff_card_dead_letter.py`` (CI)."""
+    from sqlalchemy.dialects import postgresql
+
+    from app.services.strategy_sleeves.exit_handoffs import _locked_statement
+
+    statement = _locked_statement(7)
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert sql.rstrip().endswith("FOR NO KEY UPDATE")
+    assert statement.get_execution_options()["populate_existing"] is True
