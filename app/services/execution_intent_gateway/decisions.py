@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 from uuid import UUID
@@ -27,6 +28,16 @@ class ChildState(StrEnum):
     ACCEPTED = "accepted"
     UNCERTAIN = "uncertain"
     REFUSED = "refused"
+    #: hk 5441, upbit_live only. ``shadowed``: a shadow intent's child passed
+    #: every check and nothing was sent. ``not_sent``: a reserved child that is
+    #: proven never to have reached the broker (design B29).
+    SHADOWED = "shadowed"
+    NOT_SENT = "not_sent"
+
+
+#: States that never were an order: the gateway decided against it or proved it
+#: was not sent. They hold no exposure and no lineage.
+NEVER_SENT_STATES: Final = frozenset({ChildState.REFUSED, ChildState.NOT_SENT})
 
 
 class Refusal(StrEnum):
@@ -45,6 +56,35 @@ class Refusal(StrEnum):
     TARGET_NOT_FOUND = "target_not_found"
     TARGET_NOT_WORKING = "target_not_working"
     TARGET_SUPERSEDED = "target_superseded"
+    # hk 5441 — upbit_live (docs/design/5438-go-execution-path.md §2).
+    UPBIT_LIVE_DISABLED = "upbit_live_disabled"
+    CHILD_SHAPE_INVALID_FOR_ACCOUNT = "child_shape_invalid_for_account"
+    AMEND_UNSUPPORTED_FOR_ACCOUNT = "amend_unsupported_for_account"
+    PRICE_OFF_TICK = "price_off_tick"
+    PRICE_TICK_UNSUPPORTED = "price_tick_unsupported"
+    MANDATE_MISSING = "mandate_missing"
+    MANDATE_EXPIRED = "mandate_expired"
+    MANDATE_REVOKED = "mandate_revoked"
+    MANDATE_SCOPE_MISMATCH = "mandate_scope_mismatch"
+    MAX_OPEN_INTENTS_EXCEEDED = "max_open_intents_exceeded"
+    SLEEVE_NOT_LIVE = "sleeve_not_live"
+    SLEEVE_NOT_SHADOW = "sleeve_not_shadow"
+    SLEEVE_LOSS_LIMIT_REACHED = "sleeve_loss_limit_reached"
+    SLEEVE_BUDGET_EXCEEDED = "sleeve_budget_exceeded"
+    SLEEVE_PNL_UNMEASURED = "sleeve_pnl_unmeasured"
+    SLEEVE_USED_UNMEASURED = "sleeve_used_unmeasured"
+    SLEEVE_UNREADABLE = "sleeve_unreadable"
+    SLEEVE_HOLDINGS_UNMEASURED = "sleeve_holdings_unmeasured"
+    EXIT_HANDOFF_ACTIVE = "exit_handoff_active"
+    OPEN_SELL_INTENT_EXISTS = "open_sell_intent_exists"
+    UNRESOLVED_PRIOR_ORDER = "unresolved_prior_order"
+    LOSS_SELL_REQUIRES_CARD = "loss_sell_requires_card"
+    AVG_PRICE_UNPROVEN = "avg_price_unproven"
+    COOLDOWN_ACTIVE = "cooldown_active"
+    OPERATOR_EXIT_INVALID = "operator_exit_invalid"
+    ACCOUNT_MISMATCH = "account_mismatch"
+    PRICE_NORMALIZATION_MISMATCH = "price_normalization_mismatch"
+    LOWER_GUARD_REFUSED = "lower_guard_refused"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +107,21 @@ class IntentSnapshot:
     min_position_after: int
     max_position_after: int
     expires_at: datetime
+    # hk 5441 — set only on a schema_version 2 (upbit_live) row. The integer
+    # quantity fields above are 0 on such a row and are never read for it.
+    schema_version: int = 1
+    execution_mode: str | None = None
+    mandate_id: UUID | None = None
+    sleeve_id: int | None = None
+    strategy_code_sha: str | None = None
+    decision_ref: str | None = None
+    origin: str | None = None
+    operator_exit_id: UUID | None = None
+    max_quantity_decimal: Decimal | None = None
+    position_at_authorization_decimal: Decimal | None = None
+    min_position_after_decimal: Decimal | None = None
+    max_position_after_decimal: Decimal | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +139,9 @@ class ChildSnapshot:
     result: dict[str, Any] | None
     #: Committed before the send, so its KST day is the day the child was sent.
     created_at: datetime
+    #: hk 5441 — the Upbit quantity; ``quantity`` is ``None`` on such a row.
+    quantity_decimal: Decimal | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

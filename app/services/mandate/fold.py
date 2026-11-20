@@ -11,9 +11,9 @@ Pure: standard library plus ``vocabulary``. No database, no clock.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -57,6 +57,8 @@ class PlanEvent:
     activation_profile_id: int | None = None
     #: the morning-batch card an approval/rebind answers (None for a non-batch approval)
     batch_member_id: int | None = None
+    #: when the row was written (None for events built in memory)
+    created_at: datetime | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     actor: str = ""
 
@@ -527,14 +529,15 @@ def check_resume_floor(
     history: Sequence[PlanEvent],
     candidate: PlanEvent,
     *,
-    plan_member_ids: frozenset[int] = frozenset(),
+    plan_members: Mapping[int, datetime] | None = None,
 ) -> None:
     """Refuse a NEW ``resumed`` event dated before the batch approval it follows (§5.1).
 
     The floor applies only when the plan's latest ``approved``/``terms_rebound`` event
-    answers a morning-batch card of THIS plan (its ``batch_member_id`` is one of
-    ``plan_member_ids``, the cards issued for the plan; a populated id from an earlier
-    schema proves nothing): that approval was recorded
+    answers a morning-batch card of THIS plan: its ``batch_member_id`` is a card issued
+    for the plan (``plan_members``: card id -> created_at) AND the event was written after
+    that card. An id persisted by the earlier schema proves nothing; it predates every
+    card, even one of the same plan that later takes the same id. That approval was recorded
     for a session after the bell, and a resume must not pull the plan back before it.
     A non-batch (legacy) approval keeps the behaviour it always had, so an operator can
     still resume such a plan to any date. A resume may otherwise move its own date around.
@@ -546,7 +549,14 @@ def check_resume_floor(
         (e for e in reversed(history) if e.event in ("approved", "terms_rebound")),
         None,
     )
-    if binding is None or binding.batch_member_id not in plan_member_ids:
+    if binding is None or binding.batch_member_id is None:
+        return
+    card_created = (plan_members or {}).get(binding.batch_member_id)
+    if (
+        card_created is None
+        or binding.created_at is None
+        or binding.created_at < card_created
+    ):
         return
     _require(
         binding.effective_session is None

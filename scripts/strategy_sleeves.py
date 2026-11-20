@@ -123,6 +123,13 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--loss-limit", required=True)
     create.add_argument("--reason", required=True)
     create.add_argument("--actor", required=True)
+    create.add_argument(
+        "--execution-path",
+        choices=["card", "go"],
+        default="card",
+        help="How the sleeve's orders reach the broker; fixed at creation "
+        "(hk 5441). 'go' is the Go executor path, upbit/crypto only",
+    )
     _prereg_arguments(create)
     create.add_argument("--commit", action="store_true")
 
@@ -200,12 +207,14 @@ async def _dispatch(session: AsyncSession, args: argparse.Namespace) -> Any:
             loss_limit=args.loss_limit,
             reason=args.reason,
             actor=args.actor,
+            execution_path=args.execution_path,
             **_prereg_kwargs(args),
         )
         payload = {
             "mode": "commit" if args.commit else "preview",
             "sleeve_id": sleeve.id,
             "sleeve_key": sleeve.sleeve_key,
+            "execution_path": sleeve.execution_path,
             "rule_id": sleeve.rule_id,
             "account_mode": sleeve.account_mode,
             "market": sleeve.market,

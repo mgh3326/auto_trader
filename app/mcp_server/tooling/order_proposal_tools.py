@@ -728,6 +728,7 @@ async def order_proposal_create(
     sleeve_id: int | None = None,
     candidate_ref: dict | None = None,
     decision_price_text: str | None = None,
+    exit_handoff_id: int | None = None,
     mandate_plan_id: int | None = None,
     tranche_index: int | None = None,
 ) -> dict[str, Any]:
@@ -785,6 +786,12 @@ async def order_proposal_create(
                 its budget; otherwise it goes to the approval card with the
                 sleeve reason. A revision inherits the superseded proposal's
                 sleeve. Omit it for every untagged flow.
+        exit_handoff_id: optional hk 5441 exit handoff id. Required, with
+                sleeve_id, for the one card a go-path sleeve accepts: a single
+                sell rung no larger than the sleeve's proven position in the
+                handed-off symbol. The handoff must be ready_for_card; creating
+                the proposal claims it, so a second card is refused. The card
+                is never auto-approved. Omit it for every other proposal.
         candidate_ref: optional {"call_id": UUID string, "symbol": DB symbol}.
         decision_price_text: optional exact decimal quote at decision time.
         mandate_plan_id: optional mandate plan for a single limit buy.
@@ -876,6 +883,7 @@ async def order_proposal_create(
                 sleeve_id=sleeve_id,
                 candidate_ref=candidate_ref,
                 decision_price_text=decision_price_text,
+                exit_handoff_id=exit_handoff_id,
                 mandate_plan_id=mandate_plan_id,
                 tranche_index=tranche_index,
             )

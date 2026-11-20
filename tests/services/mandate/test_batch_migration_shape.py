@@ -61,10 +61,10 @@ def _ddl() -> str:
     return _norm("\n".join(_load().GUARD_DDL))
 
 
-def test_revision_chain_is_a_single_step_after_the_sleeve_kiwoom_migration() -> None:
+def test_revision_chain_is_a_single_step_after_the_upbit_gateway_migration() -> None:
     m = _load()
     assert m.revision == "20261120_hk5648_mandate_batches"
-    assert m.down_revision == "20261120_hk5637_sleeve_kiwoom"
+    assert m.down_revision == "20261120_hk5441_upbit_gw"
     assert len(m.revision) <= 32
 
 
@@ -395,3 +395,18 @@ def test_a_card_id_on_an_event_counts_only_with_a_matching_card_of_the_same_plan
     )  # batch, card, other-batch, answer
     floor = _body("mandate_plan_events_resume_guard")
     assert "m.id = floor_member AND m.plan_id = NEW.plan_id" in floor
+
+
+def test_an_answer_is_an_event_written_after_its_card() -> None:
+    """A persisted placeholder predates every card, so it can never match one, not even a
+    card of the same plan that later takes the same id (answer joins and the floor)."""
+    ddl = _ddl()
+    assert ddl.count("AND e.created_at >= x.created_at") >= 4
+    floor = _body("mandate_plan_events_resume_guard")
+    assert "AND floor_created >= m.created_at" in floor
+    answer = _body("mandate_plan_events_batch_guard")
+    # the genuine answer is stamped from the wall clock, after its card committed
+    assert "NEW.created_at := clock_timestamp();" in answer
+    assert answer.index("NEW.created_at := clock_timestamp();") > answer.index(
+        "the batch has expired"
+    )

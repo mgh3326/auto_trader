@@ -5,7 +5,7 @@ Test names carry the invariant they pin (I7, I9, I16, I19, I24 ...).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -399,8 +399,12 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
         s.add("orders_settled")
 
 
-#: the batch cards issued for the plan in these histories (the approval answers card 7)
-CARDS = frozenset({7, 9})
+#: the batch cards issued for the plan in these histories: card id -> created_at
+CARD_TIME = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+CARDS = {7: CARD_TIME, 9: CARD_TIME}
+AFTER_CARD = CARD_TIME + timedelta(
+    hours=1
+)  # a genuine answer is written after its card
 
 
 def _late_approval_history(batch_member_id: int | None = 7):
@@ -417,6 +421,9 @@ def _late_approval_history(batch_member_id: int | None = 7):
             terms_sha256="a" * 64,
             effective_session=later,
             batch_member_id=batch_member_id,
+            created_at=AFTER_CARD
+            if batch_member_id in CARDS
+            else CARD_TIME - timedelta(days=30),
         ),
         ev("suspended", seq=3),
     ]
@@ -434,10 +441,10 @@ def test_a_new_resume_cannot_take_effect_before_the_approval_it_follows() -> Non
 
     history, later = _late_approval_history()
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(4, SESSION), plan_member_ids=CARDS)
+        check_resume_floor(history, _resume(4, SESSION), plan_members=CARDS)
     # on or after the approval date is fine; other events are never checked
-    check_resume_floor(history, _resume(4, later), plan_member_ids=CARDS)
-    check_resume_floor(history, ev("suspended", seq=4), plan_member_ids=CARDS)
+    check_resume_floor(history, _resume(4, later), plan_members=CARDS)
+    check_resume_floor(history, ev("suspended", seq=4), plan_members=CARDS)
 
 
 def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> None:
@@ -447,10 +454,10 @@ def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> Non
     far = later + (later - SESSION) * 4
     history += [_resume(4, far), ev("suspended", seq=5)]
     # correcting the resume date back down to the approval date is allowed ...
-    check_resume_floor(history, _resume(6, later), plan_member_ids=CARDS)
+    check_resume_floor(history, _resume(6, later), plan_members=CARDS)
     # ... below it is not
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(6, SESSION), plan_member_ids=CARDS)
+        check_resume_floor(history, _resume(6, SESSION), plan_members=CARDS)
 
 
 def test_histories_written_before_the_floor_existed_still_replay() -> None:
@@ -477,15 +484,15 @@ def test_a_legacy_approval_keeps_its_old_resume_behaviour_for_new_resumes_too() 
     history += [_resume(4, SESSION), ev("suspended", seq=5)]
     fold_plan_events(history)  # replays
     check_resume_floor(
-        history, _resume(6, later + (later - SESSION)), plan_member_ids=CARDS
+        history, _resume(6, later + (later - SESSION)), plan_members=CARDS
     )  # a later date
     check_resume_floor(
-        history, _resume(6, SESSION), plan_member_ids=CARDS
+        history, _resume(6, SESSION), plan_members=CARDS
     )  # and an earlier one: no floor
     # the same history with a batch-backed approval is floored
     batch_history, _ = _late_approval_history(batch_member_id=7)
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(batch_history, _resume(4, SESSION), plan_member_ids=CARDS)
+        check_resume_floor(batch_history, _resume(4, SESSION), plan_members=CARDS)
 
 
 def test_the_floor_follows_the_latest_binding_event() -> None:
@@ -511,10 +518,11 @@ def test_the_floor_follows_the_latest_binding_event() -> None:
         terms_sha256="c" * 64,
         effective_session=later,
         batch_member_id=9,
+        created_at=AFTER_CARD,
     )
     history = [*history, batch_rebind, ev("suspended", seq=8)]
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(9, SESSION), plan_member_ids=CARDS)
+        check_resume_floor(history, _resume(9, SESSION), plan_members=CARDS)
 
 
 def test_a_populated_card_id_without_a_card_of_this_plan_proves_nothing() -> None:
@@ -525,11 +533,34 @@ def test_a_populated_card_id_without_a_card_of_this_plan_proves_nothing() -> Non
     history, later = _late_approval_history(batch_member_id=999_999)  # placeholder
     history += [_resume(4, SESSION), ev("suspended", seq=5)]
     fold_plan_events(history)  # replays
-    check_resume_floor(history, _resume(6, SESSION), plan_member_ids=frozenset())
+    check_resume_floor(history, _resume(6, SESSION), plan_members={})
     # the id of a card that belongs to ANOTHER plan is not this plan's proof either
-    check_resume_floor(history, _resume(6, SESSION), plan_member_ids=frozenset({1, 2}))
-    # only when the card is this plan's does the floor apply
+    check_resume_floor(history, _resume(6, SESSION), plan_members={1: CARD_TIME})
+    # a card of this plan with that id, older than the event: the event answers it
     with refused(v.MandateRefusal.INVALID_TRANSITION):
         check_resume_floor(
-            history, _resume(6, SESSION), plan_member_ids=frozenset({999_999})
+            history,
+            _resume(6, SESSION),
+            plan_members={999_999: CARD_TIME - timedelta(days=60)},
         )
+
+
+def test_a_persisted_placeholder_colliding_with_a_later_card_of_the_same_plan_proves_nothing() -> (
+    None
+):
+    """T1 allowed approved(batch_member_id=7) with no card table. The plan later gets a
+    reapproval card whose id IS 7: the old approval (written before every card existed)
+    must not count as that card's answer, nor floor a resume."""
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history(batch_member_id=7)
+    legacy = history[1]
+    history[1] = type(legacy)(
+        **{**legacy.__dict__, "created_at": CARD_TIME - timedelta(days=30)}
+    )  # persisted before the batch schema: older than card 7
+    history += [ev("suspended", seq=4)]
+    check_resume_floor(history, _resume(5, SESSION), plan_members=CARDS)
+    # the same id written AFTER its card is a genuine answer: floored
+    history[1] = type(legacy)(**{**legacy.__dict__, "created_at": AFTER_CARD})
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(5, SESSION), plan_members=CARDS)

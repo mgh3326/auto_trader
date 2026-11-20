@@ -266,6 +266,9 @@ async def answer_event(
                 MandatePlanBatchMember.plan_id == plan_id,
                 # a card id on an event counts only for the plan the card belongs to
                 MandatePlanEvent.plan_id == MandatePlanBatchMember.plan_id,
+                # written after the card: an id persisted by the earlier schema predates
+                # every card, even a card of the same plan that later takes that id
+                MandatePlanEvent.created_at >= MandatePlanBatchMember.created_at,
                 MandatePlanEvent.event.in_(
                     [e for ev in v.BATCH_ANSWER_EVENTS.values() for e in ev]
                 ),

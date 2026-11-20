@@ -322,6 +322,7 @@ def event_to_fold(row: MandatePlanEvent) -> PlanEvent:
         ),
         activation_profile_id=row.activation_profile_id,
         batch_member_id=row.batch_member_id,
+        created_at=row.created_at,
         evidence=dict(row.evidence or {}),
         actor=row.actor,
     )
@@ -348,14 +349,17 @@ async def plan_state(session: AsyncSession, plan_id: int) -> PlanState:
     return fold_plan_events([event_to_fold(r) for r in rows])
 
 
-async def plan_member_ids(session: AsyncSession, plan_id: int) -> frozenset[int]:
-    """The ids of every batch card issued for this plan (what can prove a batch approval)."""
+async def plan_members(session: AsyncSession, plan_id: int) -> dict[int, datetime]:
+    """Every batch card issued for this plan: card id -> when it was created.
+
+    An approval proves a batch answer only with a card of its plan that existed before it.
+    """
     rows = await session.execute(
-        select(MandatePlanBatchMember.id).where(
+        select(MandatePlanBatchMember.id, MandatePlanBatchMember.created_at).where(
             MandatePlanBatchMember.plan_id == plan_id
         )
     )
-    return frozenset(r[0] for r in rows.all())
+    return {r[0]: r[1] for r in rows.all()}
 
 
 async def get_plan(session: AsyncSession, plan_id: int) -> MandatePlan | None:
@@ -1525,7 +1529,7 @@ async def append_plan_event(
             check_resume_floor(
                 history,
                 candidate,
-                plan_member_ids=await plan_member_ids(session, plan_id),
+                plan_members=await plan_members(session, plan_id),
             )
         apply_event(state, candidate)
     except InvalidPlanEvent as exc:

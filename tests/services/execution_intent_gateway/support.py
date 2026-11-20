@@ -7,7 +7,8 @@ the real store against the run-owned test database.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import contextlib
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -212,3 +213,31 @@ class FakeKillSwitch:
         self, *, mode: KillMode, reason: str, updated_by: str
     ) -> KillSwitchState:
         raise AssertionError("the gateway never writes the kill switch")
+
+
+#: Serializes the DB test files that write ``review.execution_intents`` and
+#: ``review.execution_child_requests``. CI runs files on separate xdist workers
+#: against one database (``--dist=loadfile``), and ``test_store_db`` truncates
+#: both tables after every test: without this, it would empty them under a test
+#: of another file. Same remedy as ``toss_ledger_cleanup_lock``.
+JOURNAL_TABLES_TEST_LOCK_ID = 544_101_440
+
+
+@contextlib.asynccontextmanager
+async def journal_tables_lock() -> AsyncIterator[None]:
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": JOURNAL_TABLES_TEST_LOCK_ID},
+        )
+        try:
+            yield
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": JOURNAL_TABLES_TEST_LOCK_ID},
+            )

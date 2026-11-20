@@ -37,7 +37,7 @@ The app role gets SELECT and INSERT only (hard rule 18).
 Downgrade refuses while any batch row exists.
 
 Revision ID: 20261120_hk5648_mandate_batches
-Revises: 20261120_hk5637_sleeve_kiwoom
+Revises: 20261120_hk5441_upbit_gw
 Create Date: 2026-11-20
 """
 
@@ -52,7 +52,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261120_hk5648_mandate_batches"
-down_revision: str | Sequence[str] | None = "20261120_hk5637_sleeve_kiwoom"
+down_revision: str | Sequence[str] | None = "20261120_hk5441_upbit_gw"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -61,6 +61,11 @@ TABLES_NEWEST_FIRST: tuple[str, ...] = (
     "mandate_plan_batches",
 )
 
+# An answer is an event of the card's own plan, one of the four answer events, written
+# AFTER the card existed: a ``batch_member_id`` persisted by the earlier schema (a free
+# placeholder, no card table) predates every card row and so can never match one, not
+# even a card of the same plan that later takes the same id. The answer trigger stamps
+# ``created_at`` from the wall clock so a genuine answer always sorts after its card.
 _ANSWERED = """
     EXISTS (
         SELECT 1
@@ -68,6 +73,7 @@ _ANSWERED = """
           JOIN review.mandate_plan_events e
             ON e.batch_member_id = x.id
            AND e.plan_id = x.plan_id
+           AND e.created_at >= x.created_at
            AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
          WHERE x.batch_id = {batch} AND x.plan_id = {plan}
     )
@@ -216,6 +222,7 @@ def _guard_ddl() -> tuple[str, ...]:
                                     JOIN review.mandate_plan_events e
                                       ON e.batch_member_id = x.id
                                      AND e.plan_id = x.plan_id
+                                     AND e.created_at >= x.created_at
                                      AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
                                    WHERE x.batch_id = m.batch_id
                                      AND x.plan_id = m.plan_id
@@ -291,8 +298,10 @@ def _guard_ddl() -> tuple[str, ...]:
         DECLARE
             floor_day date;
             floor_member bigint;
+            floor_created timestamptz;
         BEGIN
-            SELECT e.effective_session, e.batch_member_id INTO floor_day, floor_member
+            SELECT e.effective_session, e.batch_member_id, e.created_at
+              INTO floor_day, floor_member, floor_created
               FROM review.mandate_plan_events e
              WHERE e.plan_id = NEW.plan_id
                AND e.event IN ('approved', 'terms_rebound')
@@ -303,6 +312,7 @@ def _guard_ddl() -> tuple[str, ...]:
                AND EXISTS (
                    SELECT 1 FROM review.mandate_plan_batch_members m
                     WHERE m.id = floor_member AND m.plan_id = NEW.plan_id
+                      AND floor_created >= m.created_at
                )
                AND NEW.effective_session < floor_day THEN
                 RAISE EXCEPTION 'a resume cannot take effect before the approval it follows'
@@ -427,6 +437,8 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the batch has expired'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            -- stamped from the wall clock: a genuine answer sorts after its card
+            NEW.created_at := clock_timestamp();
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql

@@ -1703,3 +1703,64 @@ async def test_an_upgraded_t1_event_with_a_placeholder_card_id_proves_nothing(
     assert await bt.answer_event(db_session, other.batch_id, other.plans[0].id) is None
     await db_session.rollback()
     assert (await answer(other, other_card)).handled
+
+
+async def test_a_persisted_placeholder_matching_a_later_card_of_the_same_plan_proves_nothing(
+    db_session, seed
+) -> None:
+    """T1 allowed ``terms_rebound(batch_member_id=N)`` with no card table. The same plan
+    later gets a reapproval card whose id is N: the old event (written before every card)
+    is not that card's answer and sets no resume floor; the card still answers."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await seed.approve_plan(plan.id, terms)
+    live = await second_live_terms(db_session, seed, sleeve, terms, (sym,))
+    sc = await open_batch(db_session, seed, sleeve, live, [plan], when="before")
+    card = sc.cards[plan.id]
+    assert card.kind == "reapproval"
+    created = (
+        await db_session.execute(
+            sa.text(
+                "SELECT created_at FROM review.mandate_plan_batch_members WHERE id = :m"
+            ),
+            {"m": card.id},
+        )
+    ).scalar_one()
+    later = d.EFFECTIVE + timedelta(days=1)
+    # a pre-upgrade row: triggers off, the id the card later received, an older created_at
+    await raw(db_session, "SET LOCAL session_replication_role = replica")
+    await raw(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+        "terms_sha256, effective_session, batch_member_id, created_at, actor) "
+        "SELECT :p, 3, 'terms_rebound', t.id, t.content_sha256, :e, :m, :c, 'op' "
+        "FROM review.mandate_terms t WHERE t.id = :t",
+        p=plan.id,
+        t=terms.id,
+        e=later,
+        m=card.id,
+        c=created - timedelta(days=30),
+    )
+    await raw(db_session, "SET LOCAL session_replication_role = origin")
+    await db_session.commit()
+    # not an answer to the new card
+    assert await bt.answer_event(db_session, sc.batch_id, plan.id) is None
+    await db_session.rollback()
+    # no floor: suspend and resume to an earlier day through the store and the trigger
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    await ms.append_plan_event(
+        db_session,
+        plan_id=plan.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=d.EFFECTIVE,
+    )
+    await db_session.commit()
+    # and the card answers (neither button returns mandate_batch_answered)
+    out = await answer(sc, card)
+    assert out.handled and out.reason == "approved", out
+    assert await bt.answer_event(db_session, sc.batch_id, plan.id) is not None

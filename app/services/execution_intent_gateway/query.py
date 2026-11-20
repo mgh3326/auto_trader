@@ -545,6 +545,88 @@ class SqlLedgerEvidenceReader:
         self, intent: IntentSnapshot, children: Sequence[ChildSnapshot]
     ) -> list[dict[str, Any]]:
         """Only committed, effective ledger rows for this journal's order IDs."""
+        if intent.schema_version == 2:
+            # hk 5441 (design §1.5): an upbit_live order is one uuid for life.
+            # Only in-effect rows of the live Upbit account that carry a uuid
+            # this intent's own children are bound to are read.
+            from app.services.execution_intent_gateway.upbit_decisions import (
+                CURRENCY,
+                LEDGER_ACCOUNT_MODE,
+                LEDGER_BROKER,
+                SLEEVE_MARKET,
+            )
+            from app.services.execution_intent_gateway.upbit_query import (
+                upbit_fill_orders,
+            )
+            from app.services.strategy_sleeves.intent_orders import (
+                load_intent_child_orders,
+            )
+            from app.services.strategy_sleeves.store import sleeve_symbol
+
+            if intent.sleeve_id is None:
+                return []
+            async with self._session_factory() as session:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                own_orders = [
+                    order
+                    for order in await load_intent_child_orders(
+                        session, intent.sleeve_id
+                    )
+                    if order.intent_id == intent.intent_id
+                ]
+                uuids = sorted(
+                    {
+                        order.order_uuid
+                        for order in own_orders
+                        if order.order_uuid and not order.is_shadow
+                    }
+                )
+                upbit_rows: list[ExecutionLedger] = []
+                if uuids:
+                    found = await session.scalars(
+                        select(ExecutionLedger)
+                        .options(
+                            load_only(
+                                ExecutionLedger.id,
+                                ExecutionLedger.broker,
+                                ExecutionLedger.account_mode,
+                                ExecutionLedger.venue,
+                                ExecutionLedger.instrument_type,
+                                ExecutionLedger.symbol,
+                                ExecutionLedger.raw_symbol,
+                                ExecutionLedger.side,
+                                ExecutionLedger.currency,
+                                ExecutionLedger.broker_order_id,
+                                ExecutionLedger.source,
+                                ExecutionLedger.filled_qty,
+                                ExecutionLedger.filled_price,
+                                ExecutionLedger.filled_at,
+                                ExecutionLedger.created_at,
+                                ExecutionLedger.quarantined_at,
+                            )
+                        )
+                        .where(
+                            ExecutionLedger.broker == LEDGER_BROKER,
+                            ExecutionLedger.account_mode == LEDGER_ACCOUNT_MODE,
+                            ExecutionLedger.side == intent.side,
+                            ExecutionLedger.currency == CURRENCY,
+                            ExecutionLedger.broker_order_id.in_(uuids),
+                            execution_ledger_in_effect(),
+                        )
+                    )
+                    upbit_rows = [
+                        row
+                        for row in found.all()
+                        if intent.symbol
+                        in {
+                            sleeve_symbol(value, SLEEVE_MARKET)
+                            for value in (row.symbol, row.raw_symbol)
+                            if value
+                        }
+                    ]
+                upbit_orders = upbit_fill_orders(own_orders, upbit_rows)
+                await session.rollback()
+            return upbit_orders
         numbers = {
             _order_number(child.broker_order_id).lstrip("0")
             for child in children

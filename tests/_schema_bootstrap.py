@@ -173,7 +173,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v73 (hk 5637): review.strategy_sleeves account/market CHECK gains
 # kiwoom_mock/equity_kr; create_all never alters an existing table's CHECK, so
 # the production migration's idempotent DROP/ADD is mirrored below.
-# v74 (hk 5648): review.mandate_plan_batches / mandate_plan_batch_members (two new
+# v75 (hk 5648): review.mandate_plan_batches / mandate_plan_batch_members (two new
 # ORM tables via create_all) and the batch/card/answer guard triggers plus the
 # events index, loaded from the production migration 20261120_hk5648_mandate_batches.
 # v72 (hk 5528): review.mandate_* (nine new ORM tables via create_all), the
@@ -181,7 +181,16 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # (ADD COLUMN IF NOT EXISTS for a persistent test DB) and the guard triggers,
 # loaded from the production migration 20261120_hk5528_mandate so the DB tests run
 # its exact DDL.
-SCHEMA_BOOTSTRAP_VERSION = 74
+# v74 (hk 5441): review.execution_mandates / execution_mandate_revocations /
+# execution_operator_exits / execution_exit_handoffs / execution_account_control
+# / execution_child_order_evidence (new ORM tables), the v2 columns on
+# review.execution_intents, execution_child_requests.quantity_decimal,
+# strategy_sleeves.execution_path, order_proposals.exit_handoff_id, and the
+# guard triggers, all loaded from the production migration
+# 20261120_hk5441_upbit_gw so the DB tests run its exact DDL. The two journal
+# triggers of 20261101 are installed here too: production has them, a database
+# built from the models did not.
+SCHEMA_BOOTSTRAP_VERSION = 75
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2594,6 +2603,62 @@ def _sleeve_kiwoom_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _sleeve_kiwoom_ddl()
+
+
+def _hk5441_upbit_gateway_ddl() -> tuple[str, ...]:
+    """hk 5441 DDL, read from the production migration (one source).
+
+    ``create_all`` already built the new tables and columns from the models, so
+    the table and column statements are no-ops on a fresh database and bring a
+    persistent one up to date. The guard statements install the triggers.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261120_hk5441_upbit_intent_gateway.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk5441_upbit_gw_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (
+        *module.TABLE_DDL,
+        *module.ALTER_DDL,
+        *module.GUARD_DDL,
+        *_rob1440_journal_triggers(
+            path.with_name("20261101_rob1440_intent_gateway.py")
+        ),
+        *module.SEED_DDL,
+    )
+
+
+def _rob1440_journal_triggers(path) -> tuple[str, ...]:
+    """The two journal triggers 20261101 created, attached to today's functions.
+
+    hk 5441 replaces the bodies of ``execution_intents_guard`` and
+    ``execution_child_requests_guard`` and leaves the triggers that call them
+    alone, because production already has them. This database is built from the
+    models, so nothing had created those triggers here: a test that ran before
+    ``test_store_db`` installed them met no guard at all.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rob1440_gw_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    triggers = tuple(
+        statement
+        for statement in module.GUARD_DDL
+        if "CREATE OR REPLACE FUNCTION" not in statement
+    )
+    assert len(triggers) == 4, "20261101 has a DROP and a CREATE for two triggers"
+    return triggers
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _hk5441_upbit_gateway_ddl()
 
 
 # --------------------------------------------------------------------------- #

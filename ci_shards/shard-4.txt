@@ -104,6 +104,7 @@ tests/scripts/test_deploy_ncp_pull_h3_us_paper.py
 tests/scripts/test_deploy_ncp_pull_install_paths.py
 tests/scripts/test_deploy_ncp_pull_retired_units.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
+tests/scripts/test_execution_mandates_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
 tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_ncp_job_timers_check.py
@@ -167,6 +168,8 @@ tests/services/dots_history_export/test_read_only.py
 tests/services/execution_intent_gateway/test_followup_capability.py
 tests/services/execution_intent_gateway/test_intent_query.py
 tests/services/execution_intent_gateway/test_intent_schema.py
+tests/services/execution_intent_gateway/test_upbit_forwarders.py
+tests/services/execution_intent_gateway/test_upbit_query.py
 tests/services/execution_ledger/test_fill_sinks.py
 tests/services/execution_ledger/test_kis_lots_seed_cutover.py
 tests/services/execution_ledger/test_kis_lots_us_mutants.py
@@ -278,6 +281,7 @@ tests/services/spike_attribution/test_attribute.py
 tests/services/spike_attribution/test_cache_first_consumption.py
 tests/services/spike_attribution/test_hooks.py
 tests/services/spike_attribution/test_no_mutation_surface.py
+tests/services/strategy_sleeves/test_exit_handoffs.py
 tests/services/strategy_sleeves/test_gate.py
 tests/services/strategy_sleeves/test_store_db.py
 tests/services/strategy_sleeves/test_store_inputs.py

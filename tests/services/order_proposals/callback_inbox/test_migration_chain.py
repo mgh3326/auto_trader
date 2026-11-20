@@ -145,9 +145,19 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.execution_ledger_quarantine_events",
     # #1250 kis_mock inference-expiry audit table is later than this boundary.
     "review.kis_mock_inference_expiry_events",
+    # hk 5441: the evidence table references the journal, so it goes first.
+    "review.execution_child_order_evidence",
     # ROB-1440 intent gateway tables are later than this boundary (child first).
     "review.execution_child_requests",
     "review.execution_intents",
+    # hk 5441 mandate tables are later than this boundary. They reference the
+    # sleeve tables below; the order_proposals.exit_handoff_id column that
+    # references the handoffs is dropped before this loop.
+    "review.execution_exit_handoffs",
+    "review.execution_operator_exits",
+    "review.execution_mandate_revocations",
+    "review.execution_mandates",
+    "review.execution_account_control",
     # ROB-1460 exit plan tables are later than this boundary.
     "review.lot_exit_plans",
     "review.mechanical_loss_cut_decisions",
@@ -228,6 +238,13 @@ async def scratch_database() -> AsyncIterator[str]:
                     text(
                         "ALTER TABLE review.order_proposals "
                         "DROP COLUMN IF EXISTS sleeve_id"
+                    )
+                )
+                # hk 5441: same for the exit handoff tag column.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposals "
+                        "DROP COLUMN IF EXISTS exit_handoff_id"
                     )
                 )
                 for table in _POST_PARENT_TABLES:

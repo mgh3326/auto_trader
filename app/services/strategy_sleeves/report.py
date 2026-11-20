@@ -91,7 +91,7 @@ def build_report_row(
         max_duration_days=prereg.max_duration_days,
         now=now,
     )
-    return {
+    row: dict[str, Any] = {
         "sleeve_id": sleeve.id,
         "sleeve_key": sleeve.sleeve_key,
         "rule_id": sleeve.rule_id,
@@ -158,6 +158,37 @@ def build_report_row(
         "attribution_skipped": dict(sorted(diagnostics.items())),
         "versions": len(versions),
     }
+    if book.unproven_orders:
+        _mark_holdings_unmeasured(row, book)
+    return row
+
+
+#: Report fields computed from the ledger lots alone.
+_LOT_DERIVED_FIELDS = ("held_cost_basis", "realized_pnl", "unrealized_pnl")
+
+
+def _mark_holdings_unmeasured(row: dict[str, Any], book: SleeveBook) -> None:
+    """hk 5441 O4: an order with unproven fills makes the lots themselves unknown.
+
+    ``net_pnl`` and ``used`` are already ``None`` then. The figures they are
+    built from, and the positions, come from the same ledger lots and may be
+    missing a fill, so they are not printed as if they were measured. A sleeve
+    with no such order gets none of these keys and its row is unchanged.
+    """
+    row["holdings_state"] = "unmeasured"
+    row["unproven_orders"] = list(book.unproven_orders)
+    for name in _LOT_DERIVED_FIELDS:
+        row[name] = None
+    row["positions"] = [
+        {
+            "symbol": position.symbol,
+            "quantity": None,
+            "cost_basis": None,
+            "mark": _text(position.mark),
+            "unrealized_pnl": None,
+        }
+        for position in book.positions
+    ]
 
 
 def currency_totals(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, str]]:
@@ -230,6 +261,11 @@ def render_text(rows: Sequence[Mapping[str, Any]]) -> str:
             f"mean_result={canary['mean_result_pct_of_budget'] or '-'}% "
             f"baseline={canary['baseline']}"
         )
+        if row.get("unproven_orders"):
+            lines.append(
+                "  holdings UNMEASURED: fills not proven for orders "
+                + ",".join(str(key) for key in row["unproven_orders"])
+            )
         for position in row["positions"]:
             lines.append(
                 f"    {position['symbol']} qty={position['quantity']} "

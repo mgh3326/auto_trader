@@ -1,0 +1,119 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "HK-5624",
+  "version": 1,
+  "title": "동일 매수 결정의 기존 깊은 지정가와 첫 정규장 시가 지정가 모의 비교",
+  "question": "첫 정규장 시가 지정가는 기존 깊은 지정가보다 시장별 동일 후보·예약자본 기준 비용 차감 5거래일 평가손익률을 높이는가?",
+  "status": "draft",
+  "markets": [
+    "kr",
+    "us"
+  ],
+  "hashes": {
+    "preregistration_text": "docs/design/5624-entry-ab-mock.md",
+    "preregistration_sha256": "eb088066ba805fe1cd122a3450124f4e1f7984b8152a4cae078b78899029d6c9",
+    "dataset_manifest": {
+      "pending": "봉인 전 수집·결속 계약과 데이터 출처, 달력 버전, 대상 후보의 상폐 커버리지를 고정한다. 결론은 실제 등록된 후보에 한정한다."
+    },
+    "evaluation_contract": "docs/design/5624-entry-ab-mock.md §2–3",
+    "code_sha": {
+      "pending": "후속 구현과 채점기에 대해 봉인 시 기록한다."
+    },
+    "policy": {
+      "pending": "원본 필터·청산 정책 version/content_hash를 봉인 시 기록한다."
+    },
+    "cost_table": {
+      "pending": "봉인 시 버전과 해시를 기록한다."
+    }
+  },
+  "features": [
+    {
+      "name": "저장된 BUY 결정과 깊은 지정가",
+      "available_at": "원본 결정·연결 증거가 기록된 시각. 시가가 수신되기 전에 고정한다.",
+      "source": "review.decision_evidence, 원본 제안 또는 report item"
+    },
+    {
+      "name": "첫 정규장 시가",
+      "available_at": "결정 뒤 첫 개장의 공식 시가 수신 시각. 주문 판단은 수신 이후.",
+      "source": "시장별 공통 시가 출처를 봉인 시 고정"
+    },
+    {
+      "name": "공통 주문 가능 수량 및 DAY 검증",
+      "available_at": "시가 수신 뒤 전송 전 두 계좌 공통 사전점검 시각",
+      "source": "기존 계좌·호가·세션 사전 검증과 결정의 수량·금액 상한"
+    }
+  ],
+  "labels": [
+    {
+      "name": "paired_net_return_delta",
+      "definition": "진입일 이후 다섯 번째 정규장 종가 기준, 기존 규칙으로 이미 청산된 수량의 실현분과 남은 수량의 평가분을 합산하고 비용을 차감한다. 공통 예약액 기준 B−A. 결정 이후 첫 정규장에서 진입할 수 있으므로 결정일 기준 최대 6개 세션을 읽는다.",
+      "horizon_sessions": 6
+    }
+  ],
+  "calendar": {
+    "kr": "XKRX",
+    "us": "XNYS"
+  },
+  "splits": {
+    "scheme": "전향 시험만 사용. 과거 회고는 가설 선정에만 사용. 학습이나 튜닝 없음.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 6,
+    "gap_sessions": 6,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {
+        "pending": "두 시장 준비 및 원인 증거 확인 후 각 시장의 시작·끝 날짜와 마지막 평가 날짜를 봉인한다. 시장별 40개 정규장 및 후속 평가 5개 정규장."
+      },
+      "exposure_audit": "11/13 회고 및 기존 자료는 시험 밖이다. 봉인 이후 결정만 포함하고 열람 기록을 대조한다.",
+      "seal_rule": "달력별 모든 종목에 고정 날짜를 적용하고 이후 연장하지 않는다."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "A",
+      "description": "원래 지지선·깊이 기준 지정가. KR KIS 모의 미러, US Alpaca paper."
+    },
+    {
+      "id": "B",
+      "description": "첫 정규장 시가 수신 후 공통 호가로 내림한 지정가. KR 키움 국내 모의, US 키움 해외 모의."
+    }
+  ],
+  "costs_fills": {
+    "cost_table": {
+      "pending": "검증된 원장 비용을 우선하고, 그 외 및 평가 청산에 봉인한 공통 시장별 비용표를 사용한다."
+    },
+    "fill_models": [
+      "empirical: 모의 브로커 주문·체결 증거. 접촉 기반 체결 추정 없음. 증거 미완결은 UNKNOWN."
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 0,
+    "search": "없음"
+  },
+  "seeds": [
+    0
+  ],
+  "metrics": {
+    "primary": "시장별 성숙 짝의 동일 예약자본 대비 비용 차감 5거래일 평가손익률 평균 B−A",
+    "secondary": [
+      "양성 접수와 완결 관측 기준 체결률 및 수량 체결률",
+      "체결 다리 조건부 비용 차감 평가손익과 최대 불리 변동",
+      "제출 차단 및 차단 사유, 이탈 및 관측 누락"
+    ],
+    "family": [
+      "HK-5624 단일 가설. KR과 US 모두 효과 문턱을 충족해야 지지. 서술적 판정이며 유의성 검정 없음."
+    ],
+    "alpha": "0.05",
+    "delta_min": "0.0025"
+  },
+  "stopping_rules": [
+    "시장별 제출 40개 정규장 고정. 전 짝의 평가시한 이후 한 번 검토. 기간 연장 없음.",
+    "시장별 관측 가능 성숙 짝 50개 미만이면 INSUFFICIENT_SAMPLE, 관측 불가율 10% 초과면 UNVERIFIED.",
+    "계좌·귀속·송신 안전 문제는 신규 진입 중지. 중간 비교 지표 열람·규칙 변경·자동 정책 승격 없음."
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}
