@@ -131,6 +131,33 @@ per-source-family round-robin (declared family order, one new symbol per
 family per round, empty families yield) so a dominant family cannot take the
 whole 10-slot pool.
 
+**`screen_stocks`·`screen_stocks_snapshot` 관측 기록 (hk 5622, `collection_version="screener-tools-v1"`)**:
+KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다(fanout은 H1/H3 파일럿 프롬프트뿐이라 파일럿이
+멈춘 10/30 이후 로그가 비었다). 그래서 두 도구가 돌려준 후보도 같은 바깥 관측자 패턴으로
+`review.screener_pick_log`에 기록한다 — `app/services/screener_tool_pick_log.py`, 호출은 MCP 등록 계층
+`analysis_registration.py` 한 곳뿐이다(`test_only_the_registration_layer_wires_the_observer`).
+🔴 `screen_stocks_impl`·`screen_stocks_snapshot_impl`·`screen_stocks_enrich_impl`·`buy_candidate_fanout`은 계속 쓰기가 없다 —
+`screen_stocks_impl`은 fanout과 웹 스크리너가 재사용하므로 impl 안에서 기록하면 하드룰 13이 깨진다.
+`SCREENER_PICK_LOG_ENABLED` 기본 false, fail-open(기록 예외는 도구 출력을 바꾸지 않는다), 스케줄러 금지, 과거 소급 없음.
+- **행**: 반환된 후보마다 1행(`admission='admitted'`, `admission_reason='returned_to_session'`, `selection_seq` = 반환 목록 안 1-based 위치(offset 포함),
+  `rank` = `screen_stocks`는 반환 순서, snapshot은 도구의 rank — 다중 preset 병합 행은 첫 매칭 preset에만 rank가 있고 나머지 preset 행은 null).
+  도구 자신이 이미 아는 제거는 `not_admitted` + 닫힌 사유: `halted_suspect`(screen_stocks, `meta.halted_suspect_excluded`),
+  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`(snapshot; `exclude_held`는
+  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
+  `screen_stocks_enrich`의 만성 실패 제외·`isHeld`는 이 변경 범위 밖이며 enrich는 기록하지 않는다. 시장은 kr/us만 기록한다(kospi/kosdaq/konex/all → kr, crypto 미기록).
+- **source**: `screen_stocks` / `screen_stocks_snapshot:<preset>`(다중 preset 스윕에서도 (call, source, symbol) 유일키 유지). `family`는 `screen_stocks_live`/`screener_snapshot`.
+  US 심볼은 DB 형식(`BRK.B`, `app/core/symbol.py`)으로 저장해 `decision_evidence`의 candidate ref(`call_id`+정규 심볼)가 그대로 해석된다.
+- **가격**: 정확한 decimal 문자열. `screen_stocks`는 도구의 `price` 필드(float는 `Decimal(str())`), snapshot은 `priceLabel`("75,000원", "$12.30")을
+  파싱한 값이라 라벨 정밀도다(`call_context.price_basis`). 해석 불가·비유한 값은 null이다.
+- **source_status/data_asof**: 기록 행은 모두 `ok`다 — snapshot 자체의 fresh/partial/stale 판정은 컬럼 어휘에 대응이 없어 `call_context.freshness.<preset>`에 둔다.
+  `data_asof`는 snapshot은 snapshotDate(없으면 computedAt), `screen_stocks`는 응답 timestamp다. 원 행은 JSONB-safe(NaN/Inf→null)로 `raw_row`에 둔다.
+  마이그레이션은 없다(기존 컬럼·CHECK로 모두 표현된다).
+- **call id**: 도구 호출마다 `call_id` 하나. 게이트가 켜져 있고 행을 하나 이상 썼을 때만 응답 최상위에 선택 키 `pick_log_call_id`가 붙는다
+  (꺼짐·0행·오류 응답·기록 실패는 키 생략, 출력은 바이트 동일). 세션은 이를 `decision_evidence` 후보 ref로 인용한다.
+  🔴 `decision_evidence`는 후보 ref 없는 같은 KST 날짜 매수 place에서 `admitted` 행을 `inference`로 연결하므로, 세션이 반환받은 후보는 이제 그 추론 대상이 된다.
+- **fanout 규칙은 그대로**: `funnel-a1` A-record(소스 top-10 전수·admission·`dropped_preselection`)는 `discover_buy_candidates_fanout` 전용이고 이 두 도구는 위 규칙을 따른다.
+- 테스트: `tests/services/screener_pick_log/test_screener_tool_pick_log.py`(순수·fail-open·게이트 off 동일성·등록 배선·경계), `..._db.py`(CI DB 왕복).
+
 ### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
 
 Sentry 실측(p50 38.11s / p95 54.73s, 호출당 ~214 HTTP call, 120s 예산 내 타임아웃 8건)에서

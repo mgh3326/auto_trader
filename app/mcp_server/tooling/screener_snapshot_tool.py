@@ -180,8 +180,26 @@ def _holding_market_filter(market: str) -> str | None:
     return None
 
 
+def _drop_rows(
+    rows: list[dict[str, Any]],
+    should_drop: Any,
+    reason: str,
+    dropped: list[tuple[dict[str, Any], str]],
+) -> list[dict[str, Any]]:
+    """Keep rows ``should_drop`` rejects; note the rest with a closed reason."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if should_drop(row):
+            dropped.append((row, reason))
+        else:
+            kept.append(row)
+    return kept
+
+
 def _filter_min_market_cap_with_warning(
-    rows: list[dict[str, Any]], min_val: float
+    rows: list[dict[str, Any]],
+    min_val: float,
+    dropped: list[tuple[dict[str, Any], str]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     kept: list[dict[str, Any]] = []
     missing_count = 0
@@ -189,12 +207,18 @@ def _filter_min_market_cap_with_warning(
         raw = row.get("marketCapValue")
         if raw is None:
             missing_count += 1
+            if dropped is not None:
+                dropped.append((row, "market_cap_missing"))
             continue
         try:
             if float(raw) >= min_val:
                 kept.append(row)
+            elif dropped is not None:
+                dropped.append((row, "below_min_market_cap"))
         except (TypeError, ValueError):
             missing_count += 1
+            if dropped is not None:
+                dropped.append((row, "market_cap_missing"))
     return kept, missing_count
 
 
@@ -382,6 +406,12 @@ async def _build_snapshot_page(
     merged_results: list[dict[str, Any]] = []
     combined_warnings: list[str] = []
     threaded_warned_presets: set[str] = set()
+    # hk 5622: rows this function's own discovery filters removed, with a closed
+    # reason, and each preset's freshness. Internal-only (returned beside
+    # ``payload``, never inside it) so the outer pick-log observer can record
+    # them without any change to the tool's output.
+    dropped_rows: list[tuple[dict[str, Any], str]] = []
+    freshness_by_preset: dict[str, Any] = {}
 
     try:
         async with _session_factory()() as db:
@@ -396,6 +426,7 @@ async def _build_snapshot_page(
                     snapshot_only=snapshot_only,
                 )
                 raw_payload = resp.model_dump(mode="json")
+                freshness_by_preset[pid] = raw_payload.get("freshness")
                 merged_results = _merge_rows(
                     merged_results, raw_payload.get("results") or [], pid
                 )
@@ -421,26 +452,37 @@ async def _build_snapshot_page(
             "exclude_watched는 MCP snapshot 도구에서 아직 사용자 watchlist를 "
             "배선하지 않아 지원하지 않습니다 (필터 미적용)."
         )
-        merged_results = [r for r in merged_results if not r.get("isWatched")]
+        merged_results = _drop_rows(
+            merged_results,
+            lambda r: bool(r.get("isWatched")),
+            "exclude_watched",
+            dropped_rows,
+        )
     # ROB-543 Slice B: surface how many held rows exclude_held removed so the
     # caller can reason about coverage (0 when the filter is off).
     excluded_held_count = 0
     if exclude_held:
         excluded_held_count = sum(1 for r in merged_results if r.get("isHeld"))
-        merged_results = [r for r in merged_results if not r.get("isHeld")]
+        merged_results = _drop_rows(
+            merged_results,
+            lambda r: bool(r.get("isHeld")),
+            "exclude_held",
+            dropped_rows,
+        )
     if exclude_symbols:
         excluded_symbols = {_normalize_symbol_key(s) for s in exclude_symbols}
-        merged_results = [
-            r
-            for r in merged_results
-            if _normalize_symbol_key(r.get("symbol")) not in excluded_symbols
-        ]
+        merged_results = _drop_rows(
+            merged_results,
+            lambda r: _normalize_symbol_key(r.get("symbol")) in excluded_symbols,
+            "exclude_symbols",
+            dropped_rows,
+        )
 
     # Discovery filters (market cap)
     if min_market_cap is not None:
         min_val = float(min_market_cap)
         merged_results, missing_count = _filter_min_market_cap_with_warning(
-            merged_results, min_val
+            merged_results, min_val, dropped_rows
         )
         if missing_count:
             combined_warnings.append(
@@ -449,7 +491,7 @@ async def _build_snapshot_page(
     if min_market_cap_eok is not None:
         min_val = float(min_market_cap_eok) * 100_000_000
         merged_results, missing_count = _filter_min_market_cap_with_warning(
-            merged_results, min_val
+            merged_results, min_val, dropped_rows
         )
         if missing_count:
             combined_warnings.append(
@@ -457,9 +499,12 @@ async def _build_snapshot_page(
             )
     if max_market_cap_eok is not None:
         max_val = float(max_market_cap_eok) * 100_000_000
-        merged_results = [
-            r for r in merged_results if (r.get("marketCapValue") or 0) <= max_val
-        ]
+        merged_results = _drop_rows(
+            merged_results,
+            lambda r: (r.get("marketCapValue") or 0) > max_val,
+            "above_max_market_cap",
+            dropped_rows,
+        )
 
     # Intersection sort
     if sort == "matched_presets_desc":
@@ -536,6 +581,8 @@ async def _build_snapshot_page(
         "preset": preset,
         "preset_ids": preset_ids,
         "market": market,
+        "dropped_rows": dropped_rows,
+        "freshness_by_preset": freshness_by_preset,
     }
 
 
@@ -556,8 +603,14 @@ async def screen_stocks_snapshot_impl(
     sort: Literal["matched_presets_desc"] | None = None,
     limit: int = _DEFAULT_RESULT_LIMIT,
     offset: int = 0,
+    observation_sink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a screener preset over its base snapshot with adjustable AND-filters.
+
+    ``observation_sink`` (hk 5622, internal, never part of the response): when a
+    dict is passed it receives ``dropped_rows`` / ``freshness_by_preset`` /
+    ``preset_ids`` so the outer pick-log observer can record what this call
+    considered. The tool itself still performs no writes.
 
     ROB-1309: this is the DB-only path — it makes ZERO external HTTP calls
     (sector lazy-fill, analyst-consensus fetch, quoteSummary/timeseries/crumb,
@@ -640,6 +693,12 @@ async def screen_stocks_snapshot_impl(
     if built.get("error") is not None:
         return built["error"]
 
+    if observation_sink is not None:
+        observation_sink.update(
+            dropped_rows=built["dropped_rows"],
+            freshness_by_preset=built["freshness_by_preset"],
+            preset_ids=built["preset_ids"],
+        )
     payload = built["payload"]
     payload["discoveryFilters"]["min_analyst_count"] = None
     payload["discoveryFilters"]["min_analyst_buy_count"] = None

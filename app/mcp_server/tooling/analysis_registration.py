@@ -42,6 +42,10 @@ from app.mcp_server.tooling.spike_attribution_registration import (
 )
 from app.mcp_server.tooling.theme_events import get_theme_events_impl
 from app.services.krx import probe_krx_session_health
+from app.services.screener_tool_pick_log import (
+    record_screen_stocks_picks,
+    record_snapshot_picks,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -380,7 +384,10 @@ def register_analysis_tools(
             "(1B KRW conservative, 5B KRW aggressive), instrument_types, "
             "and exclude_sectors. "
             "sort_by='trade_amount' is supported for KR and crypto only; "
-            "for US use 'volume', 'market_cap', or 'change_rate'."
+            "for US use 'volume', 'market_cap', or 'change_rate'. "
+            "When SCREENER_PICK_LOG_ENABLED, KR/US results are recorded by an outer "
+            "fail-open observer and the response gains the optional "
+            "pick_log_call_id (cite it as a decision_evidence candidate ref)."
         ),
     )
     async def screen_stocks(
@@ -416,7 +423,7 @@ def register_analysis_tools(
         market_cap_max_krw: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        return await screen_stocks_impl(
+        result = await screen_stocks_impl(
             market=market,
             asset_type=asset_type,
             category=category,
@@ -437,6 +444,33 @@ def register_analysis_tools(
             market_cap_min_krw=market_cap_min_krw,
             market_cap_max_krw=market_cap_max_krw,
             limit=limit,
+        )
+        # hk 5622: outer fail-open pick-log observer (SCREENER_PICK_LOG_ENABLED).
+        # The impl stays write-free; it is reused by buy_candidate_fanout.
+        return await record_screen_stocks_picks(
+            result,
+            request={
+                "market": market,
+                "asset_type": asset_type,
+                "category": category,
+                "sector": sector,
+                "exclude_sectors": exclude_sectors,
+                "instrument_types": instrument_types,
+                "strategy": strategy,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "max_pbr": max_pbr,
+                "min_dividend_yield": min_dividend_yield,
+                "min_dividend": min_dividend,
+                "min_analyst_buy": min_analyst_buy,
+                "max_rsi": max_rsi,
+                "adv_krw_min": adv_krw_min,
+                "market_cap_min_krw": market_cap_min_krw,
+                "market_cap_max_krw": market_cap_max_krw,
+                "limit": limit,
+            },
         )
 
     @mcp.tool(
@@ -489,7 +523,10 @@ def register_analysis_tools(
             "snapshot time and may be stale by up to one session; before confirming "
             "a top candidate, revalidate it separately (get_quote / "
             "get_support_resistance / analyze_stock_batch). "
-            "Results are capped (default 40) and paginated via limit/offset."
+            "Results are capped (default 40) and paginated via limit/offset. "
+            "When SCREENER_PICK_LOG_ENABLED, KR/US results are recorded by an outer "
+            "fail-open observer and the response gains the optional "
+            "pick_log_call_id (cite it as a decision_evidence candidate ref)."
         ),
     )
     async def screen_stocks_snapshot(
@@ -509,7 +546,8 @@ def register_analysis_tools(
         limit: int = 40,
         offset: int = 0,
     ) -> dict[str, Any]:
-        return await screen_stocks_snapshot_impl(
+        observation: dict[str, Any] = {}
+        payload = await screen_stocks_snapshot_impl(
             preset=preset,
             presets=presets,
             market=market,
@@ -525,6 +563,27 @@ def register_analysis_tools(
             sort=sort,
             limit=limit,
             offset=offset,
+            observation_sink=observation,
+        )
+        # hk 5622: outer fail-open pick-log observer (SCREENER_PICK_LOG_ENABLED).
+        return await record_snapshot_picks(
+            payload,
+            request={
+                "preset": preset,
+                "presets": presets,
+                "market": market,
+                "filters": filters,
+                "exclude_watched": exclude_watched,
+                "exclude_held": exclude_held,
+                "exclude_symbols": exclude_symbols,
+                "min_market_cap": min_market_cap,
+                "min_market_cap_eok": min_market_cap_eok,
+                "max_market_cap_eok": max_market_cap_eok,
+                "sort": sort,
+                "limit": limit,
+                "offset": offset,
+            },
+            observation=observation,
         )
 
     @mcp.tool(
