@@ -328,6 +328,40 @@ async def _record_post_cancel_window_block(
     )
 
 
+async def _record_post_cancel_mandate_block(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    refused_code: str,
+    now: datetime,
+) -> RungOutcome:
+    """The replacement loss sale was refused at its POST after the target was cancelled.
+
+    Same shape as the adjacent approval-window handling: the confirmed cancellation is
+    recorded, the replacement was not submitted, and the mandate refusal is kept.
+    """
+    target_id = group.target_broker_order_id
+    if target_id is None:
+        raise AssertionError("target id validated before replacement cancellation")
+    await service.record_cancelled(
+        group.proposal_id,
+        rung.rung_index,
+        broker_order_id=target_id,
+        now=now,
+    )
+    return RungOutcome(
+        rung.rung_index,
+        "guard_blocked",
+        {
+            "reason": refused_code,
+            "error": f"{refused_code}:target_cancelled_replacement_not_submitted",
+            "target_cancelled": True,
+            "replacement_submitted": False,
+        },
+    )
+
+
 class ApprovalWindowPreSendGate:
     """Transport hook that aborts immediately before an HTTP mutation."""
 
@@ -2572,6 +2606,16 @@ async def _revalidate_replace_rung(
         expected_policy_stamp=expected_policy_stamp,
         now_fn=now_fn,
     )
+    # hk 3795 T4c, I14: the hook instance is kept so a refusal at the replacement's
+    # POST is recorded with the already-confirmed cancellation, never lost.
+    loss_hook: mandate_send.LossCutGuardHook | None = None
+    replace_hook: Callable[[], Awaitable[None]] = transport_gate
+    if group.exit_intent == "loss_cut":
+        loss_hook = mandate_send.LossCutGuardHook(
+            inner=transport_gate,
+            refusal_fn=lambda: service.mandate_loss_cut_refusal(group),
+        )
+        replace_hook = loss_hook
     try:
         with _optional_order_link_context(
             client_order_id=str(proposal_client_order_id or ""),
@@ -2607,17 +2651,18 @@ async def _revalidate_replace_rung(
                         if proposal_client_order_id is not None
                         else {}
                     ),
-                    pre_send_hook=(
-                        mandate_send.LossCutGuardHook(
-                            inner=transport_gate,
-                            refusal_fn=lambda: service.mandate_loss_cut_refusal(group),
-                        )
-                        if group.exit_intent == "loss_cut"
-                        else transport_gate
-                    ),
+                    pre_send_hook=replace_hook,
                 )
             )
     except Exception as exc:
+        if loss_hook is not None and loss_hook.refused_code is not None:
+            return await _record_post_cancel_mandate_block(
+                service=service,
+                group=group,
+                rung=rung,
+                refused_code=loss_hook.refused_code,
+                now=now,
+            )
         if transport_gate.blocked_decision is not None:
             return await _record_post_cancel_window_block(
                 service=service,
@@ -2648,6 +2693,14 @@ async def _revalidate_replace_rung(
             idempotency_key=preview.get("idempotency_key"),
         )
         return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+    if loss_hook is not None and loss_hook.refused_code is not None:
+        return await _record_post_cancel_mandate_block(
+            service=service,
+            group=group,
+            rung=rung,
+            refused_code=loss_hook.refused_code,
+            now=now,
+        )
     if transport_gate.blocked_decision is not None:
         return await _record_post_cancel_window_block(
             service=service,

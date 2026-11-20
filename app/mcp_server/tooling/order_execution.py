@@ -1891,6 +1891,10 @@ def _augment_error_for_unknown_outcome(
     if isinstance(exc, OrderSendNotCreated):
         enriched = dict(base_error)
         enriched["retry_allowed"] = True
+        # hk 3795: positive, typed evidence that no order exists (a provider rejection
+        # or a transport that failed before the HTTP boundary); untyped failures carry
+        # no such marker and are never read as one.
+        enriched["send_disposition"] = "not_created"
         enriched["error"] = (
             "주문 전송 전 실패: "
             f"{describe_exception(exc.original)}. 주문이 생성되지 않아 재시도할 수 있습니다."

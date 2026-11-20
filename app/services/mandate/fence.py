@@ -180,20 +180,22 @@ def _real_now() -> datetime:
 async def _read_freeze(
     session: AsyncSession,
     sleeve: StrategySleeve,
-    now: datetime,
+    clock: Callable[[], datetime],
     freeze_fn: Callable[..., Awaitable[Any]],
 ) -> bool | None:
+    """The verdict is judged on a clock sampled again **after** the reader returns, so a
+    measurement that expires while the reader runs cannot authorize a fence (I11)."""
     try:
         verdict = await freeze_fn(
             session,
             account_mode=sleeve.account_mode,
             market=sleeve.market,
             sleeve_id=sleeve.id,
-            now=now,
+            now=clock(),
         )
+        return _frozen(verdict, clock())
     except Exception:  # noqa: BLE001 - a freeze that cannot be read is a freeze
         return True
-    return _frozen(verdict, now)
 
 
 @dataclass(frozen=True)
@@ -312,7 +314,7 @@ async def gather_send_facts(
         actual_account_ref=req.actual_account_ref,
         plan_account_ref=loaded.plan.account_ref,
         frozen=await _read_freeze(
-            session, loaded.sleeve, (req.clock or _real_now)(), freeze_fn
+            session, loaded.sleeve, req.clock or _real_now, freeze_fn
         ),
     )
     return facts, terms, state

@@ -385,18 +385,24 @@ async def test_i11_the_freeze_is_judged_on_a_clock_sampled_after_the_locks(monke
         return FreezeVerdict(False, "fixture", {}, valid_until=valid_until)
 
     sleeve = SimpleNamespace(account_mode="kis_live", market="equity_kr", id=1)
-    early = await fence._read_freeze(None, sleeve, NOW, verdict)  # type: ignore[arg-type]
+    early = await fence._read_freeze(None, sleeve, lambda: NOW, verdict)  # type: ignore[arg-type]
     late = await fence._read_freeze(
         None,
         sleeve,
-        NOW + timedelta(minutes=2),
+        lambda: NOW + timedelta(minutes=2),
         verdict,  # type: ignore[arg-type]
     )
     assert (early, late) == (False, True)
+    # a measurement that expires while the reader runs: the clock is sampled again
+    ticks = iter([NOW, NOW + timedelta(minutes=2)])  # before the reader, after it
+    during = await fence._read_freeze(None, sleeve, lambda: next(ticks), verdict)  # type: ignore[arg-type]
+    assert during is True
     req = _request(clock=lambda: NOW + timedelta(minutes=2))
     assert req.clock() > valid_until  # type: ignore[misc]
     source = inspect.getsource(fence.gather_send_facts)
-    assert "(req.clock or _real_now)()" in source  # sampled where the freeze is read
+    assert (
+        "req.clock or _real_now" in source
+    )  # the clock itself is handed to the reader
 
 
 async def test_a_clause_that_moves_a_sleeve_takes_every_f2_once_in_order():

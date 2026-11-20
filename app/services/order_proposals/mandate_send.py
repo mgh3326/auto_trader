@@ -93,26 +93,31 @@ def edge_account_ref(group: object, fallback: str | None) -> str | None:
 
 
 def is_affirmative_rejection(submit: Any) -> bool:
-    """A failure that is **not** an unknown outcome: the broker boundary's own contract.
+    """Positive, typed evidence that no order exists — the only thing that closes a fence.
 
-    ``order_execution`` marks the only ambiguous send failure with
-    ``outcome_unknown=True`` (a timeout or network error around the POST); every other
-    failure of the send call — a provider rejection, an ``OrderSendNotCreated`` (a
-    transport setup that failed before the HTTP boundary, ``retry_allowed``) — means no
-    order was created (``_augment_error_for_unknown_outcome``). Only those close a
-    fence. An unknown outcome, a failure that asks for a reconcile, or one that says the
-    request was sent proves nothing and keeps the fence.
+    Accepted: the adapter's vetted ``broker_status='rejected'`` (a Toss coded 4xx keeps
+    ``mutation_sent=True`` and is still a rejection), ``ledger_status='rejected'``, a
+    proven non-dispatch (``mutation_sent=False`` / ``status='not_submitted'``) and the
+    broker boundary's ``send_disposition='not_created'`` (``OrderSendNotCreated``: a
+    provider rejection or a transport that failed before the HTTP boundary). Never
+    accepted: an unknown outcome (``outcome_unknown``), a request for a reconcile, or an
+    untyped failure — a post-dispatch HTTP 5xx is flattened to ``success=False`` with no
+    marker and may have created the order, so it keeps the fence.
     """
     if not isinstance(submit, dict) or submit.get("success") is not False:
         return False
     if (
         submit.get("outcome_unknown") is True
         or submit.get("reconcile_required") is True
-        or submit.get("mutation_sent") is True
-        or submit.get("send_outcome") == "unknown"
     ):
         return False
-    return True
+    return (
+        submit.get("broker_status") == "rejected"
+        or submit.get("ledger_status") == "rejected"
+        or submit.get("mutation_sent") is False
+        or submit.get("status") == "not_submitted"
+        or submit.get("send_disposition") == "not_created"
+    )
 
 
 def approver_refusal(principal: str | None) -> str | None:
@@ -139,14 +144,22 @@ def legacy_auto_dispatch_refusal(group: object) -> str | None:
 AccountRefResolver = Callable[[object], Awaitable[str | None]]
 
 
-def fence_notional(rung: Any, preview: dict[str, Any] | None = None) -> Decimal | None:
-    """max(limit, current price) x quantity; ``None`` when it cannot be a valid amount."""
+def fence_notional(
+    rung: Any, preview: dict[str, Any] | None = None, *, require_quote: bool = False
+) -> Decimal | None:
+    """max(limit, current price) x quantity; ``None`` when it cannot be a valid amount.
+
+    ``require_quote`` (the authoritative fence): a positive finite current quote must be
+    present, or there is no amount — the limit is only a lower bound and must never
+    stand in for it. The advisory reads before the preview use the limit as that bound.
+    """
     try:
         quantity = Decimal(str(rung.quantity))
         limit = Decimal(str(rung.limit_price))
     except (InvalidOperation, TypeError):
         return None
     price = limit
+    quoted = False
     if preview is not None:
         # a provider reports its fresh quote under its own key (Kiwoom KR mock:
         # ``estimated_evidence.quote_price``); the larger of all of them counts
@@ -160,8 +173,12 @@ def fence_notional(rung: Any, preview: dict[str, Any] | None = None) -> Decimal 
                 current = Decimal(str(raw))
             except (InvalidOperation, TypeError):
                 continue
-            if current.is_finite() and current > price:
-                price = current
+            if current.is_finite() and current > 0:
+                quoted = True
+                if current > price:
+                    price = current
+    if require_quote and not quoted:
+        return None
     notional = price * quantity
     if not notional.is_finite() or notional <= 0:
         return None
@@ -383,7 +400,7 @@ async def commit_fence_for_rung(
     pilot = legacy_auto_dispatch_refusal(group)
     if pilot is not None:
         return fence.FenceOutcome(False, refusal=pilot)
-    notional = fence_notional(rung, preview)
+    notional = fence_notional(rung, preview, require_quote=True)
     if notional is None:
         return fence.FenceOutcome(False, refusal=v.MandateRefusal.UNREADABLE.value)
     try:
