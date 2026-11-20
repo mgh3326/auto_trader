@@ -487,7 +487,7 @@ def test_every_dag_is_single_flight_bounded_and_alerts_on_failure(stem):
     text, dag = _load(stem)
     job = JOBS[stem]
     assert dag["max_active_runs"] == 1
-    assert dag["worker_selector"] == {"host": "ncp"}
+    assert dag["worker_selector"] == {"host": "pi"}
     assert dag["dotenv"] == "/root/at-secrets/.env.dagu-at-batch"
     assert all(
         isinstance(s["timeout_sec"], int) and s["timeout_sec"] > 0 for s in dag["steps"]

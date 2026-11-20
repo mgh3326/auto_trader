@@ -159,7 +159,7 @@ def test_a_failing_account_does_not_stop_the_others_and_the_run_ends_failed():
 def test_single_flight_bounded_and_retried():
     _, dag = _load()
     assert dag.get("max_active_runs") == 1
-    assert dag["worker_selector"] == {"host": "ncp"}
+    assert dag["worker_selector"] == {"host": "pi"}
     assert dag["dotenv"] == "/root/at-secrets/.env.dagu-at-batch"
     for step in dag["steps"]:
         timeout = step.get("timeout_sec")

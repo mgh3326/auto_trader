@@ -7,7 +7,7 @@ schedule: "CRON_TZ=UTC 30 12 * * *"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
-  host: ncp
+  host: pi
 steps:
   - name: sync
     command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_us_symbol_universe

@@ -1,0 +1,28 @@
+# 제안 복사본(hk 5752). 저장소는 이 파일을 등록하지 않는다. 설계 세션이 dry-run 채움률을 확인한 뒤 호스트에 등록한다(docs/runbooks/snapshot-refresh-dagu.md).
+# 시각 근거: 매일 14:00 UTC(23:00 KST). 일봉·스크리너·컨센서스 잡과 겹치지 않고, data-plane-kr(09:00 UTC)과 DART 공시 잡(09:30 UTC, 22:00 UTC)과도 떨어져 있다.
+# 예산: --limit 1500 --skip-existing 은 DART 일일 예산 18,000 안에 든다(1500 × 11 = 16,500). 아직 수집되지 않은 종목만 고르므로 전부 채워지면 매일 0건이다.
+# 🔴 dry-run 은 DART 를 호출하지 않는 --estimate-only 다(빌더의 일반 dry-run 은 DART 를 호출해 예산을 쓴다). 채움률 확인은 런북의 수동 명령(--limit 20)으로 한다.
+# 🔴 commit 은 --allow-partial 과 함께만 쓴다(빌더가 증분 백필이라 요구한다).
+# commit 게이트: AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED 가 참일 때만 --commit --allow-partial. 미설정 = --estimate-only.
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
+# 환경: dotenv 파일에서만 읽는다. 값은 이 파일과 레포에 없다.
+# 실패 경로: handler_on 이 journal 한 줄(`logger -t at-dagu-batch`)을 먼저 남기고, 핑 URL 이 있을 때만 healthchecks 핑을 보낸다.
+description: "KR financial fundamentals snapshots (DART 읽기, DB 쓰기, 일일 예산 분할)"
+schedule: "CRON_TZ=UTC 0 14 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: build
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_financial_fundamentals_snapshots --market kr --limit 1500 --skip-existing $(case "$(printf %s "${AT_SNAPSHOT_FINANCIAL_KR_COMMIT_ENABLED}" | tr A-Z a-z)" in 1|true|yes|on) echo --commit --allow-partial;; *) echo --estimate-only;; esac)
+    timeout_sec: 7200
+    retry_policy:
+      limit: 1
+      interval_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-snapshot-financial-kr status=success"; [ -z "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR}"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-snapshot-financial-kr status=failure"; [ -z "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_SNAPSHOT_FINANCIAL_KR}/fail"'

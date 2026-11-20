@@ -47,7 +47,7 @@ KR 공시(dart)를 함께 수집하므로 DART 수집이 깨진 동안(hk 3845)�
 
 ## 사전 조건 (이름만 적는다. 값은 이 레포에 없다)
 
-NCP Dagu 워커(`worker_selector: host: ncp`, 기존 `prefect-error-watchdog` 와 같은 라벨)에서:
+Dagu 워커(`worker_selector: host: pi`, 2026-11-20 hk 5752 에서 레포 사본을 OCI 등록값에 맞춤)에서:
 
 - **도구**: `docker`(root), `curl`, GNU `date`. 각 DAG 가 `docker run` 으로 auto_trader 이미지를 띄운다.
 - **이미지 포인터**: `/root/at-run/deployed-digest` (`ghcr.io/mgh3326/auto_trader@sha256:…` 전체 참조, deploy 스크립트가 쓴다).
