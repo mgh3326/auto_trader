@@ -334,11 +334,17 @@ class TrancheMarketEvidence:
     ask_observed_at: datetime | None = None
     tick_size: Decimal | None = None
     global_budget: GlobalBudgetEvidence | None = None
+    ask_read_at: datetime | None = None
 
 
 MarketEvidenceReader = Callable[
     [PlanProposalContext, datetime], Awaitable[TrancheMarketEvidence | None]
 ]
+
+
+# §4.1 condition 6: the venue ask must have been observed this recently when it
+# is used (test value, Q10).
+ASK_MAX_AGE = timedelta(seconds=5)
 
 
 @dataclass(frozen=True)
@@ -347,11 +353,38 @@ class ProposalQuote:
     best_ask: Decimal
     ask_observed_at: datetime
     tick_size: Decimal
+    # When the read that produced the ask finished. The freshness check is
+    # evaluated no earlier than this, so a ``now`` sampled before the read cannot
+    # make a just-read ask look like it comes from the future.
+    read_at: datetime | None = None
+    # Opaque id of the read that produced this ask; a later use records it so the
+    # read -> use elapsed time is paired by identity, not by symbol and proximity.
+    observation_id: str | None = None
 
 
-async def load_proposal_quote(context: PlanProposalContext) -> ProposalQuote | None:
-    """T4d supplies the authoritative venue quote at this boundary."""
-    return None
+QuoteReader = Callable[[PlanProposalContext], Awaitable[ProposalQuote | None]]
+
+
+async def load_proposal_quote(
+    context: PlanProposalContext, reader: QuoteReader | None = None
+) -> ProposalQuote | None:
+    """The venue quote for the plan's account, from the T4d reader.
+
+    No reader, or a reader that raises, is no quote: the ask has no substitute.
+    """
+    if reader is None:
+        return None
+    try:
+        return await reader(context)
+    except Exception:  # noqa: BLE001 - an unread ask is unavailable, not a guess
+        return None
+
+
+def ask_check_time(now: datetime, read_at: datetime | None) -> datetime:
+    """The time the ask's age is measured at: never before the read finished."""
+    if read_at is None or read_at.utcoffset() is None:
+        return now
+    return max(now, read_at)
 
 
 def check_near_ask(
@@ -372,7 +405,7 @@ def check_near_ask(
         or tick_size <= 0
         or observed_at is None
         or observed_at.utcoffset() is None
-        or not timedelta(0) <= now - observed_at <= timedelta(seconds=5)
+        or not timedelta(0) <= now - observed_at <= ASK_MAX_AGE
     ):
         return "mandate_ask_unavailable", {}
     ceiling = best_ask * (1 + premium_bps / 10_000)
@@ -440,7 +473,7 @@ def check_tranche_market_evidence(
         observed_at=evidence.ask_observed_at,
         tick_size=evidence.tick_size,
         premium_bps=context.terms.entry_max_premium_bps,
-        now=now,
+        now=ask_check_time(now, evidence.ask_read_at),
     )
     if band_refusal is not None:
         return band_refusal
