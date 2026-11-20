@@ -89,6 +89,26 @@ class SleeveFill:
     price: Decimal
     fee: Decimal
     filled_at: datetime
+    #: hk 5441: the place of a *virtual* fill in the FIFO, when the fill has no
+    #: ledger time of its own. A shadow child's fill carries its journal id
+    #: here, which is handed out under the sleeve lock and is therefore the
+    #: order the reservations were actually made in. ``None`` for every ledger
+    #: fill: those keep their ledger time.
+    fifo_rank: int | None = None
+
+
+def _fifo_key(fill: SleeveFill) -> tuple[bool, int, datetime, int]:
+    """Ledger fills by their time, then their id; ranked fills by their rank.
+
+    A list holds one kind or the other. Ranked fills sort before unranked ones
+    only so that the order is total.
+    """
+    return (
+        fill.fifo_rank is None,
+        fill.fifo_rank if fill.fifo_rank is not None else 0,
+        fill.filled_at,
+        fill.ledger_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -151,7 +171,7 @@ def compute_sleeve_book(
     unattributed_rungs: Collection[int] = (),
 ) -> SleeveBook:
     """Fold one sleeve's orders and attributed fills into its book."""
-    fill_list = sorted(fills, key=lambda f: (f.filled_at, f.ledger_id))
+    fill_list = sorted(fills, key=_fifo_key)
     attributed_qty: dict[int, Decimal] = defaultdict(lambda: ZERO)
     attributed_notional: dict[int, Decimal] = defaultdict(lambda: ZERO)
     queues: dict[str, deque[list[Decimal]]] = defaultdict(deque)

@@ -198,11 +198,16 @@ def shadow_book_inputs(
                 quantity=order.quantity,
                 price=order.limit_price,
                 fee=ZERO,
-                # The reservation time, never the time the outcome was
-                # recorded: it is committed before anything can depend on the
-                # fill and does not move when a row left ``sending`` is
-                # finished later, so the FIFO order of virtual fills is fixed.
+                # An audit time only. ``created_at`` is the start of the
+                # reserving transaction, and that transaction reads before it
+                # takes the sleeve lock, so two reservations can commit in the
+                # opposite order of their ``created_at``.
                 filled_at=order.created_at,
+                # The FIFO order: the journal id is handed out at the INSERT,
+                # under the sleeve lock, so it is the order the reservations
+                # were made in. It never changes once the row exists, whether
+                # the row is finished late or not at all.
+                fifo_rank=order.child_id,
             )
         )
     return book_orders, fills

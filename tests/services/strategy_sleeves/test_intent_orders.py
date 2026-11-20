@@ -474,3 +474,62 @@ def test_a_shadow_fill_keeps_its_place_in_the_fifo_when_it_is_recorded_late() ->
         assert book.positions == ()
         assert book.unmatched_sell_quantity == Decimal("0")
         assert book.realized_pnl == Decimal("0")
+
+
+def test_shadow_fills_fold_in_the_order_they_were_reserved_not_started() -> None:
+    """PR 2486 review (65wJD5, 65wMjK): ``created_at`` is the start of the
+    reserving transaction, which reads before it takes the sleeve lock. Buy B
+    starts first and waits; buy A takes the lock and commits first at 3,000; B
+    then commits at 3,300 with the *earlier* ``created_at``. The journal id is
+    handed out under the lock, so A is child 1 and B is child 2. A later sell of
+    one lot must consume A's lot, leaving B's 3,300 lot as what is still held."""
+    b_started = NOW
+    a_started = NOW + timedelta(seconds=1)
+    first_reserved = order(1, state="shadowed", uuid=None, price="3000", at=a_started)
+    second_reserved = order(2, state="shadowed", uuid=None, price="3300", at=b_started)
+    sell = order(
+        3,
+        state="shadowed",
+        side="sell",
+        uuid=None,
+        price="3100",
+        at=NOW + timedelta(minutes=1),
+    )
+
+    orders, fills = shadow_book_inputs([first_reserved, second_reserved, sell])
+    book = compute_sleeve_book(orders=orders, fills=fills, marks={})
+
+    assert [(p.symbol, p.quantity, p.cost_basis) for p in book.positions] == [
+        ("KRW-XRP", Decimal("10"), Decimal("33000"))
+    ]
+    assert book.realized_pnl == Decimal("1000")
+    # What the budget gate reads: the cost of what is still held.
+    assert book.used == Decimal("33000")
+
+
+def test_a_ledger_fill_keeps_its_ledger_time_in_the_fifo() -> None:
+    """The rank is for virtual fills only: ledger fills still fold by their
+    ledger time, then their ledger id, exactly as before."""
+
+    def fill(ledger_id: int, price: str, at: datetime, side: str = "buy") -> SleeveFill:
+        return SleeveFill(
+            ledger_id=ledger_id,
+            rung_id=ledger_id,
+            symbol="KRW-XRP",
+            side=side,
+            quantity=Decimal("10"),
+            price=Decimal(price),
+            fee=Decimal("0"),
+            filled_at=at,
+        )
+
+    later_id_earlier_time = fill(9, "3000", NOW)
+    earlier_id_later_time = fill(1, "3300", NOW + timedelta(seconds=1))
+    sell = fill(10, "3100", NOW + timedelta(minutes=1), side="sell")
+    book = compute_sleeve_book(
+        orders=[], fills=[earlier_id_later_time, later_id_earlier_time, sell], marks={}
+    )
+
+    assert [(p.quantity, p.cost_basis) for p in book.positions] == [
+        (Decimal("10"), Decimal("33000"))
+    ]
