@@ -27,6 +27,8 @@ from app.services.execution_intent_gateway.store import MAX_INTENT_LIFETIME
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "alembic/versions/20261101_rob1440_intent_gateway.py"
+#: hk 5441 extends both tables; the model is the two revisions together.
+HK5441_MIGRATION = ROOT / "alembic/versions/20261120_hk5441_upbit_intent_gateway.py"
 PACKAGE = ROOT / "app/services/execution_intent_gateway"
 
 
@@ -36,6 +38,23 @@ def _load_migration() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_hk5441() -> Any:
+    spec = importlib.util.spec_from_file_location("hk5441_migration", HK5441_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _hk5441_alters(table: str) -> str:
+    """What hk 5441 adds to or replaces on one table, as SQL text."""
+    return "\n".join(
+        statement
+        for statement in _load_hk5441().ALTER_DDL
+        if f"review.{table} " in statement
+    )
 
 
 def _render_upgrade() -> str:
@@ -90,9 +109,10 @@ def test_migration_is_additive_and_grants_no_delete() -> None:
 
 
 def test_journal_guard_covers_every_column_except_the_outcome_columns() -> None:
+    # hk 5441 replaced the guard; the journal runs the latest one.
     guard = next(
         statement
-        for statement in _load_migration().GUARD_DDL
+        for statement in _load_hk5441().GUARD_DDL
         if "execution_child_requests_guard()" in statement
         and "CREATE OR REPLACE" in statement
     )
@@ -136,7 +156,8 @@ def test_intent_expiry_guard_matches_the_store_window() -> None:
 @pytest.mark.parametrize("model", [ExecutionIntent, ExecutionChildRequest])
 def test_migration_columns_and_checks_match_the_model(model: type) -> None:
     table: sa.Table = model.__table__  # type: ignore[attr-defined]
-    block = _table_block(_render_upgrade(), table.name)
+    # The table as created (20261101) plus what hk 5441 altered on it.
+    block = _table_block(_render_upgrade(), table.name) + _hk5441_alters(table.name)
     for column in table.columns:
         assert f"{column.name} " in block, column.name
     checks = [c for c in table.constraints if isinstance(c, sa.CheckConstraint)]

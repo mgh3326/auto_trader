@@ -141,3 +141,40 @@ def test_budget_at_signal_uses_the_version_in_effect() -> None:
 
 def test_report_says_no_sleeves_when_empty() -> None:
     assert render_text([]) == "no sleeves\n"
+
+
+def test_o4_an_unproven_order_is_not_printed_as_measured_holdings() -> None:
+    """hk 5441 (PR 2486 review): the lots may be missing a fill, so nothing
+    derived from them is shown as a number."""
+    from dataclasses import replace
+
+    orders = [order(1, limit_price="100", signal_key="sig-a")]
+    fills = [fill(1, 1, quantity="10", price="100", minutes=0)]
+    measured = build_report_row(
+        sleeve=sleeve(),
+        versions=[version_row()],
+        book=compute_sleeve_book(orders=orders, fills=fills, marks={"AAA": D("110")}),
+        cohort=build_cohort(orders=[], fills=[], marks={}, budget_at={}),
+        diagnostics={},
+        now=NOW,
+    )
+    assert "unproven_orders" not in measured and "holdings_state" not in measured
+    assert measured["held_cost_basis"] == "1000"
+
+    unproven = [replace(orders[0], fill_unproven=True)]
+    row = build_report_row(
+        sleeve=sleeve(),
+        versions=[version_row()],
+        book=compute_sleeve_book(orders=unproven, fills=fills, marks={"AAA": D("110")}),
+        cohort=build_cohort(orders=[], fills=[], marks={}, budget_at={}),
+        diagnostics={},
+        now=NOW,
+    )
+    assert row["holdings_state"] == "unmeasured" and row["unproven_orders"] == [1]
+    assert row["net_pnl"] is None and row["used"] is None
+    assert row["held_cost_basis"] is None
+    assert row["realized_pnl"] is None and row["unrealized_pnl"] is None
+    assert [
+        (p["symbol"], p["quantity"], p["cost_basis"]) for p in row["positions"]
+    ] == [("AAA", None, None)]
+    assert "holdings UNMEASURED" in render_text([row])

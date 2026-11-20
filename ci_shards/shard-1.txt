@@ -21,6 +21,7 @@ tests/contracts/test_retro_v1_contract.py
 tests/core/test_cli.py
 tests/core/test_invest_deep_links.py
 tests/core/test_market_aliases.py
+tests/core/test_upbit_tick.py
 tests/integration/test_paper_positions_market_filter.py
 tests/jobs/test_kis_market_adapters.py
 tests/mcp_server/test_alpaca_paper_no_size_caps.py
@@ -121,6 +122,7 @@ tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
+tests/scripts/test_execution_intent_upbit_resolve.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
 tests/scripts/test_list_recent_fill_events_cli.py
@@ -197,6 +199,9 @@ tests/services/dots_history_export/test_export_v2.py
 tests/services/execution_intent_gateway/test_migration_and_boundaries.py
 tests/services/execution_intent_gateway/test_query_db.py
 tests/services/execution_intent_gateway/test_store_db.py
+tests/services/execution_intent_gateway/test_upbit_db.py
+tests/services/execution_intent_gateway/test_upbit_http_route.py
+tests/services/execution_intent_gateway/test_upbit_static_boundaries.py
 tests/services/execution_ledger/test_cross_source_dedupe_db.py
 tests/services/execution_ledger/test_fill_ingest_downstream.py
 tests/services/execution_ledger/test_kis_lots_us_db.py
@@ -290,6 +295,7 @@ tests/services/social_sentiment_probe/test_cli.py
 tests/services/spike_attribution/test_judgment_status.py
 tests/services/strategy_sleeves/test_cli.py
 tests/services/strategy_sleeves/test_dispatch_gate_db.py
+tests/services/strategy_sleeves/test_intent_orders.py
 tests/services/strategy_sleeves/test_report.py
 tests/services/test_account_routing.py
 tests/services/test_alpaca_paper_final_review.py

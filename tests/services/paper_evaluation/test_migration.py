@@ -342,9 +342,28 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.kis_mock_inference_expiry_events")
             )
+            # hk 5441: the handoff tag column references a later table, and the
+            # evidence table references the journal, so both go first.
+            await connection.execute(
+                text("ALTER TABLE review.order_proposals DROP COLUMN exit_handoff_id")
+            )
+            await connection.execute(
+                text("DROP TABLE review.execution_child_order_evidence")
+            )
             # ROB-1440 intent gateway tables are later too (child first).
             await connection.execute(text("DROP TABLE review.execution_child_requests"))
             await connection.execute(text("DROP TABLE review.execution_intents"))
+            # hk 5441 mandate tables are later too; they reference the sleeve
+            # tables dropped further down.
+            await connection.execute(text("DROP TABLE review.execution_exit_handoffs"))
+            await connection.execute(text("DROP TABLE review.execution_operator_exits"))
+            await connection.execute(
+                text("DROP TABLE review.execution_mandate_revocations")
+            )
+            await connection.execute(text("DROP TABLE review.execution_mandates"))
+            await connection.execute(
+                text("DROP TABLE review.execution_account_control")
+            )
             # ROB-1474's table (including its indexes) is already in metadata.
             await connection.execute(text("DROP TABLE review.mock_strategy_orders"))
             # ROB-1460 exit plan tables are later too.
