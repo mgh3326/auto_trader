@@ -17,6 +17,9 @@
 #   deployed-digest(마지막으로 세 컴포넌트가 모두 끝난 릴리스)와 다른 컴포넌트가 있으면 그것들만 그 digest 로
 #   되돌린다(마커는 그대로). 전부 같으면 deployed-digest.previous 로 완결 롤백하고 마커를 맞바꾼다.
 #   롤백 경로는 CI 게이트를 보지 않는다(긴급 경로).
+#   hk 5753: 이 릴리스 이전 이미지로 되돌리면 TaskIQ producer 가 다시 살아난다. 워커가 멈춰 있으면 큐에 메시지가
+#   쌓이므로, 롤백 전에 docs/runbooks/pi-shiftgate-deploy.md 「롤백 경계」의 조건(W5 게이트 off, OPS_TASK_KICK_TOKEN
+#   비움, NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=false)을 운영자가 확인한다. 이 스크립트는 그 조건을 검사하지 않는다.
 # 스케줄러·follow 타이머는 등록하지 않는다. 수동 실행만.
 set -Eeuo pipefail
 

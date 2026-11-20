@@ -221,7 +221,24 @@ docker logs --tail 50 at-upbit-ws
 
 ## hk 5753 — at-worker 은퇴
 
-TaskIQ worker 는 은퇴했다(운영자 결정 `decision/2026-11-20/at-direction-daily-plan-nonprice-go` 항목 7). 이 디렉터리의 `deploy.sh`·`swap-singletons.sh` 는 더 이상 `at-worker` 를 시작하거나 교체하지 않는다(정적 테스트가 실행 줄에서 그 이름을 막는다). 배포 뒤에는 **설계 세션이 한 번** 실행 중인 컨테이너를 멈춘다:
+TaskIQ worker 는 은퇴했다(운영자 결정 `decision/2026-11-20/at-direction-daily-plan-nonprice-go` 항목 7). 이 디렉터리의 `deploy.sh`·`swap-singletons.sh` 는 더 이상 `at-worker` 를 시작하거나 교체하지 않는다(정적 테스트가 실행 줄에서 그 이름을 막는다).
+
+### 배포 전 전제 (순서대로, 하나라도 건너뛰면 배포하지 않는다)
+
+이 릴리스의 API 는 durable Telegram ingress 를 **503 으로 거부**하고(`TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED=False`), 워커가 없으므로 이미 ACK 된 행을 비울 수 없다. 그래서 `at-worker` 를 멈추기 전에 W5 를 먼저 빼야 한다. 근거는 `telegram-callback-durable-inbox.md` §8 의 롤백 순서다.
+
+1. 공유 env 에서 `ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED=false` 로 두고 `at-api` 를 재시작한다. 이후 콜백은 인라인 경로로 간다. 이 단계에서 env 가 `true` 로 남아 있으면 이 릴리스 배포 뒤 승인 버튼이 전부 503 이 된다.
+2. 워커와 recovery 게이트가 켜진 채로 활성 행을 비운다. 모든 행이 `succeeded`·`discarded`·`dead_letter` 여야 한다. `pending`·`processing`·`retry_wait` 가 남아 있으면 **응답되지 않은 운영자 클릭**이므로 멈추고 보고한다.
+
+   ```sql
+   SELECT state, count(*) FROM review.telegram_callback_inbox GROUP BY state;
+   ```
+3. 워커와 recovery 게이트를 끈다(`ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED=false`, `ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED=false`).
+4. 그 다음 이 릴리스를 배포한다(`deploy.sh <tag>`).
+
+### 배포 뒤 정지
+
+배포 뒤에는 **설계 세션이 한 번** 실행 중인 `at-worker` 컨테이너를 멈춘다. 위 3번이 끝난 뒤에만 한다:
 
 ```bash
 docker stop -t 60 at-worker
@@ -230,7 +247,19 @@ docker ps -a --filter name=at-worker --format 'table {{.Names}}\t{{.Status}}\t{{
 
 정지만 하고 `docker rm` 은 하지 않는다. `--restart unless-stopped` 컨테이너는 수동 정지 뒤 데몬 재시작으로 되살아나지 않으므로 별도 설정이 필요 없다. 지우는 것은 후속 정리다. `deployed-digest` 에는 `at-worker` 가 들어가지 않으므로 롤백 대상도 없다.
 
-W5 Telegram durable inbox 를 다시 켜려면 TaskIQ worker 복원이 먼저다(`docs/runbooks/telegram-callback-durable-inbox.md` §4).
+W5 Telegram durable inbox 를 다시 켜려면 TaskIQ worker 복원이 먼저다. 복원과 함께 `TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED` 를 검토된 변경으로 `True` 로 바꿔야 한다(`docs/runbooks/telegram-callback-durable-inbox.md` §4).
+
+### 롤백 경계 (이 릴리스 이전 이미지로 되돌릴 때)
+
+`deploy.sh --rollback` 은 `deployed-digest.previous` 나 마지막 끝난 digest 로 `at-api`·`at-mcp` 를 되돌린다. 그 이미지에는 TaskIQ producer 가 남아 있다(ops task-kick, 뉴스 판정 enqueue, W5 기본 kick). 워커가 멈춰 있는 상태에서 되살리면 아무도 받지 않는 메시지가 생긴다. 따라서 **롤백 전에 다음이 모두 참이어야 한다**:
+
+- `ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED=false`, 그리고 W5 worker·recovery 게이트가 꺼져 있다. 워커를 되살리지 않는 한 켜지 않는다.
+- `OPS_TASK_KICK_TOKEN` 이 비어 있다. 구 코드는 빈 토큰이면 `/trading/api/ops/tasks/*` 를 403 으로 닫는다. 토큰을 넣지 않는다.
+- `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=false`. 구 코드는 이 값이 켜지면 워커 없이 enqueue 한다.
+
+위 조건을 확인할 수 없으면 롤백하지 않고 보고한다. `--rollback` 은 이 조건을 검사하지 않는다(긴급 경로).
+
+## 7. 설계 선택과 한계
 
 ## 7. 설계 선택과 한계
 
