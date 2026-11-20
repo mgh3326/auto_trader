@@ -46,7 +46,7 @@ from app.models.mandate import (
 )
 from app.models.order_proposals import OrderProposal
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
-from app.services.mandate import hashing
+from app.services.mandate import fence_locks, hashing
 from app.services.mandate import vocabulary as v
 from app.services.mandate.fold import (
     InvalidPlanEvent,
@@ -873,6 +873,21 @@ def _parse_ts(text_: str) -> datetime:
     return datetime.strptime(text_, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
 
 
+async def _bump_basket_authority(
+    session: AsyncSession, realm: str, basket_key: str
+) -> None:
+    """F2 as a writer (§4.6): a clause, profile or plan registration is a fact a send
+    fence reads, so its basket's authority row is created if new and counted up in
+    this same transaction. A row that cannot be updated fails the writer."""
+    try:
+        await fence_locks.ensure_authority_row(session, realm, basket_key)
+        await fence_locks.bump_authority(session, realm, basket_key)
+    except fence_locks.AuthorityRowMissing as exc:
+        raise MandateError(
+            v.MandateRefusal.UNREADABLE, "the basket authority row is missing"
+        ) from exc
+
+
 async def _write_terms(
     session: AsyncSession,
     request: MandateApprovalRequest,
@@ -931,6 +946,7 @@ async def _write_terms(
     await _flush(session)
     await session.refresh(terms)
     await session.refresh(version)
+    await _bump_basket_authority(session, realm_and_market(sleeve)[0], terms.basket_key)
     if (
         hashing.content_sha256(terms_content_from_rows(terms, version))
         != terms.content_sha256
@@ -959,6 +975,15 @@ async def _write_profile(
     session.add(profile)
     await _flush(session)
     await session.refresh(profile)
+    profile_terms = await session.get(MandateTerms, profile.terms_id)
+    profile_sleeve = await _sleeve(session, profile.sleeve_id)
+    if profile_terms is None:
+        raise MandateError(
+            v.MandateRefusal.BINDING_BROKEN, "the profile's clause row is missing"
+        )
+    await _bump_basket_authority(
+        session, realm_and_market(profile_sleeve)[0], profile_terms.basket_key
+    )
     if (
         hashing.content_sha256(profile_content_from_row(profile))
         != profile.content_sha256
@@ -1308,6 +1333,7 @@ async def register_plan(
     )
     session.add(reservation)
     await _flush(session)
+    await _bump_basket_authority(session, realm, terms.basket_key)
     return RegisteredPlan(plan, tranches, reservation, proposed)
 
 
