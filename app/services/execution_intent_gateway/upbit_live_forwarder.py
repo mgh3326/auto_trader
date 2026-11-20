@@ -10,7 +10,9 @@ What it adds is in front of them:
   or nothing is posted (B2, B28);
 * a last look immediately before the request (design §4.4): the live switch, the
   account kill row, the intent's expiry, the mandate and its revocation, the
-  sleeve state, an open exit handoff, and the account fingerprint (B12).
+  sleeve state, an open exit handoff, and the account fingerprint (B12);
+* for a cancel, the account fingerprint alone, at the same place: the
+  transport's pre-send hook, immediately before the DELETE.
 
 **What counts as proof that nothing was sent (B29).** The order layer calls the
 pre-send hook immediately before the HTTP request and nowhere else. If the hook
@@ -24,7 +26,7 @@ accepted order is an unknown outcome, exactly as for kis_mock.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -148,6 +150,32 @@ class _PreSendGate:
         self.passed = True
 
 
+class _CancelAccountGate:
+    """The pre-send hook of a live cancel (B12).
+
+    ``passed`` is True only after the account check returned no refusal,
+    immediately before the DELETE. Until then no request was made.
+    """
+
+    def __init__(self, refusal: Callable[[], Awaitable[str | None]]) -> None:
+        self._refusal = refusal
+        self.passed = False
+        self.refusal: str | None = None
+
+    async def __call__(self) -> None:
+        from app.services.brokers.kis.pre_send import PreSendFreshnessError
+
+        refusal = await self._refusal()
+        if refusal is not None:
+            self.refusal = refusal
+            raise PreSendFreshnessError((refusal,))
+        self.passed = True
+
+    def not_sent_reason(self) -> str:
+        """Why nothing was sent: this hook's refusal, or a guard below it."""
+        return self.refusal or Refusal.LOWER_GUARD_REFUSED.value
+
+
 def _not_sent_reason(gate: _PreSendGate, result: Mapping[str, Any] | None) -> str:
     if gate.refusal is not None:
         return not_sent_reason(gate.refusal.value)
@@ -259,7 +287,11 @@ class UpbitLiveForwarder:
             )
         # B12 for a cancel: the DELETE goes to the account the mandate was
         # approved for, or nowhere. Kill, expiry and revocation are not read --
-        # a cancel passes all three -- only whose account this is.
+        # a cancel passes all three -- only whose account this is. It is asked
+        # twice: here, before the order layer is entered at all, and again in
+        # the transport's pre-send hook, after the rate limiter has admitted
+        # the request and immediately before the DELETE. The second look is the
+        # one that authorizes the send: the first can be seconds old by then.
         mismatch = await self._cancel_account_refusal(intent)
         if mismatch is not None:
             return ForwardResult(
@@ -268,9 +300,35 @@ class UpbitLiveForwarder:
                 result={"success": False},
                 not_sent_reason=mismatch,
             )
-        result = await cancel_order_impl(
-            order_id=broker_order_id, symbol=intent.symbol, market=_MARKET
-        )
+        gate = _CancelAccountGate(lambda: self._cancel_account_refusal(intent))
+        try:
+            result = await cancel_order_impl(
+                order_id=broker_order_id,
+                symbol=intent.symbol,
+                market=_MARKET,
+                pre_send_hook=gate,
+            )
+        except Exception as exc:
+            if gate.passed:
+                raise
+            return ForwardResult(
+                accepted=False,
+                broker_order_id=None,
+                result={"success": False, "error_class": type(exc).__name__},
+                not_sent_reason=gate.not_sent_reason(),
+            )
+        if not gate.passed:
+            # The order layer turns the hook's refusal into an ordinary failed
+            # result, so the proof is the hook's own flag: it is called
+            # immediately before the request and nowhere else (B29).
+            return ForwardResult(
+                accepted=False,
+                broker_order_id=None,
+                result=result,
+                not_sent_reason=gate.not_sent_reason(),
+            )
+        # The hook returned: the DELETE may have crossed the wire. Anything
+        # short of success is an unknown outcome, as before.
         return ForwardResult(
             accepted=result.get("success") is True,
             broker_order_id=broker_order_id,

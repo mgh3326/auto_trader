@@ -556,19 +556,88 @@ async def test_o4_a_reserved_buy_is_not_sent_once_the_sleeve_is_unmeasured(
     assert result.not_sent_reason == Refusal.SLEEVE_PNL_UNMEASURED.value
 
 
+class _UpbitWire:
+    """The real cancel order layer and the real Upbit client, down to the wire.
+
+    Only the two things below the pre-send hook's caller are replaced: the rate
+    limiter, whose wait is where time passes before a request, and the HTTP
+    client, which records the DELETE instead of making it. A test that uses it
+    asks for ``allow_external_providers`` so that the real
+    ``_request_with_auth`` runs; no socket is opened.
+    """
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        while_waiting: Any = None,
+        send_error: Exception | None = None,
+    ) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.services.brokers.upbit import client
+
+        self.admitted = 0
+        self.deletes: list[dict[str, Any]] = []
+        wire = self
+
+        async def acquire(**_kwargs: Any) -> None:
+            wire.admitted += 1
+            if while_waiting is not None:
+                while_waiting()
+
+        limiter = MagicMock()
+        limiter.acquire = AsyncMock(side_effect=acquire)
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {"uuid": "uuid-1", "created_at": "2026-11-20T05:20:00+09:00"}
+
+        class _Client:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> _Client:
+                return self
+
+            async def __aexit__(self, *_exc: Any) -> None:
+                return None
+
+            async def delete(self, url: str, **kwargs: Any) -> _Response:
+                wire.deletes.append({"url": url, **kwargs})
+                if send_error is not None:
+                    raise send_error
+                return _Response()
+
+        monkeypatch.setattr(client, "get_limiter", AsyncMock(return_value=limiter))
+        monkeypatch.setattr(client.jwt, "encode", lambda *a, **k: "tok")
+        monkeypatch.setattr(client.httpx, "AsyncClient", _Client)
+
+
+def _cancel_forwarder(
+    store: MemoryUpbitStore, account: dict[str, str | None], **kwargs: Any
+) -> UpbitLiveForwarder:
+    return UpbitLiveForwarder(
+        facts=store,
+        kill_switch=FakeKillSwitch(kwargs.get("kill", KillMode.ACTIVE)),
+        environment=LIVE_ENV,
+        clock=lambda: NOW,
+        account_ref=lambda: account["ref"],
+    )
+
+
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 async def test_b12_a_live_cancel_goes_to_the_mandates_account_or_nowhere(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.mcp_server.tooling import orders_modify_cancel
-
-    calls: list[dict[str, Any]] = []
-
-    async def cancel_order_impl(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"success": True}
-
-    monkeypatch.setattr(orders_modify_cancel, "cancel_order_impl", cancel_order_impl)
+    wire = _UpbitWire(monkeypatch)
     intent = upbit_intent()
     store = MemoryUpbitStore(intent, facts=facts())
     request = cancel_child(intent, "child-0001")
@@ -579,7 +648,8 @@ async def test_b12_a_live_cancel_goes_to_the_mandates_account_or_nowhere(
     unknown = await _forwarder(store, account_ref=None).cancel(
         intent, request, broker_order_id="uuid-1"
     )
-    assert calls == []
+    # Refused before the order layer: not even the rate limiter was asked.
+    assert wire.admitted == 0 and wire.deletes == []
     assert other.not_sent_reason == Refusal.ACCOUNT_MISMATCH.value
     assert unknown.not_sent_reason == Refusal.ACCOUNT_MISMATCH.value
 
@@ -589,4 +659,80 @@ async def test_b12_a_live_cancel_goes_to_the_mandates_account_or_nowhere(
         intent, request, broker_order_id="uuid-1"
     )
     assert sent.accepted is True and sent.not_sent_reason is None
-    assert [call["order_id"] for call in calls] == ["uuid-1"]
+    assert [delete["params"] for delete in wire.deletes] == [{"uuid": "uuid-1"}]
+
+
+@pytest.mark.usefixtures("allow_external_providers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("becomes", ["upbit:upbit:" + "c" * 64, None])
+async def test_b12_a_live_cancel_is_authorized_immediately_before_the_delete(
+    monkeypatch: pytest.MonkeyPatch, becomes: str | None
+) -> None:
+    """PR 2486 review (65t2wp): the account matched when the cancel entered the
+    order layer, and changed (or became unreadable) while the request waited
+    for the rate limiter. The check that authorizes the send is the one in the
+    transport's pre-send hook, so no DELETE is made and the child is a proven
+    non-send, which leaves a later cancel possible."""
+    account: dict[str, str | None] = {"ref": ACCOUNT_REF}
+    wire = _UpbitWire(monkeypatch, while_waiting=lambda: account.update(ref=becomes))
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+
+    outcome = await _cancel_forwarder(store, account).cancel(
+        intent, cancel_child(intent, "child-0001"), broker_order_id="uuid-1"
+    )
+
+    assert wire.admitted == 1
+    assert wire.deletes == []
+    assert outcome.accepted is False
+    assert outcome.not_sent_reason == Refusal.ACCOUNT_MISMATCH.value
+    assert outcome.broker_order_id is None
+
+
+@pytest.mark.usefixtures("allow_external_providers")
+@pytest.mark.asyncio
+async def test_a_live_cancel_that_fails_after_the_hook_returned_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the hook has returned the DELETE may have crossed the wire: a
+    transport error is an unknown outcome, never a proven non-send."""
+    import httpx
+
+    wire = _UpbitWire(monkeypatch, send_error=httpx.ReadTimeout("lost"))
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+
+    outcome = await _forwarder(store).cancel(
+        intent, cancel_child(intent, "child-0001"), broker_order_id="uuid-1"
+    )
+
+    assert len(wire.deletes) == 1
+    assert outcome.accepted is False
+    assert outcome.not_sent_reason is None
+    assert outcome.broker_order_id == "uuid-1"
+
+
+@pytest.mark.usefixtures("allow_external_providers")
+@pytest.mark.asyncio
+async def test_a_live_cancel_stopped_below_the_hook_is_a_proven_non_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure of the order layer before it reaches the hook sent nothing."""
+    from app.services.brokers.upbit import client
+
+    wire = _UpbitWire(monkeypatch)
+
+    async def no_limiter(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("limiter unavailable")
+
+    monkeypatch.setattr(client, "get_limiter", no_limiter)
+    intent = upbit_intent()
+    store = MemoryUpbitStore(intent, facts=facts())
+
+    outcome = await _forwarder(store).cancel(
+        intent, cancel_child(intent, "child-0001"), broker_order_id="uuid-1"
+    )
+
+    assert wire.deletes == []
+    assert outcome.accepted is False
+    assert outcome.not_sent_reason == Refusal.LOWER_GUARD_REFUSED.value
