@@ -352,6 +352,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.mechanical_loss_cut_decisions")
             )
+            # hk 5651 fence coordination tables are later than the boundary too.
+            await connection.execute(text("DROP TABLE review.mandate_cap_mutex"))
+            await connection.execute(text("DROP TABLE review.mandate_basket_authority"))
             # hk 5528 mandate tables are later too: the proposal binding columns
             # (their FK goes with them) before the tables, children first.
             await connection.execute(

@@ -148,6 +148,7 @@ async def test_i14_f_the_ids_of_the_thesis_broken_event_open_the_loss_cut(
         actor="operator:test",
         evidence=EVIDENCE,
     )
+    broken_seq = broken.seq
     await db_session.commit()
     service = OrderProposalsService(db_session)
     with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
@@ -168,7 +169,7 @@ async def test_i14_f_the_ids_of_the_thesis_broken_event_open_the_loss_cut(
         plan_id=plan.id,
         event="thesis_evidence_refreshed",
         actor="operator:test",
-        thesis_seq=broken.seq,
+        thesis_seq=broken_seq,
         evidence={"retrospective_id": 77, "approval_issue_id": "ROB-900"},
     )
     await db_session.commit()
@@ -191,6 +192,7 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
         actor="operator:test",
         evidence=EVIDENCE,
     )
+    broken_seq = broken.seq
     await ms.append_plan_event(
         db_session, plan_id=plan.id, event="retired", actor="operator:test"
     )
@@ -204,7 +206,7 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
         plan_id=plan.id,
         event="thesis_evidence_refreshed",
         actor="operator:test",
-        thesis_seq=broken.seq,
+        thesis_seq=broken_seq,
         evidence={"retrospective_id": 88, "approval_issue_id": "ROB-901"},
     )
     await db_session.commit()
