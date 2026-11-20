@@ -336,7 +336,10 @@ async def test_i13_batch_and_card_rows_are_append_only(db_session, seed) -> None
         n="f" * 64,
     )
     await refused(
-        db_session, "TRUNCATE review.mandate_plan_batch_members", "append-only"
+        db_session,
+        # CASCADE: a plain TRUNCATE is already refused by the answer link's foreign key
+        "TRUNCATE review.mandate_plan_batch_members CASCADE",
+        "append-only",
     )
 
 
@@ -1725,10 +1728,10 @@ RESEND_AT = (
     "now() + CAST(:skew AS interval) FROM review.mandate_terms t WHERE t.id = :t"
 )
 SKEWS = [
-    "-30 days",
-    "0 seconds",
-    "30 days",
-]  # a card dated before / at / after its answer
+    pytest.param(timedelta(days=-30), id="-30 days"),
+    pytest.param(timedelta(0), id="0 seconds"),
+    pytest.param(timedelta(days=30), id="30 days"),
+]  # a card (or old row) dated before / at / after the thing it is compared with
 
 
 async def next_seq(db, plan_id: int) -> int:
@@ -1796,9 +1799,7 @@ async def test_i22_t1_rows_upgraded_in_place_are_never_read_as_answers(
     sc, plan, terms, live = await reapproval_scene(db_session, seed)
     card = sc.cards[plan.id]
     created = await card_created_at(db_session, card.id)
-    offset = {"-30 days": timedelta(days=-30), "0 seconds": timedelta(0)}.get(
-        skew, timedelta(days=30)
-    )
+    offset = skew
     later = d.EFFECTIVE + timedelta(days=1)
     # the T1 shape
     await raw(
