@@ -42,6 +42,7 @@ class MandateSeed(SleeveSeed):
     def __init__(self, db) -> None:
         super().__init__(db)
         self.basket_keys: list[str] = []
+        self.batch_ids: list[int] = []
 
     async def clause_sleeve(
         self,
@@ -254,6 +255,13 @@ class MandateSeed(SleeveSeed):
     async def cleanup(self) -> None:
         await self.db.rollback()
         await self.db.execute(sa.text("SET LOCAL session_replication_role = replica"))
+        if self.batch_ids:
+            bids = {"bids": self.batch_ids}
+            for statement in (
+                "DELETE FROM review.mandate_plan_batch_members WHERE batch_id = ANY(:bids)",
+                "DELETE FROM review.mandate_plan_batches WHERE id = ANY(:bids)",
+            ):
+                await self.db.execute(sa.text(statement), bids)
         if self.sleeve_ids:
             ids = {"ids": self.sleeve_ids}
             plans = "(SELECT id FROM review.mandate_plans WHERE sleeve_id = ANY(:ids))"

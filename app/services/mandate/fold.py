@@ -11,6 +11,7 @@ Pure: standard library plus ``vocabulary``. No database, no clock.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
@@ -54,6 +55,11 @@ class PlanEvent:
     first_fill_amount: Decimal | None = None
     first_fill_quantity: Decimal | None = None
     activation_profile_id: int | None = None
+    #: the card id a writer names as its input (T1 free value; proves nothing alone)
+    batch_member_id: int | None = None
+    #: the card this event verifiably answered: set by the database in the INSERT that
+    #: passed every card check, NULL on all earlier rows and on events built in memory
+    answered_batch_member_id: int | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     actor: str = ""
 
@@ -518,6 +524,34 @@ def _trade_date(event: PlanEvent) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> None:
+    """Refuse a NEW ``resumed`` event dated before the batch approval it follows (§5.1).
+
+    The floor applies only when the plan's latest ``approved``/``terms_rebound`` event
+    verifiably answered a morning-batch card: ``answered_batch_member_id`` is set by the
+    database in the INSERT that passed the card checks, so neither a card id a T1 writer
+    stored nor any date comparison is read. That approval was recorded for a session after
+    the bell, and a resume must not pull the plan back before it. A non-batch (legacy or
+    earlier-schema) approval keeps the behaviour it always had, so an operator can still
+    resume such a plan to any date. A resume may otherwise move its own date around.
+    This is a write-time check only; ``fold_plan_events`` replays stored rows unchanged.
+    """
+    if candidate.event != "resumed" or candidate.effective_session is None:
+        return
+    binding = next(
+        (e for e in reversed(history) if e.event in ("approved", "terms_rebound")),
+        None,
+    )
+    if binding is None or binding.answered_batch_member_id is None:
+        return
+    _require(
+        binding.effective_session is None
+        or candidate.effective_session >= binding.effective_session,
+        v.MandateRefusal.INVALID_TRANSITION,
+        "a resume cannot take effect before the approval it follows",
+    )
 
 
 def fold_plan_events(events: list[PlanEvent] | tuple[PlanEvent, ...]) -> PlanState:

@@ -203,6 +203,7 @@ tests/services/kis_mock_runner/test_migration.py
 tests/services/kis_mock_runner/test_singleton.py
 tests/services/kis_websocket/test_approval_keys.py
 tests/services/kis_websocket/test_approval_keys_gatewayd.py
+tests/services/mandate/test_batches_db.py
 tests/services/mandate/test_cli_db.py
 tests/services/mandate/test_fence_db.py
 tests/services/mandate/test_loss_guard_db.py

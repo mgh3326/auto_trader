@@ -435,8 +435,14 @@ async def send_telegram_message(
     parse_mode: str | None = "Markdown",
     reply_markup: dict[str, Any] | None = None,
     message_thread_id: int | None = None,
+    reply_to_message_id: int | None = None,
 ) -> TelegramMethodResult:
-    """Send one message and preserve only allowlisted response metadata."""
+    """Send one message and preserve only allowlisted response metadata.
+
+    ``reply_to_message_id`` makes the message a reply to that exact message and is strict:
+    ``allow_sending_without_reply`` is false, so a missing target fails the send instead of
+    posting an unlinked message.
+    """
     payload_chars = telegram_text_length(text)
     if payload_chars > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT:
         result = TelegramMethodResult.failed(
@@ -459,6 +465,11 @@ async def send_telegram_message(
         payload["reply_markup"] = reply_markup
     if message_thread_id is not None:
         payload["message_thread_id"] = message_thread_id
+    if reply_to_message_id is not None:
+        payload["reply_parameters"] = {
+            "message_id": reply_to_message_id,
+            "allow_sending_without_reply": False,
+        }
 
     try:
         response = await http_client.post(url, json=payload)
@@ -542,10 +553,13 @@ async def edit_message_text(
     chat_id: str,
     message_id: int,
     text: str,
-    parse_mode: str = "Markdown",
+    parse_mode: str | None = "Markdown",
     reply_markup: dict[str, Any] | None = None,
 ) -> TelegramMethodResult:
-    """Edit one message with the same UTF-16 and safe-result contract."""
+    """Edit one message with the same UTF-16 and safe-result contract.
+
+    ``parse_mode=None`` sends plain text (the default stays Markdown).
+    """
     payload_chars = telegram_text_length(text)
     if payload_chars > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT:
         result = TelegramMethodResult.failed(
@@ -561,8 +575,9 @@ async def edit_message_text(
         "chat_id": chat_id,
         "message_id": message_id,
         "text": text,
-        "parse_mode": parse_mode,
     }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
 
@@ -607,6 +622,65 @@ async def edit_message_text(
         error_classification=classification,
     )
     _log_method_failure(result, telegram_method="editMessageText")
+    return result
+
+
+async def edit_message_reply_markup(
+    *,
+    http_client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    message_id: int,
+    reply_markup: dict[str, Any] | None = None,
+) -> TelegramMethodResult:
+    """Replace only the inline keyboard of one message (the text is left as it is).
+
+    An empty ``{"inline_keyboard": []}`` removes the buttons.
+    """
+    url = f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup"
+    payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    try:
+        response = await http_client.post(url, json=payload)
+    except Exception:  # noqa: BLE001 - converted to a safe typed result
+        result = TelegramMethodResult.failed(
+            payload_chars=0,
+            failure_code="telegram_transport_error",
+            error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
+        )
+        _log_method_failure(result, telegram_method="editMessageReplyMarkup")
+        return result
+    (
+        status_code,
+        error_code,
+        telegram_ok,
+        _message_id,
+        classification,
+    ) = _safe_response_fields(response)
+    if 200 <= status_code < 300 and telegram_ok:
+        return TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=status_code,
+            error_code=None,
+            error_classification=None,
+            payload_chars=0,
+        )
+    if error_code is None and 200 <= status_code < 300:
+        classification = TelegramErrorClassification.INVALID_RESPONSE
+    result = TelegramMethodResult.failed(
+        payload_chars=0,
+        failure_code=(
+            "telegram_api_error"
+            if error_code is not None
+            else "telegram_invalid_response"
+        ),
+        status_code=status_code,
+        error_code=error_code,
+        error_classification=classification,
+    )
+    _log_method_failure(result, telegram_method="editMessageReplyMarkup")
     return result
 
 

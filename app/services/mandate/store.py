@@ -54,6 +54,7 @@ from app.services.mandate.fold import (
     PlanEvent,
     PlanState,
     apply_event,
+    check_resume_floor,
     fold_plan_events,
 )
 from app.services.mandate.invariants import (
@@ -320,6 +321,8 @@ def event_to_fold(row: MandatePlanEvent) -> PlanEvent:
             else Decimal(str(row.first_fill_quantity))
         ),
         activation_profile_id=row.activation_profile_id,
+        batch_member_id=row.batch_member_id,
+        answered_batch_member_id=row.answered_batch_member_id,
         evidence=dict(row.evidence or {}),
         actor=row.actor,
     )
@@ -1429,6 +1432,20 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     return None
 
 
+def fold_candidate(
+    *,
+    event: str,
+    seq: int,
+    evidence: Mapping[str, Any],
+    actor: str,
+    fields: Mapping[str, Any],
+) -> PlanEvent:
+    """The fold's view of an event about to be written."""
+    return PlanEvent(
+        event=event, seq=seq, evidence=dict(evidence), actor=actor, **fields
+    )
+
+
 #: §5.2: only a thesis-change retrospective of the plan's own symbol evidences a broken
 #: thesis. The generic loss-cut validators also accept ``stop_loss``; the mandate does not.
 THESIS_RETROSPECTIVE_TRIGGER = "thesis_change"
@@ -1599,15 +1616,19 @@ async def append_plan_event(
         raise MandateError(
             v.MandateRefusal.ACCOUNT_MISMATCH, "the fence account is not the plan's"
         )
-    state = await plan_state(session, plan_id)
-    candidate = PlanEvent(
+    rows = await list_plan_events(session, plan_id)
+    history = [event_to_fold(r) for r in rows]
+    state = fold_plan_events(history)
+    candidate = fold_candidate(
         event=event,
         seq=state.last_seq + 1,
         evidence=clean_evidence,
         actor=who,
-        **fields,
+        fields=fields,
     )
     try:
+        if event == "resumed":  # a new resume only; replay is unchanged
+            check_resume_floor(history, candidate)
         apply_event(state, candidate)
     except InvalidPlanEvent as exc:
         raise MandateError(exc.code, str(exc)) from exc

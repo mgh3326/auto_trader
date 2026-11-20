@@ -173,6 +173,11 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v73 (hk 5637): review.strategy_sleeves account/market CHECK gains
 # kiwoom_mock/equity_kr; create_all never alters an existing table's CHECK, so
 # the production migration's idempotent DROP/ADD is mirrored below.
+# v76 (hk 5648): review.mandate_plan_batches / mandate_plan_batch_members (two new
+# ORM tables via create_all), the nullable verified-answer column on
+# review.mandate_plan_events (ADD COLUMN IF NOT EXISTS + FK + CHECK for a persistent
+# test DB) and the batch/card/answer guard triggers plus the events index, loaded from
+# the production migration 20261120_hk5648_mandate_batches.
 # v72 (hk 5528): review.mandate_* (nine new ORM tables via create_all), the
 # nullable review.order_proposals.mandate_plan_id / mandate_tranche_index columns
 # (ADD COLUMN IF NOT EXISTS for a persistent test DB) and the guard triggers,
@@ -190,7 +195,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v75 (hk 5651): review.mandate_basket_authority / review.mandate_cap_mutex (two ORM
 # tables via create_all) and the three guard triggers incl. the automatic-fence
 # profile guard, loaded from the production migration 20261120_hk5651_mandate_fence.
-SCHEMA_BOOTSTRAP_VERSION = 75
+SCHEMA_BOOTSTRAP_VERSION = 76
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2586,6 +2591,25 @@ def _mandate_fence_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _mandate_fence_ddl()
+
+
+def _mandate_batches_ddl() -> tuple[str, ...]:
+    """hk 5648 guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261120_hk5648_mandate_batches.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk5648_mandate_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (*module.COLUMN_DDL, *module.GUARD_DDL)
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _mandate_batches_ddl()
 
 
 def _sleeve_kiwoom_ddl() -> tuple[str, ...]:

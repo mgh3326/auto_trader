@@ -139,3 +139,37 @@ def profile_content(
         "effective_session": canonical_date(effective_session),
         "expires_at": canonical_timestamp(expires_at),
     }
+
+
+def plan_content(
+    *,
+    plan_id: int,
+    sleeve_id: int,
+    symbol: str,
+    approved_terms_id: int,
+    account_ref: str,
+    scope_account_refs: Sequence[str],
+    planned_amount: Any,
+    adopted_amount: Any,
+    thesis: str,
+    invalidation_conditions: Sequence[str],
+    sector_key: str,
+) -> dict[str, Any]:
+    """The immutable identity of a plan, as a batch card snapshots it (§5.1).
+
+    A plan row never changes, so a card whose recomputed hash differs from the
+    snapshot means the row set was tampered with, not that the plan moved on.
+    """
+    return {
+        "plan_id": int(plan_id),
+        "sleeve_id": int(sleeve_id),
+        "symbol": symbol,
+        "approved_terms_id": int(approved_terms_id),
+        "account_ref": account_ref,
+        "scope_account_refs": sorted(set(scope_account_refs)),
+        "planned_amount": canonical_decimal(planned_amount),
+        "adopted_amount": canonical_decimal(adopted_amount),
+        "thesis": thesis,
+        "invalidation_conditions": list(invalidation_conditions),
+        "sector_key": sector_key,
+    }

@@ -397,3 +397,143 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
     s.add("retired")
     with refused(v.MandateRefusal.TRANCHE_UNCERTAIN):
         s.add("orders_settled")
+
+
+def _late_approval_history(verified: int | None = 7, placeholder: int | None = None):
+    """proposed -> approved for the NEXT session -> suspended (as plain event rows).
+
+    ``verified`` is the answer link the database set (a morning-batch answer); a T1-era
+    row carries a free ``batch_member_id`` placeholder and no link (``placeholder``)."""
+    later = date(SESSION.year, SESSION.month, SESSION.day + 1)
+    history = [
+        ev("proposed", seq=1),
+        ev(
+            "approved",
+            seq=2,
+            terms_id=1,
+            terms_sha256="a" * 64,
+            effective_session=later,
+            batch_member_id=verified if verified is not None else placeholder,
+            answered_batch_member_id=verified,
+        ),
+        ev("suspended", seq=3),
+    ]
+    return history, later
+
+
+def _resume(seq: int, day: date):
+    return ev("resumed", seq=seq, resume_target="approved", effective_session=day)
+
+
+def test_a_new_resume_cannot_take_effect_before_the_approval_it_follows() -> None:
+    """A late (batch) approval is recorded for the next session; a same-day suspend and
+    resume with the earlier session must not pull the plan back before it."""
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history()
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(4, SESSION))
+    # on or after the approval date is fine; other events are never checked
+    check_resume_floor(history, _resume(4, later))
+    check_resume_floor(history, ev("suspended", seq=4))
+
+
+def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> None:
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history()
+    far = later + (later - SESSION) * 4
+    history += [_resume(4, far), ev("suspended", seq=5)]
+    # correcting the resume date back down to the approval date is allowed ...
+    check_resume_floor(history, _resume(6, later))
+    # ... below it is not
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(6, SESSION))
+
+
+def test_histories_written_before_the_floor_existed_still_replay() -> None:
+    """Replay is unchanged: a stream the old writer and trigger accepted (approved for a
+    later day, resumed for an earlier one, resumed again) folds, and can still be retired."""
+    from app.services.mandate.fold import fold_plan_events
+
+    history, later = _late_approval_history()
+    history += [_resume(4, SESSION), ev("suspended", seq=5), _resume(6, SESSION)]
+    state = fold_plan_events(history)
+    assert state.effective_session == SESSION and state.authority == "approved"
+    state = apply_event(state, ev("retired", seq=7))
+    assert state.authority == "retired"
+
+
+def test_a_legacy_approval_keeps_its_old_resume_behaviour_for_new_resumes_too() -> None:
+    """Pre-upgrade history: a non-batch approval effective later, a resume for an earlier
+    day, a second suspension. A NEW resume is checked against the latest binding approval
+    only when that approval answers a batch card, so the operator's path back (here a
+    resume for any date, including before the approval) is unchanged."""
+    from app.services.mandate.fold import check_resume_floor, fold_plan_events
+
+    history, later = _late_approval_history(verified=None)  # legacy approval
+    history += [_resume(4, SESSION), ev("suspended", seq=5)]
+    fold_plan_events(history)  # replays
+    check_resume_floor(history, _resume(6, later + (later - SESSION)))  # a later date
+    check_resume_floor(history, _resume(6, SESSION))  # and an earlier one: no floor
+    # the same history with a batch-backed approval is floored
+    batch_history, _ = _late_approval_history(verified=7)
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(batch_history, _resume(4, SESSION))
+
+
+def test_the_floor_follows_the_latest_binding_event() -> None:
+    """A later non-batch rebind lifts the floor; a later batch rebind sets a new one."""
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history(verified=7)
+    legacy_rebind = ev(
+        "terms_rebound",
+        seq=4,
+        terms_id=2,
+        terms_sha256="b" * 64,
+        effective_session=later,
+    )
+    history = [*history, legacy_rebind, _resume(5, later), ev("suspended", seq=6)]
+    check_resume_floor(
+        history, _resume(7, SESSION)
+    )  # latest binding is not batch-backed
+    batch_rebind = ev(
+        "terms_rebound",
+        seq=7,
+        terms_id=3,
+        terms_sha256="c" * 64,
+        effective_session=later,
+        batch_member_id=9,
+        answered_batch_member_id=9,
+    )
+    history = [*history, batch_rebind, ev("suspended", seq=8)]
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(9, SESSION))
+
+
+def test_a_t1_card_id_without_the_verified_link_proves_nothing() -> None:
+    """The T1 schema allowed any ``batch_member_id`` on approved/terms_rebound (a free
+    placeholder, no card table). After upgrade such a row has no verified link, so it gives
+    no floor whatever the id is, and whatever date or time the row or any card carries."""
+    from app.services.mandate.fold import check_resume_floor, fold_plan_events
+
+    for placeholder in (1, 7, 999_999):
+        history, _ = _late_approval_history(verified=None, placeholder=placeholder)
+        history += [_resume(4, SESSION), ev("suspended", seq=5)]
+        fold_plan_events(history)  # replays unchanged
+        check_resume_floor(history, _resume(6, SESSION))  # no floor: the old behaviour
+
+
+def test_the_verified_link_alone_floors_the_resume_whatever_the_card_id_is() -> None:
+    """A placeholder id equal to a later card's id (same plan) is still nothing; the same
+    row with the link the database set is a genuine answer and is floored."""
+    from app.services.mandate.fold import check_resume_floor
+
+    history, _ = _late_approval_history(verified=None, placeholder=7)
+    history += [ev("suspended", seq=4)]
+    check_resume_floor(history, _resume(5, SESSION))  # the T1 row: nothing
+    verified, _ = _late_approval_history(verified=7)
+    verified += [ev("suspended", seq=4)]
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(verified, _resume(5, SESSION))

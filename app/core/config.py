@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -1037,6 +1038,8 @@ class Settings(BaseSettings):
     # approvals remain the fallback whenever this is off or eligibility fails.
     ORDER_PROPOSALS_AUTO_APPROVE: bool = False
     MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES: str = ""
+    # hk 3795 §3.5 (T3a): Telegram user ids allowed to answer a mandate card
+    # (comma-separated, canonical decimal). Empty (default) = nobody can approve.
     MANDATE_APPROVER_TELEGRAM_USER_IDS: str = ""
     # AUTO-APPROVE-EXPAND (§40차) — selects which eligibility classification
     # `evaluate_auto_approve_eligibility` applies. Subordinate to
@@ -1144,6 +1147,24 @@ class Settings(BaseSettings):
     MECHANICAL_LOSS_CUT_LIVE_ENABLED: bool = False
     MECHANICAL_LOSS_CUT_LIVE_MARKETS: str = ""
     MECHANICAL_LOSS_CUT_LIVE_ACCOUNT_MODES: str = ""
+
+    @property
+    def mandate_approver_telegram_user_ids(self) -> frozenset[int]:
+        """The closed principal list of the mandate callbacks (§3.5).
+
+        Fail-closed: an empty value, or a value with any entry that is not a
+        canonical positive decimal within Telegram's bound, is the empty set.
+        """
+        raw = self.MANDATE_APPROVER_TELEGRAM_USER_IDS.strip()
+        if not raw:
+            return frozenset()
+        ids: set[int] = set()
+        for token in raw.split(","):
+            token = token.strip()
+            if not re.fullmatch(r"[1-9][0-9]{0,15}", token) or int(token) > 2**52 - 1:
+                return frozenset()
+            ids.add(int(token))
+        return frozenset(ids)
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:

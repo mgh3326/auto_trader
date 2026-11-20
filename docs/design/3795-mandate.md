@@ -224,7 +224,8 @@ hk 4881이 요구한 설계 문서이고, 상위 작업은 hk 3795다. 이 판�
 | `terms_id`·`terms_sha256` | `approved`·`terms_rebound` 이벤트에 필수, `rejected`·`retired`는 선택(묶음 스냅샷에서 왔을 때 기록), 그 외 NULL(CHECK). `terms_id`는 `mandate_terms` FK, 해시는 그 행과 일치해야 함(트리거) |
 | `effective_session` | `approved`·`terms_rebound`·`resumed`에 필수: 승인 효력이 시작되는 거래일(시장 달력) |
 | `resume_target` | `resumed`에 필수: `approved` 또는 `active` |
-| `batch_member_id` | 묶음 승인에서 온 이벤트면 그 멤버 스냅샷(§5.1) |
+| `batch_member_id` | 묶음 승인 응답을 쓰는 쪽이 지정하는 카드 입력(§5.1). T1에서 기록한 멤버 번호는 과거 입력으로 보존하며 응답·nonce 소비·효력 하한을 증명하지 않는다 |
+| `answered_batch_member_id` | T3a 응답의 근거: 새 응답 INSERT에서 카드 검사(계획·종류·최신 발급·스냅샷·만료·단일 소비)를 통과한 같은 INSERT에서 DB가 채우는 불변 카드 참조(`mandate_plan_batch_members` FK, nullable). 기존 행은 NULL이고 백필하지 않으며, 어떤 쓰기도 이 값을 직접 지정할 수 없다(트리거가 거부). 응답 여부·배치 닫힘·재발급·새 resume의 하한은 이 참조만 읽고, 기록 시각은 감사 정보로만 쓴다 |
 | `proposal_id` | 회차가 제안을 만들었을 때. `tranche_proposed`·`tranche_send_fenced`에 필수. FK 제약은 두지 않는다(§4.6) |
 | `notional`·`kst_day`·`approval_mode`·`account_ref`·`attempt_id`·`activation_profile_id` | `tranche_send_fenced`에 필수: 전송 금액, 그 fence가 속한 KST 일, 승인 방식(`auto`/`human`), 그 시도가 쓰는 계좌 참조(계획의 것과 같아야 한다 — 트리거), 송신 시도 id(fence 하나는 transport 시도 하나에만 쓰인다). `activation_profile_id`는 `auto`일 때만 필수(판정에 쓴 활성화 프로필 행, §3.6). 그 외 이벤트에서는 NULL(CHECK) |
 | `fenced_seq` | `tranche_send_released`에 필수: 해제하는 fence 이벤트의 `seq`(같은 계획). fence 하나에 해제는 많아야 하나(트리거). 해제의 금액과 KST 일은 짝인 fence에서 읽는다 |
@@ -799,7 +800,7 @@ D4와 정책의 관계: 결정 §1-3의 "신규 매수·물타기 티어 끄기"
 
 - 기존 순서 L0 → L3 → L4b(§2.3 F4)는 그대로다. L1·L2는 L0과 L3 사이에, L4a는 L4b 바로 앞에 놓인다. 한 트랜잭션이 여러 sleeve lock을 잡을 때(묶음 승인 콜백)는 sleeve id 오름차순이다.
 - 계획 결속이 아닌 제안은 L1·L2를 잡지 않는다(`loss_cut` 제안 생성의 L1만 예외, §5.2).
-- 계획 이벤트를 append하는 진입점(묶음 승인 콜백, 운영자 CLI, 투영 CLI, 제안 생성과 arming, 논지 훼손 기록)은 그 계획의 sleeve lock(L3)을 쥐고 쓴다. 이것은 `seq` 충돌을 줄이는 관례이고, 순서의 근거는 `UNIQUE(plan_id, seq)`와 전이 트리거다. 이벤트 INSERT 트리거는 advisory lock을 잡지 않는다(종목 lock을 스스로 잡는 것은 예약·해제 **테이블**의 트리거뿐이다, §3.4).
+- 계획 이벤트를 append하는 진입점(묶음 승인 콜백, 운영자 CLI, 투영 CLI, 제안 생성과 arming, 논지 훼손 기록)은 그 계획의 sleeve lock(L3)을 쥐고 쓴다. 이것은 `seq` 충돌을 줄이는 관례이고, 순서의 근거는 `UNIQUE(plan_id, seq)`와 전이 트리거다. 이벤트 INSERT 트리거는 advisory lock을 잡지 않는다(종목 lock을 스스로 잡는 것은 예약·해제 **테이블**의 트리거뿐이다, §3.4). 예외는 하나다: T3a 카드 응답을 검증하는 전용 경로(`batch_member_id`를 단 이벤트)는 배치 생성·재발급과 직렬화하기 위해 L2 → L3 → 해당 배치·계획의 멤버 lock 순서를 사용한다. 이 경로는 카드 응답 이벤트에만 적용하며, fence 쓰기에는 호출자 lock을 획득하지 않는다. 일반 이벤트와 기존 `released` 규칙은 위와 같다.
 - fence 트랜잭션과 해제 writer는 L0~L4b를 잡지 않는다(fence 영역 F1~F4만). 자동 경로에서는 dispatch 트랜잭션이 L3을 쥐고 있어 잡으려 하면 자기 호출자를 기다리게 된다. `seq`가 다른 writer와 겹치면 INSERT가 실패하고, 다시 읽어 판정부터 한 번 더 한다(그 사이 폐기됐으면 거기서 끝난다).
 - 사람 승인 콜백은 위임장 lock을 잡지 않는다.
 - **누계의 경계는 fence 트랜잭션의 F3·F4다.** dispatch가 L2·L4a·L4b 아래에서 읽는 B·G는 카드 사유를 미리 고르는 참고 판정이다. 한도를 지키는 것은 fence 트랜잭션이 F3·F4를 잡은 뒤 다시 합한 값이고, 그 판정과 fence INSERT는 한 트랜잭션이다. dispatch의 DB 세션이 판정과 fence 커밋 사이에 죽어도 결과는 같다.
@@ -997,7 +998,7 @@ r4618309267 — 세션 상실 뒤 프로필 철회가 먼저 커밋.
 ### 5.1 1a — 하루 1회 장 시작 전 묶음 승인
 
 - 대상: (a) `proposed` 계획(새 종목 등록), (b) 위임장 버전이 바뀌어 현재 결속 조항이 live 조항과 다른 `approved`/`active` 계획(재승인 대상), (c) 그날 armed가 될 회차 요약.
-- 카드: ROB-870 batch 경로는 **재사용하지 않는다**. 그 멤버는 주문 제안에 FK로 묶이고 개별 승인 카드 게시를 요구하며(`app/models/order_proposals.py:531`, `app/services/order_proposals/service.py:487`), 승인 콜백이 멤버마다 `_handle_approve`를 불러 브로커 주문을 낼 수 있다(`app/services/order_proposals/telegram_callback.py:1223`, `:1388`). 대신 새 테이블 `review.mandate_plan_batches`(+멤버 행, 불변 스냅샷: 계획 id·조항 id·계획 해시)와 nonce 결속 콜백 `mpb`를 둔다. 이 콜백은 멤버 종류에 따라 계획 이벤트 `approved`/`rejected`(새 계획) 또는 `terms_rebound`/`retired`(재승인 대상)만 append하며, 각 이벤트에 스냅샷의 `terms_id`·`terms_sha256`·`effective_session`(다음 정규장 세션)·`batch_member_id`를 싣는다. 콜백 시점 스냅샷 조항이 더 이상 live가 아니면 그 멤버는 아무 이벤트도 쓰지 않는다. 콜백은 주문·제안 모듈을 import하지 않는다(정적 테스트). 멤버 1개도 허용한다. 콜백 인가·nonce 단일 소비·chat allowlist는 기존 콜백과 같은 규칙을 쓰되 코드 경로는 분리한다. 이벤트의 `actor`는 `operator:telegram:<from.id>`이고, 그 `from.id`는 운영자 principal 대조(§3.5, `MANDATE_APPROVER_TELEGRAM_USER_IDS`)를 통과한 것이어야 한다. 통과하지 못한 발신자의 버튼은 이벤트를 쓰지 않고 nonce도 소비하지 않는다.
+- 카드: ROB-870 batch 경로는 **재사용하지 않는다**. 그 멤버는 주문 제안에 FK로 묶이고 개별 승인 카드 게시를 요구하며(`app/models/order_proposals.py:531`, `app/services/order_proposals/service.py:487`), 승인 콜백이 멤버마다 `_handle_approve`를 불러 브로커 주문을 낼 수 있다(`app/services/order_proposals/telegram_callback.py:1223`, `:1388`). 대신 새 테이블 `review.mandate_plan_batches`(+멤버 행, 불변 스냅샷: 계획 id·조항 id·계획 해시)와 nonce 결속 콜백 `mpb`를 둔다. 이 콜백은 멤버 종류에 따라 계획 이벤트 `approved`/`rejected`(새 계획) 또는 `terms_rebound`/`retired`(재승인 대상)만 append하며, 네 응답은 각각 검증된 카드·계획·조항에 결속한다(각 이벤트에 스냅샷의 `terms_id`·`terms_sha256`과 카드 입력 `batch_member_id`를 싣고, 검사를 통과하면 DB가 `answered_batch_member_id`를 채운다). 승인·재결속만 효력 세션을 가진다. 잠금 뒤 DB 쓰기 판정 시각이 T 개장 전이면 T, 개장 이상 종료 미만이면 시장 달력의 다음 거래일, 종료 이상이면 네 종류 모두 기록하지 않는다. 콜백 시점 스냅샷 조항이 더 이상 live가 아니면 그 멤버는 아무 이벤트도 쓰지 않는다. 콜백은 주문·제안 모듈을 import하지 않는다(정적 테스트). 멤버 1개도 허용한다. 콜백 인가·nonce 단일 소비·chat allowlist는 기존 콜백과 같은 규칙을 쓰되 코드 경로는 분리한다. 이벤트의 `actor`는 `operator:telegram:<from.id>`이고, 그 `from.id`는 운영자 principal 대조(§3.5, `MANDATE_APPROVER_TELEGRAM_USER_IDS`)를 통과한 것이어야 한다. 통과하지 못한 발신자의 버튼은 이벤트를 쓰지 않고 nonce도 소비하지 않는다.
 - 발송: 장 시작 전 운영자/세션이 CLI로 발송(scheduleless, Q8 = A 결정됨). 발송하지 않은 날은 승인도 없다.
 - 아무것도 바뀌지 않았으면 "오늘 적용 기준" 요약만(자문 §10).
 - 재승인 대상 멤버의 기각은 그 계획을 `retired`로 만든다. 추가 권한만 멈추고 미결 주문·보유는 건드리지 않는다. 카드 응답에 그 계획의 미결 주문 수를 보여 준다(§3.7).
@@ -1007,9 +1008,9 @@ r4618309267 — 세션 상실 뒤 프로필 철회가 먼저 커밋.
 - 배치는 **대상 거래일** T를 갖는다. T = 배치 생성 시각 이후 처음 개장하는 그 시장의 정규장 세션(시장 달력). 정규장 중에 만든 배치의 T는 다음 거래일이다.
 - 시각 둘을 구분한다. **승인 마감** = T의 정규장 개장 시각(이 뒤의 승인은 T에 효력이 없다). **배치 만료** = T의 정규장 종료 시각(이 뒤에는 응답을 받지 않는다).
 - 바구니 × T당 배치는 하나다: `UNIQUE(realm, basket_key, target_session)`(I22). 바구니는 (영역, `basket_key`)이므로 모의 바구니와 실계좌 바구니의 배치는 서로 별개다. 같은 T의 두 번째 배치는 INSERT가 거부된다.
-- **앞 배치가 닫힌 뒤에만 새 배치를 만든다.** 닫힘 = 모든 멤버가 응답했거나 배치가 만료됐다. 그 바구니에 열린 배치가 있으면 새 배치 INSERT가 거부된다(바구니 lock 아래 트리거). 그래서 한 계획이 동시에 두 배치의 열린 멤버가 되는 일은 없다.
+- **앞 배치가 닫힌 뒤에만 새 배치를 만든다.** 최초 멤버 집합은 배치를 만드는 DB 트랜잭션에서 확정한다(DB가 강제하는 생성 트랜잭션 식별자로 대조하며 writer가 지정하는 시각은 쓰지 않는다). 이후 같은 스냅샷의 재발급만 허용한다. 배치는 만료되거나 모든 최초 멤버에 검증된 응답(`answered_batch_member_id`)이 하나씩 있으면 닫힌다. 요약 전용 배치도 T를 점유한다. 그 바구니에 열린 배치가 있으면 새 배치 INSERT가 거부된다(바구니 lock 아래 트리거). 그래서 한 계획이 동시에 두 배치의 열린 멤버가 되는 일은 없다.
 - **재발송**은 새 배치가 아니다. 같은 배치의 아직 응답 없는 멤버 카드를 다시 보내는 것이고, 스냅샷은 그대로다. 재발송은 그 멤버의 nonce를 새것으로 바꾸고 앞 카드의 nonce는 더 이상 받지 않는다. 멤버 하나에 결정은 많아야 하나다.
-- **추가 승인**은 다음 거래일이다. 배치를 만든 뒤 등록된 계획은 그 배치에 들어가지 않고 다음 배치에 들어간다. 같은 T의 배치에 계획을 나중에 끼워 넣는 길은 없다.
+- **추가 승인**은 다음 거래일이다. 배치를 만든 뒤 등록된 계획은 그 배치에 들어가지 않고 다음 배치에 들어간다. 같은 T의 배치에 계획을 나중에 끼워 넣는 길은 없다(카드 1은 그 배치를 만든 트랜잭션에서만 INSERT된다). 카드 발급(최초·재발급)은 잠금 뒤 DB 시각으로 조항과 배치의 만료를 다시 확인하며, 그 사이 만료된 계획은 발급 결과를 오보고하지 않고 건너뜀 사유와 함께 보고한다.
 - **부분 승인**: 멤버마다 승인·기각한다. 응답한 멤버만 이벤트를 쓴다.
 - **만료**: 배치 만료 시각에 응답 없는 멤버는 만료된다. 만료는 이벤트를 쓰지 않는다. 새 계획은 `proposed`로, 재승인 대상은 재승인 대기(자동승인 없음, `mandate_terms_stale`)로 남아 다음 배치에 다시 들어간다.
 
@@ -1036,7 +1037,7 @@ r4618309267 — 세션 상실 뒤 프로필 철회가 먼저 커밋.
 | 화 16:00, 수요일 휴장 | 목 | 수 12:00(휴장일) | 효력 목 |
 | 화 16:00, 수요일 휴장 | 목 | 목 09:05 | 효력 금 |
 
-효력 세션 전에는 그 계획으로 제안 생성도 전송도 되지 않는다(I16, 차단).
+효력 세션 전에는 그 계획으로 제안 생성도 전송도 되지 않는다(I16, 차단). 최신 결속이 검증된 묶음 승인·재승인(`answered_batch_member_id`가 있는 `approved`/`terms_rebound`)이면, 그 뒤 새 `resumed`가 정하는 효력일은 그 결속의 효력일 이상이어야 한다. 기존 이력은 기록 당시 의미로 재생하고 비배치 결속에는 T3a 하한을 소급하지 않는다.
 
 ### 5.2 1b — 논지 훼손 손실 매도
 
@@ -1205,7 +1206,7 @@ auto_trader-design 결정(2026-11-16, `consult/2026-11-16/at-mandate-design-r3` 
 |---|---|---|---|---|---|---|---|
 | T1 | 조항·승인·활성화 프로필·계획 모델 | §3.4의 아홉 테이블(`mandate_approval_requests`, `mandate_approvals`, `mandate_terms`, `mandate_activation_profiles`, `mandate_plans`, `mandate_plan_tranches`, `mandate_plan_events`, `mandate_symbol_reservations`, `mandate_symbol_reservation_releases`), 트리거, `order_proposals` 두 열과 그 INSERT 트리거, 조건부 GRANT, downgrade 거부, store(유일 writer), `fold_plan_events`와 순수 불변식 함수, lock 순서 정의(§4.6), 예약과 바구니 정체성의 영역(`live`/`mock`) 키, 조항·계획의 계좌 참조(`account_ref`)와 보유 범위 계좌 참조(`scope_account_refs`), 그 비교(I15의 등록 쪽), 권한 상태가 `approved`/`active`가 아닌 계획의 fence INSERT를 거부하는 이벤트 트리거(I16·I24), 계획 등록의 열린 `loss_cut` 제안 거부(`mandate_open_loss_cut`, §5.2), 그리고 바구니 ①의 sleeve 규칙 id를 sleeve 규칙 어휘에 추가(지금은 `CANARY_RULES`에 없는 규칙으로 sleeve를 만들 수 없다, §2.3 F12. 기존 항목은 고치지 않는다) | — | T2 | A | DB 가드, sleeve 규칙 어휘(추가만) | **있음** |
 | T2 | 위임장·계획 CLI | `scripts/mandate.py`: 승인 요청 생성(조항·활성화 프로필, 운영자 actor만), 계획 등록(proposed, 편입액과 그 증거), 운영자 계획 이벤트(`suspended`·`resumed`·`retired`·`tranche_closed_partial`·`thesis_broken`·`thesis_evidence_refreshed`, `holdings_disposed`의 `kept_outside_basket` 종류), 상태 조회. **기본 dry-run, 명시적 `--commit` 때만 쓰기** | T1 | T2 | B | 운영자 CLI | 없음 |
-| T3a | 아침 묶음 승인 카드 | `mandate_plan_batches`·`mandate_plan_batch_members` 두 테이블(불변 스냅샷), 배치 단일성(I22: UNIQUE와 "앞 배치가 닫힌 뒤에만" 트리거)·효력 세션·만료·재발송(§5.1), 발송 CLI, 주문 경로와 분리된 nonce 결속 콜백 `mpb`(계획 이벤트만 append, 주문 모듈 import 금지 정적 테스트), 운영자 principal 대조(`MANDATE_APPROVER_TELEGRAM_USER_IDS`, 기본 빈 값 = 승인 불가, §3.5) | T1, T2 | T2 | A | Telegram 콜백(새 경로, 기존 콜백 불변) | **있음** |
+| T3a | 아침 묶음 승인 카드 | `mandate_plan_batches`·`mandate_plan_batch_members` 두 테이블(불변 스냅샷), 배치 단일성(I22: UNIQUE와 "앞 배치가 닫힌 뒤에만" 트리거)·효력 세션·만료·재발송(§5.1), 발송 CLI, 주문 경로와 분리된 nonce 결속 콜백 `mpb`(계획 이벤트만 append, 주문 모듈 import 금지 정적 테스트), 운영자 principal 대조(`MANDATE_APPROVER_TELEGRAM_USER_IDS`, 기본 빈 값 = 승인 불가, §3.5). 검증: T1 행을 보존하는 업그레이드, 쓰기 때 검증된 카드 참조(`answered_batch_member_id`), 같은 생성 트랜잭션의 고정 멤버십과 응답 단일성, 새 resume 하한을 DB 경쟁·업그레이드 사례로 확인한다. §3.5의 승인자 정책, §4.6의 커밋된 fence, §5.2의 사람 손실매도 정책은 현행 계약을 적용한다 | T1, T2 | T2 | A | Telegram 콜백(새 경로, 기존 콜백 불변) | **있음** |
 | T3b | 조항·활성화 프로필 승인 카드 | nonce 결속 콜백 `mta`(§3.5): 승인 기록 + live sleeve 버전·조항, 또는 활성화 프로필 행. 낡은 요청·nonce 재사용·목록에 없는 발신자는 무기록(운영자 principal 대조, §3.5). 주문·제안 모듈 import 금지 정적 테스트. 승인 화면 표시 항목(§4.5)의 자리 | T1, T2 | T2 | A | Telegram 콜백(새 경로), sleeve 버전 append | 없음 |
 | T1m-a | 키움 체결 귀속·원장 투영 | 키움 체결 귀속을 계좌·거래일·주문번호·rung idempotency 키로 매칭(키움 주문번호는 계좌·거래일 안에서만 유일, `app/models/review.py:874-878`; 지금 로더는 KIS만 거래일을 붙이고 `execution_ledger/supersede.py:104-106`은 키움 거래일이 없다 — `store.py:599-605`, `:661-690`), 모호한 체결은 미측정. 순수 매칭 함수와 로더를 고정 fixture로 증명한다. sleeve 계좌 조합·CHECK·어휘는 이 PR에서 바꾸지 않는다 | — | T2 | A | sleeve 체결 로더(읽기) | 없음 |
 | T1m-b | 모의 sleeve 조합 | sleeve 계좌 조합 DB CHECK와 런타임 어휘(`SLEEVE_ACCOUNT_MARKETS`, `app/models/strategy_sleeves.py:35-41`; `create_sleeve` 검사, `app/services/strategy_sleeves/store.py:303-308`)에 `kiwoom_mock`/`equity_kr` 추가, `LEDGER_IDENTITY`에 `kiwoom_mock → (kiwoom, mock)` 추가(`vocabulary.py:126-135`의 동치 단언 유지, `store.py:599` 로더). live 조합·게이트 불변. T1m-a의 귀속이 머지돼 있어야 이 조합의 사용액·손익이 측정된다 | T1m-a | T2 | A | DB CHECK·sleeve 어휘 | **있음** |

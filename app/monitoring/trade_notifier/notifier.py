@@ -23,6 +23,7 @@ from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
 from .transports import (
     answer_callback_query,
+    edit_message_reply_markup,
     edit_message_text,
     send_discord_content_single,
     send_discord_embed_single,
@@ -254,6 +255,8 @@ class TradeNotifier:
         message_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = "Markdown",
     ) -> TelegramMethodResult:
         """Edit a Telegram message using the singleton HTTP client."""
         if not self._http_client or not self._bot_token:
@@ -268,6 +271,28 @@ class TradeNotifier:
             chat_id=chat_id,
             message_id=message_id,
             text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+
+    async def edit_message_reply_markup(
+        self,
+        chat_id: str,
+        message_id: int,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> TelegramMethodResult:
+        """Replace only the inline keyboard of a Telegram message (text untouched)."""
+        if not self._http_client or not self._bot_token:
+            return TelegramMethodResult.failed(
+                payload_chars=0,
+                failure_code="telegram_notifier_unconfigured",
+                error_classification=TelegramErrorClassification.NOT_CONFIGURED,
+            )
+        return await edit_message_reply_markup(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_id=chat_id,
+            message_id=message_id,
             reply_markup=reply_markup,
         )
 
