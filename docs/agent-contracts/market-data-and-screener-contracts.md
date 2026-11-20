@@ -624,6 +624,8 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
   Toss `market_cap` 최신이 아닌 행. 남기는 목록(`naver_item_news`·`finnhub_company_news`·`finnhub_general_news`·
   `research_on_demand_naver`·`research_on_demand_finnhub`·`dart`·`finnhub`·`naver_finance`·`tvscreener`과 Toss 최신 행)과
   뉴스 피드 삭제 목록이 남기는 뉴스 피드와 겹치면 모듈 로드가 실패한다.
+- **보존 링크가 있는 기사는 지우지 않는다**: 삭제 피드 기사라도 보존 피드(`naver_item_news` 등)의 `symbol_news_relevance` 연결이 있으면 보호되며 미리보기 `protected_by_retained_feed_link`로 보고된다. `symbol_news_store`가 URL 충돌 때 첫 기사 행을 유지하고 연결에 현재 피드를 기록하기 때문이다.
+- **배치 상한**: `MAX_BATCH_SIZE`는 10,000이다(asyncpg 바인드 파라미터 상한 32,767 아래). 배치 행 수 불일치는 트랜잭션 안에서 검사해 그 배치를 롤백한다.
 - **보류 피드 `http_naver_stock_aggregate`**: spike attribution 의 유일한 KR 정확 시각 근거(`KR_EXACT`)이고 backfill 대상이다.
   `--allow-held-feed` 로 명시하지 않으면 커밋에서 빠지고 결과에 `held_news_feeds_kept`로 보고된다.
   `--allow-held-feed`에는 보류 피드 이름만 받는다(오타·보존 피드는 입력 오류).

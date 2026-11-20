@@ -21,6 +21,10 @@ pi에서 수동으로 실행하고, 그 뒤 VACUUM을 한다.
 `research_on_demand_naver`, `research_on_demand_finnhub`. 시장 이벤트 `dart`, `finnhub`.
 밸류에이션 `naver_finance`, `tvscreener`(hk 5755에서 다룬다) 행과 Toss의 최신 행.
 
+## 보호 기사
+
+삭제 피드의 기사라도 보존 피드(`naver_item_news` 등)의 `symbol_news_relevance` 연결이 있으면 지우지 않는다. 미리보기의 `protected_by_retained_feed_link`가 그 개수다.
+
 ## 보류: `http_naver_stock_aggregate`
 
 이 피드는 기본 실행에서 삭제하지 않는다. 두 가지 이유가 있다.
