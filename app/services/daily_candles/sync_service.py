@@ -16,13 +16,14 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.services.daily_candles.converters import frame_to_rows
 from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
@@ -84,6 +85,7 @@ class DailyCandleSyncService:
         toss_kr_fetcher: TossDailyFetcher | None = None,
         toss_us_fetcher: TossDailyFetcher | None = None,
         us_holdings_loader: UsHoldingsLoader | None = None,
+        upbit_holdings_loader: Callable[[], Awaitable[set[str]]] | None = None,
         close_callbacks: list[Callable[[], object]] | None = None,
     ) -> None:
         self._repository = repository
@@ -94,6 +96,7 @@ class DailyCandleSyncService:
         self._toss_kr = toss_kr_fetcher
         self._toss_us = toss_us_fetcher
         self._us_holdings_loader = us_holdings_loader
+        self._upbit_holdings_loader = upbit_holdings_loader
         self._close_callbacks = close_callbacks or []
 
     async def close(self) -> None:
@@ -250,7 +253,7 @@ class DailyCandleSyncService:
         Target universe rules (resolution helpers wire to existing services):
         - kr: union of active rows from kr_symbol_universe + KIS KR holdings + manual KR holdings.
         - us: union of active rows from us_symbol_universe + KIS US holdings + manual US holdings.
-        - crypto: rows from upbit_symbol_universe (KRW market).
+        - crypto: union of active upbit_symbol_universe rows and held Upbit KRW markets.
 
         For the holdings-union pattern, see app/services/us_candles_sync_service.py:471-481.
         """
@@ -387,13 +390,23 @@ class DailyCandleSyncService:
                 " ORDER BY market"
             )
             result = await session.execute(sql)
+            markets = {row.market for row in result}
+            if self._upbit_holdings_loader is not None:
+                try:
+                    markets.update(await self._upbit_holdings_loader())
+                except Exception as exc:
+                    logger.warning(
+                        "Crypto daily sync: Upbit holdings union unavailable; "
+                        "syncing active universe only (error_class=%s)",
+                        type(exc).__name__,
+                    )
             targets = [
                 SyncTarget(
                     market=MarketKey.CRYPTO,
-                    symbol=row.market,
-                    partition=upbit_daily_candle_partition(row.market),
+                    symbol=symbol,
+                    partition=upbit_daily_candle_partition(symbol),
                 )
-                for row in result
+                for symbol in sorted(markets)
             ]
             await self._seed_upbit_krw_instruments(targets)
             return targets
@@ -404,7 +417,7 @@ class DailyCandleSyncService:
 
         The daily-candle repository deliberately remains fail-closed when an
         instrument is absent. This producer-side, idempotent seed makes that
-        final guard unnecessary for active KRW universe rows without weakening
+        final guard unnecessary for selected KRW markets without weakening
         the repository contract for any other caller.
         """
         if not targets:
@@ -487,6 +500,36 @@ async def _build_default_service() -> DailyCandleSyncService:
     async def _upbit(*, market: str, days: int) -> pd.DataFrame:
         return await upbit_service.fetch_ohlcv(market=market, days=days, period="day")
 
+    async def _upbit_holdings() -> set[str]:
+        held_markets = set()
+        for row in await upbit_service.fetch_my_coins():
+            currency = row.get("currency")
+            if (
+                not isinstance(currency, str)
+                or not currency.strip()
+                or currency == "KRW"
+            ):
+                continue
+            try:
+                balance = Decimal(str(row.get("balance")))
+                locked = Decimal(str(row.get("locked")))
+            except InvalidOperation:
+                continue
+            if not all(
+                amount.is_finite() and amount >= 0 for amount in (balance, locked)
+            ):
+                continue
+            if balance > 0 or locked > 0:
+                held_markets.add(to_upbit_symbol(currency))
+        if not held_markets:
+            return set()
+        krw_markets = await upbit_service.fetch_all_market_codes(fiat="KRW")
+        return held_markets.intersection(
+            market
+            for market in krw_markets
+            if isinstance(market, str) and market.startswith("KRW-")
+        )
+
     async def _toss(*, symbol: str, n: int) -> pd.DataFrame:
         return await fetch_daily_toss_unclamped(symbol=symbol, n=n)
 
@@ -539,5 +582,6 @@ async def _build_default_service() -> DailyCandleSyncService:
         toss_kr_fetcher=_toss if settings.toss_api_enabled else None,
         toss_us_fetcher=_toss if settings.toss_api_enabled else None,
         us_holdings_loader=_us_holdings,
+        upbit_holdings_loader=_upbit_holdings,
         close_callbacks=[session.close, kis.close],
     )

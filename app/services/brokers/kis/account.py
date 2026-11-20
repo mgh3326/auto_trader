@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from . import constants
@@ -710,7 +711,7 @@ class AccountClient:
             include_field_presence: True면 각 행에 브로커가 외화예수금 필드를
                 실제로 파싱 가능한 값으로 내려줬는지 나타내는
                 ``frcr_dncl_amt1_present`` 키를 추가한다. 결측·빈 문자열·
-                파싱 불가 값은 False다.
+                파싱 불가 값은 False다. 이 모드의 금액은 Decimal 또는 None이다.
 
         Returns:
             통화별 증거금 정보 리스트
@@ -771,13 +772,12 @@ class AccountClient:
             except (ValueError, TypeError):
                 return default
 
-        def optional_float(val: Any) -> float | None:
-            if val in ("", None):
-                return None
+        def deposit_amount(value: object) -> Decimal | None:
             try:
-                return float(val)
-            except (ValueError, TypeError):
+                amount = Decimal(str(value))
+            except InvalidOperation:
                 return None
+            return amount if amount.is_finite() else None
 
         results: list[dict] = []
         for item in output:
@@ -799,10 +799,11 @@ class AccountClient:
                 "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),
             }
             if include_field_presence:
-                result["frcr_dncl_amt1_present"] = (
-                    optional_float(item.get("frcr_dncl_amt1")) is not None
-                    or optional_float(item.get("frcr_dncl_amt_2")) is not None
-                )
+                deposit = deposit_amount(item.get("frcr_dncl_amt1"))
+                if deposit is None:
+                    deposit = deposit_amount(item.get("frcr_dncl_amt_2"))
+                result["frcr_dncl_amt1"] = deposit
+                result["frcr_dncl_amt1_present"] = deposit is not None
             results.append(result)
 
         usd_rows = [

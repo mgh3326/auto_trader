@@ -1102,6 +1102,7 @@ terminal-only는 기존 분류·전처리·scan과 같은 `limit` 상한과 취�
 계좌 전체의 `series_break`는 보고 기간 안의 지문 변경만 표시한다. 이전 지문 변경으로
 원장의 물리 계좌 귀속이 불확실한 시장 행은 미측정이다(운영자 #408205). 지문이 없으면
 `account_identity_unknown`이다.
+Toss는 응답의 계좌 목록에서 확인한 `TOSS_API_ACCOUNT_SEQ`와 `SECRET_KEY`에서 `account-value-fingerprint:toss`로 도메인 분리한 HMAC 키로 새 시리즈를 시작한다. 기존 `identity_unknown` 행은 그대로이며, 주문 가능액 `cashBuyingPower`로 예수금을 입증할 수 없으므로 현금은 미측정이다.
 
 KIS 보유 관측(hk 4882): reader는 `fetch_my_stocks_with_completion` 하나만 추가로
 허용된 broker view 메서드로 읽는다. 반환 `complete`가 true이고 파싱에 실패한
@@ -1110,8 +1111,13 @@ KIS 보유 관측(hk 4882): reader는 `fetch_my_stocks_with_completion` 하나�
 `holdings_completeness_unknown`이 남는다. `fetch_my_stocks` 자체의 동작은 다른
 호출자에게 그대로다. KIS US 현금은 `inquire_overseas_margin`의
 선택 인자 `include_field_presence`로 브로커가 외화예수금 필드를 실제로 파싱
-가능하게 내려줬는지 구분하며, 증명된 0만 현금 0이고 결측·파싱 불가는
-`cash_unknown`으로 남는다. Upbit `KRW` 계정 행은 보유 종목이 아니라 원화 현금이다.
+가능하게 내려줬는지 구분한다. 여러 국가에서 USD 행을 반환하면 미국 USD 행이
+정확히 하나일 때만 채택하며, 유효한 `frcr_dncl_amt1` 또는 `frcr_dncl_amt_2`를
+Decimal로 읽는다. 증명된 0만 현금 0이고 결측·파싱 불가는 `cash_unknown`으로 남는다.
+Upbit `KRW` 계정 행은 원화 현금이다. crypto 일봉 수집 대상은 활성 KRW 유니버스와
+현재 잔고(잠긴 수량 포함)가 있고 거래소 목록에서 확인된 Upbit KRW 마켓의 합집합이다.
+잔고나 마켓 목록 조회가 실패하면 활성 유니버스만 동기화한다. 결손 마크는 스냅샷의
+`mark_unknown`에 남으므로 미확인 가격을 채우는 fail-open은 없다.
 US 보유 마크는 `public.us_candles_1d`에서 가장 최근 종료된 XNYS 세션 날짜(UTC)의
 행을 읽으며 정확히 1행일 때만 사용하고 한 행 안의 소스를 섞지 않는다 — 0행이거나
 여러 행이면 `mark_unknown`이다. `us_candles_1d` 일봉 수집 대상은 활성
