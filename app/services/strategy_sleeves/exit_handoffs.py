@@ -108,11 +108,19 @@ class ExitHandoffError(ValueError):
     """A handoff step that is refused. Nothing was written.
 
     ``code`` is a closed reason a caller can show or store.
+
+    ``unsent_claim_count`` is set by :func:`fence_card_send` alone, and only
+    when it refused *after* it had seen, under the sleeve lock and the row lock,
+    that this card still holds the claim and that every attempt it ever counted
+    was proven unsent. Such a refusal counts nothing and sends nothing, so the
+    card as a whole has provably never posted at that moment; the value is the
+    claim it saw. It is ``None`` for every other refusal, which proves nothing.
     """
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, unsent_claim_count: int | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.unsent_claim_count = unsent_claim_count
 
 
 class SettleOutcome(StrEnum):
@@ -395,8 +403,11 @@ async def fence_card_send(
     proposal_id: uuid.UUID,
     configured_account_ref: str | None,
     now: datetime,
-) -> None:
+) -> int:
     """Count a send attempt in its own committed transaction, or refuse.
+
+    Returns the ``claim_count`` of the claim the attempt was counted on, so
+    that the proof of what became of the attempt is bound to that claim.
 
     Call this before the card's rung may reach the broker. It raises unless the
     handoff is still claimed by this card, the account matches, and no earlier
@@ -432,19 +443,28 @@ async def fence_card_send(
         if handoff.send_attempts != handoff.send_attempts_proven_unsent:
             await session.rollback()
             raise ExitHandoffError("exit_handoff_prior_attempt_unresolved")
+        # From here on this card holds the claim and none of its attempts is
+        # unexplained, both read under the locks. A refusal below counts
+        # nothing, so it leaves the card provably unsent; it says which claim.
+        claim_count = handoff.claim_count
         if await _live_buy_in_flight(session, handoff.sleeve_id):
             await session.rollback()
-            raise ExitHandoffError("exit_handoff_buy_in_flight")
+            raise ExitHandoffError(
+                "exit_handoff_buy_in_flight", unsent_claim_count=claim_count
+            )
         mandate = await session.get(ExecutionMandate, handoff.mandate_id)
         if not _account_matches(mandate, configured_account_ref):
             await session.rollback()
-            raise ExitHandoffError("exit_handoff_account_mismatch")
+            raise ExitHandoffError(
+                "exit_handoff_account_mismatch", unsent_claim_count=claim_count
+            )
         counted = await session.execute(
             update(ExecutionExitHandoff)
             .where(
                 ExecutionExitHandoff.id == handoff_id,
                 ExecutionExitHandoff.state == "card_claimed",
                 ExecutionExitHandoff.proposal_id == proposal_id,
+                ExecutionExitHandoff.claim_count == claim_count,
                 ExecutionExitHandoff.send_attempts
                 == ExecutionExitHandoff.send_attempts_proven_unsent,
             )
@@ -458,6 +478,7 @@ async def fence_card_send(
             await session.rollback()
             raise ExitHandoffError("exit_handoff_claim_lost")
         await session.commit()
+        return claim_count
 
 
 async def _live_buy_in_flight(session: AsyncSession, sleeve_id: int) -> bool:
@@ -466,10 +487,12 @@ async def _live_buy_in_flight(session: AsyncSession, sleeve_id: int) -> bool:
     Such a buy was judged on a measured sleeve and is between its last look and
     its request. It reads the sleeve again before it posts, but without the
     sleeve lock, so a fence committed during that read would go unseen. The
-    fence therefore waits for it instead: under the sleeve lock a buy is either
+    fence therefore refuses instead: under the sleeve lock a buy is either
     reserved before the fence, and seen here, or after it, and then it finds
-    the sleeve unmeasured and is refused. The card is not sent now and can be
-    approved again once the buy has an outcome.
+    the sleeve unmeasured and is refused. The card is not sent. Nothing was
+    counted, so the refusal is proof that it never posted; the approval ends
+    the card on that proof, the handoff returns to ``ready_for_card`` at the
+    next settle, and a new card can be made once the buy has an outcome.
 
     A journal row is never rewritten, so a buy whose answer was lost stays
     ``sending`` for good. It stops counting here once the broker's final reading
@@ -506,6 +529,7 @@ async def record_card_proven_unsent(
     *,
     handoff_id: int,
     proposal_id: uuid.UUID,
+    claim_count: int,
     now: datetime,
 ) -> bool:
     """Record that the last counted attempt provably did not post.
@@ -513,6 +537,10 @@ async def record_card_proven_unsent(
     Only the pre-send hook raising before the request proves that. A failure to
     record leaves the attempt counted as possibly sent, which is the safe side.
     With every attempt explained again, the mark the fence set is cleared.
+
+    ``claim_count`` is the claim the attempt was counted on: an attempt of an
+    earlier claim never explains an attempt of the current one. ``True`` means
+    the row was written and committed.
     """
     try:
         async with session_factory() as session:
@@ -522,6 +550,7 @@ async def record_card_proven_unsent(
                     ExecutionExitHandoff.id == handoff_id,
                     ExecutionExitHandoff.state == "card_claimed",
                     ExecutionExitHandoff.proposal_id == proposal_id,
+                    ExecutionExitHandoff.claim_count == claim_count,
                     ExecutionExitHandoff.send_attempts_proven_unsent
                     < ExecutionExitHandoff.send_attempts,
                 )

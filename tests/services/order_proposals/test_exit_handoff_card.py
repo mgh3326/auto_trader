@@ -16,10 +16,17 @@ import pytest
 
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.order_proposals import exit_handoff_card
-from app.services.order_proposals.exit_handoff_card import exit_handoff_place_fn
+from app.services.order_proposals.exit_handoff_card import (
+    CardProvenUnsent,
+    card_unsent_reason,
+    exit_handoff_place_fn,
+)
 from app.services.strategy_sleeves.exit_handoffs import ExitHandoffError
 
 pytestmark = pytest.mark.unit
+
+#: The claim the fake fence counts an attempt on.
+CLAIM = 3
 
 
 class _Order:
@@ -56,19 +63,23 @@ class _Handoff:
         self.proven_unsent = 0
         self.fence_error: Exception | None = None
         self.refusal_before_post: str | None = None
+        #: Whether the proven-unsent record commits.
+        self.record_commits = True
+        self.recorded_claims: list[int] = []
         self.events: list[str] = []
-
-        async def fence(self_, _factory=None, **_kw):  # noqa: ANN001
-            raise AssertionError("unused")
 
         async def fence_card_send(_factory, **_kwargs):
             self.events.append("fence")
             if self.fence_error is not None:
                 raise self.fence_error
             self.fences += 1
+            return CLAIM
 
-        async def record_card_proven_unsent(_factory, **_kwargs):
+        async def record_card_proven_unsent(_factory, **kwargs):
             self.events.append("proven_unsent")
+            self.recorded_claims.append(kwargs["claim_count"])
+            if not self.record_commits:
+                return False
             self.proven_unsent += 1
             return True
 
@@ -156,9 +167,56 @@ async def test_without_a_committed_fence_nothing_is_sent(
     result = await _wrapped(order, _card())(dry_run=False)
 
     assert order.calls == [] and order.posted is False
+    # No proof: the refusal did not say that the card is provably unsent.
+    assert not isinstance(result, CardProvenUnsent)
     assert result["success"] is False and result["pre_send_blocked"] is True
     # Nothing was counted, so there is nothing to mark as proven unsent.
     assert handoff.proven_unsent == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code", ["exit_handoff_buy_in_flight", "exit_handoff_account_mismatch"]
+)
+async def test_a_fence_that_refused_with_nothing_unexplained_is_the_proof(
+    monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    """PR 2486 review (65wJD0): the fence saw, under its locks, that this card
+    holds the claim and that none of its attempts is unexplained, and refused
+    without counting. The card has provably not posted, and the send says so
+    with the claim it was bound to instead of an ordinary failed result."""
+    handoff, order = _Handoff(monkeypatch), _Order()
+    handoff.fence_error = ExitHandoffError(code, unsent_claim_count=7)
+    card = _card()
+
+    result = await _wrapped(order, card)(dry_run=False)
+
+    assert order.calls == [] and order.posted is False
+    assert result == CardProvenUnsent(
+        handoff_id=5, proposal_id=card.proposal_id, claim_count=7, reason=code
+    )
+    assert handoff.events == ["fence"]
+    assert card_unsent_reason(card, result) == code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code", ["exit_handoff_prior_attempt_unresolved", "exit_handoff_claim_lost"]
+)
+async def test_a_fence_refusal_that_proves_nothing_is_an_ordinary_result(
+    monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    """An unexplained earlier attempt or a lost claim says nothing about whether
+    the card posted: the approval classifies it as before, by looking."""
+    handoff, order = _Handoff(monkeypatch), _Order()
+    handoff.fence_error = ExitHandoffError(code)
+    card = _card()
+
+    result = await _wrapped(order, card)(dry_run=False)
+
+    assert order.posted is False
+    assert result["reason_codes"] == [code]
+    assert card_unsent_reason(card, result) is None
 
 
 @pytest.mark.asyncio
@@ -167,12 +225,75 @@ async def test_a_changed_account_right_before_the_post_sends_nothing(
 ) -> None:
     handoff, order = _Handoff(monkeypatch), _Order()
     handoff.refusal_before_post = "exit_handoff_account_mismatch"
+    card = _card()
 
-    result = await _wrapped(order, _card())(dry_run=False)
+    result = await _wrapped(order, card)(dry_run=False)
 
     assert order.posted is False
-    assert result["reason_codes"] == ["exit_handoff_account_mismatch"]
     assert handoff.events == ["fence", "pre_post_check", "proven_unsent"]
+    # The counted attempt was recorded as unsent on the claim it was counted on.
+    assert handoff.recorded_claims == [CLAIM]
+    assert result == CardProvenUnsent(
+        handoff_id=5,
+        proposal_id=card.proposal_id,
+        claim_count=CLAIM,
+        reason="exit_handoff_account_mismatch",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_whose_non_send_could_not_be_recorded_is_no_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hook stopped the send, but the record did not commit: the attempt
+    stays counted as possibly sent, so nothing may be concluded from it."""
+    handoff, order = _Handoff(monkeypatch), _Order()
+    handoff.refusal_before_post = "exit_handoff_account_mismatch"
+    handoff.record_commits = False
+    card = _card()
+
+    result = await _wrapped(order, card)(dry_run=False)
+
+    assert order.posted is False and handoff.proven_unsent == 0
+    assert not isinstance(result, CardProvenUnsent)
+    assert result["reason_codes"] == ["exit_handoff_account_mismatch"]
+    assert card_unsent_reason(card, result) is None
+
+
+@pytest.mark.asyncio
+async def test_an_error_below_the_hook_is_the_proof_only_once_it_is_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff = _Handoff(monkeypatch)
+
+    async def fails_before_the_hook(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("balance read failed")
+
+    card = _card()
+    result = await _wrapped(fails_before_the_hook, card)(dry_run=False)  # type: ignore[arg-type]
+    assert result == CardProvenUnsent(
+        handoff_id=5,
+        proposal_id=card.proposal_id,
+        claim_count=CLAIM,
+        reason="balance read failed",
+    )
+
+    handoff.record_commits = False
+    with pytest.raises(RuntimeError, match="balance read failed"):
+        await _wrapped(fails_before_the_hook, _card())(dry_run=False)  # type: ignore[arg-type]
+
+
+def test_a_proof_for_another_card_is_not_this_cards_proof() -> None:
+    card = _card()
+    other_proposal = CardProvenUnsent(5, uuid4(), CLAIM, "exit_handoff_buy_in_flight")
+    other_handoff = CardProvenUnsent(
+        6, card.proposal_id, CLAIM, "exit_handoff_buy_in_flight"
+    )
+
+    assert card_unsent_reason(card, other_proposal) is None
+    assert card_unsent_reason(card, other_handoff) is None
+    # A result that merely looks like one is not one either.
+    assert card_unsent_reason(card, {"exit_handoff_proven_unsent": True}) is None
 
 
 @pytest.mark.asyncio
@@ -231,7 +352,8 @@ async def test_an_unreadable_pre_post_check_sends_nothing(
     result = await _wrapped(order, _card())(dry_run=False)
 
     assert order.posted is False
-    assert result["reason_codes"] == ["exit_handoff_check_unavailable"]
+    assert isinstance(result, CardProvenUnsent)
+    assert result.reason == "exit_handoff_check_unavailable"
     assert handoff.proven_unsent == 1
 
 
@@ -252,6 +374,216 @@ def test_revalidation_wraps_every_place_rung_through_this_module() -> None:
     wrap = body.index("place_order_fn = exit_handoff_place_fn(group, place_order_fn)")
     assert wrap < body.index('new_state="revalidating"')
     assert wrap < body.index("dry_run=False")
+
+
+class _RungService:
+    """Records the rung writes ``_revalidate_place_rung`` makes."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def transition_rung(self, _proposal_id, _rung_index, *, new_state):
+        self.calls.append(("transition", {"new_state": new_state}))
+
+    async def record_rejected(self, _proposal_id, _rung_index, **kwargs):
+        self.calls.append(("rejected", kwargs))
+
+    async def record_unverified(self, _proposal_id, _rung_index, **kwargs):
+        self.calls.append(("unverified", kwargs))
+
+
+async def _approve_card_rung(
+    monkeypatch: pytest.MonkeyPatch, order: _Order, lookups: list[str]
+) -> tuple[Any, _RungService]:
+    """Run the real ``_revalidate_place_rung`` for a handoff card's one rung.
+
+    The window and lifecycle gates are passed (they have their own tests); the
+    place function is the real wrapper around ``order``; the identifier lookup
+    is a broker that cannot be reached.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.services.order_proposals import revalidation
+    from app.services.order_proposals.broker_gateway import SubmitEvidence
+    from app.services.strategy_sleeves import account_binding
+
+    async def passed(**_kwargs: Any) -> None:
+        return None
+
+    class _WindowGate:
+        blocked_decision = None
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def __call__(self) -> None:
+            return None
+
+    monkeypatch.setattr(revalidation, "_pre_mutation_window_gate", passed)
+    monkeypatch.setattr(revalidation, "_pre_submit_lifecycle_gate", passed)
+    monkeypatch.setattr(revalidation, "ApprovalWindowPreSendGate", _WindowGate)
+    # The wrapper's default session factory, which it imports when it is built.
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", _Session)
+    monkeypatch.setattr(
+        account_binding, "configured_upbit_account_ref", lambda: "upbit:upbit:x"
+    )
+
+    async def unreachable(**kwargs: Any) -> SubmitEvidence:
+        lookups.append(kwargs["identifier"])
+        return SubmitEvidence("unknown", reason="broker unreachable")
+
+    group = SimpleNamespace(
+        exit_handoff_id=5,
+        proposal_id=uuid4(),
+        account_mode="upbit",
+        market="crypto",
+        symbol="KRW-XRP",
+        order_type="limit",
+        thesis="card",
+        strategy=None,
+        exit_intent=None,
+        exit_reason=None,
+        retrospective_id=None,
+        approval_issue_id=None,
+        decision_id=None,
+        source_asof={},
+    )
+    rung = SimpleNamespace(
+        rung_index=0, side="sell", quantity=Decimal("40"), limit_price=Decimal("3000")
+    )
+    service = _RungService()
+    now = datetime(2026, 11, 20, 5, 20, tzinfo=UTC)
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("dry_run") is not False:
+            return {
+                "success": True,
+                "price": kwargs["price"],
+                "quantity": kwargs["quantity"],
+            }
+        return await order(**kwargs)
+
+    outcome = await revalidation._revalidate_place_rung(
+        service=service,  # type: ignore[arg-type]
+        group=group,  # type: ignore[arg-type]
+        rung=rung,  # type: ignore[arg-type]
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **_kwargs: "corr-1",
+        fetch_submit_evidence_fn=unreachable,
+        buying_power_claimer=None,  # type: ignore[arg-type]
+        buying_power_releaser=None,  # type: ignore[arg-type]
+        eligibility_gate=None,
+        window_evaluator=None,  # type: ignore[arg-type]
+        expected_policy_stamp="stamp",
+        now_fn=lambda: now,
+        parking_sell_auto_enabled=False,
+    )
+    return outcome, service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code", ["exit_handoff_buy_in_flight", "exit_handoff_account_mismatch"]
+)
+async def test_the_approval_ends_a_provably_unsent_card_without_asking_the_broker(
+    monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    """PR 2486 review (65wJD0, 65t2wx): the fence refused with nothing counted
+    and nothing unexplained, and the broker cannot be reached. The rung ends
+    ``rejected`` with no idempotency key -- the look of a card that was never
+    sent, which the handoff's settle step releases -- and no lookup is made.
+    Before, the refusal was classified by looking: an unreachable broker left
+    the rung ``unverified`` with a key, and the handoff claimed for good."""
+    handoff, order = _Handoff(monkeypatch), _Order()
+    handoff.fence_error = ExitHandoffError(code, unsent_claim_count=1)
+    lookups: list[str] = []
+
+    outcome, service = await _approve_card_rung(monkeypatch, order, lookups)
+
+    assert order.posted is False
+    assert lookups == []
+    assert [name for name, _ in service.calls if name != "transition"] == ["rejected"]
+    rejected = dict(service.calls)["rejected"]
+    assert rejected["reason"] == code and "idempotency_key" not in rejected
+    assert outcome.result == "error" and outcome.detail["error"] == code
+
+
+@pytest.mark.asyncio
+async def test_the_approval_still_looks_when_the_refusal_proves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An earlier attempt of this card is unexplained: it may be at the broker.
+    The refusal is classified as before, by the identifier lookup, and with the
+    broker unreachable the rung is ``unverified``, never ended."""
+    handoff, order = _Handoff(monkeypatch), _Order()
+    handoff.fence_error = ExitHandoffError("exit_handoff_prior_attempt_unresolved")
+    lookups: list[str] = []
+
+    outcome, service = await _approve_card_rung(monkeypatch, order, lookups)
+
+    assert order.posted is False
+    assert len(lookups) == 1
+    assert [name for name, _ in service.calls if name != "transition"] == ["unverified"]
+    assert outcome.result == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_a_card_whose_request_went_out_is_classified_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hook returned and the order layer then failed: the request may have
+    been made. No proof exists, so the classifier looks."""
+    _Handoff(monkeypatch)
+
+    async def posts_then_fails(**kwargs: Any) -> dict[str, Any]:
+        await kwargs["pre_send_hook"]()
+        return {"success": False, "error": "timeout after the request"}
+
+    lookups: list[str] = []
+    outcome, service = await _approve_card_rung(
+        monkeypatch,
+        posts_then_fails,  # type: ignore[arg-type]
+        lookups,
+    )
+
+    assert len(lookups) == 1
+    assert outcome.result == "unverified"
+    assert "rejected" not in dict(service.calls)
+
+
+def test_revalidation_ends_the_rung_on_the_proof_before_it_asks_the_broker() -> None:
+    """The proof is consumed after the window-block check, which restores the
+    card rather than ending it, and before ``_classify_submit``, whose
+    identifier lookup turns an unavailable broker into an ``unverified`` rung.
+    The behaviour itself is exercised through the real approval callback in
+    ``callback_inbox/test_exit_handoff_card_dead_letter.py`` (CI)."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "app/services/order_proposals/revalidation.py"
+    ).read_text("utf-8")
+    body = source[source.index("async def _revalidate_place_rung(") :]
+    body = body[: body.index("\nasync def _record_exit_plan_after_accepted_buy(")]
+    live = body.index("dry_run=False")
+    consumed = body.index("unsent_reason = card_unsent_reason(group, submit)")
+    window_blocks = [
+        index
+        for index in range(len(body))
+        if body.startswith("if transport_gate.blocked_decision is not None:", index)
+    ]
+    assert len(window_blocks) == 2
+    assert live < window_blocks[-1] < consumed
+    after = body[consumed:]
+    assert after.index("await service.record_rejected(") < after.index(
+        "outcome = await _classify_submit("
+    )
+    # It is the last ``_classify_submit`` of the function: nothing classifies
+    # this card's submit result without passing the proof check first.
+    assert body.count("_classify_submit(") == 2
+    assert body.index("_classify_submit(") < window_blocks[-1]
 
 
 def test_dispatch_never_auto_approves_a_handoff_card() -> None:

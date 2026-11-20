@@ -930,10 +930,18 @@ async def test_the_fence_refuses_a_card_that_lost_the_claim_or_the_account(
     await _set_state(handoff_id, "ready_for_card")
     card = await _card(sleeve, handoff_id)
 
-    for proposal_id, account_ref, code in (
-        (uuid.uuid4(), ACCOUNT_REF, "exit_handoff_claim_lost"),
-        (card.proposal_id, "upbit:upbit:" + "c" * 64, "exit_handoff_account_mismatch"),
-        (card.proposal_id, None, "exit_handoff_account_mismatch"),
+    # A lost claim proves nothing about this card. A wrong account is refused
+    # after the fence saw the claim held and nothing unexplained, so it says
+    # which claim provably did not post.
+    for proposal_id, account_ref, code, unsent_claim in (
+        (uuid.uuid4(), ACCOUNT_REF, "exit_handoff_claim_lost", None),
+        (
+            card.proposal_id,
+            "upbit:upbit:" + "c" * 64,
+            "exit_handoff_account_mismatch",
+            1,
+        ),
+        (card.proposal_id, None, "exit_handoff_account_mismatch", 1),
     ):
         with pytest.raises(ExitHandoffError) as refused:
             await fence_card_send(
@@ -944,6 +952,7 @@ async def test_the_fence_refuses_a_card_that_lost_the_claim_or_the_account(
                 now=_now(),
             )
         assert refused.value.code == code
+        assert refused.value.unsent_claim_count == unsent_claim
     async with AsyncSessionLocal() as session:
         handoff = await session.get(ExecutionExitHandoff, handoff_id)
         assert handoff is not None and handoff.send_attempts == 0
@@ -1248,8 +1257,8 @@ async def _claimed_card(sleeve: StrategySleeve, mandate: ExecutionMandate) -> An
     return handoff_id, await _card(sleeve, handoff_id)
 
 
-async def _fence(handoff_id: int, card: OrderProposal) -> None:
-    await fence_card_send(
+async def _fence(handoff_id: int, card: OrderProposal) -> int:
+    return await fence_card_send(
         AsyncSessionLocal,
         handoff_id=handoff_id,
         proposal_id=card.proposal_id,
@@ -1275,11 +1284,14 @@ async def test_o1_o3_a_second_click_cannot_post_while_the_first_attempt_is_unexp
     mandate = await _mandate(sleeve, "live")
     handoff_id, card = await _claimed_card(sleeve, mandate)
 
-    await _fence(handoff_id, card)
+    # The attempt is counted on the claim the card holds.
+    assert await _fence(handoff_id, card) == 1
     with pytest.raises(ExitHandoffError) as refused:
         await _fence(handoff_id, card)
 
     assert refused.value.code == "exit_handoff_prior_attempt_unresolved"
+    # An unexplained attempt: this refusal is no proof that the card is unsent.
+    assert refused.value.unsent_claim_count is None
     row = await _handoff_row(handoff_id)
     assert row.send_attempts == 1 and row.send_attempts_proven_unsent == 0
 
@@ -1292,12 +1304,23 @@ async def test_o1_an_attempt_proven_unsent_lets_the_card_try_again(
     mandate = await _mandate(sleeve, "live")
     handoff_id, card = await _claimed_card(sleeve, mandate)
 
-    await _fence(handoff_id, card)
+    claim_count = await _fence(handoff_id, card)
     assert (await _handoff_row(handoff_id)).fills_unmeasured is True
+    # A proof bound to another claim of this handoff explains nothing here.
+    stale = await exit_handoffs.record_card_proven_unsent(
+        AsyncSessionLocal,
+        handoff_id=handoff_id,
+        proposal_id=card.proposal_id,
+        claim_count=claim_count + 1,
+        now=_now(),
+    )
+    assert stale is False
+    assert (await _handoff_row(handoff_id)).send_attempts_proven_unsent == 0
     recorded = await exit_handoffs.record_card_proven_unsent(
         AsyncSessionLocal,
         handoff_id=handoff_id,
         proposal_id=card.proposal_id,
+        claim_count=claim_count,
         now=_now(),
     )
 
@@ -1606,6 +1629,8 @@ async def test_o4_the_card_fence_waits_for_a_live_buy_that_is_on_its_way_out(
         await _fence(handoff_id, card)
 
     assert refused.value.code == "exit_handoff_buy_in_flight"
+    # Nothing was counted and nothing is unexplained: the claim is named.
+    assert refused.value.unsent_claim_count == 1
     row = await _handoff_row(handoff_id)
     assert row.send_attempts == 0 and row.fills_unmeasured is False
 
