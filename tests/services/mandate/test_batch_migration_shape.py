@@ -362,3 +362,20 @@ def test_the_answer_takes_the_basket_lock_before_the_sleeve_lock_and_rechecks_ex
     assert last > body.index("NEW.effective_session := next_day")
     assert body.index("RETURN NEW;") > last
     assert "in-place downgrade is unavailable" in _norm(_load().DOWNGRADE_GUARD)
+
+
+def test_a_resume_keeps_the_approval_date_as_its_lower_bound_in_the_database() -> None:
+    ddl = _ddl()
+    body = _body("mandate_plan_events_resume_guard")
+    assert "e.event IN ('approved', 'terms_rebound', 'resumed')" in body
+    assert "NEW.effective_session < floor_day" in body
+    assert "a resume cannot take effect before the approval it follows" in body
+    # no function call in WHEN: other events never run trigger code (#789 Stage 4)
+    assert (
+        "CREATE TRIGGER trg_mandate_plan_events_resume_guard BEFORE INSERT ON "
+        "review.mandate_plan_events FOR EACH ROW WHEN (NEW.event = 'resumed') "
+        "EXECUTE FUNCTION review.mandate_plan_events_resume_guard()"
+    ) in ddl
+    assert "DROP TRIGGER IF EXISTS trg_mandate_plan_events_resume_guard" in _norm(
+        _render("downgrade")
+    )

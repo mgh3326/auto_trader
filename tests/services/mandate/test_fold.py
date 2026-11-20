@@ -397,3 +397,33 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
     s.add("retired")
     with refused(v.MandateRefusal.TRANCHE_UNCERTAIN):
         s.add("orders_settled")
+
+
+def test_a_resume_cannot_take_effect_before_the_approval_it_follows() -> None:
+    """A late (batch) approval is recorded for the next session; a same-day suspend and
+    resume with the earlier session must not pull the plan back before it."""
+    later = date(SESSION.year, SESSION.month, SESSION.day + 1)
+    s = Stream()
+    s.add("proposed")
+    s.add("approved", terms_id=1, terms_sha256="a" * 64, effective_session=later)
+    s.add("suspended")
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        apply_event(
+            s.state,
+            ev(
+                "resumed",
+                seq=s.state.last_seq + 1,
+                resume_target="approved",
+                effective_session=SESSION,
+            ),
+        )
+    # the same date or a later one is fine, and the bound then moves with the resume
+    s.add("resumed", resume_target="approved", effective_session=later)
+    assert s.state.effective_session == later
+    s.add("suspended")
+    s.add(
+        "resumed", resume_target="approved", effective_session=later + (later - SESSION)
+    )
+    with pytest.raises(InvalidPlanEvent):
+        s.add("suspended")
+        s.add("resumed", resume_target="approved", effective_session=later)

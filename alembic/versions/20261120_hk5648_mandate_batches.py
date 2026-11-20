@@ -23,6 +23,8 @@ before the batch closed must not be able to answer after it closed:
   account reference, clause hash); the plan holds the authority state the card kind
   needs; card 1 only comes with its batch; later cards follow ``card_no`` and repeat the
   snapshot, and only while the batch is open and the plan is unanswered;
+* ``resumed`` events: the effective session cannot be earlier than the approval (or
+  rebind, or earlier resume) it follows;
 * plan event insert carrying ``batch_member_id`` (answers): under the sleeve lock and
   the per-plan card lock (the card insert takes the same one), the card is the newest
   card of its plan, the batch is not expired, the plan has no other answer, the event
@@ -276,6 +278,35 @@ def _guard_ddl() -> tuple[str, ...]:
         BEFORE INSERT ON review.mandate_plan_batch_members
         FOR EACH ROW EXECUTE FUNCTION review.mandate_plan_batch_members_guard()
         """,
+        # --- a resume keeps the approval date as its lower bound ------------------
+        """
+        CREATE OR REPLACE FUNCTION review.mandate_plan_events_resume_guard()
+        RETURNS trigger AS $$
+        DECLARE
+            floor_day date;
+        BEGIN
+            SELECT e.effective_session INTO floor_day
+              FROM review.mandate_plan_events e
+             WHERE e.plan_id = NEW.plan_id
+               AND e.event IN ('approved', 'terms_rebound', 'resumed')
+             ORDER BY e.seq DESC LIMIT 1;
+            IF floor_day IS NOT NULL AND NEW.effective_session < floor_day THEN
+                RAISE EXCEPTION 'a resume cannot take effect before the approval it follows'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """,
+        "DROP TRIGGER IF EXISTS trg_mandate_plan_events_resume_guard "
+        "ON review.mandate_plan_events",
+        # No function call in WHEN: other events never run trigger code.
+        """
+        CREATE TRIGGER trg_mandate_plan_events_resume_guard
+        BEFORE INSERT ON review.mandate_plan_events
+        FOR EACH ROW WHEN (NEW.event = 'resumed')
+        EXECUTE FUNCTION review.mandate_plan_events_resume_guard()
+        """,
         # --- answers: plan events that carry a card id ----------------------
         """
         CREATE OR REPLACE FUNCTION review.mandate_plan_events_batch_guard()
@@ -423,6 +454,7 @@ DOWNGRADE_GUARD = """
 """
 
 _FUNCTIONS = (
+    "review.mandate_plan_events_resume_guard()",
     "review.mandate_plan_events_batch_guard()",
     "review.mandate_plan_batch_members_guard()",
     "review.mandate_plan_batches_guard()",
@@ -575,6 +607,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(DOWNGRADE_GUARD)
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_mandate_plan_events_resume_guard "
+        "ON review.mandate_plan_events"
+    )
     op.execute(
         "DROP TRIGGER IF EXISTS trg_mandate_plan_events_batch_guard "
         "ON review.mandate_plan_events"

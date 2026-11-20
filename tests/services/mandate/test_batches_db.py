@@ -1561,3 +1561,47 @@ async def test_a_plan_under_an_expired_live_clause_is_skipped_not_offered(
     await asyncio.sleep(3.5)
     sc = await open_batch(db_session, seed, sleeve, terms, [plan], when="before")
     assert sc.cards == {} and sc.skipped == [plan.id]
+
+
+async def test_a_late_approval_cannot_be_pulled_back_by_a_same_day_suspend_and_resume(
+    db_session, seed
+) -> None:
+    """An approval after the bell is recorded for the next session; the plan then
+    suspends and resumes with the target session: refused by the fold and by the database."""
+    sc = await scene(db_session, seed, when="after")  # deadline passed: effective = T+1
+    plan = sc.plans[0]
+    assert (await answer(sc, sc.cards[plan.id])).handled
+    later = sc.target + timedelta(days=1)
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    await db_session.commit()
+    with err(v.MandateRefusal.INVALID_TRANSITION):
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="resumed",
+            actor="operator:test",
+            resume_target="approved",
+            effective_session=sc.target,
+        )
+    await db_session.rollback()
+    # the database refuses it for any writer
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, resume_target, "
+        "effective_session, actor) VALUES (:p, 4, 'resumed', 'approved', :e, 'op')",
+        "cannot take effect before the approval",
+        p=plan.id,
+        e=sc.target,
+    )
+    await ms.append_plan_event(
+        db_session,
+        plan_id=plan.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=later,
+    )
+    await db_session.commit()
+    assert (await events_of(db_session, plan.id))[-1] == "resumed"

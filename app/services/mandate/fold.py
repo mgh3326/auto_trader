@@ -228,6 +228,15 @@ def _apply_authority_event(state: PlanState, event: PlanEvent) -> PlanState:
             v.MandateRefusal.INVALID_TRANSITION,
             f"resume_target must be {expected} for this plan",
         )
+        # The approval (or rebind) date is a lower bound: a resume cannot pull the
+        # plan back before the session its batch approval was recorded for (§5.1).
+        _require(
+            state.effective_session is None
+            or event.effective_session is None
+            or event.effective_session >= state.effective_session,
+            v.MandateRefusal.INVALID_TRANSITION,
+            "a resume cannot take effect before the approval it follows",
+        )
         return replace(
             state,
             authority=event.resume_target,
