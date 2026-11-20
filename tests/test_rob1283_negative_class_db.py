@@ -254,3 +254,94 @@ async def test_stale_bucketed_forecast_reports_stalled(
     assert health.status == "stalled"
     assert health.stale_days >= 365
     assert date.today() is not None  # sanity: no clock freezing in this module
+
+
+# --------------------------------------------------------------------------- #
+# hk 5719 — a declined decision stores the would-be BUY exactly (CI round trip)
+# --------------------------------------------------------------------------- #
+async def test_declined_would_be_entry_round_trips_exact_rows(db_session: AsyncSession):
+    from decimal import Decimal
+
+    from sqlalchemy import text
+
+    from app.mcp_server.tooling.forecast_tools import forecast_save
+
+    # Crypto symbols without a market dash are stored as KRW-<base>; use the
+    # canonical form so the query matches what the write path stores.
+    symbol = f"KRW-T5719{uuid.uuid4().hex[:6].upper()}"
+    result = await forecast_save(
+        created_by="kr-open-trade",
+        symbol=symbol,
+        instrument_type="crypto",
+        forecast_target=_target(),
+        probability=0.3,
+        review_date="2026-11-27",
+        decision_bucket="deferred_no_action",
+        declined_limit_price="123456.123456789012",
+        declined_quantity="0.00000001",
+        declined_quote_price="123000.5",
+        declined_quote_asof="2026-11-20T10:00:00+09:00",
+        declined_account_mode="upbit",
+    )
+    assert result["success"] is True
+    assert result["action"] == "created"
+
+    decision = (
+        await db_session.execute(
+            text(
+                "SELECT decision_id, decision_kind, account_mode, side, market "
+                "FROM review.decision_evidence WHERE symbol = :symbol"
+            ),
+            {"symbol": symbol},
+        )
+    ).one()
+    assert decision.decision_kind == "declined"
+    assert (decision.account_mode, decision.side, decision.market) == (
+        "upbit",
+        "buy",
+        "crypto",
+    )
+
+    rung = (
+        await db_session.execute(
+            text(
+                "SELECT rung_index, side, planned_quantity, planned_notional, "
+                "limit_price FROM review.decision_evidence_rungs "
+                "WHERE decision_id = :decision_id"
+            ),
+            {"decision_id": decision.decision_id},
+        )
+    ).one()
+    assert (rung.rung_index, rung.side) == (0, "buy")
+    assert rung.limit_price == Decimal("123456.123456789012")
+    assert rung.planned_quantity == Decimal("0.00000001")
+    assert rung.planned_notional is None
+
+    prices = (
+        await db_session.execute(
+            text(
+                "SELECT kind, rung_index, price, asof "
+                "FROM review.decision_reference_prices WHERE decision_id = :decision_id"
+            ),
+            {"decision_id": decision.decision_id},
+        )
+    ).all()
+    by_kind = {price.kind: price for price in prices}
+    assert set(by_kind) == {"limit", "quote_at_decision"}
+    assert by_kind["limit"].rung_index == 0
+    assert by_kind["limit"].price == Decimal("123456.123456789012")
+    assert by_kind["quote_at_decision"].rung_index is None
+    assert by_kind["quote_at_decision"].price == Decimal("123000.5")
+    assert by_kind["quote_at_decision"].asof == datetime(2026, 11, 20, 1, 0, tzinfo=UTC)
+
+    # A declined decision is still not an order.
+    links = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM review.decision_order_links "
+                "WHERE decision_id = :decision_id"
+            ),
+            {"decision_id": decision.decision_id},
+        )
+    ).scalar_one()
+    assert links == 0

@@ -191,6 +191,6 @@ DELETE · TRUNCATE를 거부하며 downgrade는 행이 하나라도 있으면 �
 같은 KST 날짜의 admitted 후보를 서버가 찾은 경우는 `inference`다. 후보의 관측 가격이
 양수이면서 저장 가능한 정확한 decimal이 아니면 연결은 유지하고 가격은 생략한다.
 기각 forecast의 판단 근거 연결은 세 시장(`equity_kr`, `equity_us`,
-`crypto`)만이며, `forex`·`index` forecast는 연결 없이 기존대로 저장한다. 기존 행
+`crypto`)만이며, `forex`·`index` forecast는 연결 없이 기존대로 저장한다. hk 5719 로 같은 기각 판단에 `declined_*` 입력(would-be 지정가·수량 또는 금액, 선택 시세·계좌 모드)을 주면 BUY rung 0 과 `limit` 참조가가 함께 기록된다. 입력이 없으면 종전 기록과 같다. 기존 행
 소급은 없다. 판단의 stop·target 가격, rung의 수량·금액·지정가, 참조 가격은
 `numeric(38,12)`로 원래 제안의 정밀도를 보존한다. 이 정밀도는 downgrade에서도 좁히지 않는다.

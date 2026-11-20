@@ -93,6 +93,40 @@ ROB-1301 A/B 채점기가 필요로 하는 (코호트, 결과, 귀속)은 전부
 
 ---
 
+## 2-1. 기각 판단의 '샀다면 넣었을' 지정가 (hk 5719)
+
+2026-11-12 이후 모든 매수 판단이 `declined`로만 남아 실험 짝 모집단이 0이 됐다
+(hk:doc reports/2026-11-20/at-5715-kis-mirror-gap). 그래서 기각 기록에도 기록 시점의
+매수 지정가와 수량을 함께 남긴다. 주문은 나가지 않는다.
+
+```python
+forecast_save(
+    ...,                                  # 2절과 같은 필수 인자
+    decision_bucket="deferred_no_action",
+    declined_limit_price="70000",         # 정확한 decimal 문자열 또는 정수 (소수는 문자열로; 부동소수 JSON 숫자는 거부)
+    declined_quantity="3",                # 또는 declined_notional — 정확히 하나
+    declined_quote_price="69500",         # 선택: 결정 시점 시세. 아래 시각과 함께만
+    declined_quote_asof="2026-11-20T09:00:00+09:00",  # 시각대 포함 ISO
+    declined_account_mode="kis_live",     # 선택: kis_live|toss_live|upbit (시장과 짝이 맞아야 함)
+)
+```
+
+- 입력이 하나라도 있으면 `decision_bucket`은 정확히 `deferred_no_action`, 시장은
+  `equity_kr`·`equity_us`·`crypto` 여야 한다. 지정가와 수량/금액 한 쌍이 필요하다.
+  시세는 가격과 시각이 함께 있어야 하고, 계좌 모드는 시장과 짝이 맞아야 한다.
+- 🔴 검증은 행을 쓰기 전에 끝난다. 실패 응답은 닫힌 코드 하나(`error`·`error_code`)만
+  담고 기록이 0건이다: `declined_bucket_required`, `declined_market_unsupported`,
+  `declined_limit_price_required`, `declined_size_required`, `declined_size_ambiguous`,
+  `declined_quote_incomplete`, `declined_value_invalid`, `declined_account_mode_invalid`.
+- 같은 `forecast_id`를 갱신(`updated`)하면서 입력을 주면 `declined_not_created`로
+  롤백한다. 입력을 주지 않은 호출은 종전과 바이트 동일한 증거를 쓴다.
+- 기록: `review.decision_evidence`(`decision_kind='declined'`, `side='buy'`),
+  `decision_evidence_rungs`(rung 0 의 `limit_price`·`planned_quantity`/`planned_notional`),
+  `decision_reference_prices`(`limit`, rung 0; 시세가 있으면 `quote_at_decision`).
+- 🔴 `decision_order_links`는 만들지 않는다. retro/v1 `retro_decisions`는 이 행의
+  계획 필드만 채우고 주문·체결로 세지 않는다. 실험 짝의 모집단 정의는
+  `docs/design/5624-entry-ab-mock.md` §2 다.
+
 ## 3. 링크 (AC3)
 
 - `report_uuid` / `report_item_uuid`는 **UUID 문자열로 검증·정규화**된다.

@@ -512,3 +512,48 @@ async def test_invalid_market_rejected() -> None:
         await read_retro_decisions(
             FakeSession(), from_="2026-01-01", to="2026-01-31", market="moon"
         )
+
+
+@pytest.mark.asyncio
+async def test_declined_would_be_entry_fills_plan_fields_but_is_no_order() -> None:
+    # hk 5719: a declined decision now stores the would-be BUY rung and its
+    # limit price. The plan fields may fill in; the decision is still no order.
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        account_mode="kis_live",
+        side="buy",
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    rung_b = decision_rung(
+        DECISION_B,
+        planned_quantity=Decimal("3"),
+        planned_notional=None,
+        limit_price=Decimal("70000"),
+    )
+    response = await read_retro_decisions(
+        linked_session(
+            decisions=[decision(1), declined],
+            **{
+                "FROM review.decision_evidence_rungs": [decision_rung(), rung_b],
+                "FROM review.decision_reference_prices": [
+                    ref_price(),
+                    ref_price(DECISION_B),
+                ],
+            },
+        ),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][1]
+    assert row["decision_kind"] == "declined"
+    assert row["order_count"] == 0 and row["order_states"] == []
+    assert row["retrospective_reason"] == "no_decision_link"
+    assert row["planned_quantity"] == "3"
+    assert row["reference_price"] == "70000"
+    assert row["reference_kind"] == "limit"
+    assert row["planned_risk_amount"] is None
