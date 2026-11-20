@@ -46,7 +46,6 @@ from app.services.mandate.projection_rules import (
     RungFact,
     project,
 )
-from app.services.order_proposals.state_machine import is_terminal
 from app.services.strategy_sleeves import store as sleeve_store
 
 _US_EASTERN = ZoneInfo("America/New_York")
@@ -83,86 +82,6 @@ class PlanReport:
     final_authority: str | None = None
     final_cleanup: str | None = None
     appended_seqs: tuple[int, ...] = field(default_factory=tuple)
-
-
-async def _recovered_orders(
-    session: AsyncSession,
-    sleeve: StrategySleeve,
-    state: PlanState,
-    proposals: Sequence[OrderProposal],
-    rungs: Sequence[OrderProposalRung],
-    plan: MandatePlan,
-) -> dict[int, Any]:
-    """Orders a rolled-back human approval left without a number on the rung (X26).
-
-    A committed, unreleased fence carries the deterministic send key of the order it
-    allowed. When the rung itself has neither an order number nor a key (the callback
-    transaction rolled back after the broker accepted), the Kiwoom mock ledger's place
-    row for that key ties the order back; no row means no evidence and nothing changes.
-    """
-    open_fences = {
-        f.proposal_id: f for f in state.fences if f.seq not in state.released_fence_seqs
-    }
-    if not open_fences:
-        return {}
-    keys: dict[int, str] = {}
-    for event in await ms.list_plan_events(session, plan.id):
-        if event.event != "tranche_send_fenced" or event.seq not in {
-            f.seq for f in open_fences.values()
-        }:
-            continue
-        key = (event.evidence or {}).get(v.SEND_KEY)
-        if isinstance(key, str) and key.strip():
-            keys[event.seq] = key.strip()
-    candidates = []
-    for proposal in proposals:
-        fence_ = open_fences.get(proposal.proposal_id)
-        key = keys.get(fence_.seq) if fence_ is not None else None
-        mine = [r for r in rungs if r.proposal_pk == proposal.id]
-        if key is None or len(mine) != 1:
-            continue
-        rung = mine[0]
-        if (rung.broker_order_id or "").strip() or (rung.idempotency_key or "").strip():
-            continue
-        if is_terminal(rung.state):
-            continue
-        candidates.append(sleeve_store.RecoveredKiwoomCandidate(rung, proposal, key))
-    return await sleeve_store.recover_kiwoom_orders(session, sleeve, candidates)
-
-
-def _with_recovered_order(
-    fact: RungFact, order: Any, market: str
-) -> tuple[RungFact, list[FillFact]]:
-    """The rung as the recovered order proves it: its number and key, its fills.
-
-    Only a fully booked rung is settled (``filled``); anything less stays open, because
-    a resting or part-filled order is not provably over.
-    """
-    fills = [
-        FillFact(
-            ledger_id=f.ledger_id,
-            rung_id=f.rung_id,
-            quantity=f.quantity,
-            price=f.price,
-            trade_date=trade_date_of(f.filled_at, market),
-            filled_at=f.filled_at
-            if f.filled_at.tzinfo
-            else f.filled_at.replace(tzinfo=UTC),
-        )
-        for f in order.fills
-        if f.side == "buy"
-    ]
-    booked = sum((f.quantity for f in fills), ZERO)
-    filled = booked >= fact.quantity > ZERO
-    return (
-        replace(
-            fact,
-            broker_order_id=order.order_id,
-            state="filled" if filled else fact.state,
-            filled_qty=booked if filled else fact.filled_qty,
-        ),
-        fills,
-    )
 
 
 async def _proposal_facts(
@@ -215,14 +134,11 @@ async def _proposal_facts(
             )
         )
     unattributed = frozenset(inputs.unattributed_rungs)
-    recovered = await _recovered_orders(session, sleeve, state, proposals, rungs, plan)
     facts: list[ProposalFact] = []
     for proposal in proposals:
         mine = [r for r in rungs if r.proposal_pk == proposal.id]
-        rung_facts = []
-        extra_fills: list[FillFact] = []
-        for r in mine:
-            fact = RungFact(
+        rung_facts = tuple(
+            RungFact(
                 rung_id=r.id,
                 state=r.state,
                 quantity=_dec(r.quantity) or ZERO,
@@ -231,20 +147,13 @@ async def _proposal_facts(
                 broker_order_id=(r.broker_order_id or "").strip() or None,
                 idempotency_key=(r.idempotency_key or "").strip() or None,
             )
-            order = recovered.get(r.id)
-            if order is not None:
-                fact, more = _with_recovered_order(fact, order, sleeve.market)
-                extra_fills.extend(more)
-            rung_facts.append(fact)
-        rung_facts = tuple(rung_facts)
+            for r in mine
+        )
         facts.append(
             ProposalFact(
                 proposal_id=proposal.proposal_id,
                 rungs=rung_facts,
-                fills=tuple(
-                    [fill for r in mine for fill in fills_by_rung.get(r.id, [])]
-                    + extra_fills
-                ),
+                fills=tuple(fill for r in mine for fill in fills_by_rung.get(r.id, [])),
                 unattributed_rung_ids=frozenset(r.id for r in mine) & unattributed,
             )
         )

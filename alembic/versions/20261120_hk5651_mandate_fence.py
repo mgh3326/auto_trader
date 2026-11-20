@@ -2,8 +2,7 @@
 
 Additive. Two coordination tables, one trigger and one widened CHECK, nothing else changes:
 
-* ``ck_mandate_plan_events_evidence_keys`` gains two keys. ``send_key`` is the broker send
-  key a human fence records before the POST (X26); ``retrospective_verified`` is the
+* ``ck_mandate_plan_events_evidence_keys`` gains one key, ``retrospective_verified`` — the
   write-time proof of I14 (§5.2): the event writer sets it when the cited retrospective
   existed in its snapshot; a caller cannot supply it, and an event without it never
   qualifies a loss sale. The check is dropped and re-added (a table scan of a small
@@ -86,8 +85,7 @@ EVIDENCE_KEYS_BEFORE: tuple[str, ...] = (
     "holdings_disposition",
 )
 PROOF_KEY = "retrospective_verified"
-SEND_KEY = "send_key"
-EVIDENCE_KEYS_AFTER: tuple[str, ...] = (*EVIDENCE_KEYS_BEFORE, PROOF_KEY, SEND_KEY)
+EVIDENCE_KEYS_AFTER: tuple[str, ...] = (*EVIDENCE_KEYS_BEFORE, PROOF_KEY)
 
 
 def _evidence_check(keys: Sequence[str]) -> str:

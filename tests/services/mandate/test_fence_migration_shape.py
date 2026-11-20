@@ -72,7 +72,7 @@ def test_upgrade_is_additive_only() -> None:
     assert sql.count("CREATE TABLE") == 2
 
 
-def test_the_evidence_check_gains_exactly_the_proof_and_send_keys() -> None:
+def test_i14_the_evidence_check_gains_exactly_the_proof_key() -> None:
     from app.services.mandate import vocabulary as vocab
 
     m = _load()
@@ -84,8 +84,7 @@ def test_the_evidence_check_gains_exactly_the_proof_and_send_keys() -> None:
         "ALTER TABLE review.mandate_plan_events ADD CONSTRAINT "
         "ck_mandate_plan_events_evidence_keys CHECK ((evidence - ARRAY["
     ) in sql
-    assert "'retrospective_verified','send_key']) = '{}'::jsonb)" in sql
-    assert m.SEND_KEY == vocab.SEND_KEY
+    assert "'retrospective_verified']) = '{}'::jsonb)" in sql
     # the downgrade restores the narrower check
     down = _norm(_render("downgrade"))
     assert "'holdings_disposition']) = '{}'::jsonb)" in down
