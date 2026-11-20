@@ -38,6 +38,7 @@ from app.models.mandate import (
     MandateApproval,
     MandateApprovalRequest,
     MandatePlan,
+    MandatePlanBatchMember,
     MandatePlanEvent,
     MandatePlanTranche,
     MandateSymbolReservation,
@@ -345,6 +346,16 @@ async def list_plan_events(
 async def plan_state(session: AsyncSession, plan_id: int) -> PlanState:
     rows = await list_plan_events(session, plan_id)
     return fold_plan_events([event_to_fold(r) for r in rows])
+
+
+async def plan_member_ids(session: AsyncSession, plan_id: int) -> frozenset[int]:
+    """The ids of every batch card issued for this plan (what can prove a batch approval)."""
+    rows = await session.execute(
+        select(MandatePlanBatchMember.id).where(
+            MandatePlanBatchMember.plan_id == plan_id
+        )
+    )
+    return frozenset(r[0] for r in rows.all())
 
 
 async def get_plan(session: AsyncSession, plan_id: int) -> MandatePlan | None:
@@ -1510,7 +1521,12 @@ async def append_plan_event(
         fields=fields,
     )
     try:
-        check_resume_floor(history, candidate)  # a new resume only; replay is unchanged
+        if event == "resumed":  # a new resume only; replay is unchanged
+            check_resume_floor(
+                history,
+                candidate,
+                plan_member_ids=await plan_member_ids(session, plan_id),
+            )
         apply_event(state, candidate)
     except InvalidPlanEvent as exc:
         raise MandateError(exc.code, str(exc)) from exc

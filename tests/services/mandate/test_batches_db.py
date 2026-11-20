@@ -1656,3 +1656,49 @@ async def test_a_legacy_approval_can_still_be_resumed_to_an_earlier_date(
         )
     await db_session.commit()
     assert (await events_of(db_session, plan.id))[-1] == "resumed"
+
+
+async def test_an_upgraded_t1_event_with_a_placeholder_card_id_proves_nothing(
+    db_session, seed
+) -> None:
+    """T1 allowed any ``batch_member_id`` on approved/terms_rebound (no FK, no batch table).
+    A persisted such event neither floors a resume nor makes another plan's card 'answered'."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    legacy = await register(seed, sleeve, terms, sym)
+    other = await scene(db_session, seed)  # another plan with a real card
+    other_card = other.cards[other.plans[0].id]
+    later = d.EFFECTIVE + timedelta(days=1)
+    # a pre-upgrade row: written with the triggers off, carrying the id of the OTHER
+    # plan's card as a placeholder (the sequence later assigns that very id)
+    await raw(db_session, "SET LOCAL session_replication_role = replica")
+    await raw(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+        "terms_sha256, effective_session, batch_member_id, actor) "
+        "SELECT :p, 2, 'approved', t.id, t.content_sha256, :e, :m, 'op' "
+        "FROM review.mandate_terms t WHERE t.id = :t",
+        p=legacy.id,
+        t=terms.id,
+        e=later,
+        m=other_card.id,
+    )
+    await raw(db_session, "SET LOCAL session_replication_role = origin")
+    await db_session.commit()
+    # no floor: suspended and resumed to an earlier day through the store and the trigger
+    await ms.append_plan_event(
+        db_session, plan_id=legacy.id, event="suspended", actor="operator:test"
+    )
+    await ms.append_plan_event(
+        db_session,
+        plan_id=legacy.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=d.EFFECTIVE,
+    )
+    await db_session.commit()
+    # the other plan's card is not 'answered' by the placeholder, and still answers
+    assert await bt.answer_event(db_session, other.batch_id, other.plans[0].id) is None
+    await db_session.rollback()
+    assert (await answer(other, other_card)).handled

@@ -380,3 +380,18 @@ def test_a_resume_keeps_the_approval_date_as_its_lower_bound_in_the_database() -
     assert "DROP TRIGGER IF EXISTS trg_mandate_plan_events_resume_guard" in _norm(
         _render("downgrade")
     )
+
+
+def test_a_card_id_on_an_event_counts_only_with_a_matching_card_of_the_same_plan() -> (
+    None
+):
+    """Both joins and the floor demand the card row to belong to the event's plan."""
+    ddl = _ddl()
+    # every "answered" lookup: the event is the plan's own and one of the four answers
+    assert "AND e.plan_id = x.plan_id" in ddl
+    assert "AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')" in ddl
+    assert (
+        ddl.count("AND e.plan_id = x.plan_id") >= 4
+    )  # batch, card, other-batch, answer
+    floor = _body("mandate_plan_events_resume_guard")
+    assert "m.id = floor_member AND m.plan_id = NEW.plan_id" in floor

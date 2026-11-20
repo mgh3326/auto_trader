@@ -65,7 +65,10 @@ _ANSWERED = """
     EXISTS (
         SELECT 1
           FROM review.mandate_plan_batch_members x
-          JOIN review.mandate_plan_events e ON e.batch_member_id = x.id
+          JOIN review.mandate_plan_events e
+            ON e.batch_member_id = x.id
+           AND e.plan_id = x.plan_id
+           AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
          WHERE x.batch_id = {batch} AND x.plan_id = {plan}
     )
 """
@@ -212,6 +215,8 @@ def _guard_ddl() -> tuple[str, ...]:
                                     FROM review.mandate_plan_batch_members x
                                     JOIN review.mandate_plan_events e
                                       ON e.batch_member_id = x.id
+                                     AND e.plan_id = x.plan_id
+                                     AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
                                    WHERE x.batch_id = m.batch_id
                                      AND x.plan_id = m.plan_id
                               )
@@ -292,7 +297,13 @@ def _guard_ddl() -> tuple[str, ...]:
              WHERE e.plan_id = NEW.plan_id
                AND e.event IN ('approved', 'terms_rebound')
              ORDER BY e.seq DESC LIMIT 1;
+            -- a card id on a persisted event proves nothing by itself (an earlier schema
+            -- allowed a placeholder): it counts only when the card row belongs to this plan
             IF floor_member IS NOT NULL AND floor_day IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM review.mandate_plan_batch_members m
+                    WHERE m.id = floor_member AND m.plan_id = NEW.plan_id
+               )
                AND NEW.effective_session < floor_day THEN
                 RAISE EXCEPTION 'a resume cannot take effect before the approval it follows'
                     USING ERRCODE = 'restrict_violation';

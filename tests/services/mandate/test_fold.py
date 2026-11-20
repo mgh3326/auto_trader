@@ -399,6 +399,10 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
         s.add("orders_settled")
 
 
+#: the batch cards issued for the plan in these histories (the approval answers card 7)
+CARDS = frozenset({7, 9})
+
+
 def _late_approval_history(batch_member_id: int | None = 7):
     """proposed -> approved for the NEXT session -> suspended (as plain event rows).
 
@@ -430,10 +434,10 @@ def test_a_new_resume_cannot_take_effect_before_the_approval_it_follows() -> Non
 
     history, later = _late_approval_history()
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(4, SESSION))
+        check_resume_floor(history, _resume(4, SESSION), plan_member_ids=CARDS)
     # on or after the approval date is fine; other events are never checked
-    check_resume_floor(history, _resume(4, later))
-    check_resume_floor(history, ev("suspended", seq=4))
+    check_resume_floor(history, _resume(4, later), plan_member_ids=CARDS)
+    check_resume_floor(history, ev("suspended", seq=4), plan_member_ids=CARDS)
 
 
 def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> None:
@@ -443,10 +447,10 @@ def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> Non
     far = later + (later - SESSION) * 4
     history += [_resume(4, far), ev("suspended", seq=5)]
     # correcting the resume date back down to the approval date is allowed ...
-    check_resume_floor(history, _resume(6, later))
+    check_resume_floor(history, _resume(6, later), plan_member_ids=CARDS)
     # ... below it is not
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(6, SESSION))
+        check_resume_floor(history, _resume(6, SESSION), plan_member_ids=CARDS)
 
 
 def test_histories_written_before_the_floor_existed_still_replay() -> None:
@@ -472,12 +476,16 @@ def test_a_legacy_approval_keeps_its_old_resume_behaviour_for_new_resumes_too() 
     history, later = _late_approval_history(batch_member_id=None)  # legacy approval
     history += [_resume(4, SESSION), ev("suspended", seq=5)]
     fold_plan_events(history)  # replays
-    check_resume_floor(history, _resume(6, later + (later - SESSION)))  # a later date
-    check_resume_floor(history, _resume(6, SESSION))  # and an earlier one: no floor
+    check_resume_floor(
+        history, _resume(6, later + (later - SESSION)), plan_member_ids=CARDS
+    )  # a later date
+    check_resume_floor(
+        history, _resume(6, SESSION), plan_member_ids=CARDS
+    )  # and an earlier one: no floor
     # the same history with a batch-backed approval is floored
     batch_history, _ = _late_approval_history(batch_member_id=7)
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(batch_history, _resume(4, SESSION))
+        check_resume_floor(batch_history, _resume(4, SESSION), plan_member_ids=CARDS)
 
 
 def test_the_floor_follows_the_latest_binding_event() -> None:
@@ -506,4 +514,22 @@ def test_the_floor_follows_the_latest_binding_event() -> None:
     )
     history = [*history, batch_rebind, ev("suspended", seq=8)]
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        check_resume_floor(history, _resume(9, SESSION))
+        check_resume_floor(history, _resume(9, SESSION), plan_member_ids=CARDS)
+
+
+def test_a_populated_card_id_without_a_card_of_this_plan_proves_nothing() -> None:
+    """An earlier schema allowed any ``batch_member_id`` on approved/terms_rebound. After
+    upgrade such a persisted placeholder (no card row for this plan) gives no floor."""
+    from app.services.mandate.fold import check_resume_floor, fold_plan_events
+
+    history, later = _late_approval_history(batch_member_id=999_999)  # placeholder
+    history += [_resume(4, SESSION), ev("suspended", seq=5)]
+    fold_plan_events(history)  # replays
+    check_resume_floor(history, _resume(6, SESSION), plan_member_ids=frozenset())
+    # the id of a card that belongs to ANOTHER plan is not this plan's proof either
+    check_resume_floor(history, _resume(6, SESSION), plan_member_ids=frozenset({1, 2}))
+    # only when the card is this plan's does the floor apply
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(
+            history, _resume(6, SESSION), plan_member_ids=frozenset({999_999})
+        )

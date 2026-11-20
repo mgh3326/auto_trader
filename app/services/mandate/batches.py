@@ -264,6 +264,11 @@ async def answer_event(
             .where(
                 MandatePlanBatchMember.batch_id == batch_id,
                 MandatePlanBatchMember.plan_id == plan_id,
+                # a card id on an event counts only for the plan the card belongs to
+                MandatePlanEvent.plan_id == MandatePlanBatchMember.plan_id,
+                MandatePlanEvent.event.in_(
+                    [e for ev in v.BATCH_ANSWER_EVENTS.values() for e in ev]
+                ),
             )
             .limit(1)
         )

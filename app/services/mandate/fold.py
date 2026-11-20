@@ -523,11 +523,18 @@ def _trade_date(event: PlanEvent) -> date | None:
     return None
 
 
-def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> None:
+def check_resume_floor(
+    history: Sequence[PlanEvent],
+    candidate: PlanEvent,
+    *,
+    plan_member_ids: frozenset[int] = frozenset(),
+) -> None:
     """Refuse a NEW ``resumed`` event dated before the batch approval it follows (§5.1).
 
     The floor applies only when the plan's latest ``approved``/``terms_rebound`` event
-    answers a morning-batch card (``batch_member_id`` set): that approval was recorded
+    answers a morning-batch card of THIS plan (its ``batch_member_id`` is one of
+    ``plan_member_ids``, the cards issued for the plan; a populated id from an earlier
+    schema proves nothing): that approval was recorded
     for a session after the bell, and a resume must not pull the plan back before it.
     A non-batch (legacy) approval keeps the behaviour it always had, so an operator can
     still resume such a plan to any date. A resume may otherwise move its own date around.
@@ -539,7 +546,7 @@ def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> No
         (e for e in reversed(history) if e.event in ("approved", "terms_rebound")),
         None,
     )
-    if binding is None or binding.batch_member_id is None:
+    if binding is None or binding.batch_member_id not in plan_member_ids:
         return
     _require(
         binding.effective_session is None
