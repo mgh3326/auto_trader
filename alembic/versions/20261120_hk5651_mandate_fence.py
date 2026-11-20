@@ -1,6 +1,12 @@
 """hk 5651 (3795 T4c): fence-area coordination tables and the auto-fence profile guard.
 
-Additive. Two coordination tables and one trigger, nothing else changes:
+Additive. Two coordination tables, one trigger and one widened CHECK, nothing else changes:
+
+* ``ck_mandate_plan_events_evidence_keys`` gains one key, ``retrospective_verified`` — the
+  write-time proof of I14 (§5.2): the event writer sets it when the cited retrospective
+  existed in its snapshot; a caller cannot supply it, and an event without it never
+  qualifies a loss sale. The check is dropped and re-added (a table scan of a small
+  table); downgrade restores the narrower check and refuses while rows hold the key.
 
 * ``review.mandate_basket_authority`` — one row per (realm, basket key), the lock
   target F2 of design §4.6. A writer of a clause, an activation profile, a sleeve
@@ -62,7 +68,44 @@ FUNCTIONS: tuple[str, ...] = (
 MUTEX_SCOPES: tuple[str, ...] = ("sleeve", "basket", "global")
 REALMS: tuple[str, ...] = ("live", "mock")
 
+#: The evidence keys of ``review.mandate_plan_events`` before and after this migration.
+#: The new key is the write-time proof of I14 (§5.2): the event writer adds it when the
+#: cited retrospective existed in its snapshot; callers cannot supply it.
+EVIDENCE_KEYS_BEFORE: tuple[str, ...] = (
+    "ledger_row_ids",
+    "trade_date",
+    "reason_code",
+    "retrospective_id",
+    "approval_issue_id",
+    "open_order_count",
+    "unknown_order_count",
+    "holdings_quantity",
+    "holdings_checked_at",
+    "holdings_account_refs",
+    "holdings_disposition",
+)
+PROOF_KEY = "retrospective_verified"
+EVIDENCE_KEYS_AFTER: tuple[str, ...] = (*EVIDENCE_KEYS_BEFORE, PROOF_KEY)
+
+
+def _evidence_check(keys: Sequence[str]) -> str:
+    listed = ",".join(f"'{k}'" for k in keys)
+    return (
+        "ALTER TABLE review.mandate_plan_events ADD CONSTRAINT "
+        f"ck_mandate_plan_events_evidence_keys CHECK ((evidence - ARRAY[{listed}]) "
+        "= '{}'::jsonb)"
+    )
+
+
+DROP_EVIDENCE_CHECK = (
+    "ALTER TABLE review.mandate_plan_events "
+    "DROP CONSTRAINT IF EXISTS ck_mandate_plan_events_evidence_keys"
+)
+
 GUARD_DDL: tuple[str, ...] = (
+    # Widen the evidence-keys CHECK by the proof key (idempotent for the test bootstrap).
+    DROP_EVIDENCE_CHECK,
+    _evidence_check(EVIDENCE_KEYS_AFTER),
     """
     CREATE OR REPLACE FUNCTION review.mandate_authority_guard()
     RETURNS trigger AS $$
@@ -266,6 +309,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Restoring the narrower CHECK refuses (rows hold the proof key) until they are
+    # exported: the proof is evidence and is never silently dropped.
+    op.execute(DROP_EVIDENCE_CHECK)
+    op.execute(_evidence_check(EVIDENCE_KEYS_BEFORE))
     op.execute(
         "DROP TRIGGER IF EXISTS trg_mandate_plan_events_guard_fence_profile "
         "ON review.mandate_plan_events"

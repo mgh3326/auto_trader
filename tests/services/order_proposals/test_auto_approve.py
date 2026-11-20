@@ -255,20 +255,16 @@ def test_i23_mandate_buy_below_market_requires_human_approval():
     assert decision.reason == "mandate_not_eligible"
 
 
-def test_mandate_proposal_accounts_default_closed_and_accept_realm_accounts_only_when_listed():
+def test_mandate_proposal_accounts_default_closed_and_only_kiwoom_mock_is_accepted():
     default = Settings.model_fields["MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES"].default
     assert default == ""
-    for mode in ("kiwoom_mock", "kis_live", "toss_live"):
-        assert not proposal_account_allowed(mode, default)
+    assert not proposal_account_allowed("kiwoom_mock", default)
     configured = "kiwoom_mock,kiwoom_mock_us,kis_live,toss_live"
-    # T4c: the live accounts are accepted once a send boundary exists, but only
-    # when the operator lists them; an account with no mandate realm never is.
     assert proposal_account_allowed("kiwoom_mock", configured)
-    assert proposal_account_allowed("kis_live", configured)
-    assert proposal_account_allowed("toss_live", configured)
-    assert not proposal_account_allowed("kiwoom_mock_us", configured)
-    assert not proposal_account_allowed("upbit", "upbit,kis_live")
-    assert not proposal_account_allowed("toss_live", "kis_live")
+    # hk 5651 T4c opens no live account (typed send evidence and quote provenance for
+    # KIS and Toss are follow-up hk 5696), listed or not
+    for mode in ("kis_live", "toss_live", "kiwoom_mock_us", "upbit"):
+        assert not proposal_account_allowed(mode, configured)
 
 
 @pytest.mark.asyncio
@@ -2873,48 +2869,41 @@ async def test_mandate_create_binds_plan_and_appends_events(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("auto_dispatch", "reaches_the_plan"),
-    [(True, False), (False, True)],
-    ids=["legacy-auto-dispatch-running", "legacy-auto-dispatch-stopped"],
-)
-async def test_t4c_a_live_plan_proposal_needs_the_legacy_auto_dispatch_stopped(
-    monkeypatch, auto_dispatch, reaches_the_plan
+@pytest.mark.parametrize("auto_dispatch", [True, False])
+async def test_t4c_no_live_account_gets_a_plan_bound_proposal(
+    monkeypatch, auto_dispatch
 ):
-    """§4.6 deployment order (1): the T4c-only human pilot keeps the existing automatic
-    dispatch off, and the code refuses to create the proposal otherwise (refusal only)."""
+    """T4c opens the Kiwoom mock account only (live opening is follow-up hk 5696): a live
+    account is refused whatever the settings say (refusal only)."""
     from app.services.mandate import proposal_gate
     from app.services.order_proposals import service as service_module
     from app.services.order_proposals.errors import OrderProposalError
 
-    class ReachedThePlan(Exception):
-        pass
-
     monkeypatch.setattr(
-        service_module.settings, "MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES", "kis_live"
+        service_module.settings,
+        "MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES",
+        "kis_live,toss_live,kiwoom_mock",
     )
     monkeypatch.setattr(
         service_module.settings, "ORDER_PROPOSALS_AUTO_APPROVE", auto_dispatch
     )
     monkeypatch.setattr(
-        proposal_gate, "lock_plan_proposal", AsyncMock(side_effect=ReachedThePlan)
+        proposal_gate,
+        "lock_plan_proposal",
+        AsyncMock(side_effect=AssertionError("the plan is never reached")),
     )
     service = OrderProposalsService(AsyncMock())
-
-    kwargs = {
-        "symbol": "005930",
-        "market": "equity_kr",
-        "account_mode": "kis_live",
-        "side": "buy",
-        "order_type": "limit",
-        "proposer": "test",
-        "rungs": [RungInput(0, "buy", Decimal(1), Decimal(90), None)],
-        "mandate_plan_id": 42,
-        "tranche_index": 1,
-        "now": datetime(2026, 11, 20, 1, tzinfo=UTC),
-    }
-    expected = ReachedThePlan if reaches_the_plan else OrderProposalError
-    with pytest.raises(expected) as caught:
-        await service.create_proposal(**kwargs)
-    if not reaches_the_plan:
-        assert "mandate_auto_dispatch_active" in str(caught.value)
+    for account_mode in ("kis_live", "toss_live"):
+        with pytest.raises(OrderProposalError, match="mandate_account_not_enabled"):
+            await service.create_proposal(
+                symbol="005930",
+                market="equity_kr",
+                account_mode=account_mode,
+                side="buy",
+                order_type="limit",
+                proposer="test",
+                rungs=[RungInput(0, "buy", Decimal(1), Decimal(90), None)],
+                mandate_plan_id=42,
+                tranche_index=1,
+                now=datetime(2026, 11, 20, 1, tzinfo=UTC),
+            )

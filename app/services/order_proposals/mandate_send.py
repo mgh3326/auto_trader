@@ -97,9 +97,8 @@ def is_affirmative_rejection(submit: Any) -> bool:
 
     Accepted: the adapter's vetted ``broker_status='rejected'`` (a Toss coded 4xx keeps
     ``mutation_sent=True`` and is still a rejection), ``ledger_status='rejected'``, a
-    proven non-dispatch (``mutation_sent=False`` / ``status='not_submitted'``) and the
-    broker boundary's ``send_disposition='not_created'`` (``OrderSendNotCreated``: a
-    provider rejection or a transport that failed before the HTTP boundary). Never
+    proven non-dispatch (``mutation_sent=False`` / ``status='not_submitted'``); the
+    KIS live adapter has no such typed evidence yet (follow-up hk 5696). Never
     accepted: an unknown outcome (``outcome_unknown``), a request for a reconcile, or an
     untyped failure — a post-dispatch HTTP 5xx is flattened to ``success=False`` with no
     marker and may have created the order, so it keeps the fence.
@@ -116,7 +115,6 @@ def is_affirmative_rejection(submit: Any) -> bool:
         or submit.get("ledger_status") == "rejected"
         or submit.get("mutation_sent") is False
         or submit.get("status") == "not_submitted"
-        or submit.get("send_disposition") == "not_created"
     )
 
 

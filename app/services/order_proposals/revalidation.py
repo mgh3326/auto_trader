@@ -38,7 +38,6 @@ from typing import Any, Literal
 from app.core.timezone import now_kst
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
-from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.live_correlation import live_correlation_id
 from app.services.mechanical_loss_cut.gate import regular_session_open
 from app.services.mechanical_loss_cut.plans import (
@@ -1073,23 +1072,6 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     return submit
 
 
-def _mandate_kis_kwargs(group: Any, *, dry_run: bool) -> dict[str, Any]:
-    """hk 3795 T4c: a plan-bound KIS live order needs a real quote and typed send proof.
-
-    The preview must not publish the limit as the "current price" when the quote lookup
-    fails (``require_fresh_quote``), and the send carries a tracker so a transport that
-    proves no order exists (a pre-dispatch failure or a provider rejection in a <500
-    response) comes back typed, while a post-dispatch 5xx stays unmarked. Other
-    proposals and other accounts are untouched.
-    """
-    if not mandate_send.is_plan_bound(group) or group.account_mode != "kis_live":
-        return {}
-    kwargs: dict[str, Any] = {"require_fresh_quote": True}
-    if not dry_run:
-        kwargs["send_outcome"] = OrderSendOutcomeTracker()
-    return kwargs
-
-
 def _cash_funding_revalidation_kwargs(group: OrderProposal) -> dict[str, Any]:
     """Extract only durable §S177 inputs for execution revalidation.
 
@@ -1594,7 +1576,6 @@ async def _revalidate_place_rung(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
-                **_mandate_kis_kwargs(group, dry_run=True),
                 **_cash_funding_revalidation_kwargs(group),
                 **(
                     {"parking_sell_ctx": parking_sell_ctx}
@@ -1894,7 +1875,6 @@ async def _revalidate_place_rung(
                     rung=rung_index,
                     correlation_id=corr,
                     pre_send_hook=send_hook,
-                    **_mandate_kis_kwargs(group, dry_run=False),
                     **_cash_funding_revalidation_kwargs(group),
                     **(
                         {"parking_sell_ctx": parking_sell_ctx}

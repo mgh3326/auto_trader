@@ -63,11 +63,32 @@ def test_revision_chain_follows_the_upbit_gateway_head() -> None:
 
 def test_upgrade_is_additive_only() -> None:
     sql = _norm(_render("upgrade")).upper()
-    for forbidden in ("DROP TABLE", "DROP COLUMN", "ALTER TABLE", "DELETE FROM REVIEW"):
+    for forbidden in ("DROP TABLE", "DROP COLUMN", "DELETE FROM REVIEW"):
         assert forbidden not in sql, forbidden
-    # the only existing object touched is the plan-events table, by one new trigger
+    # the only existing object touched: one new trigger, and the evidence-keys CHECK
+    # of the plan-events table widened by the proof key (the only ALTER TABLE)
     assert "ON REVIEW.MANDATE_PLAN_EVENTS" in sql
+    assert sql.count("ALTER TABLE") == 2  # drop + re-add of that one constraint
     assert sql.count("CREATE TABLE") == 2
+
+
+def test_i14_the_evidence_check_gains_exactly_the_proof_key() -> None:
+    from app.services.mandate import vocabulary as vocab
+
+    m = _load()
+    assert m.EVIDENCE_KEYS_BEFORE == vocab.EVIDENCE_KEYS  # the keys callers may send
+    assert m.EVIDENCE_KEYS_AFTER == vocab.STORED_EVIDENCE_KEYS
+    assert m.PROOF_KEY == vocab.PROOF_KEY
+    sql = _norm(_render("upgrade"))
+    assert (
+        "ALTER TABLE review.mandate_plan_events ADD CONSTRAINT "
+        "ck_mandate_plan_events_evidence_keys CHECK ((evidence - ARRAY["
+    ) in sql
+    assert "'retrospective_verified']) = '{}'::jsonb)" in sql
+    # the downgrade restores the narrower check
+    down = _norm(_render("downgrade"))
+    assert "'holdings_disposition']) = '{}'::jsonb)" in down
+    assert "retrospective_verified" not in down
 
 
 def test_hard_rule_18_the_app_role_gets_no_delete_and_only_a_conditional_grant() -> (

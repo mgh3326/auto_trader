@@ -179,6 +179,13 @@ EVIDENCE_KEYS: tuple[str, ...] = (
     "holdings_disposition",
 )
 
+#: The proof the checked event writer adds itself (never a caller input): the retrospective
+#: an ``evidence`` cites existed in the writer's snapshot when the event was written
+#: (§5.2 "증거의 순서", I14). Events without it never qualify a loss sale.
+PROOF_KEY = "retrospective_verified"
+#: Every key the stored ``evidence`` may hold (the DB CHECK of migration hk5651).
+STORED_EVIDENCE_KEYS: tuple[str, ...] = (*EVIDENCE_KEYS, PROOF_KEY)
+
 #: Column group -> (required events, allowed events). Outside ``allowed`` the
 #: columns must be NULL; inside ``required`` they must be set.
 _S = frozenset

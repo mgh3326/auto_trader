@@ -1542,6 +1542,8 @@ async def append_plan_event(
         # this writer's snapshot. A write-time visibility check orders the writes
         # themselves; the transaction-start ``created_at`` defaults cannot.
         await _require_cited_retrospective(session, clean_evidence)
+        # durable proof, written by this writer only (callers cannot send the key)
+        clean_evidence[v.PROOF_KEY] = True
     if event == "holdings_disposed":
         validate_holdings_evidence(
             clean_evidence, scope_account_refs=list(plan.scope_account_refs), actor=who

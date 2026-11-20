@@ -566,8 +566,6 @@ async def test_i24_an_unproven_outcome_keeps_the_fence(harness, reply):
         {"success": False, "ledger_status": "rejected", "error": "no"},
         {"success": False, "mutation_sent": False, "error": "refused before send"},
         {"success": False, "status": "not_submitted", "error": "x"},
-        # OrderSendNotCreated: provider rejection or a transport failed before the POST
-        {"success": False, "send_disposition": "not_created", "retry_allowed": True},
     ],
     ids=[
         "live-rejected",
@@ -575,7 +573,6 @@ async def test_i24_an_unproven_outcome_keeps_the_fence(harness, reply):
         "kiwoom-rejected",
         "not-sent",
         "not-submitted",
-        "not-created",
     ],
 )
 async def test_an_affirmative_typed_rejection_closes_the_fence(harness, reply):
@@ -929,30 +926,6 @@ async def test_the_plan_bound_hook_asks_to_run_at_the_transport_edge():
     assert not getattr(plain, "run_at_transport_edge", False)
 
 
-async def test_the_broker_boundary_marks_only_a_not_created_send_with_a_disposition():
-    """The positive marker is produced by order_execution for OrderSendNotCreated only."""
-    from app.mcp_server.tooling import order_execution as oe
-
-    base = {"success": False, "error": "x"}
-    created = oe._augment_error_for_unknown_outcome(
-        dict(base),
-        oe.OrderSendNotCreated(RuntimeError("token request failed")),
-        market_type="equity_kr",
-        is_mock=False,
-    )
-    assert created["send_disposition"] == "not_created"
-    assert mandate_send.is_affirmative_rejection(created) is True
-    # an HTTP 5xx after dispatch reaches the boundary as a generic exception: no marker
-    generic = oe._augment_error_for_unknown_outcome(
-        dict(base),
-        RuntimeError("502 Bad Gateway"),
-        market_type="equity_kr",
-        is_mock=False,
-    )
-    assert "send_disposition" not in generic
-    assert mandate_send.is_affirmative_rejection(generic) is False
-
-
 async def test_i8_the_authoritative_fence_needs_a_current_quote(harness):
     """A quote outage must not let the limit stand in for max(limit, current)."""
     group, rung = _group(), _rung()
@@ -1035,44 +1008,3 @@ async def test_i14_a_refused_replacement_post_keeps_the_confirmed_cancellation(
     assert outcomes[0].detail["target_cancelled"] is True
     assert outcomes[0].detail["replacement_submitted"] is False
     service.record_cancelled.assert_awaited_once()
-
-
-async def test_a_kis_provider_rejection_reaches_the_response_as_typed_evidence():
-    """A business rejection in a <500 response marks the tracker NOT_CREATED; the generic
-    handler carries that to the response, while an untracked or 5xx failure has no marker."""
-    from app.mcp_server.tooling import order_execution as oe
-
-    class Rejected(RuntimeError):
-        pass
-
-    rejected = Rejected("APBK0013 rejected")
-    rejected.mandate_send_disposition = "not_created"  # set by the generic handler
-    marked = oe._augment_error_for_unknown_outcome(
-        {"success": False, "error": "x"},
-        rejected,
-        market_type="equity_kr",
-        is_mock=False,
-    )
-    assert marked["send_disposition"] == "not_created"
-    assert mandate_send.is_affirmative_rejection(marked) is True
-    plain = oe._augment_error_for_unknown_outcome(
-        {"success": False, "error": "x"},
-        RuntimeError("502"),
-        market_type="equity_kr",
-        is_mock=False,
-    )
-    assert mandate_send.is_affirmative_rejection(plain) is False
-
-
-async def test_a_plan_bound_kis_live_order_asks_for_a_real_quote_and_a_send_tracker():
-    from app.services.order_proposals.revalidation import _mandate_kis_kwargs
-
-    bound = _group(account_mode="kis_live")
-    preview = _mandate_kis_kwargs(bound, dry_run=True)
-    send = _mandate_kis_kwargs(bound, dry_run=False)
-    assert preview == {"require_fresh_quote": True}
-    assert send["require_fresh_quote"] is True and "send_outcome" in send
-    # nothing changes for any other proposal or account
-    assert _mandate_kis_kwargs(_group(mandate_plan_id=None), dry_run=False) == {}
-    assert _mandate_kis_kwargs(_group(account_mode="toss_live"), dry_run=False) == {}
-    assert _mandate_kis_kwargs(_group(account_mode="kiwoom_mock"), dry_run=False) == {}

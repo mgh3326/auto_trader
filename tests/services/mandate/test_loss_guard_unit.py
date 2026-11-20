@@ -27,7 +27,11 @@ def _ev(event: str, seq: int, evidence=None, thesis_seq=None):
     )
 
 
-EVIDENCE = {"retrospective_id": 42, "approval_issue_id": "hk:9"}
+EVIDENCE = {
+    "retrospective_id": 42,
+    "approval_issue_id": "hk:9",
+    "retrospective_verified": True,
+}
 
 
 async def test_i14_a_plan_without_thesis_broken_has_no_matching_evidence():
@@ -55,11 +59,23 @@ async def test_i14_both_ids_must_come_from_the_thesis_broken_event():
 
 
 async def test_i14_ids_must_be_from_one_event_not_mixed_across_events():
-    broken = _ev("thesis_broken", 2, {"retrospective_id": 42, "approval_issue_id": "A"})
+    broken = _ev(
+        "thesis_broken",
+        2,
+        {
+            "retrospective_id": 42,
+            "approval_issue_id": "A",
+            "retrospective_verified": True,
+        },
+    )
     refresh = _ev(
         "thesis_evidence_refreshed",
         3,
-        {"retrospective_id": 77, "approval_issue_id": "B"},
+        {
+            "retrospective_id": 77,
+            "approval_issue_id": "B",
+            "retrospective_verified": True,
+        },
         thesis_seq=2,
     )
     events = [broken, refresh]
@@ -76,7 +92,11 @@ async def test_i14_f_a_refresh_counts_only_for_the_thesis_event_it_points_at():
     stray = _ev(
         "thesis_evidence_refreshed",
         4,
-        {"retrospective_id": 99, "approval_issue_id": "hk:new"},
+        {
+            "retrospective_id": 99,
+            "approval_issue_id": "hk:new",
+            "retrospective_verified": True,
+        },
         thesis_seq=3,  # not the thesis_broken event
     )
     assert not loss_guard.evidence_matches(
@@ -85,7 +105,11 @@ async def test_i14_f_a_refresh_counts_only_for_the_thesis_event_it_points_at():
     pointing = _ev(
         "thesis_evidence_refreshed",
         4,
-        {"retrospective_id": 99, "approval_issue_id": "hk:new"},
+        {
+            "retrospective_id": 99,
+            "approval_issue_id": "hk:new",
+            "retrospective_verified": True,
+        },
         thesis_seq=2,
     )
     assert loss_guard.evidence_matches(
@@ -101,7 +125,11 @@ async def test_i14_h_a_retired_plan_is_judged_by_the_same_evidence(monkeypatch):
         _ev(
             "thesis_evidence_refreshed",
             4,
-            {"retrospective_id": 100, "approval_issue_id": "hk:r"},
+            {
+                "retrospective_id": 100,
+                "approval_issue_id": "hk:r",
+                "retrospective_verified": True,
+            },
             thesis_seq=2,
         ),
     ]
@@ -279,25 +307,40 @@ async def test_i14_i_the_event_writer_refuses_a_retrospective_that_does_not_exis
     assert source.index("_require_cited_retrospective(") < source.index("apply_event(")
 
 
-async def test_i14_a_legacy_thesis_event_does_not_qualify_without_a_fresh_refresh(
-    monkeypatch,
-):
-    """Events written before the writer checked the cited retrospective carry no proof of
-    the §5.2 order (review r5); a refresh written after the cutoff reopens the sale."""
-    legacy_at = datetime(2026, 11, 19, 12, tzinfo=UTC)
-    legacy = _ev("thesis_broken", 2, EVIDENCE)
-    legacy.created_at = legacy_at
+async def test_i14_an_event_without_the_write_time_proof_never_qualifies(monkeypatch):
+    """No durable proof that the retrospective existed when the event was written (an old
+    writer's event, or a forged one): fail closed; a verified refresh reopens the sale."""
+    bare = _ev(
+        "thesis_broken", 2, {"retrospective_id": 42, "approval_issue_id": "hk:9"}
+    )
     assert not loss_guard.evidence_matches(
-        [_ev("proposed", 1), legacy], retrospective_id=42, approval_issue_id="hk:9"
+        [_ev("proposed", 1), bare], retrospective_id=42, approval_issue_id="hk:9"
     )
     refresh = _ev(
         "thesis_evidence_refreshed",
         3,
-        {"retrospective_id": 77, "approval_issue_id": "hk:new"},
+        {
+            "retrospective_id": 77,
+            "approval_issue_id": "hk:new",
+            "retrospective_verified": True,
+        },
         thesis_seq=2,
     )
     assert loss_guard.evidence_matches(
-        [_ev("proposed", 1), legacy, refresh],
+        [_ev("proposed", 1), bare, refresh],
         retrospective_id=77,
         approval_issue_id="hk:new",
     )
+
+
+async def test_the_proof_key_is_set_by_the_writer_and_cannot_be_supplied():
+    import inspect
+
+    from app.services.mandate import store
+    from app.services.mandate import vocabulary as vocab
+
+    assert vocab.PROOF_KEY not in vocab.EVIDENCE_KEYS  # a caller's evidence is checked
+    assert vocab.PROOF_KEY in vocab.STORED_EVIDENCE_KEYS  # the stored form allows it
+    source = inspect.getsource(store.append_plan_event)
+    assert "clean_evidence[v.PROOF_KEY] = True" in source
+    assert source.index("bad_keys") < source.index("clean_evidence[v.PROOF_KEY]")
