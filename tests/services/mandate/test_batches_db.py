@@ -337,9 +337,11 @@ async def test_i13_batch_and_card_rows_are_append_only(db_session, seed) -> None
     )
     await refused(
         db_session,
-        # CASCADE: a plain TRUNCATE is already refused by the answer link's foreign key
-        "TRUNCATE review.mandate_plan_batch_members CASCADE",
-        "append-only",
+        # both tables in one TRUNCATE: a lone TRUNCATE of the cards is refused by the
+        # answer link's foreign key before any trigger runs; this one reaches the
+        # members' own append-only trigger, whose message names the table
+        "TRUNCATE review.mandate_plan_batch_members, review.mandate_plan_events",
+        "mandate_plan_batch_members rows are append-only",
     )
 
 
