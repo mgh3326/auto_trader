@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from app.services.snapshot_fill_rate import format_fill_rate_line
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -119,6 +121,10 @@ def _print_result(result) -> None:
         print("warnings:")
         for warning in result.warnings:
             print(f"  - {warning}")
+    if result.fill_rate:
+        print(
+            format_fill_rate_line("financial_fundamentals_snapshots", result.fill_rate)
+        )
     if not result.committed:
         print("\n--dry-run: no rows written.\n")
     else:

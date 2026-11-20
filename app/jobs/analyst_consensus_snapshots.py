@@ -19,11 +19,22 @@ from app.services.analyst_consensus_snapshots.repository import (
     AnalystConsensusSnapshotUpsert,
 )
 from app.services.candles_sync_common import build_symbol_union
+from app.services.snapshot_fill_rate import FillRateTally
 
 logger = logging.getLogger(__name__)
 
 _WATCH_ALERTS_LIMIT = 500
 _DEFAULT_USER_ID = 1
+# Key fields for the dry-run fill-rate line (hk 5752).
+CONSENSUS_FILL_RATE_FIELDS: tuple[str, ...] = (
+    "total_count",
+    "target_mean",
+    "target_high",
+    "target_low",
+    "current_price",
+    "upside_pct",
+    "newest_opinion_date",
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,7 @@ class AnalystConsensusSnapshotBuildResult:
     idempotency: dict[str, int] = field(default_factory=dict)
     samples: tuple[AnalystConsensusSnapshotSample, ...] = ()
     warnings: tuple[str, ...] = ()
+    fill_rate: dict = field(default_factory=dict)
 
 
 def _validate_market(market: str) -> str:
@@ -274,6 +286,7 @@ async def run_analyst_consensus_snapshot_build(
     distribution: Counter[str] = Counter()
     samples: list[AnalystConsensusSnapshotSample] = []
     warnings: list[str] = []
+    tally = FillRateTally(CONSENSUS_FILL_RATE_FIELDS)
     total_built = 0
     batches = 0
     for start in range(0, len(symbols), effective_batch_size):
@@ -287,6 +300,7 @@ async def run_analyst_consensus_snapshot_build(
         payloads = list(result.payloads)
         warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)
         total_built += len(payloads)
+        tally.add(payloads)
         distribution.update(p.snapshot_date.isoformat() for p in payloads)
         idempotency.update(await _classify_idempotency(payloads))
         samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
@@ -305,4 +319,5 @@ async def run_analyst_consensus_snapshot_build(
         idempotency=dict(idempotency),
         samples=tuple(samples),
         warnings=tuple(warnings),
+        fill_rate=tally.summary(),
     )

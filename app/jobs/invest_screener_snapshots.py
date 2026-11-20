@@ -26,8 +26,24 @@ from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
     SnapshotUpsert,
 )
+from app.services.invest_screener_snapshots.retention import retention_cutoff
+from app.services.snapshot_fill_rate import FillRateTally
 
 logger = logging.getLogger(__name__)
+
+# Key fields for the dry-run fill-rate line (hk 5752). The design session reads
+# these shares to decide whether the scheduled screener DAG may be registered.
+SCREENER_FILL_RATE_FIELDS: tuple[str, ...] = (
+    "latest_close",
+    "prev_close",
+    "change_rate",
+    "consecutive_up_days",
+    "week_change_rate",
+    "daily_volume",
+    "daily_turnover",
+    "market_cap",
+)
+RETENTION_DELETE_BATCH = 1000
 
 
 @dataclass(frozen=True)
@@ -66,6 +82,16 @@ class SnapshotBuildResult:
     snapshot_date_distribution: dict[str, int] = field(default_factory=dict)
     samples: tuple[SnapshotSample, ...] = ()
     warnings: tuple[str, ...] = ()
+    fill_rate: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RetentionResult:
+    market: str
+    keep_trading_days: int
+    cutoff: dt.date | None
+    rows: int  # rows that would be deleted (dry-run) or were deleted (commit)
+    committed: bool
 
 
 def _validate_market(market: str) -> None:
@@ -243,6 +269,7 @@ async def run_snapshot_build(request: SnapshotBuildRequest) -> SnapshotBuildResu
     batch_count = 0
     date_distribution: Counter[str] = Counter()
     samples: list[SnapshotSample] = []
+    tally = FillRateTally(SCREENER_FILL_RATE_FIELDS)
 
     effective_batch_size = request.batch_size if request.all_symbols else len(symbols)
     effective_batch_size = max(1, effective_batch_size)
@@ -256,6 +283,7 @@ async def run_snapshot_build(request: SnapshotBuildRequest) -> SnapshotBuildResu
             concurrency=request.concurrency,
         )
         total_built += len(payloads)
+        tally.add(payloads)
         _merge_date_distribution(date_distribution, payloads)
         remaining_sample_slots = max(0, 10 - len(samples))
         if remaining_sample_slots:
@@ -281,6 +309,70 @@ async def run_snapshot_build(request: SnapshotBuildRequest) -> SnapshotBuildResu
         snapshot_date_distribution=dict(sorted(date_distribution.items())),
         samples=tuple(samples),
         warnings=tuple(warnings),
+        fill_rate=tally.summary(),
+    )
+
+
+async def prune_snapshot_history(
+    market: str,
+    *,
+    keep_trading_days: int,
+    commit: bool,
+    batch_size: int = RETENTION_DELETE_BATCH,
+) -> RetentionResult:
+    """Keep only the newest ``keep_trading_days`` snapshot dates for a market (hk 5752).
+
+    Dry-run (``commit=False``) only counts the rows that would go. Commit deletes
+    them in committed batches. The cutoff is fixed before the first delete, so
+    rows from a concurrent build that are newer than the cutoff are never
+    removed. Re-running after completion deletes nothing.
+    """
+    _validate_market(market)
+    async with AsyncSessionLocal() as session:
+        repo = InvestScreenerSnapshotsRepository(session)
+        dates = await repo.recent_snapshot_dates(market=market, limit=keep_trading_days)
+        cutoff = retention_cutoff(dates, keep_trading_days)
+        if cutoff is None:
+            return RetentionResult(
+                market=market,
+                keep_trading_days=keep_trading_days,
+                cutoff=None,
+                rows=0,
+                committed=commit,
+            )
+        if not commit:
+            would_delete = await repo.count_before(market=market, cutoff=cutoff)
+            return RetentionResult(
+                market=market,
+                keep_trading_days=keep_trading_days,
+                cutoff=cutoff,
+                rows=would_delete,
+                committed=False,
+            )
+
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as session:
+            batch_deleted = await InvestScreenerSnapshotsRepository(
+                session
+            ).delete_before_batch(market=market, cutoff=cutoff, batch_size=batch_size)
+            await session.commit()
+        deleted += batch_deleted
+        if batch_deleted < batch_size:
+            break
+    logger.info(
+        "pruned invest_screener_snapshots: market=%s keep=%d cutoff=%s deleted=%d",
+        market,
+        keep_trading_days,
+        cutoff,
+        deleted,
+    )
+    return RetentionResult(
+        market=market,
+        keep_trading_days=keep_trading_days,
+        cutoff=cutoff,
+        rows=deleted,
+        committed=True,
     )
 
 
