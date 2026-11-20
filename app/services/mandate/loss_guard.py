@@ -138,16 +138,14 @@ async def loss_cut_refusal(
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
         )
-        # §5.2 "증거의 순서": the retrospective must already exist when the event that
-        # cites it was written. An id issued to a later row does not qualify.
+        # §5.2 "증거의 순서": the event writer (``store.append_plan_event``) refuses to
+        # record an event whose cited retrospective does not exist yet, so the order of
+        # the writes is enforced there. Here the row must still exist.
         created = (
             await _retrospective_created_at(session, retrospective_id)
             if candidates
             else None
         )
-        if created is None or not any(
-            event.created_at is not None and created <= event.created_at
-            for event in candidates
-        ):
+        if created is None:
             return v.MandateRefusal.THESIS_NOT_BROKEN.value
     return None

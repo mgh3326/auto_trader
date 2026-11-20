@@ -45,6 +45,7 @@ from app.models.mandate import (
     MandateTerms,
 )
 from app.models.order_proposals import OrderProposal
+from app.models.review import TradeRetrospective
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
 from app.services.mandate import fence_locks, hashing
 from app.services.mandate import vocabulary as v
@@ -1428,6 +1429,30 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     return None
 
 
+async def _require_cited_retrospective(
+    session: AsyncSession, evidence: Mapping[str, Any]
+) -> None:
+    raw = evidence.get("retrospective_id")
+    try:
+        retro_id = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        retro_id = None
+    found = (
+        None
+        if retro_id is None
+        else (
+            await session.execute(
+                select(TradeRetrospective.id).where(TradeRetrospective.id == retro_id)
+            )
+        ).first()
+    )
+    if found is None:
+        raise MandateError(
+            v.MandateRefusal.INVALID_FIELDS,
+            "the cited retrospective does not exist yet; create it before the event",
+        )
+
+
 async def append_plan_event(
     session: AsyncSession,
     *,
@@ -1512,6 +1537,11 @@ async def append_plan_event(
     problem = _event_field_problem(event, fields)
     if problem is not None:
         raise MandateError(v.MandateRefusal.INVALID_FIELDS, problem)
+    if event in ("thesis_broken", "thesis_evidence_refreshed"):
+        # §5.2 "증거의 순서": the retrospective the event cites must already exist in
+        # this writer's snapshot. A write-time visibility check orders the writes
+        # themselves; the transaction-start ``created_at`` defaults cannot.
+        await _require_cited_retrospective(session, clean_evidence)
     if event == "holdings_disposed":
         validate_holdings_evidence(
             clean_evidence, scope_account_refs=list(plan.scope_account_refs), actor=who

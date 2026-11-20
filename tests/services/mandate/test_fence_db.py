@@ -164,24 +164,42 @@ async def _events(db, plan_id, name: str | None = None) -> list:
     return [e for e in rows if name is None or e.event == name]
 
 
-async def _blocked_sessions(minimum: int = 1, timeout: float = 10.0) -> bool:
-    """True once ``minimum`` sessions of this database wait on a lock."""
+async def _pid(session) -> int:
+    return (await session.execute(sa.text("SELECT pg_backend_pid()"))).scalar_one()
+
+
+async def _blocked_by(holder_pid: int, timeout: float = 10.0) -> bool:
+    """True once some backend of this database waits on a lock **held by** ``holder_pid``.
+
+    Each poll is a fresh transaction, so the backend list is never a stale snapshot
+    taken before the contender connected, and an unrelated lock wait cannot satisfy it.
+    """
     deadline = time.monotonic() + timeout
-    async with AsyncSessionLocal() as probe:
-        while time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        async with AsyncSessionLocal() as probe:
             count = (
                 await probe.execute(
                     sa.text(
                         "SELECT count(*) FROM pg_stat_activity "
                         "WHERE datname = current_database() "
-                        "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
-                    )
+                        "AND pid <> pg_backend_pid() "
+                        "AND :holder = ANY(pg_blocking_pids(pid))"
+                    ),
+                    {"holder": holder_pid},
                 )
             ).scalar_one()
-            if count >= minimum:
-                return True
-            await asyncio.sleep(0.05)
+        if count >= 1:
+            return True
+        await asyncio.sleep(0.05)
     return False
+
+
+async def _cancel_and_join(*tasks) -> None:
+    """Failure-safe cleanup: nothing keeps a transaction (and its locks) open."""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ------------------------------------------------------------------ the happy path
@@ -449,8 +467,10 @@ async def test_x6_the_fence_wins_the_race_with_a_revoking_writer_and_posts_once(
     revoke = await _profile(db_session, r.sleeve, r.terms, 0)
     inside = asyncio.Event()
     go = asyncio.Event()
+    holder: dict[str, int] = {}
 
     async def hold_then_pass(session, facts):
+        holder["fence"] = await _pid(session)
         inside.set()
         await go.wait()
         return None
@@ -461,19 +481,24 @@ async def test_x6_the_fence_wins_the_race_with_a_revoking_writer_and_posts_once(
             freeze_fn=r.freeze,
         )
     )
-    await asyncio.wait_for(inside.wait(), 10)
 
     async def writer():
         async with AsyncSessionLocal() as s:
             await _approve_profile(s, revoke)
             await s.commit()
 
-    writer_task = asyncio.create_task(writer())
-    assert await _blocked_sessions(), "the profile writer must wait on F2"
-    assert not writer_task.done()
-    go.set()
-    out = await asyncio.wait_for(fence_task, 10)
-    await asyncio.wait_for(writer_task, 10)
+    writer_task = None
+    try:
+        await asyncio.wait_for(inside.wait(), 10)
+        writer_task = asyncio.create_task(writer())
+        assert await _blocked_by(holder["fence"]), "the profile writer must wait on F2"
+        assert not writer_task.done()
+        go.set()
+        out = await asyncio.wait_for(fence_task, 10)
+        await asyncio.wait_for(writer_task, 10)
+    finally:
+        go.set()
+        await _cancel_and_join(*(t for t in (fence_task, writer_task) if t is not None))
 
     assert out.fenced is True  # P1 was the latest when F2 was taken
     (row,) = await _events(db_session, r.plan.id, "tranche_send_fenced")
@@ -497,10 +522,13 @@ async def test_x7_a_revoking_writer_that_holds_f2_makes_the_fence_wait_and_refus
                 _req(r, mode="auto", auto=_auto(r)), freeze_fn=r.freeze
             )
         )
-        assert await _blocked_sessions(), "the fence must wait on F2"
-        assert not fence_task.done()
-        await writer.commit()
-    out = await asyncio.wait_for(fence_task, 10)
+        try:
+            assert await _blocked_by(await _pid(writer)), "the fence must wait on F2"
+            assert not fence_task.done()
+            await writer.commit()
+            out = await asyncio.wait_for(fence_task, 10)
+        finally:
+            await _cancel_and_join(fence_task)
     assert (out.fenced, out.refusal) == (False, R.ACTIVATION_MISSING.value)
     assert await _events(db_session, r.plan.id, "tranche_send_fenced") == []
 
@@ -522,9 +550,12 @@ async def test_x8_a_paused_sleeve_version_stops_the_automatic_fence_not_the_huma
                 _req(r, mode="auto", auto=_auto(r)), freeze_fn=r.freeze
             )
         )
-        assert await _blocked_sessions(), "the fence must wait on F2"
-        await writer.commit()
-    out = await asyncio.wait_for(fence_task, 10)
+        try:
+            assert await _blocked_by(await _pid(writer)), "the fence must wait on F2"
+            await writer.commit()
+            out = await asyncio.wait_for(fence_task, 10)
+        finally:
+            await _cancel_and_join(fence_task)
     assert out.refusal in {"sleeve_not_live", R.TERMS_MISSING.value}
     assert out.fenced is False
     # a person who approves a card after the pause is not stopped by the sleeve state
@@ -702,12 +733,17 @@ async def test_x10_a_sleeve_version_writer_waits_on_l3_without_holding_f2(
                 await s.commit()
 
         writer_task = asyncio.create_task(writer())
-        assert await _blocked_sessions(), "the writer must wait on the sleeve lock L3"
-        out = await asyncio.wait_for(_commit(r), 10)  # F2 is free: no wait, no deadlock
-        assert out.fenced is True
-        assert not writer_task.done()
-        await dispatch.commit()
-    await asyncio.wait_for(writer_task, 10)
+        try:
+            assert await _blocked_by(await _pid(dispatch)), (
+                "the writer must wait on the sleeve lock L3"
+            )
+            out = await asyncio.wait_for(_commit(r), 10)  # F2 is free: no deadlock
+            assert out.fenced is True
+            assert not writer_task.done()
+            await dispatch.commit()
+            await asyncio.wait_for(writer_task, 10)
+        finally:
+            await _cancel_and_join(writer_task)
 
 
 async def test_x13_a_freeze_writer_holding_f1_makes_the_fence_wait_then_refuse(
@@ -717,11 +753,14 @@ async def test_x13_a_freeze_writer_holding_f1_makes_the_fence_wait_then_refuse(
     async with AsyncSessionLocal() as freezer:
         await fence_locks.acquire_freeze_exclusive(freezer, "live", r.terms.basket_key)
         fence_task = asyncio.create_task(_commit(r))
-        assert await _blocked_sessions(), "the fence must wait on F1"
-        assert not fence_task.done()
-        r.freeze.frozen = True  # the freeze is committed with the lock release
-        await freezer.commit()
-    out = await asyncio.wait_for(fence_task, 10)
+        try:
+            assert await _blocked_by(await _pid(freezer)), "the fence must wait on F1"
+            assert not fence_task.done()
+            r.freeze.frozen = True  # the freeze is committed with the lock release
+            await freezer.commit()
+            out = await asyncio.wait_for(fence_task, 10)
+        finally:
+            await _cancel_and_join(fence_task)
     assert (out.fenced, out.refusal) == (False, R.DRAWDOWN_FROZEN.value)
     assert await _events(db_session, r.plan.id, "tranche_send_fenced") == []
 

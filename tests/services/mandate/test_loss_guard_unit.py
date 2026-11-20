@@ -235,11 +235,8 @@ async def test_account_ref_is_opaque_stable_and_mode_bound():
     assert derive_account_ref("kis_live", "x", secret="") is None
 
 
-async def test_i14_i_a_retrospective_written_after_the_event_does_not_qualify(
-    monkeypatch,
-):
-    """Same ids, reversed creation order: the id was issued to a row that did not exist
-    when the thesis_broken event cited it (§5.2 (i))."""
+async def test_i14_i_the_cited_retrospective_must_still_exist_when_read(monkeypatch):
+    """Ordering is enforced when the event is written (store); the reader needs the row."""
     events = [_ev("proposed", 1), _ev("thesis_broken", 2, EVIDENCE)]
 
     async def plans(session, *, market, symbol):
@@ -250,16 +247,6 @@ async def test_i14_i_a_retrospective_written_after_the_event_does_not_qualify(
 
     monkeypatch.setattr(loss_guard, "unreleased_live_plan_ids", plans)
     monkeypatch.setattr(loss_guard.store, "list_plan_events", history)
-
-    async def later(session, retrospective_id):
-        return datetime(2026, 11, 20, 13, tzinfo=UTC)  # after the event
-
-    async def earlier(session, retrospective_id):
-        return RETRO_AT
-
-    async def missing(session, retrospective_id):
-        return None
-
     args = {
         "market": "equity_kr",
         "symbol": "005930",
@@ -267,9 +254,26 @@ async def test_i14_i_a_retrospective_written_after_the_event_does_not_qualify(
         "approval_issue_id": "hk:9",
     }
     for lookup, expected in (
-        (later, "mandate_thesis_not_broken"),
-        (missing, "mandate_thesis_not_broken"),
-        (earlier, None),
+        (_lookup(None), "mandate_thesis_not_broken"),
+        (_lookup(RETRO_AT), None),
     ):
         monkeypatch.setattr(loss_guard, "_retrospective_created_at", lookup)
         assert await loss_guard.loss_cut_refusal(None, **args) == expected
+
+
+def _lookup(value):
+    async def lookup(session, retrospective_id):
+        return value
+
+    return lookup
+
+
+async def test_i14_i_the_event_writer_refuses_a_retrospective_that_does_not_exist_yet():
+    """The write-time check (a visibility check, not a transaction-start timestamp)."""
+    import inspect
+
+    from app.services.mandate import store
+
+    source = inspect.getsource(store.append_plan_event)
+    assert '"thesis_broken", "thesis_evidence_refreshed"' in source
+    assert source.index("_require_cited_retrospective(") < source.index("apply_event(")

@@ -253,11 +253,11 @@ async def test_i14_h_a_retired_plan_still_guards_and_a_refresh_still_opens_it(
     assert state.authority == "retired" and state.cleanup != "released"
 
 
-async def test_i14_i_a_retrospective_created_after_its_event_does_not_qualify(
+async def test_i14_i_an_event_cannot_cite_a_retrospective_that_does_not_exist_yet(
     db_session, seed, retro
 ) -> None:
-    """The same id and issue, reversed creation order: the event cites an id that is
-    issued to a retrospective only afterwards (§5.2 (i))."""
+    """Write-time ordering (§5.2 (i)): the same id and issue, reversed creation order —
+    the event is refused until the retrospective exists, then it is accepted."""
     from sqlalchemy import delete
 
     from app.models.review import TradeRetrospective
@@ -269,21 +269,37 @@ async def test_i14_i_a_retrospective_created_after_its_event_does_not_qualify(
         delete(TradeRetrospective).where(TradeRetrospective.id == placeholder)
     )
     await db_session.commit()
+    evidence = {"retrospective_id": placeholder, "approval_issue_id": "ROB-1"}
+    with pytest.raises(ms.MandateError) as caught:
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="thesis_broken",
+            actor="operator:test",
+            evidence=evidence,
+        )
+    assert caught.value.code is v.MandateRefusal.INVALID_FIELDS
+    await db_session.rollback()
+    with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
+        await OrderProposalsService(db_session).create_proposal(
+            **_loss_cut(sym, retro_id=placeholder, issue="ROB-1")
+        )
+    await db_session.rollback()
+    # the retrospective now gets that very id; only now may the event cite it
+    await _retro(db_session, sym, row_id=placeholder)
     await ms.append_plan_event(
         db_session,
         plan_id=plan.id,
         event="thesis_broken",
         actor="operator:test",
-        evidence={"retrospective_id": placeholder, "approval_issue_id": "ROB-1"},
+        evidence=evidence,
     )
     await db_session.commit()
-    await asyncio.sleep(0.05)
-    # the retrospective now gets that very id, written after the event
-    await _retro(db_session, sym, row_id=placeholder, created_at=datetime.now(UTC))
-    with pytest.raises(OrderProposalError, match="mandate_thesis_not_broken"):
-        await OrderProposalsService(db_session).create_proposal(
-            **_loss_cut(sym, retro_id=placeholder, issue="ROB-1")
-        )
+    group = await OrderProposalsService(db_session).create_proposal(
+        **_loss_cut(sym, retro_id=placeholder, issue="ROB-1")
+    )
+    await db_session.commit()
+    seed.proposal_pks.append(group.id)
 
 
 async def test_i14_c_a_card_from_before_the_guard_is_refused_before_its_nonce(

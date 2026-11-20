@@ -22,7 +22,12 @@ Steps (each read below runs after the lock before it)::
 
 A refusal rolls everything back and writes nothing. If the commit cannot be
 confirmed the caller does not send (``mandate_fence_unavailable``); if it did commit,
-the fence stays open and blocks the tranche until a ledger reconcile closes it.
+the fence stays open and blocks the tranche. An open fence is closed by exactly two
+writers: ``release_send_fence`` (a proven non-send or an explicit rejection) or the
+T4b projection's closing events for a ledger-proven result. A release that fails
+every attempt (database down) is not retried by any job: the fence stays open, the
+safe direction, and an operator acts (a durable pending-release record is a
+follow-up with the send-key link of X26).
 
 Release (``release_send_fence``) is written only for a proven-unsent attempt or an
 explicit broker rejection; every ambiguous outcome keeps the fence.
