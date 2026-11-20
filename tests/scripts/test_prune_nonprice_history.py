@@ -305,3 +305,32 @@ def test_superseded_predicate_is_correlated_and_same_source_only() -> None:
     )
     assert "snapshot_date >" in sql
     assert "market_valuation_snapshots_1.id > market_valuation_snapshots.id" in sql
+
+
+# --- review r1 hardening ----------------------------------------------------
+
+
+def test_batch_size_cap_stays_below_the_asyncpg_bind_ceiling() -> None:
+    # asyncpg allows 32,767 bind parameters per statement; one per id in an IN list.
+    assert prune.MAX_BATCH_SIZE < 32_767
+
+
+def test_in_transaction_count_check_names_the_safe_counts_only() -> None:
+    with pytest.raises(RuntimeError, match="deleted 2 of 3 selected rows"):
+        prune._require_all_deleted(3, 2)
+    prune._require_all_deleted(3, 3)
+
+
+def test_plain_postgres_dsn_is_normalized_to_asyncpg(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "PRUNE_TEST_DB_URL", "postgresql://user:secret@localhost:5432/db"
+    )
+    url = prune._database_url("PRUNE_TEST_DB_URL")
+    assert url.startswith("postgresql+asyncpg://user:secret@localhost:5432/db")
+
+
+def test_non_postgres_url_is_rejected_without_echoing_it(monkeypatch) -> None:
+    monkeypatch.setenv("PRUNE_TEST_DB_URL", "mysql://user:secret@localhost/db")
+    with pytest.raises(prune.PruneInputError) as excinfo:
+        prune._database_url("PRUNE_TEST_DB_URL")
+    assert "secret" not in str(excinfo.value)

@@ -20,6 +20,8 @@ from app.models.market_valuation_snapshot import MarketValuationSnapshot
 # Keep a margin for future column growth and derive chunk rows from the actual
 # payload width.
 _MAX_BIND_PARAMS = 30_000
+# prune_superseded binds one parameter per symbol; keep each statement far below the ceiling.
+_PRUNE_SYMBOL_CHUNK = 5_000
 
 
 def _chunk_rows_for_columns(column_count: int) -> int:
@@ -164,8 +166,8 @@ class MarketValuationSnapshotsRepository:
         norm_source = source.strip().lower()
         norm_symbols = sorted({s.strip().upper() for s in symbols if s.strip()})
         total = 0
-        for start in range(0, len(norm_symbols), _MAX_BIND_PARAMS):
-            chunk = norm_symbols[start : start + _MAX_BIND_PARAMS]
+        for start in range(0, len(norm_symbols), _PRUNE_SYMBOL_CHUNK):
+            chunk = norm_symbols[start : start + _PRUNE_SYMBOL_CHUNK]
             stmt = sa.delete(MarketValuationSnapshot).where(
                 MarketValuationSnapshot.market == norm_market,
                 MarketValuationSnapshot.source == norm_source,

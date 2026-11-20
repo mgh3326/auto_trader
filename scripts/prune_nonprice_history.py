@@ -51,6 +51,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -69,7 +70,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 
 DEFAULT_BATCH_SIZE = 5000
-MAX_BATCH_SIZE = 50_000
+MAX_BATCH_SIZE = 10_000  # asyncpg caps one statement at 32,767 bind parameters
 
 TOSS_VALUATION_SOURCE = "toss_openapi"
 
@@ -235,6 +236,33 @@ async def run_batches(step: StepFn, batch_size: int) -> tuple[int, dict[str, int
 # ---------------------------------------------------------------------------
 
 
+def _require_all_deleted(selected: int, deleted: int) -> None:
+    """Raised inside the batch transaction, so a mismatch rolls the batch back."""
+
+    if deleted != selected:
+        raise RuntimeError(f"batch deleted {deleted} of {selected} selected rows")
+
+
+def _retained_link_exists() -> sa.ColumnElement[bool]:
+    """True for an article that a retained feed also links (review r1 #2).
+
+    ``symbol_news_store`` keeps the first article row on URL conflict and records
+    the current feed on the link, so a retired-feed article can also carry a
+    retained-feed relevance link. Such articles are never deleted.
+    """
+
+    return (
+        sa.select(sa.literal(1))
+        .select_from(SymbolNewsRelevance)
+        .where(
+            SymbolNewsRelevance.article_id == NewsArticle.id,
+            SymbolNewsRelevance.feed_source.in_(NEWS_KEPT_FEEDS),
+        )
+        .correlate(NewsArticle)
+        .exists()
+    )
+
+
 def _news_step(
     session_factory: async_sessionmaker[AsyncSession], feeds: Sequence[str]
 ) -> StepFn:
@@ -245,7 +273,9 @@ def _news_step(
                     await session.execute(
                         select(NewsArticle.id)
                         .where(
-                            NewsArticle.feed_source.in_(feeds), NewsArticle.id > after
+                            NewsArticle.feed_source.in_(feeds),
+                            NewsArticle.id > after,
+                            ~_retained_link_exists(),
                         )
                         .order_by(NewsArticle.id)
                         .limit(size)
@@ -270,9 +300,11 @@ def _news_step(
             articles = await session.execute(
                 delete(NewsArticle).where(NewsArticle.id.in_(ids))
             )
+            deleted = articles.rowcount or 0
+            _require_all_deleted(len(ids), deleted)
             return StepResult(
                 selected=len(ids),
-                deleted=articles.rowcount or 0,
+                deleted=deleted,
                 last_id=ids[-1],
                 dependents={
                     "symbol_news_relevance": relevance.rowcount or 0,
@@ -315,9 +347,11 @@ def _market_event_step(
             events = await session.execute(
                 delete(MarketEvent).where(MarketEvent.id.in_(ids))
             )
+            deleted = events.rowcount or 0
+            _require_all_deleted(len(ids), deleted)
             return StepResult(
                 selected=len(ids),
-                deleted=events.rowcount or 0,
+                deleted=deleted,
                 last_id=ids[-1],
                 dependents={"market_event_values": values.rowcount or 0},
             )
@@ -355,9 +389,9 @@ def _partition_step(
                     MarketEventIngestionPartition.id.in_(ids)
                 )
             )
-            return StepResult(
-                selected=len(ids), deleted=parts.rowcount or 0, last_id=ids[-1]
-            )
+            deleted = parts.rowcount or 0
+            _require_all_deleted(len(ids), deleted)
+            return StepResult(selected=len(ids), deleted=deleted, last_id=ids[-1])
 
     return step
 
@@ -386,9 +420,9 @@ def _toss_valuation_step(session_factory: async_sessionmaker[AsyncSession]) -> S
                     MarketValuationSnapshot.id.in_(ids)
                 )
             )
-            return StepResult(
-                selected=len(ids), deleted=rows.rowcount or 0, last_id=ids[-1]
-            )
+            deleted = rows.rowcount or 0
+            _require_all_deleted(len(ids), deleted)
+            return StepResult(selected=len(ids), deleted=deleted, last_id=ids[-1])
 
     return step
 
@@ -405,14 +439,16 @@ async def _scalar(session: AsyncSession, stmt: Any) -> int:
 async def _news_preview(
     session: AsyncSession, feeds: Sequence[str], all_retired: Sequence[str]
 ) -> dict[str, Any]:
-    by_feed: dict[str, dict[str, int]] = {}
-    for feed in all_retired:
-        by_feed[feed] = {
+    by_feed: dict[str, dict[str, int]] = {
+        feed: {
             "articles": 0,
+            "protected_by_retained_feed_link": 0,
             "symbol_news_relevance": 0,
             "news_article_related_symbols": 0,
             "news_analysis_results": 0,
         }
+        for feed in all_retired
+    }
     article_rows = await session.execute(
         select(NewsArticle.feed_source, func.count(NewsArticle.id))
         .where(NewsArticle.feed_source.in_(all_retired))
@@ -420,6 +456,13 @@ async def _news_preview(
     )
     for feed, count in article_rows.all():
         by_feed[feed]["articles"] = int(count)
+    protected_rows = await session.execute(
+        select(NewsArticle.feed_source, func.count(NewsArticle.id))
+        .where(NewsArticle.feed_source.in_(all_retired), _retained_link_exists())
+        .group_by(NewsArticle.feed_source)
+    )
+    for feed, count in protected_rows.all():
+        by_feed[feed]["protected_by_retained_feed_link"] = int(count)
     for label, model in (
         ("symbol_news_relevance", SymbolNewsRelevance),
         ("news_article_related_symbols", NewsArticleRelatedSymbol),
@@ -428,12 +471,19 @@ async def _news_preview(
         rows = await session.execute(
             select(NewsArticle.feed_source, func.count(model.id))
             .join(model, model.article_id == NewsArticle.id)
-            .where(NewsArticle.feed_source.in_(all_retired))
+            .where(
+                NewsArticle.feed_source.in_(all_retired),
+                ~_retained_link_exists(),
+            )
             .group_by(NewsArticle.feed_source)
         )
         for feed, count in rows.all():
             by_feed[feed][label] = int(count)
-    selected_articles = sum(by_feed[feed]["articles"] for feed in feeds)
+    for feed in all_retired:
+        by_feed[feed]["deletable_articles"] = (
+            by_feed[feed]["articles"] - by_feed[feed]["protected_by_retained_feed_link"]
+        )
+    selected_articles = sum(by_feed[feed]["deletable_articles"] for feed in feeds)
     return {
         "matched": selected_articles,
         "by_feed": by_feed,
@@ -601,6 +651,11 @@ async def run_commit(
 
 
 def _database_url(env_name: str) -> str:
+    """Resolve the named URL; a plain ``postgresql://`` DSN is normalized to asyncpg.
+
+    Errors never echo the URL.
+    """
+
     if not _ENV_NAME.fullmatch(env_name):
         raise PruneInputError(
             "--database-url-env must be an environment variable name "
@@ -609,16 +664,16 @@ def _database_url(env_name: str) -> str:
     raw = os.environ.get(env_name)
     if raw is None or not raw.strip():
         raise PruneInputError(f"environment variable {env_name} is not set or empty")
+    not_postgres = PruneInputError(
+        f"environment variable {env_name} does not hold a complete PostgreSQL URL"
+    )
     try:
         url = make_url(raw.strip())
     except Exception:
-        raise PruneInputError(
-            f"environment variable {env_name} does not hold a complete PostgreSQL URL"
-        ) from None
-    if url.get_backend_name() != "postgresql" or not url.database:
-        raise PruneInputError(
-            f"environment variable {env_name} does not hold a complete PostgreSQL URL"
-        )
+        raise not_postgres from None
+    if url.drivername not in ("postgresql", "postgresql+asyncpg") or not url.database:
+        raise not_postgres
+    url = url.set(drivername="postgresql+asyncpg")
     return url.render_as_string(hide_password=False)
 
 
@@ -674,7 +729,14 @@ async def _main_async(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "input_error", "error": str(exc)}), file=sys.stderr)
         return EXIT_ERROR
 
-    engine = create_async_engine(url, pool_pre_ping=True)
+    try:
+        engine = create_async_engine(url, pool_pre_ping=True)
+    except Exception as exc:  # driver or URL problems; never echo the URL
+        print(
+            json.dumps({"status": "error", "error_class": type(exc).__name__}),
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         if args.commit:

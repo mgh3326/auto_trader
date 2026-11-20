@@ -29,7 +29,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 RETIRED_FEED = "rss_cnbc_finance"
 KEPT_FEED = "naver_item_news"
-NOW = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)  # timestamptz columns (MarketEvent)
+NOW_NAIVE = datetime(2026, 11, 20, 0, 0)  # timestamp-without-time-zone columns
 MARK = uuid.uuid4().hex[:8]  # keeps this run's symbols and urls apart from others
 
 
@@ -40,28 +41,29 @@ async def _seed(session) -> dict[str, object]:
             title=f"prune {tag}",
             market="kr",
             feed_source=feed,
-            scraped_at=NOW,
-            created_at=NOW,
+            scraped_at=NOW_NAIVE,
+            created_at=NOW_NAIVE,
         )
 
     retired_a = article(RETIRED_FEED, "retired-a")
     retired_b = article(RETIRED_FEED, "retired-b")
+    shared = article(RETIRED_FEED, "shared")  # first seen on a retired feed
     kept = article(KEPT_FEED, "kept")
-    session.add_all([retired_a, retired_b, kept])
+    session.add_all([retired_a, retired_b, shared, kept])
     await session.flush()
 
     symbol = f"P{MARK[:5].upper()}"
-    for art in (retired_a, kept):
+    for art in (retired_a, shared, kept):
         session.add(
             SymbolNewsRelevance(
                 article_id=art.id,
                 market="kr",
                 symbol=symbol,
-                feed_source=art.feed_source,
-                first_seen_at=NOW,
+                feed_source=KEPT_FEED if art is shared else art.feed_source,
+                first_seen_at=NOW_NAIVE,
                 status="pending",
-                created_at=NOW,
-                updated_at=NOW,
+                created_at=NOW_NAIVE,
+                updated_at=NOW_NAIVE,
             )
         )
     session.add(
@@ -70,7 +72,7 @@ async def _seed(session) -> dict[str, object]:
             market="kr",
             symbol=symbol,
             source="fixture",
-            created_at=NOW,
+            created_at=NOW_NAIVE,
         )
     )
     session.add(
@@ -83,7 +85,7 @@ async def _seed(session) -> dict[str, object]:
             confidence=50,
             prompt="fixture",
             raw_response="fixture",
-            created_at=NOW,
+            created_at=NOW_NAIVE,
         )
     )
 
@@ -158,6 +160,7 @@ async def _seed(session) -> dict[str, object]:
     return {
         "retired_a": retired_a.id,
         "retired_b": retired_b.id,
+        "shared": shared.id,
         "kept": kept.id,
         "tv_event": tv_event.id,
         "dart_event": dart_event.id,
@@ -215,7 +218,8 @@ async def seeded():
 async def test_preview_counts_our_rows_and_writes_nothing(seeded) -> None:
     report = await prune.run_preview(AsyncSessionLocal)
     news = report["categories"]["news"]
-    assert news["by_feed"][RETIRED_FEED]["articles"] >= 2
+    assert news["by_feed"][RETIRED_FEED]["protected_by_retained_feed_link"] >= 1
+    assert news["by_feed"][RETIRED_FEED]["articles"] >= 3
     assert news["by_feed"][RETIRED_FEED]["symbol_news_relevance"] >= 1
     assert news["by_feed"][RETIRED_FEED]["news_article_related_symbols"] >= 1
     assert news["by_feed"][RETIRED_FEED]["news_analysis_results"] >= 1
@@ -261,6 +265,11 @@ async def test_commit_deletes_exactly_the_targets_and_dependents_in_one_row_batc
                 )
             )
         ).first() is None
+
+        # An article a retained feed also links is protected and survives.
+        assert await _ids(session, NewsArticle, [seeded["shared"]]) == {
+            seeded["shared"]
+        }
 
         # Kept feed and its relevance row survive.
         assert await _ids(session, NewsArticle, [seeded["kept"]]) == {seeded["kept"]}
