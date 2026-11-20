@@ -1,7 +1,7 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "HK-5624",
-  "version": 1,
+  "version": 2,
   "title": "동일 매수 결정의 기존 깊은 지정가와 첫 정규장 시가 지정가 모의 비교",
   "question": "첫 정규장 시가 지정가는 기존 깊은 지정가보다 시장별 동일 후보·예약자본 기준 비용 차감 5거래일 평가손익률을 높이는가?",
   "status": "draft",
@@ -11,7 +11,7 @@
   ],
   "hashes": {
     "preregistration_text": "docs/design/5624-entry-ab-mock.md",
-    "preregistration_sha256": "eb088066ba805fe1cd122a3450124f4e1f7984b8152a4cae078b78899029d6c9",
+    "preregistration_sha256": "30e0c9abdd6f3e26fa5453880455f544f2f42079225a6afce7c57de85e90b103",
     "dataset_manifest": {
       "pending": "봉인 전 수집·결속 계약과 데이터 출처, 달력 버전, 대상 후보의 상폐 커버리지를 고정한다. 결론은 실제 등록된 후보에 한정한다."
     },
@@ -30,7 +30,7 @@
     {
       "name": "저장된 BUY 결정과 깊은 지정가",
       "available_at": "원본 결정·연결 증거가 기록된 시각. 시가가 수신되기 전에 고정한다.",
-      "source": "review.decision_evidence, 원본 제안 또는 report item"
+      "source": "review.decision_evidence (decision_kind=proposal 은 order_proposals.decision_id 결속 제안 rung, decision_kind=declined 은 forecast_save 로 기록된 would-be rung 과 limit 참조가, hk 5719)"
     },
     {
       "name": "첫 정규장 시가",

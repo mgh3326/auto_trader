@@ -53,7 +53,13 @@ def register_forecast_tools(mcp: Any) -> None:
             "one is worthwhile even when no report item exists; if you did "
             "create a report item, also pass its item_uuid as report_item_uuid "
             "so both halves join. The response carries a 'warnings' list when "
-            "the bucket or the link is missing."
+            "the bucket or the link is missing. A declined decision may also "
+            "carry the would-be BUY it skipped: declined_limit_price plus exactly "
+            "one of declined_quantity or declined_notional (exact decimals), an "
+            "optional declined_quote_price with declined_quote_asof (timezone-aware "
+            "ISO), and an optional declined_account_mode in {kis_live, toss_live, "
+            "upbit}. These are recorded as a declined rung and are never an order; "
+            "invalid shapes are rejected before any write with a closed error_code."
         ),
     )(forecast_save)
     _ = mcp.tool(

@@ -212,6 +212,9 @@ import하거나 건드리지 않습니다(halted_suspect 판정은 `screen_stock
   (`trade_forecasts` 는 66일 내내 바빴다)
 - `decision_bucket=NULL` = "미분류"이지 "기각 아님"이 아니다. 오타는 fail-closed(거부)
 
+**기각 판단의 '샀다면 넣었을' 지정가 (hk 5719)**: `forecast_save`에 `decision_bucket='deferred_no_action'`과 함께
+`declined_limit_price`(정확한 decimal), `declined_quantity` 또는 `declined_notional`(정확히 하나), 선택 `declined_quote_price`+`declined_quote_asof`(시각대 포함 ISO), 선택 `declined_account_mode`(`kis_live`·`toss_live`·`upbit`)를 주면 그 기각 판단의 `decision_evidence`에 BUY rung 0 의 `limit_price`·수량/금액과 `limit`(및 `quote_at_decision`) 참조가를 함께 기록한다. 🔴 이 값은 기각이며 주문이 아니다 — 판단 행은 `decision_kind='declined'`이고 `decision_order_links`를 만들지 않는다. retro/v1 은 계획 필드만 채우고 주문·체결로 세지 않는다. 기록은 `equity_kr`·`equity_us`·`crypto` 이고 `decision_bucket` 이 정확히 `deferred_no_action` 인 새 생성 행에만 된다. 입력 검증은 쓰기 이전에 끝나며 닫힌 코드(`declined_bucket_required`·`declined_market_unsupported`·`declined_limit_price_required`·`declined_size_required`·`declined_size_ambiguous`·`declined_quote_incomplete`·`declined_value_invalid`·`declined_account_mode_invalid`)로 실패한다. 생성되지 않은 갱신에 입력을 주면 `declined_not_created`로 롤백한다. 입력이 전혀 없으면 기록은 종전과 바이트 동일하다(evidence hash 고정 테스트). 실험 짝의 모집단은 `docs/design/5624-entry-ab-mock.md` §2 를 따른다.
+
 ### 정지 종목 오염 차단 — `halted_suspect` (ROB-1236)
 
 일봉이 **3거래일 연속 죽어 있으면**(`volume=0` **또는** `high==low==close` 이면서

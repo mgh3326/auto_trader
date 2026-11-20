@@ -190,8 +190,10 @@
       "status": "draft",
       "registered_at": "2026-11-20",
       "manifest": "research/experiments/manifests/hk-5624-entry-ab-mock.json",
-      "manifest_sha256": "39ae89d38381839ac52d39cea706e8b29f792564fb85a3e67b308d0bf20cbde8",
-      "previous_manifest_sha256": [],
+      "manifest_sha256": "a06f99f48cfcac13d9da32701c9dda1cebdae42b1cfe8a36599fae52b90676cb",
+      "previous_manifest_sha256": [
+        "39ae89d38381839ac52d39cea706e8b29f792564fb85a3e67b308d0bf20cbde8"
+      ],
       "k": 0,
       "test_looks": []
     }
