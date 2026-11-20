@@ -550,7 +550,15 @@ def _patch_store_with_insert_count(monkeypatch, *, stored, new_links: int):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kr_new_pending_enqueues_judgment_when_flag_on(monkeypatch) -> None:
+async def test_kr_new_pending_never_enqueues_taskiq_even_when_flag_on(
+    monkeypatch,
+) -> None:
+    """hk 5753: get_news no longer nudges an external judge through TaskIQ.
+
+    The judgment is made out-of-process and written back via token-authed
+    ingest (docs/agent-contracts/mcp-and-analysis-contracts.md). Pending rows
+    stay visible in the response; nothing is enqueued, even with the flag on.
+    """
     from app.core.config import settings
     from app.tasks import news_relevance_judgment_tasks
 
@@ -568,83 +576,14 @@ async def test_kr_new_pending_enqueues_judgment_when_flag_on(monkeypatch) -> Non
 
     result = await symbol_news_service.fetch_symbol_news("035420", "kr")
     assert result.status == "ok"
-    kiq.assert_awaited_once_with(market="kr", symbol="035420", dry_run=False)
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_kr_enqueue_failure_is_fail_open(monkeypatch) -> None:
-    from app.core.config import settings
-    from app.tasks import news_relevance_judgment_tasks
-
-    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
-    _patch_naver(monkeypatch, [_RAW_ITEM])
-    _patch_store_with_insert_count(
-        monkeypatch,
-        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
-        new_links=1,
-    )
-    kiq = AsyncMock(side_effect=RuntimeError("redis down"))
-    monkeypatch.setattr(
-        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
-    )
-
-    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
-    assert result.status == "ok"  # enqueue 실패가 get_news를 죽이지 않음
     assert result.returned_count == 1
-    kiq.assert_awaited_once()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_kr_no_enqueue_when_flag_off(monkeypatch) -> None:
-    from app.core.config import settings
-    from app.tasks import news_relevance_judgment_tasks
-
-    # flag 기본 off — 명시적으로 고정
-    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", False)
-    _patch_naver(monkeypatch, [_RAW_ITEM])
-    _patch_store_with_insert_count(
-        monkeypatch,
-        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
-        new_links=1,
-    )
-    kiq = AsyncMock()
-    monkeypatch.setattr(
-        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
-    )
-
-    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
-    assert result.status == "ok"
+    assert result.articles[0].provider_metadata["relevance"]["status"] == "pending"
     kiq.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kr_no_enqueue_when_no_new_pending(monkeypatch) -> None:
-    from app.core.config import settings
-    from app.tasks import news_relevance_judgment_tasks
-
-    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
-    _patch_naver(monkeypatch, [_RAW_ITEM])
-    _patch_store_with_insert_count(
-        monkeypatch,
-        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"], status="confirmed")],
-        new_links=0,  # 전부 기존 link — 신규 pending 없음
-    )
-    kiq = AsyncMock()
-    monkeypatch.setattr(
-        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
-    )
-
-    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
-    assert result.status == "ok"
-    kiq.assert_not_awaited()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_us_existing_pending_reenqueues_judgment_when_flag_on(
+async def test_us_existing_pending_never_enqueues_taskiq_even_when_flag_on(
     monkeypatch,
 ) -> None:
     from app.core.config import settings
@@ -670,7 +609,7 @@ async def test_us_existing_pending_reenqueues_judgment_when_flag_on(
 
     assert result.status == "ok"
     assert result.articles[0].provider_metadata["relevance"]["status"] == "pending"
-    kiq.assert_awaited_once_with(market="us", symbol="AAPL", dry_run=False)
+    kiq.assert_not_awaited()
 
 
 _FINNHUB_RAW = {

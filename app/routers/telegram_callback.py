@@ -92,14 +92,25 @@ def _unavailable_503() -> HTTPException:
     )
 
 
+# hk 5753: this release ships no TaskIQ producer and no supported drain (the
+# worker is retired). Durable ingress would commit and ACK rows nothing drains,
+# so it is refused before any persistence until a drain is restored and this
+# constant is flipped in a reviewed change.
+TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED: bool = False
+
+
 def _require_durable_consumers() -> None:
     """Refuse durable ingress that nothing would drain.
 
-    Durable mode turns the webhook into "commit and ACK". If no worker and no
-    recovery sweep are armed, that ACK would be a promise nobody keeps, so the
-    ingress fails closed instead. This is a config-level guard; the deployment
-    runbook additionally requires proving the processes are actually up.
+    Durable mode turns the webhook into "commit and ACK". If no supported drain
+    exists in this release, or no worker and no recovery sweep are armed, that
+    ACK would be a promise nobody keeps, so the ingress fails closed instead,
+    before any row is written. The arming check is config-level only; the
+    deployment runbook additionally requires proving the processes are up.
     """
+    if not TELEGRAM_CALLBACK_DURABLE_DRAIN_SUPPORTED:
+        logger.error("order_proposals.telegram.durable_drain_unsupported")
+        raise _unavailable_503()
     if not (
         settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED
         and settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED

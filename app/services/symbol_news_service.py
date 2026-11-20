@@ -22,7 +22,6 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services import naver_finance, symbol_news_store
 from app.services.finnhub_news import fetch_news_finnhub
@@ -311,39 +310,6 @@ def _stored_to_article(
     )
 
 
-async def _maybe_enqueue_judgment(market: str, symbol: str, new_pending: int) -> None:
-    """ROB-506: fire-and-forget judgment enqueue. Never raises into get_news."""
-    if new_pending <= 0:
-        return
-    if not settings.NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED:
-        return
-    try:
-        # Lazy import — keeps the taskiq broker out of plain MCP import paths.
-        from app.tasks.news_relevance_judgment_tasks import (
-            news_relevance_judge_pending,
-        )
-
-        await news_relevance_judge_pending.kiq(
-            market=market, symbol=symbol, dry_run=False
-        )
-    except Exception as exc:  # noqa: BLE001 — enqueue must be fail-open
-        logger.warning(
-            "symbol_news_service: judgment enqueue failed (fail-open): "
-            "market=%s symbol=%s err=%s",
-            market,
-            symbol,
-            exc,
-        )
-
-
-def _visible_pending_count(stored: list[StoredSymbolNews]) -> int:
-    return sum(
-        1
-        for row in stored
-        if isinstance(row.relevance, dict) and row.relevance.get("status") == "pending"
-    )
-
-
 async def _persist_and_load(
     symbol: str,
     market: str,
@@ -354,11 +320,10 @@ async def _persist_and_load(
     fetched_at: datetime | None,
 ) -> _PersistedNewsLoad | None:
     """Persist this window then serve canonical DB state. None → DB unavailable."""
-    inserted: Any = 0
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
-                inserted = await symbol_news_store.upsert_feed_articles(
+                await symbol_news_store.upsert_feed_articles(
                     db,
                     market,
                     symbol,
@@ -386,9 +351,6 @@ async def _persist_and_load(
             exc,
         )
         return None
-    new_pending = inserted if isinstance(inserted, int) else 0
-    visible_pending = _visible_pending_count(stored)
-    await _maybe_enqueue_judgment(market, symbol, max(new_pending, visible_pending))
     raw_by_url = {
         a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
     }

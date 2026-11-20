@@ -65,8 +65,8 @@ AT_SWAP_MCP_VOLUMES = [
     "-v", "/etc/machine-id:/etc/machine-id:ro",
 ]  # fmt: skip
 AT_SWAP_MCP_COMMAND = ["python", "-m", "app.mcp_server.main"]
+# hk 5753: at-worker 는 pi 배포에서 빠졌다(TaskIQ worker 은퇴). 싱글턴은 upbit websocket 하나뿐이다.
 AT_SWAP_SINGLETON_COMMANDS = {
-    "at-worker": "/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1",
     "at-upbit-ws": "/app/.venv/bin/python websocket_monitor.py --mode upbit",
 }
 
@@ -366,7 +366,7 @@ def swap(host: dict, *args: str, **extra: str) -> subprocess.CompletedProcess[st
 
 
 def test_swap_runs_exactly_the_at_swap_arguments(host: dict) -> None:
-    seed_old(host, "at-worker", "at-upbit-ws")
+    seed_old(host, "at-upbit-ws")
     result = swap(host, PINNED)
     assert result.returncode == 0, result.stderr
     runs = [line for line in docker_log(host) if line.startswith("run ")]
@@ -376,7 +376,7 @@ def test_swap_runs_exactly_the_at_swap_arguments(host: dict) -> None:
             f"--env-file {AT_SWAP_ENV_FILES[0]} --env-file {AT_SWAP_ENV_FILES[1]} {PINNED} {command}"
         )
         assert expected in runs
-    assert len(runs) == 2
+    assert len(runs) == len(AT_SWAP_SINGLETON_COMMANDS) == 1
     # 옛 컨테이너는 정지(-t 60)한 뒤 <이름>-prev 로 보관된다.
     log = docker_log(host)
     for name in AT_SWAP_SINGLETON_COMMANDS:
@@ -388,8 +388,8 @@ def test_swap_runs_exactly_the_at_swap_arguments(host: dict) -> None:
     assert not (host["run"] / "deployed-digest").exists()
 
 
-def test_swap_failure_on_second_singleton_restores_both(host: dict) -> None:
-    seed_old(host, "at-worker", "at-upbit-ws")
+def test_swap_failure_restores_at_upbit_ws(host: dict) -> None:
+    seed_old(host, "at-upbit-ws")
     result = swap(host, PINNED, FAKE_LOG_BAD="at-upbit-ws")
     assert result.returncode == 1
     for name in AT_SWAP_SINGLETON_COMMANDS:
@@ -400,12 +400,15 @@ def test_swap_failure_on_second_singleton_restores_both(host: dict) -> None:
     assert not (host["run"] / "deployed-digest").exists()
 
 
-def test_swap_failure_on_first_singleton_never_touches_the_second(host: dict) -> None:
+def test_swap_never_starts_stops_or_renames_at_worker(host: dict) -> None:
+    """hk 5753 — the retired TaskIQ worker is outside every swap, success or failure."""
     seed_old(host, "at-worker", "at-upbit-ws")
-    result = swap(host, PINNED, FAKE_RUN_FAIL="at-worker")
-    assert result.returncode == 1
+    ok = swap(host, PINNED)
+    assert ok.returncode == 0, ok.stderr
+    failed = swap(host, f"{IMAGE}@sha256:{'2' * 64}", FAKE_RUN_FAIL="at-upbit-ws")
+    assert failed.returncode == 1
+    assert not any("at-worker" in line for line in docker_log(host)), docker_log(host)
     assert (host["state"] / "c" / "at-worker").read_text() == "old at-worker\n"
-    assert not any("at-upbit-ws" in line for line in docker_log(host))
 
 
 def test_swap_with_no_previous_container_just_starts_and_failure_leaves_nothing(
@@ -413,45 +416,33 @@ def test_swap_with_no_previous_container_just_starts_and_failure_leaves_nothing(
 ) -> None:
     result = swap(host, PINNED)
     assert result.returncode == 0, result.stderr
-    assert (host["state"] / "r" / "at-worker").read_text().strip() == "true"
+    assert (host["state"] / "r" / "at-upbit-ws").read_text().strip() == "true"
     failed = swap(host, f"{IMAGE}@sha256:{'2' * 64}", FAKE_RUN_FAIL="at-upbit-ws")
     assert failed.returncode == 1
 
 
 def test_swap_skips_a_singleton_already_running_the_image(host: dict) -> None:
-    seed_old(host, "at-worker", "at-upbit-ws", image=PINNED)
-    seed_old(host, "at-upbit-ws", image=f"{IMAGE}@sha256:{'9' * 64}")
+    seed_old(host, "at-upbit-ws", image=PINNED)
     result = swap(host, PINNED)
     assert result.returncode == 0, result.stderr
     log = docker_log(host)
-    # at-worker 는 이미 그 이미지: 정지·보관·새 run 없이 보관 컨테이너(직전 세대)도 그대로.
+    # 이미 그 이미지: 정지·보관·새 run 없이 끝난다.
     assert not any(
-        line.startswith(("stop", "rename at-worker", "rm -f at-worker"))
-        and "at-worker" in line
+        line.startswith(("stop", "rename at-upbit-ws", "rm -f at-upbit-ws"))
+        and "at-upbit-ws" in line
         for line in log
     )
-    assert "stop -t 60 at-upbit-ws" in log
-
-
-def test_swap_worker_ready_requires_the_worker_line_not_the_supervisor_line(
-    host: dict,
-) -> None:
-    seed_old(host, "at-worker", "at-upbit-ws")
-    result = swap(host, PINNED, FAKE_LOG_SUPERVISOR_ONLY="at-worker")
-    assert result.returncode == 1
-    assert (
-        (host["state"] / "c" / "at-worker").read_text() == "old at-worker\n"
-    )  # 복원됨, 새 digest 가 healthy 로 표시되지 않는다
+    assert not any(line.startswith("run ") for line in log)
 
 
 def test_swap_refuses_backup_only_layout_without_starting_anything(host: dict) -> None:
-    seed_old(host, "at-worker-prev", image=f"{IMAGE}@sha256:{'9' * 64}")
-    (host["state"] / "r" / "at-worker-prev").write_text("false\n")
+    seed_old(host, "at-upbit-ws-prev", image=f"{IMAGE}@sha256:{'9' * 64}")
+    (host["state"] / "r" / "at-upbit-ws-prev").write_text("false\n")
     result = swap(host, PINNED)
     assert result.returncode == 1
-    assert "docker rename at-worker-prev at-worker" in result.stderr
+    assert "docker rename at-upbit-ws-prev at-upbit-ws" in result.stderr
     assert not any(line.startswith("run ") for line in docker_log(host))
-    assert (host["state"] / "c" / "at-worker-prev").exists()
+    assert (host["state"] / "c" / "at-upbit-ws-prev").exists()
 
 
 @pytest.mark.parametrize(
@@ -532,7 +523,7 @@ FAKE_SWAP = """#!/usr/bin/env bash
 printf 'swap %s\\n' "$*" >> "$FAKE_CALLS"
 [[ "${FAKE_SWAP_RC:-0}" == 0 ]] || exit "$FAKE_SWAP_RC"
 [[ -z "$FAKE_SWAP_NOOP" ]] || exit 0
-for name in at-worker at-upbit-ws; do printf '%s\\n' "$1" > "$FAKE_SG/single.$name"; done
+for name in at-upbit-ws; do printf '%s\\n' "$1" > "$FAKE_SG/single.$name"; done
 """
 FAKE_DOCKER_DEPLOY = """#!/usr/bin/env bash
 if [[ "$1" == inspect ]]; then
@@ -600,7 +591,7 @@ def set_fleet(
         (fixture["sg"] / f"{name}.previous").write_text(
             f"sha256:{previous}\n" if previous != "none" else "none\n"
         )
-    for name in ("at-worker", "at-upbit-ws"):
+    for name in ("at-upbit-ws",):
         (fixture["sg"] / f"single.{name}").write_text(singletons + "\n")
     for path, value in (
         ("deployed-digest", marker),
@@ -636,7 +627,7 @@ def fleet_digests(env: dict) -> dict[str, str]:
     for name in ("at-api", "at-mcp"):
         out[name] = (env["sg"] / f"{name}.active").read_text().strip()
         out[name + ".previous"] = (env["sg"] / f"{name}.previous").read_text().strip()
-    for name in ("at-worker", "at-upbit-ws"):
+    for name in ("at-upbit-ws",):
         out[name] = (env["sg"] / f"single.{name}").read_text().strip()
     return out
 
@@ -1162,14 +1153,32 @@ def test_runbook_keeps_legacy_containers_until_both_rollback_targets_exist() -> 
     assert "PREVIOUS" in section and "다른 digest" in section
 
 
-def test_marker_is_written_only_after_all_four_components_are_verified_at_the_target(
+def test_marker_is_written_only_after_all_components_are_verified_at_the_target(
     deploy_env: dict,
 ) -> None:
     # 싱글턴 교체가 성공을 보고했지만 실제로는 옛 이미지가 남아 있다.
     result = deploy(deploy_env, "main", FAKE_SWAP_NOOP="1")
     assert result.returncode != 0
-    assert "not at target: at-worker" in result.stderr
+    assert "not at target: at-upbit-ws" in result.stderr
     assert (
         marker(deploy_env) == REF_A
         and marker(deploy_env, "deployed-digest.previous") is None
     )
+
+
+def _code_lines(path: Path) -> list[str]:
+    return [
+        line
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def test_no_pi_deploy_code_starts_or_swaps_at_worker() -> None:
+    """hk 5753 — the TaskIQ worker is retired; the pi deploy never names it in code.
+
+    Comments may still describe history; executable lines may not.
+    """
+    for path in (DEPLOY_SH, SWAP_SH):
+        offenders = [line for line in _code_lines(path) if "at-worker" in line]
+        assert offenders == [], (path.name, offenders)

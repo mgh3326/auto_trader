@@ -637,9 +637,13 @@ async def test_the_real_ingress_leaks_nothing_when_the_kick_fails(
     log_sink: _RecordSink,
     sentry_sink: list[dict[str, Any]],
 ) -> None:
-    """The broker error path logs a class name, never the payload."""
+    """The producer-failure path logs a class name, never the payload.
+
+    hk 5753: the production route injects no producer, so this injects a
+    failing one directly. That exercises the same ``_kick`` failure logging
+    that any injected producer would hit.
+    """
     from app.core.config import settings
-    from app.core.taskiq_broker import broker
     from app.services.order_proposals.callback_inbox.ingress import (
         ingest_callback_update,
     )
@@ -651,10 +655,8 @@ async def test_the_real_ingress_leaks_nothing_when_the_kick_fails(
         raising=False,
     )
 
-    async def _dead(message):
+    async def _dead_producer(job_id):
         raise _Exploding
-
-    monkeypatch.setattr(broker, "kick", _dead)
 
     update_id = 640_000 + uuid.uuid4().int % 100_000
     result = await ingest_callback_update(
@@ -666,6 +668,7 @@ async def test_the_real_ingress_leaks_nothing_when_the_kick_fails(
             user_id=int(SENTINEL_USER),
         ),
         now=now_kst(),
+        enqueue_fn=_dead_producer,
     )
     assert result.job_id is not None
     inbox_cleanup.append(result.job_id)

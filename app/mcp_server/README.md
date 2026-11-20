@@ -86,7 +86,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_news(symbol, market=None, limit=10)`
   - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
   - KR/US/crypto: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
-  - When `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, visible `pending` rows in the canonical DB response enqueue `news_relevance.judge_pending`, including rows created during an earlier worker/webhook outage. Duplicate enqueue is acceptable because the worker re-queries pending rows.
+  - `get_news` never enqueues a judgment task (hk 5753; the TaskIQ worker is retired). Visible `pending` rows stay pending in the response until the external judgment loop ingests a verdict (`docs/runbooks/news-relevance-judgment.md` 「외부 판정 루프」).
   - `degraded: true` + `fetch_error` appear when provider fetch failed and the response was served from DB cache only.
   - ROB-1048 freshness/provenance fields are always present:
     `data_state` (`fresh|stale|degraded|missing`), `derived_as_of`,

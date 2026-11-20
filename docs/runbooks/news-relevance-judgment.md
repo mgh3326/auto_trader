@@ -5,8 +5,9 @@
 get_news(KR)가 수집·저장한 기사의 종목 관련성 판정을 **외부 LLM Job**(Hermes류
 세션 또는 operator 수동 실행)이 수행해 write-back하는 절차. auto_trader는
 판정하지 않으며 어떤 기사도 자동 제외하지 않는다. recurring 스케줄러
-(cron/Prefect) 연결 없음 — ROB-506의 TaskIQ enqueue는 get_news 호출 시에만
-발생하며 default-off다. production 활성화는 별도 operator gate.
+(cron/Prefect) 연결 없음. hk 5753 이후 `get_news` 는 TaskIQ 를 enqueue 하지 않는다
+(판정 task 는 운영자 수동 호출만). pending 은 market 별 외부 polling 루프로 비운다.
+production 활성화는 별도 operator gate.
 
 - 데이터: `news_articles` + `symbol_news_relevance` (상태 `pending` →
   `confirmed`/`excluded`, 전이는 ingest 경로로만)
@@ -98,15 +99,49 @@ uv run python -m scripts.news_relevance_judge_smoke --mode submit \
 - 판정 JSON은 서버와 동일한 pydantic 계약(`NewsRelevanceIngestRequest`)으로 검증한다 —
   enum/shape 위반은 POST 전에 걸린다. `status`는 서버가 파생하므로 절대 보내지 않는다.
 
-## TaskIQ 비동기 판정 worker (ROB-506)
+## 판정 task와 자동 트리거 (ROB-506, hk 5753 에서 자동 트리거 제거)
 
-`get_news`(KR)가 새 pending link를 만들면 `news_relevance.judge_pending`
-task를 enqueue한다 (fail-open — enqueue 실패해도 get_news는 성공). Task는
-pending batch를 외부 Hermes-호환 judgment webhook에 POST하고, 응답에
-inline `judgments`가 있으면 기존 ingest 규칙(서버 status 파생)으로
-적용한다. 응답이 dispatch-only(2xx, judgments 없음)면 외부 세션이 위의
-ingest/bulk 경로로 write-back할 때까지 pending이 유지된다. 실패/검증 실패
-시에도 pending 유지 — excluded로 오판정되는 경로는 없다.
+🔴 **`get_news` 는 더 이상 TaskIQ 를 enqueue 하지 않는다 (hk 5753).** 새 pending link
+가 생겨도 아무것도 보내지 않으며, 대기 행은 응답에 `pending` 으로 그대로 보인다. 이전에는
+`news_relevance.judge_pending` 을 enqueue 해 외부 Hermes-호환 webhook 을 깨웠지만, 레포의
+worker 를 은퇴시키면서 그 깨우기를 없앴다. 판정은 외부 세션이 하는 루프(아래 「외부 판정 루프」)로만
+진행된다. 이 변경으로 `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED` 는 commit-mode task 의
+게이트로만 남는다.
+
+`news_relevance.judge_pending` task 정의와 `run_news_relevance_judgment` 본문은
+`app/tasks`·`app/jobs` 에 남아 있지만 호출하는 production 경로가 없다. 이를 실행하려면
+운영자가 아래 「수동 smoke」의 Python 스니펫으로 직접 호출한다. 그 본문은 pending batch 를
+외부 Hermes-호환 judgment webhook 에 POST 하고, 응답에 inline `judgments` 가 있으면 기존
+ingest 규칙(서버 status 파생)으로 적용한다. 응답이 dispatch-only(2xx, judgments 없음)면
+외부 세션이 ingest/bulk 로 write-back 할 때까지 pending 이 유지된다. 실패/검증 실패 시에도
+pending 유지 — excluded 로 오판정되는 경로는 없다.
+
+### 외부 판정 루프 (권장)
+
+외부 세션이 `GET /trading/api/news-relevance/pending` 을 주기적으로 읽고, 판정을 만들어
+`scripts.news_relevance_judge_smoke` 의 `--mode validate` → `--mode submit --confirm` 으로
+ingest 한다. 이 경로는 자동 제외를 하지 않고 LLM 판정도 레포 밖에서 한다(ROB-501).
+polling 주기와 호출 주체는 운영자 결정이다. 레포는 스케줄을 등록하지 않는다.
+
+`pending` 조회는 **market 하나만** 받는다(기본 `kr`). 한 번의 polling 은 `kr`, `us`,
+`crypto` 세 번 해야 한다. 한 시장만 돌리면 나머지 시장의 pending 은 영원히 남는다.
+
+```bash
+# 한 pass: 시장마다 fetch → 판정 → validate → submit (판정 파일이 없으면 그 시장은 건너뛴다)
+for market in kr us crypto; do
+  uv run python -m scripts.news_relevance_judge_smoke --mode fetch \
+    --market "$market" --limit 50 --host https://<host> > "pending-$market.json"
+  # 세션이 pending-$market.json 을 판정해 judgments-$market.json 을 작성한다 (pending 0건이면 생략)
+  [ -f "judgments-$market.json" ] || continue
+  uv run python -m scripts.news_relevance_judge_smoke --mode validate \
+    --file "judgments-$market.json"
+  uv run python -m scripts.news_relevance_judge_smoke --mode submit \
+    --file "judgments-$market.json" --host https://<host> --confirm
+done
+```
+
+pending 이 `no_pending` 으로 끝나면 적체가 없는 것이다. `excluded_count` 와 `pending` 수는
+`get_news` 재호출로 확인한다.
 
 ### 활성화 (default-off)
 
@@ -123,12 +158,11 @@ ingest/bulk 경로로 write-back할 때까지 pending이 유지된다. 실패/�
 inline 응답을 안 쓰는 Hermes 구성이라면 write-back을 위해 기존
 `NEWS_RELEVANCE_INGEST_TOKEN`도 함께 설정되어 있어야 한다.
 
-### 수동 smoke (worker 로컬 실행)
+### 수동 smoke (in-process, worker 없음)
 
 ```bash
-# 1. 의존 서비스 + worker
+# 1. 의존 서비스
 docker compose up -d            # postgres, redis
-make taskiq-worker              # uv run taskiq worker app.core.taskiq_broker:broker app.tasks
 
 # 2. dry-run (flag off에서도 허용 — client 호출/DB write 없음)
 uv run python - <<'PY'
@@ -140,8 +174,10 @@ PY
 # 기대: {"status": "dry_run" | "no_pending", "fetched_pending": N, ...}
 
 # 3. commit-mode (operator gate: flag + webhook 설정 후)
-#    get_news(MCP)로 pending을 만든 뒤 worker 로그에서
-#    "news_relevance judgment run: ... status=judged|dispatched" 확인.
+#    get_news(MCP)로 pending을 만든 뒤 위 스니펫을 dry_run=False 로 한 번 실행하고
+#    출력의 "status" 가 judged|dispatched 인지 확인한다 (TaskIQ worker 로그 아님).
+#    🔴 이 스니펫은 NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED 를 보지 않는다(flag 는 task 래퍼만 검사).
+#    dry_run=False 는 flag·webhook 설정을 운영자가 확인한 뒤에만 실행한다.
 
 # 4. 검증 — 기존 §Job 절차 4와 동일: get_news 재호출로
 #    excluded_count 증가 / confirmed relevance 블록 확인.
@@ -172,14 +208,12 @@ GET pending / POST ingest/bulk)은 market 파라미터로 이미 지원되며 �
   `degraded: true` + `fetch_error` + DB 기사(stale) 폴백.
 - degraded 폴백으로 DB에서 복원된 항목은 sentiment가 없을 수 있다
   (sentiment는 미영속 — 신선 fetch 응답에만 포함).
-- ROB-579: when `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, a `get_news`
-  call enqueues `news_relevance.judge_pending` if the canonical DB response
-  still contains visible `pending` rows. This covers both newly inserted links
-  and links created during an earlier worker/webhook outage. Duplicate enqueue
-  is acceptable: the job re-queries pending rows and exits `no_pending` after
-  another worker has applied judgments.
+- hk 5753 (replaces ROB-579): `get_news` no longer enqueues
+  `news_relevance.judge_pending`, whatever `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED`
+  says. Pending rows stay visible in the response until the external polling pass
+  above (for every market) ingests verdicts.
 
-US dry-run smoke:
+US dry-run check (manual, does not enqueue):
 
 Run this after a US `get_news` call has created pending rows for the symbol.
 
