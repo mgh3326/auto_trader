@@ -525,10 +525,15 @@ async def test_i24_a_timeout_after_the_request_left_never_releases_the_fence(har
 
 @pytest.mark.parametrize(
     "reply",
-    [{"success": False, "error": "something"}, {"success": False}],
-    ids=["untyped-with-message", "untyped-bare"],
+    [
+        {"success": False, "outcome_unknown": True, "error": "ReadTimeout"},
+        {"success": False, "reconcile_required": True, "error": "x"},
+        {"success": False, "mutation_sent": True, "error": "x"},
+        {"success": True, "status": "weird"},
+    ],
+    ids=["unknown", "reconcile", "sent", "ambiguous-success"],
 )
-async def test_i24_an_untyped_failure_keeps_the_fence(harness, reply):
+async def test_i24_an_unproven_outcome_keeps_the_fence(harness, reply):
     port = Port()
     outcomes = await harness.run(harness.build(_group(), _rung()), Broker(reply), port)
     assert outcomes[0].result == "unverified"
@@ -542,8 +547,18 @@ async def test_i24_an_untyped_failure_keeps_the_fence(harness, reply):
         {"success": False, "error_code": "price_band", "error": "no"},
         {"success": False, "ledger_status": "rejected", "error": "no"},
         {"success": False, "mutation_sent": False, "error": "refused before send"},
+        # the real KIS provider rejection / OrderSendNotCreated shapes carry no marker
+        {"success": False, "error": "APBK0013 주문가능금액을 초과"},
+        {"success": False, "retry_allowed": True, "error": "주문 전송 전 실패: token"},
     ],
-    ids=["live-rejected", "error-code", "kiwoom-rejected", "not-sent"],
+    ids=[
+        "live-rejected",
+        "error-code",
+        "kiwoom-rejected",
+        "not-sent",
+        "kis-provider-rejection",
+        "not-created-retry-allowed",
+    ],
 )
 async def test_an_affirmative_typed_rejection_closes_the_fence(harness, reply):
     port = Port()
@@ -818,3 +833,79 @@ async def test_i14_the_first_loss_cut_click_checks_the_plan_before_preview_and_n
     guard = source.index("_mandate_pre_nonce_block(")
     assert guard < source.index("consume_published_proposal_callback")
     assert guard < source.index("await loss_cut_preview_fn(")
+
+
+async def test_kiwoom_edge_hook_runs_after_token_and_rate_limit_waits(monkeypatch):
+    """The real Kiwoom mock client: the plan-bound hook runs right before ``send``, after
+    token resolution and the per-TR wait, so a clock that moves during those waits is
+    seen (review r4)."""
+    import httpx
+
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.client import (
+        KiwoomMockClient,
+        KiwoomPreDispatchError,
+    )
+    from app.services.brokers.pre_send_account import PRE_DISPATCH_HOOK
+
+    order: list[str] = []
+    sent = 0
+
+    def handler(_request):
+        nonlocal sent
+        sent += 1
+        return httpx.Response(200, json={"return_code": 0})
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="K",
+        app_secret="S",
+        account_no="A",
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    async def token(**_kw):
+        order.append("token")
+        return "tok"
+
+    async def limiter(api_id):
+        order.append("rate_limit_wait")
+
+    monkeypatch.setattr(client, "_resolve_token", token)
+    monkeypatch.setattr(client, "_before_api_dispatch", limiter)
+
+    async def hook():
+        order.append("hook")
+
+    reset = PRE_DISPATCH_HOOK.set(hook)
+    try:
+        await client.post_api(
+            api_id=constants.ORDER_BUY_API_ID, path=constants.ORDER_PATH, body={}
+        )
+    finally:
+        PRE_DISPATCH_HOOK.reset(reset)
+    assert order == ["token", "rate_limit_wait", "hook"] and sent == 1
+
+    order.clear()
+
+    async def closing():
+        order.append("window_closed")
+        raise PreSendFreshnessError(("approval_window:expired",))
+
+    reset = PRE_DISPATCH_HOOK.set(closing)
+    try:
+        with pytest.raises(KiwoomPreDispatchError) as caught:
+            await client.post_api(
+                api_id=constants.ORDER_BUY_API_ID, path=constants.ORDER_PATH, body={}
+            )
+    finally:
+        PRE_DISPATCH_HOOK.reset(reset)
+    assert caught.value.stage == "pre_dispatch_hook"
+    assert sent == 1  # the refused request was never dispatched
+
+
+async def test_the_plan_bound_hook_asks_to_run_at_the_transport_edge():
+    send = mandate_send.SendFence(port=Port(), plan_id=7, seq=4)
+    assert send.hook(None).run_at_transport_edge is True
+    plain = mandate_send.LossCutGuardHook(inner=None, refusal_fn=AsyncMock())
+    assert not getattr(plain, "run_at_transport_edge", False)

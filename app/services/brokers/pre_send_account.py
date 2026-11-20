@@ -14,3 +14,12 @@ from contextvars import ContextVar
 
 #: The account identifier of the request about to be sent, or ``None`` if unknown.
 PRE_SEND_ACCOUNT: ContextVar[str | None] = ContextVar("pre_send_account", default=None)
+
+
+#: A pre-send hook a transport must run at the very edge of the request — after its
+#: token resolution and rate-limit waits — instead of the caller running it earlier.
+#: Set by the order path only for a hook that asks for it (``run_at_transport_edge``),
+#: read by the Kiwoom mock transport right before ``send``.
+PRE_DISPATCH_HOOK: ContextVar[object | None] = ContextVar(
+    "pre_dispatch_hook", default=None
+)

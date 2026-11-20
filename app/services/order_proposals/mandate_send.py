@@ -93,24 +93,26 @@ def edge_account_ref(group: object, fallback: str | None) -> str | None:
 
 
 def is_affirmative_rejection(submit: Any) -> bool:
-    """The broker's own, typed refusal: only this (or a proven non-send) closes a fence.
+    """A failure that is **not** an unknown outcome: the broker boundary's own contract.
 
-    A failure that says the outcome is unknown (a timeout after the request left),
-    or that carries neither a broker status nor an error code, proves nothing.
+    ``order_execution`` marks the only ambiguous send failure with
+    ``outcome_unknown=True`` (a timeout or network error around the POST); every other
+    failure of the send call — a provider rejection, an ``OrderSendNotCreated`` (a
+    transport setup that failed before the HTTP boundary, ``retry_allowed``) — means no
+    order was created (``_augment_error_for_unknown_outcome``). Only those close a
+    fence. An unknown outcome, a failure that asks for a reconcile, or one that says the
+    request was sent proves nothing and keeps the fence.
     """
     if not isinstance(submit, dict) or submit.get("success") is not False:
         return False
-    if submit.get("outcome_unknown") is True:
-        return False
     if (
-        submit.get("broker_status") == "rejected"
-        or submit.get("ledger_status") == "rejected"
-        or submit.get("mutation_sent") is False
-        or submit.get("status") == "not_submitted"
+        submit.get("outcome_unknown") is True
+        or submit.get("reconcile_required") is True
+        or submit.get("mutation_sent") is True
+        or submit.get("send_outcome") == "unknown"
     ):
-        return True
-    code = submit.get("error_code")
-    return isinstance(code, str) and bool(code)
+        return False
+    return True
 
 
 def approver_refusal(principal: str | None) -> str | None:
@@ -324,6 +326,8 @@ class SendFence:
                 await self._inner()
             self.started = True
 
+        # Kiwoom mock runs this at its transport edge (after token and rate-limit waits)
+        _hook.run_at_transport_edge = True  # type: ignore[attr-defined]
         return _hook
 
     async def close_unsent(self, reason: str) -> bool:
