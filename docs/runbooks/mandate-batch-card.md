@@ -57,7 +57,7 @@ uv run python -m scripts.mandate_batch --database-url-env MANDATE_DB_URL create 
 
 ## 3. 재발송 — `resend`
 
-같은 배치에서 응답 없는 계획마다 다음 카드를 새 nonce로 보낸다. 새 배치가 아니고 스냅샷도 그대로이며, 앞 카드의 버튼은 더 이상 받지 않는다. 만료된 배치는 재발송할 수 없다.
+같은 배치에서 응답 없는 계획마다 다음 카드를 새 nonce로 보낸다. 새 배치가 아니고 스냅샷도 그대로이며, 앞 카드의 버튼은 더 이상 받지 않는다. 만료된 배치는 재발송할 수 없다. 잠금을 기다리는 사이 조항이 만료된 계획은 카드를 받지 않고 출력의 `skipped`에 `terms_expired`로 보고된다(다음 날 배치가 다시 제안한다).
 
 ```bash
 uv run python -m scripts.mandate_batch --database-url-env MANDATE_DB_URL resend --batch-id 9 --actor operator:cli:mgh

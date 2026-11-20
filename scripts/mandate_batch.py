@@ -344,14 +344,17 @@ async def _resend(
     batch = await bt.get_batch(session, args.batch_id)
     if batch is None:
         raise MandateCliError(f"batch {args.batch_id}가 없습니다")
-    issued = await bt.reissue_cards(
-        session, batch_id=args.batch_id, actor=actor, now=now
-    )
+    result = await bt.reissue(session, batch_id=args.batch_id, actor=actor, now=now)
+    issued = result.cards
     facts = [(c, await _card_facts(session, batch, c.member)) for c in issued]
     summary = await _summary_messages(session, batch, len(issued))
     body: dict[str, Any] = {
         "batch_id": batch.id,
         "cards": [_card_row(c, f) for c, f in facts],
+        "skipped": [
+            {"plan_id": s.plan_id, "symbol": s.symbol, "reason": s.reason}
+            for s in result.skipped
+        ],
     }
     outgoing = _outgoing(facts)
     if not args.commit:

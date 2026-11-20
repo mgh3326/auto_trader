@@ -24,6 +24,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Date,
+    FetchedValue,
     ForeignKey,
     Index,
     Integer,
@@ -518,8 +519,16 @@ class MandatePlanEvent(Base):
     terms_sha256: Mapped[str | None] = mapped_column(Text)
     effective_session: Mapped[date | None] = mapped_column(Date)
     resume_target: Mapped[str | None] = mapped_column(Text)
-    # No FK: the batch tables arrive with T3a.
+    # The card id a writer names as its input. Free text of the T1 schema: no FK, and on
+    # its own it proves nothing (T1 rows hold placeholders).
     batch_member_id: Mapped[int | None] = mapped_column(BigInteger)
+    # The verified answer link (T3a): set by the answer trigger in the same INSERT that
+    # passed every card check, never by a writer (a supplied value is refused). NULL on
+    # every row of the earlier schema and on every event that answers no card. Its FK to
+    # the card and its CHECK are installed by the migration (``COLUMN_DDL``).
+    answered_batch_member_id: Mapped[int | None] = mapped_column(
+        BigInteger, server_default=FetchedValue()
+    )
     # No FK (§3.2): the proposal row may be voided or rebuilt without touching history.
     proposal_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     notional: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
@@ -642,6 +651,11 @@ class MandatePlanBatch(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+    # The creating transaction, forced by the insert trigger (a writer value is
+    # overwritten): card 1 joins only the batch's own transaction by comparing it.
+    created_xact_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=FetchedValue()
+    )
 
 
 class MandatePlanBatchMember(Base):
@@ -650,7 +664,8 @@ class MandatePlanBatchMember(Base):
     ``card_no`` 1 is written with the batch. A re-send appends the next ``card_no``
     with a new nonce digest and the same snapshot; only the highest card of a
     (batch, plan) is answerable. The decision itself is the plan event that carries
-    the card's id in ``batch_member_id``: at most one per (batch, plan), which is
+    the card's id (``answered_batch_member_id``, set by the database): at most one per
+    (batch, plan), which is
     also what makes a nonce single-use. Nothing here is ever updated.
     """
 

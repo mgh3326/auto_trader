@@ -38,7 +38,6 @@ from app.models.mandate import (
     MandateApproval,
     MandateApprovalRequest,
     MandatePlan,
-    MandatePlanBatchMember,
     MandatePlanEvent,
     MandatePlanTranche,
     MandateSymbolReservation,
@@ -322,7 +321,7 @@ def event_to_fold(row: MandatePlanEvent) -> PlanEvent:
         ),
         activation_profile_id=row.activation_profile_id,
         batch_member_id=row.batch_member_id,
-        created_at=row.created_at,
+        answered_batch_member_id=row.answered_batch_member_id,
         evidence=dict(row.evidence or {}),
         actor=row.actor,
     )
@@ -347,19 +346,6 @@ async def list_plan_events(
 async def plan_state(session: AsyncSession, plan_id: int) -> PlanState:
     rows = await list_plan_events(session, plan_id)
     return fold_plan_events([event_to_fold(r) for r in rows])
-
-
-async def plan_members(session: AsyncSession, plan_id: int) -> dict[int, datetime]:
-    """Every batch card issued for this plan: card id -> when it was created.
-
-    An approval proves a batch answer only with a card of its plan that existed before it.
-    """
-    rows = await session.execute(
-        select(MandatePlanBatchMember.id, MandatePlanBatchMember.created_at).where(
-            MandatePlanBatchMember.plan_id == plan_id
-        )
-    )
-    return {r[0]: r[1] for r in rows.all()}
 
 
 async def get_plan(session: AsyncSession, plan_id: int) -> MandatePlan | None:
@@ -1526,11 +1512,7 @@ async def append_plan_event(
     )
     try:
         if event == "resumed":  # a new resume only; replay is unchanged
-            check_resume_floor(
-                history,
-                candidate,
-                plan_members=await plan_members(session, plan_id),
-            )
+            check_resume_floor(history, candidate)
         apply_event(state, candidate)
     except InvalidPlanEvent as exc:
         raise MandateError(exc.code, str(exc)) from exc

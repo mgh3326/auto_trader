@@ -71,8 +71,21 @@ def test_revision_chain_is_a_single_step_after_the_upbit_gateway_migration() -> 
 def test_upgrade_is_additive_only() -> None:
     sql = _render("upgrade").upper()
     assert "DROP TABLE" not in sql and "DROP COLUMN" not in sql
-    assert "ALTER TABLE REVIEW.MANDATE_PLAN_EVENTS" not in sql
+    assert "ALTER COLUMN" not in sql and "UPDATE REVIEW" not in sql
     assert sql.count("CREATE TABLE") == 2
+    # the one change to a T1 table: a nullable column with its FK and CHECK, no backfill
+    for statement in re.findall(r"ALTER TABLE REVIEW\.MANDATE_PLAN_EVENTS [^;]*", sql):
+        assert any(
+            token in statement
+            for token in (
+                "ADD COLUMN IF NOT EXISTS ANSWERED_BATCH_MEMBER_ID BIGINT",
+                "FK_MANDATE_PLAN_EVENTS_ANSWERED_BATCH_MEMBER",
+                "CK_MANDATE_PLAN_EVENTS_ANSWERED_IS_THE_CARD",
+            )
+        ), statement
+    assert "ADD COLUMN IF NOT EXISTS ANSWERED_BATCH_MEMBER_ID BIGINT;" in sql
+    assert "ANSWERED_BATCH_MEMBER_ID BIGINT NOT NULL" not in sql  # nullable
+    assert "DEFAULT" not in sql.split("ANSWERED_BATCH_MEMBER_ID BIGINT")[1][:5]
 
 
 def test_i13_both_tables_refuse_update_delete_and_truncate() -> None:
@@ -106,7 +119,8 @@ def test_the_events_trigger_has_no_function_call_in_its_when_clause() -> None:
     ddl = _ddl()
     assert (
         "CREATE TRIGGER trg_mandate_plan_events_batch_guard BEFORE INSERT ON "
-        "review.mandate_plan_events FOR EACH ROW WHEN (NEW.batch_member_id IS NOT NULL) "
+        "review.mandate_plan_events FOR EACH ROW WHEN (NEW.batch_member_id IS NOT NULL "
+        "OR NEW.answered_batch_member_id IS NOT NULL) "
         "EXECUTE FUNCTION review.mandate_plan_events_batch_guard()"
     ) in ddl
 
@@ -174,7 +188,13 @@ def test_the_answer_guard_is_serialized_by_a_per_plan_advisory_lock() -> None:
 
 def test_card_one_comes_only_with_its_batch_and_later_cards_keep_the_snapshot() -> None:
     ddl = _ddl()
-    assert "b.created_at IS DISTINCT FROM transaction_timestamp()" in ddl
+    # the batch identity is the DB-forced creating transaction, never a writer column
+    assert (
+        "b.created_xact_id IS DISTINCT FROM pg_current_xact_id()::text::bigint" in ddl
+    )
+    assert "NEW.created_xact_id := pg_current_xact_id()::text::bigint" in ddl
+    assert "transaction_timestamp()" not in ddl
+    assert "the card clause has expired" in ddl
     assert "a plan joins a batch only in the batch own transaction" in ddl
     assert "a re-sent card keeps the snapshot of card 1" in ddl
     assert "cards of a plan are numbered in sequence" in ddl
@@ -185,9 +205,9 @@ def test_card_one_comes_only_with_its_batch_and_later_cards_keep_the_snapshot() 
 def test_the_answer_lookup_index_is_created_idempotently() -> None:
     ddl = _ddl()
     assert (
-        "CREATE INDEX IF NOT EXISTS ix_mandate_plan_events_batch_member "
-        "ON review.mandate_plan_events (batch_member_id) "
-        "WHERE batch_member_id IS NOT NULL"
+        "CREATE INDEX IF NOT EXISTS ix_mandate_plan_events_answered_member "
+        "ON review.mandate_plan_events (answered_batch_member_id) "
+        "WHERE answered_batch_member_id IS NOT NULL"
     ) in ddl
 
 
@@ -195,7 +215,7 @@ def test_downgrade_refuses_while_any_batch_row_or_answer_exists() -> None:
     guard = _norm(_load().DOWNGRADE_GUARD)
     assert "FROM review.mandate_plan_batches" in guard
     assert "FROM review.mandate_plan_batch_members" in guard
-    assert "batch_member_id IS NOT NULL" in guard
+    assert "answered_batch_member_id IS NOT NULL" in guard
     assert "restrict_violation" in guard
     sql = _norm(_render("downgrade"))
     assert sql.index("DO $$") < sql.index(
@@ -205,6 +225,10 @@ def test_downgrade_refuses_while_any_batch_row_or_answer_exists() -> None:
         "DROP TABLE review.mandate_plan_batches"
     )
     assert "DROP TRIGGER IF EXISTS trg_mandate_plan_events_batch_guard" in sql
+    # the column goes before the card table its FK points at
+    assert sql.index("DROP COLUMN IF EXISTS answered_batch_member_id") < sql.index(
+        "DROP TABLE review.mandate_plan_batch_members"
+    )
 
 
 def test_constraint_and_index_names_fit_the_postgres_limit() -> None:
@@ -368,7 +392,9 @@ def test_a_resume_keeps_the_approval_date_as_its_lower_bound_in_the_database() -
     ddl = _ddl()
     body = _body("mandate_plan_events_resume_guard")
     assert "e.event IN ('approved', 'terms_rebound')" in body  # not an earlier resume
-    assert "floor_member IS NOT NULL" in body  # only a batch-backed approval/rebind
+    # only an approval/rebind that carries the verified link; no id or time comparison
+    assert "floor_link IS NOT NULL" in body
+    assert "created_at" not in body and "batch_member_id =" not in body
     assert "NEW.effective_session < floor_day" in body
     assert "a resume cannot take effect before the approval it follows" in body
     # no function call in WHEN: other events never run trigger code (#789 Stage 4)
@@ -382,31 +408,35 @@ def test_a_resume_keeps_the_approval_date_as_its_lower_bound_in_the_database() -
     )
 
 
-def test_a_card_id_on_an_event_counts_only_with_a_matching_card_of_the_same_plan() -> (
-    None
-):
-    """Both joins and the floor demand the card row to belong to the event's plan."""
+def test_every_answered_lookup_reads_the_verified_link_and_nothing_else() -> None:
+    """Batch closing, card admission, re-send and the answer itself share one definition."""
     ddl = _ddl()
-    # every "answered" lookup: the event is the plan's own and one of the four answers
-    assert "AND e.plan_id = x.plan_id" in ddl
-    assert "AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')" in ddl
+    assert ddl.count("ON e.answered_batch_member_id = x.id") >= 4
+    # no read of the free T1 card id, of an event name list or of a timestamp
+    assert "e.batch_member_id" not in ddl
+    assert "e.created_at" not in ddl
+    assert "AND e.event IN ('approved', 'rejected'" not in ddl
+    floor = _body("mandate_plan_events_resume_guard")
+    assert "m.id = floor_member" not in floor
+
+
+def test_the_answer_link_is_set_only_by_the_passed_answer_check() -> None:
+    body = _body("mandate_plan_events_batch_guard")
+    # a writer that names the link is refused before anything else is read
+    refuse = body.index("IF NEW.answered_batch_member_id IS NOT NULL THEN")
+    assert refuse < body.index("SELECT m.batch_id")
+    assert "the answer link is set by the answer check, never by a writer" in body
+    # the link is the last assignment, after the final expiry check
+    set_link = body.index("NEW.answered_batch_member_id := NEW.batch_member_id;")
+    assert set_link > body.rindex("IF clock_timestamp() >= mem.expires_at THEN")
+    assert body.index("RETURN NEW;") > set_link
+    # the timestamp is audit only: nothing stamps created_at
+    assert "NEW.created_at" not in body
+    # the FK and the CHECK that tie the link to its card input
+    columns = _norm("\n".join(_load().COLUMN_DDL))
+    assert "REFERENCES review.mandate_plan_batch_members (id)" in columns
     assert (
-        ddl.count("AND e.plan_id = x.plan_id") >= 4
-    )  # batch, card, other-batch, answer
-    floor = _body("mandate_plan_events_resume_guard")
-    assert "m.id = floor_member AND m.plan_id = NEW.plan_id" in floor
-
-
-def test_an_answer_is_an_event_written_after_its_card() -> None:
-    """A persisted placeholder predates every card, so it can never match one, not even a
-    card of the same plan that later takes the same id (answer joins and the floor)."""
-    ddl = _ddl()
-    assert ddl.count("AND e.created_at >= x.created_at") >= 4
-    floor = _body("mandate_plan_events_resume_guard")
-    assert "AND floor_created >= m.created_at" in floor
-    answer = _body("mandate_plan_events_batch_guard")
-    # the genuine answer is stamped from the wall clock, after its card committed
-    assert "NEW.created_at := clock_timestamp();" in answer
-    assert answer.index("NEW.created_at := clock_timestamp();") > answer.index(
-        "the batch has expired"
+        "CHECK (answered_batch_member_id IS NULL OR answered_batch_member_id = "
+        "batch_member_id)" in columns
     )
+    assert columns.count("VALIDATE CONSTRAINT") == 2  # NOT VALID, then validated

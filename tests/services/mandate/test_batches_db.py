@@ -4,11 +4,13 @@ Runs in CI against the run-owned test database (never a production database); th
 round trips and the lock races are not run locally (hk host safety). Test names
 carry the invariant they pin (I13, I22, I21 ...).
 
-Times: the DB triggers read the database clock (``now()``), the store and the
-callback read an injected clock. Every scenario is built around the real clock with
-margins of hours, so both agree: ``before`` = the deadline is an hour ahead, ``after``
-= the deadline passed an hour ago and the batch is still open, ``expired`` = the batch
-closed an hour ago.
+Times: the DB triggers read the database wall clock (``clock_timestamp()``, never
+``now()``, which is the transaction start), the store and the callback read an injected
+clock. Most scenarios are built around the real clock with margins of hours, so both
+agree: ``before`` = the deadline is an hour ahead, ``after`` = the deadline passed an hour
+ago and the batch is still open, ``expired`` = a batch created while open and then aged
+(append-only triggers off, test only) so that it closed an hour ago. The race and expiry
+tests that must cross a deadline in real time use margins of seconds instead and say so.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from app.services.mandate import batch_rules as rules
 from app.services.mandate import batches as bt
 from app.services.mandate import store as ms
 from app.services.mandate import vocabulary as v
+from app.services.mandate.locks import acquire_basket_lock
 from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.mandate import db_support as d
 from tests.services.mandate.db_support import MandateSeed, new_symbol
@@ -165,7 +168,10 @@ async def open_batch(
     db, seed, sleeve, terms, plans, *, when: str, shift: int = 0, times=None
 ) -> Scene:
     """``shift`` moves the calendar by whole days, to give a second batch another target."""
-    created, open_at, close_at = times or timeline(when)
+    # a batch cannot be CREATED after its own close (create_batch refuses it), so an
+    # "expired" scene is created open and aged afterwards
+    aged = when == "expired" and times is None
+    created, open_at, close_at = times or timeline("before" if aged else when)
     cal = calendar(
         open_at + timedelta(days=shift), close_at + timedelta(days=shift), days=3
     )
@@ -200,7 +206,40 @@ async def open_batch(
     )
     seed.batch_ids.append(issued.batch.id)
     await db.commit()
+    if aged:
+        await age_batch(db, issued.batch.id)
+        snap.deadline, snap.expires = await batch_deadlines(db, issued.batch.id)
     return snap
+
+
+async def age_batch(db, batch_id: int) -> None:
+    """Test only: make an existing batch closed an hour ago (deadline three hours ago).
+
+    The table is append-only for every role, so the rows are rewritten with the triggers
+    off (``session_replication_role``) in their own short transaction."""
+    await raw(db, "SET LOCAL session_replication_role = replica")
+    await raw(
+        db,
+        "UPDATE review.mandate_plan_batches SET "
+        "approval_deadline_at = clock_timestamp() - interval '3 hours', "
+        "expires_at = clock_timestamp() - interval '1 hour' WHERE id = :b",
+        b=batch_id,
+    )
+    await db.commit()
+
+
+async def batch_deadlines(db, batch_id: int):
+    row = (
+        await db.execute(
+            sa.text(
+                "SELECT approval_deadline_at, expires_at "
+                "FROM review.mandate_plan_batches WHERE id = :b"
+            ),
+            {"b": batch_id},
+        )
+    ).one()
+    await db.rollback()
+    return row[0], row[1]
 
 
 def auth(card, action: str = "approve", user: int = OPERATOR) -> cb.Authorized:
@@ -733,7 +772,7 @@ async def test_a_nonce_is_spent_by_the_answer(db_session, seed) -> None:
         await count(
             db_session,
             "mandate_plan_events",
-            "plan_id = :p AND batch_member_id IS NOT NULL",
+            "plan_id = :p AND answered_batch_member_id IS NOT NULL",
             p=plan.id,
         )
         == 1
@@ -972,7 +1011,7 @@ async def test_i22_two_presses_at_once_write_one_answer(db_session, seed) -> Non
         await count(
             db_session,
             "mandate_plan_events",
-            "plan_id = :p AND batch_member_id IS NOT NULL",
+            "plan_id = :p AND answered_batch_member_id IS NOT NULL",
             p=plan.id,
         )
         == 1
@@ -1100,25 +1139,32 @@ async def _try(session, statement: str, **params) -> str | None:
         return str(exc)
 
 
-async def _wait_until_blocked(db, timeout: float = 10.0) -> None:
-    """Wait until PostgreSQL reports a backend waiting on a lock, so the contender really
-    is blocked by the holder (a task that has not started yet is also 'not done')."""
+async def _pid(session) -> int:
+    """The backend process id of the session's connection (its transaction goes on)."""
+    return (await session.execute(sa.text("SELECT pg_backend_pid()"))).scalar_one()
+
+
+async def _wait_until_blocked_by(
+    observer, holder_pid: int, contender_pid: int, timeout: float = 10.0
+) -> None:
+    """Wait until PostgreSQL reports that the contender backend is blocked BY the holder
+    backend (``pg_blocking_pids``): not merely that some backend somewhere waits on a lock,
+    and not that a task has not started yet."""
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        waiting = (
-            await db.execute(
-                sa.text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND wait_event_type = 'Lock' "
-                    "AND pid <> pg_backend_pid()"
-                )
+        blocked = (
+            await observer.execute(
+                sa.text("SELECT :h = ANY(pg_blocking_pids(:c))"),
+                {"h": holder_pid, "c": contender_pid},
             )
         ).scalar_one()
-        await db.rollback()
-        if waiting:
+        await observer.rollback()
+        if blocked:
             return
         await asyncio.sleep(0.1)
-    raise AssertionError("no backend became blocked on a lock")
+    raise AssertionError(
+        f"backend {contender_pid} was never blocked by backend {holder_pid}"
+    )
 
 
 ANSWER = (
@@ -1142,6 +1188,8 @@ async def test_i22_an_answer_that_commits_first_blocks_a_concurrent_resend(
     plan = sc.plans[0]
     card = sc.cards[plan.id]
     async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
+        assert holder_pid != other_pid
         assert (
             await _try(holder, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
             is None
@@ -1157,7 +1205,7 @@ async def test_i22_an_answer_that_commits_first_blocks_a_concurrent_resend(
                 n=rules.nonce_digest(rules.new_nonce()),
             )
         )
-        await _wait_until_blocked(db_session)
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
         assert not task.done(), "the resend did not wait for the answer"
         await holder.commit()
         message = await asyncio.wait_for(task, 15)
@@ -1181,6 +1229,7 @@ async def test_i22_a_resend_that_commits_first_blocks_a_concurrent_answer(
     plan = sc.plans[0]
     card = sc.cards[plan.id]
     async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
         assert (
             await _try(
                 holder,
@@ -1196,7 +1245,7 @@ async def test_i22_a_resend_that_commits_first_blocks_a_concurrent_answer(
         task = asyncio.create_task(
             _try(other, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
         )
-        await _wait_until_blocked(db_session)
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
         assert not task.done(), "the answer did not wait for the resend"
         await holder.commit()
         message = await asyncio.wait_for(task, 15)
@@ -1513,7 +1562,8 @@ async def test_i22_a_successor_batch_waits_for_an_answer_that_is_still_open(
         times=(now, now + timedelta(seconds=6), now + timedelta(seconds=8)),
     )
     card = old.cards[plan.id]
-    async with AsyncSessionLocal() as holder:
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
         assert (
             await _try(holder, ANSWER, p=plan.id, t=terms.id, e=old.target, m=card.id)
             is None
@@ -1524,24 +1574,23 @@ async def test_i22_a_successor_batch_waits_for_an_answer_that_is_still_open(
         _, open_at, close_at = timeline("before")
 
         async def successor():
-            async with AsyncSessionLocal() as session:
-                issued = await bt.create_batch(
-                    session,
-                    realm="mock",
-                    basket_key=terms.basket_key,
-                    actor=ACTOR,
-                    now=datetime.now(UTC),
-                    calendar=calendar(
-                        open_at + timedelta(days=1), close_at + timedelta(days=1)
-                    ),
-                )
-                cards_made = len(issued.cards)
-                seed.batch_ids.append(issued.batch.id)
-                await session.commit()
-                return cards_made
+            issued = await bt.create_batch(
+                other,
+                realm="mock",
+                basket_key=terms.basket_key,
+                actor=ACTOR,
+                now=datetime.now(UTC),
+                calendar=calendar(
+                    open_at + timedelta(days=1), close_at + timedelta(days=1)
+                ),
+            )
+            cards_made = len(issued.cards)
+            seed.batch_ids.append(issued.batch.id)
+            await other.commit()
+            return cards_made
 
         task = asyncio.create_task(successor())
-        await _wait_until_blocked(db_session)
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
         assert not task.done(), "the successor did not wait for the open answer"
         await holder.commit()
         made = await asyncio.wait_for(task, 15)
@@ -1659,95 +1708,135 @@ async def test_a_legacy_approval_can_still_be_resumed_to_an_earlier_date(
     assert (await events_of(db_session, plan.id))[-1] == "resumed"
 
 
-async def test_an_upgraded_t1_event_with_a_placeholder_card_id_proves_nothing(
-    db_session, seed
-) -> None:
-    """T1 allowed any ``batch_member_id`` on approved/terms_rebound (no FK, no batch table).
-    A persisted such event neither floors a resume nor makes another plan's card 'answered'."""
-    sym = new_symbol()
-    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
-    legacy = await register(seed, sleeve, terms, sym)
-    other = await scene(db_session, seed)  # another plan with a real card
-    other_card = other.cards[other.plans[0].id]
-    later = d.EFFECTIVE + timedelta(days=1)
-    # a pre-upgrade row: written with the triggers off, carrying the id of the OTHER
-    # plan's card as a placeholder (the sequence later assigns that very id)
-    await raw(db_session, "SET LOCAL session_replication_role = replica")
-    await raw(
-        db_session,
-        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
-        "terms_sha256, effective_session, batch_member_id, actor) "
-        "SELECT :p, 2, 'approved', t.id, t.content_sha256, :e, :m, 'op' "
-        "FROM review.mandate_terms t WHERE t.id = :t",
-        p=legacy.id,
-        t=terms.id,
-        e=later,
-        m=other_card.id,
-    )
-    await raw(db_session, "SET LOCAL session_replication_role = origin")
-    await db_session.commit()
-    # no floor: suspended and resumed to an earlier day through the store and the trigger
-    await ms.append_plan_event(
-        db_session, plan_id=legacy.id, event="suspended", actor="operator:test"
-    )
-    await ms.append_plan_event(
-        db_session,
-        plan_id=legacy.id,
-        event="resumed",
-        actor="operator:test",
-        resume_target="approved",
-        effective_session=d.EFFECTIVE,
-    )
-    await db_session.commit()
-    # the other plan's card is not 'answered' by the placeholder, and still answers
-    assert await bt.answer_event(db_session, other.batch_id, other.plans[0].id) is None
-    await db_session.rollback()
-    assert (await answer(other, other_card)).handled
+# ------------------------------- review round 9: the verified answer link (hk 5648)
+REBOUND = (
+    "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+    "terms_sha256, effective_session, batch_member_id, created_at, actor) "
+    "SELECT :p, :s, :ev, t.id, t.content_sha256, :e, :m, "
+    "coalesce(CAST(:c AS timestamptz), now()), 'op' "
+    "FROM review.mandate_terms t WHERE t.id = :t"
+)
+RESEND_AT = (
+    "INSERT INTO review.mandate_plan_batch_members (batch_id, plan_id, card_no, "
+    "kind, terms_id, terms_sha256, plan_sha256, nonce_digest, created_by, created_at) "
+    "SELECT :b, :p, :no, 'new_plan', t.id, t.content_sha256, "
+    "(SELECT plan_sha256 FROM review.mandate_plan_batch_members "
+    " WHERE batch_id = :b AND plan_id = :p AND card_no = 1), :n, 'op', "
+    "now() + CAST(:skew AS interval) FROM review.mandate_terms t WHERE t.id = :t"
+)
+SKEWS = [
+    "-30 days",
+    "0 seconds",
+    "30 days",
+]  # a card dated before / at / after its answer
 
 
-async def test_a_persisted_placeholder_matching_a_later_card_of_the_same_plan_proves_nothing(
-    db_session, seed
-) -> None:
-    """T1 allowed ``terms_rebound(batch_member_id=N)`` with no card table. The same plan
-    later gets a reapproval card whose id is N: the old event (written before every card)
-    is not that card's answer and sets no resume floor; the card still answers."""
+async def next_seq(db, plan_id: int) -> int:
+    return (
+        await db.execute(
+            sa.text(
+                "SELECT coalesce(max(seq), 0) + 1 FROM review.mandate_plan_events "
+                "WHERE plan_id = :p"
+            ),
+            {"p": plan_id},
+        )
+    ).scalar_one()
+
+
+async def card_created_at(db, card_id: int) -> datetime:
+    value = (
+        await db.execute(
+            sa.text(
+                "SELECT created_at FROM review.mandate_plan_batch_members WHERE id = :m"
+            ),
+            {"m": card_id},
+        )
+    ).scalar_one()
+    await db.rollback()
+    return value
+
+
+async def reapproval_scene(db, seed):
+    """A plan approved under clause 1 (no batch card), a second live clause and a batch
+    whose card 1 is the reapproval card."""
     sym = new_symbol()
     sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
     plan = await register(seed, sleeve, terms, sym)
     await seed.approve_plan(plan.id, terms)
-    live = await second_live_terms(db_session, seed, sleeve, terms, (sym,))
-    sc = await open_batch(db_session, seed, sleeve, live, [plan], when="before")
+    live = await second_live_terms(db, seed, sleeve, terms, (sym,))
+    sc = await open_batch(db, seed, sleeve, live, [plan], when="before")
+    assert sc.cards[plan.id].kind == "reapproval"
+    return sc, plan, terms, live
+
+
+def migration_module():
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "alembic/versions/20261120_hk5648_mandate_batches.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk5648_db_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("skew", SKEWS)
+async def test_i22_t1_rows_upgraded_in_place_are_never_read_as_answers(
+    db_session, seed, skew
+) -> None:
+    """The real upgrade over a populated T1 table: the T1 shape (no answer link, none of
+    this migration's event triggers) holds a lawful ``terms_rebound`` whose free
+    ``batch_member_id`` equals the id the plan's card later received, dated before / at /
+    after that card. After the T3a upgrade steps run over it, that row is no answer, sets
+    no resume floor, and the card still answers (all in one rolled-back transaction)."""
+    sc, plan, terms, live = await reapproval_scene(db_session, seed)
     card = sc.cards[plan.id]
-    assert card.kind == "reapproval"
-    created = (
-        await db_session.execute(
-            sa.text(
-                "SELECT created_at FROM review.mandate_plan_batch_members WHERE id = :m"
-            ),
-            {"m": card.id},
-        )
-    ).scalar_one()
+    created = await card_created_at(db_session, card.id)
+    offset = {"-30 days": timedelta(days=-30), "0 seconds": timedelta(0)}.get(
+        skew, timedelta(days=30)
+    )
     later = d.EFFECTIVE + timedelta(days=1)
-    # a pre-upgrade row: triggers off, the id the card later received, an older created_at
-    await raw(db_session, "SET LOCAL session_replication_role = replica")
+    # the T1 shape
     await raw(
         db_session,
-        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
-        "terms_sha256, effective_session, batch_member_id, created_at, actor) "
-        "SELECT :p, 3, 'terms_rebound', t.id, t.content_sha256, :e, :m, :c, 'op' "
-        "FROM review.mandate_terms t WHERE t.id = :t",
+        "DROP TRIGGER trg_mandate_plan_events_batch_guard ON review.mandate_plan_events",
+    )
+    await raw(
+        db_session,
+        "DROP TRIGGER trg_mandate_plan_events_resume_guard ON review.mandate_plan_events",
+    )
+    await raw(
+        db_session,
+        "ALTER TABLE review.mandate_plan_events DROP COLUMN answered_batch_member_id",
+    )
+    await raw(
+        db_session,
+        REBOUND,
         p=plan.id,
-        t=terms.id,
+        s=await next_seq(db_session, plan.id),
+        ev="terms_rebound",
         e=later,
         m=card.id,
-        c=created - timedelta(days=30),
+        c=created + offset,
+        t=terms.id,
     )
-    await raw(db_session, "SET LOCAL session_replication_role = origin")
-    await db_session.commit()
-    # not an answer to the new card
+    # the T3a upgrade steps, over that populated table
+    module = migration_module()
+    for statement in (*module.COLUMN_DDL, *module.GUARD_DDL):
+        await raw(db_session, statement)
+    await db_session.flush()
+    # not an answer: the batch is still open and the plan is offered a re-send
     assert await bt.answer_event(db_session, sc.batch_id, plan.id) is None
-    await db_session.rollback()
-    # no floor: suspend and resume to an earlier day through the store and the trigger
+    result = await bt.reissue(
+        db_session, batch_id=sc.batch_id, actor=ACTOR, now=datetime.now(UTC)
+    )
+    assert [c.member.plan_id for c in result.cards] == [plan.id] and not result.skipped
+    # no floor: the T1 row is the latest binding, so suspend + resume to any earlier day
+    # works through the store (the fold) ...
     await ms.append_plan_event(
         db_session, plan_id=plan.id, event="suspended", actor="operator:test"
     )
@@ -1759,8 +1848,351 @@ async def test_a_persisted_placeholder_matching_a_later_card_of_the_same_plan_pr
         resume_target="approved",
         effective_session=d.EFFECTIVE,
     )
+    # ... and a genuine answer on the newest card is one answer, with the link set by the
+    # database, whatever date the old row carries
+    newest = result.cards[0].member
+    await raw(
+        db_session,
+        REBOUND,
+        p=plan.id,
+        s=await next_seq(db_session, plan.id),
+        ev="terms_rebound",
+        e=sc.target,
+        m=newest.id,
+        c=None,
+        t=live.id,
+    )
+    await db_session.flush()
+    link = (
+        (
+            await db_session.execute(
+                sa.text(
+                    "SELECT answered_batch_member_id FROM review.mandate_plan_events "
+                    "WHERE plan_id = :p AND batch_member_id = :m"
+                ),
+                {"p": plan.id, "m": newest.id},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert link == [newest.id]  # the genuine answer only ...
+    t1_link = (
+        (
+            await db_session.execute(
+                sa.text(
+                    "SELECT answered_batch_member_id FROM review.mandate_plan_events "
+                    "WHERE plan_id = :p AND batch_member_id = :m"
+                ),
+                {"p": plan.id, "m": card.id},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert t1_link == [None]  # ... the T1 row keeps its NULL link
+    found = await bt.answer_event(db_session, sc.batch_id, plan.id)
+    assert found is not None and found.answered_batch_member_id == newest.id
+    # the genuine approval now floors a new resume (store, then the database)
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    with err(v.MandateRefusal.INVALID_TRANSITION):
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="resumed",
+            actor="operator:test",
+            resume_target="approved",
+            effective_session=sc.target - timedelta(days=1),
+        )
+    await refused(
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, resume_target, "
+        "effective_session, actor) VALUES (:p, :s, 'resumed', 'approved', :e, 'op')",
+        "cannot take effect before the approval",
+        p=plan.id,
+        s=await next_seq(db_session, plan.id),
+        e=sc.target - timedelta(days=1),
+    )
+
+
+@pytest.mark.parametrize("skew", SKEWS)
+async def test_i22_a_genuine_answer_counts_whatever_date_its_card_carries(
+    db_session, seed, skew
+) -> None:
+    """A card dated in the past, now or the future: the answer written through the
+    callback is one answer; the batch closes; a re-send, a second answer and the next
+    batch see it; a late approval's date floors a same-day resume."""
+    sc = await scene(db_session, seed, when="after")  # deadline passed: effective T+1
+    plan = sc.plans[0]
+    nonce = rules.new_nonce()
+    await raw(
+        db_session,
+        RESEND_AT,
+        b=sc.batch_id,
+        p=plan.id,
+        no=2,
+        t=sc.terms.id,
+        n=rules.nonce_digest(nonce),
+        skew=skew,
+    )
+    card2 = (
+        await db_session.execute(
+            sa.text(
+                "SELECT id FROM review.mandate_plan_batch_members "
+                "WHERE batch_id = :b AND plan_id = :p AND card_no = 2"
+            ),
+            {"b": sc.batch_id, "p": plan.id},
+        )
+    ).scalar_one()
     await db_session.commit()
-    # and the card answers (neither button returns mandate_batch_answered)
-    out = await answer(sc, card)
+    out = await answer(sc, SimpleNamespace(id=card2, nonce=nonce))
     assert out.handled and out.reason == "approved", out
-    assert await bt.answer_event(db_session, sc.batch_id, plan.id) is not None
+    assert await events_of(db_session, plan.id) == ["proposed", "approved"]
+    found = await bt.answer_event(db_session, sc.batch_id, plan.id)
+    assert found is not None and found.answered_batch_member_id == card2
+    await db_session.rollback()
+    # the batch is closed for the plan: no re-send, the older card stays refused
+    result = await bt.reissue(
+        db_session, batch_id=sc.batch_id, actor=ACTOR, now=datetime.now(UTC)
+    )
+    assert result.cards == () and not result.skipped
+    await db_session.rollback()
+    assert (await answer(sc, sc.cards[plan.id])).reason == "mandate_card_superseded"
+    # a late approval floors a same-day resume: store and database
+    later = sc.target + timedelta(days=1)
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    await db_session.commit()
+    with err(v.MandateRefusal.INVALID_TRANSITION):
+        await ms.append_plan_event(
+            db_session,
+            plan_id=plan.id,
+            event="resumed",
+            actor="operator:test",
+            resume_target="approved",
+            effective_session=sc.target,
+        )
+    await db_session.rollback()
+    await ms.append_plan_event(
+        db_session,
+        plan_id=plan.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=later,
+    )
+    await db_session.commit()
+
+
+async def test_i22_no_writer_can_name_the_answer_link(db_session, seed) -> None:
+    """The link is the answer trigger's output: naming it (with or without a card id, on
+    an answer or on any other event) is refused, and a plain answer gets it from the DB."""
+    sc = await scene(db_session, seed)
+    plan = sc.plans[0]
+    card = sc.cards[plan.id]
+    approved = (
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, terms_id, "
+        "terms_sha256, effective_session, batch_member_id, answered_batch_member_id, "
+        "actor) SELECT :p, 2, 'approved', t.id, t.content_sha256, :e, :m, :l, 'op' "
+        "FROM review.mandate_terms t WHERE t.id = :t"
+    )
+    for member in (card.id, None):  # the card id and the link, then the link alone
+        await refused(
+            db_session,
+            approved,
+            "answer link",
+            p=plan.id,
+            t=sc.terms.id,
+            e=sc.target,
+            m=member,
+            l=card.id,
+        )
+    await refused(  # an event that answers no card
+        db_session,
+        "INSERT INTO review.mandate_plan_events (plan_id, seq, event, "
+        "answered_batch_member_id, actor) VALUES (:p, 2, 'suspended', :l, 'op')",
+        "answer link",
+        p=plan.id,
+        l=card.id,
+    )
+    assert await events_of(db_session, plan.id) == ["proposed"]
+    # the same answer without naming the link is accepted and the DB fills it in
+    await raw(db_session, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id)
+    await db_session.flush()
+    stored = (
+        await db_session.execute(
+            sa.text(
+                "SELECT batch_member_id, answered_batch_member_id "
+                "FROM review.mandate_plan_events WHERE plan_id = :p AND seq = 2"
+            ),
+            {"p": plan.id},
+        )
+    ).one()
+    assert stored.batch_member_id == stored.answered_batch_member_id == card.id
+    await db_session.rollback()
+
+
+async def test_i22_the_batch_identity_is_the_creating_transaction_not_a_writer_time(
+    db_session, seed
+) -> None:
+    """Card 1 joins a batch only from the transaction that inserted it. A batch row whose
+    writer-chosen ``created_at`` equals another transaction's start does not let that
+    transaction add card 1, and a writer-chosen transaction id is overwritten."""
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    plan = await register(seed, sleeve, terms, sym)
+    await db_session.commit()
+    async with AsyncSessionLocal() as late, AsyncSessionLocal() as maker:
+        started = (
+            await late.execute(sa.text("SELECT transaction_timestamp()"))
+        ).scalar_one()  # the card writer's transaction (and its now()) starts here
+        batch_id = (
+            await maker.execute(
+                sa.text(
+                    "INSERT INTO review.mandate_plan_batches (realm, basket_key, market, "
+                    "target_session, approval_deadline_at, expires_at, created_by, "
+                    "created_at, created_xact_id) VALUES ('mock', :k, 'equity_kr', "
+                    "current_date + 20, now() + interval '1 hour', now() + interval '7 hour', "
+                    "'op', :ts, 1) RETURNING id"
+                ),
+                {"k": terms.basket_key, "ts": started},
+            )
+        ).scalar_one()
+        stored = (
+            await maker.execute(
+                sa.text(
+                    "SELECT created_xact_id = pg_current_xact_id()::text::bigint "
+                    "FROM review.mandate_plan_batches WHERE id = :b"
+                ),
+                {"b": batch_id},
+            )
+        ).scalar_one()
+        assert stored is True  # the writer's value 1 was overwritten by the trigger
+        await maker.commit()
+        seed.batch_ids.append(batch_id)
+        message = await _try(
+            late,
+            CARD,
+            b=batch_id,
+            p=plan.id,
+            no=1,
+            t=terms.id,
+            h="a" * 64,
+            n=rules.nonce_digest(rules.new_nonce()),
+        )
+    assert message is not None and "own transaction" in message
+
+
+async def test_i22_a_clause_that_expires_while_create_waits_is_skipped_not_offered(
+    db_session, seed
+) -> None:
+    sym = new_symbol()
+    expires = datetime.now(UTC) + timedelta(seconds=8)
+    sleeve, terms = await seed.clause_sleeve(
+        symbols=(sym,), account_mode="kiwoom_mock", expires_at=expires
+    )
+    plan = await register(seed, sleeve, terms, sym)
+    await db_session.commit()
+    _, open_at, close_at = timeline("before")
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
+        await acquire_basket_lock(holder, "mock", terms.basket_key)
+        task = asyncio.create_task(
+            bt.create_batch(
+                other,
+                realm="mock",
+                basket_key=terms.basket_key,
+                actor=ACTOR,
+                now=datetime.now(UTC),  # the clause is still valid at this instant
+                calendar=calendar(open_at, close_at),
+            )
+        )
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
+        # the clause expires while the writer waits
+        await asyncio.sleep(max(0.0, (expires - datetime.now(UTC)).total_seconds()) + 1)
+        await holder.rollback()
+        issued = await asyncio.wait_for(task, 15)
+        seed.batch_ids.append(issued.batch.id)
+        await other.commit()
+    assert issued.cards == ()
+    assert [(s.plan_id, s.reason) for s in issued.skipped] == [
+        (plan.id, "live_terms_expired")
+    ]
+
+
+async def test_i22_a_batch_that_closes_while_create_waits_is_refused(
+    db_session, seed
+) -> None:
+    sym = new_symbol()
+    sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
+    await register(seed, sleeve, terms, sym)
+    await db_session.commit()
+    now = datetime.now(UTC)
+    # the session opens in 1 s and closes in 3 s: it is over when the lock is released
+    cal = calendar(now + timedelta(seconds=1), now + timedelta(seconds=3))
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
+        await acquire_basket_lock(holder, "mock", terms.basket_key)
+        task = asyncio.create_task(
+            bt.create_batch(
+                other,
+                realm="mock",
+                basket_key=terms.basket_key,
+                actor=ACTOR,
+                now=now,
+                calendar=cal,
+            )
+        )
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
+        await asyncio.sleep(4)
+        await holder.rollback()
+        with err(v.MandateRefusal.BATCH_EXPIRED):
+            await asyncio.wait_for(task, 15)
+        await other.rollback()
+    assert (
+        await count(
+            db_session, "mandate_plan_batches", "basket_key = :k", k=terms.basket_key
+        )
+        == 0
+    )
+
+
+async def test_i22_a_clause_that_expires_while_resend_waits_is_reported_skipped(
+    db_session, seed
+) -> None:
+    sym_a = new_symbol()
+    expires = datetime.now(UTC) + timedelta(seconds=9)
+    sleeve, terms = await seed.clause_sleeve(
+        symbols=(sym_a,), account_mode="kiwoom_mock", expires_at=expires
+    )
+    plan = await register(seed, sleeve, terms, sym_a)
+    sc = await open_batch(db_session, seed, sleeve, terms, [plan], when="before")
+    async with AsyncSessionLocal() as holder, AsyncSessionLocal() as other:
+        holder_pid, other_pid = await _pid(holder), await _pid(other)
+        await acquire_basket_lock(holder, "mock", terms.basket_key)
+        task = asyncio.create_task(
+            bt.reissue(other, batch_id=sc.batch_id, actor=ACTOR, now=datetime.now(UTC))
+        )
+        await _wait_until_blocked_by(db_session, holder_pid, other_pid)
+        await asyncio.sleep(max(0.0, (expires - datetime.now(UTC)).total_seconds()) + 1)
+        await holder.rollback()
+        result = await asyncio.wait_for(task, 15)
+        await other.commit()
+    assert result.cards == ()
+    assert [(s.plan_id, s.reason) for s in result.skipped] == [
+        (plan.id, "terms_expired")
+    ]
+    # the database refuses a card of an expired clause for any writer
+    await refused(
+        db_session,
+        RESEND,
+        "the card clause has expired",
+        b=sc.batch_id,
+        p=plan.id,
+        no=2,
+        t=terms.id,
+        n=rules.nonce_digest(rules.new_nonce()),
+    )

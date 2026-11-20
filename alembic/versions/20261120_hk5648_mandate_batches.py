@@ -1,12 +1,15 @@
 """hk 3795 T3a: morning approval batches of the mandate (``mpb`` card).
 
-Additive: two new ``review`` tables, one index and three triggers on the T1
-``review.mandate_plan_events`` table. Nothing existing is altered.
+Additive: two new ``review`` tables, one nullable column (with its FK and CHECK), one
+index and three triggers on the T1 ``review.mandate_plan_events`` table. No existing row is
+altered or backfilled.
 
 * ``review.mandate_plan_batches`` — one batch per (realm, basket, target session),
   with the approval deadline (open of the target session) and the expiry (its close).
+  The creating transaction id is forced by the insert trigger (``created_xact_id``).
 * ``review.mandate_plan_batch_members`` — one row per card issued for a plan of a
-  batch. Card 1 is written in the batch's own transaction; a re-send is the next
+  batch. Card 1 is written in the batch's own transaction (the forced transaction id
+  must match); a re-send is the next
   card with a new nonce digest and the same snapshot (clause id, clause hash, plan
   hash, kind).
 
@@ -23,13 +26,21 @@ before the batch closed must not be able to answer after it closed:
   account reference, clause hash); the plan holds the authority state the card kind
   needs; card 1 only comes with its batch; later cards follow ``card_no`` and repeat the
   snapshot, and only while the batch is open and the plan is unanswered;
-* new ``resumed`` events: when the latest approval (or rebind) answers a batch card, the
-  effective session cannot be earlier than it (legacy approvals and rows written before
+* the verified answer link ``mandate_plan_events.answered_batch_member_id`` (nullable FK
+  to the card): the answer trigger fills it, in the INSERT that passed every card check,
+  from the card the writer named in ``batch_member_id``; a writer that supplies it is
+  refused. Every earlier row stays NULL (``batch_member_id`` of the T1 schema is a free
+  placeholder and proves nothing). Every reader of "was this plan answered" - the batch
+  and card triggers, the resume floor, the application - reads this link, never a card id,
+  an event name or a timestamp;
+* new ``resumed`` events: when the latest approval (or rebind) carries the verified link,
+  the effective session cannot be earlier than it (legacy approvals and rows written before
   this migration are untouched);
-* plan event insert carrying ``batch_member_id`` (answers): under the sleeve lock and
-  the per-plan card lock (the card insert takes the same one), the card is the newest
-  card of its plan, the batch is not expired, the plan has no other answer, the event
-  matches the card kind, the card's clause is the sleeve's current one (for all four
+* plan event insert carrying a card id (answers): under the basket lock (L2), the sleeve
+  lock (L3) and the per-plan card lock (the card insert takes the same one; a deliberate
+  exception to "event triggers take no advisory lock", see the design 4.6), the card is
+  the newest card of its plan, the batch is not expired, the plan has no other answer, the
+  event matches the card kind, the card's clause is the sleeve's current one (for all four
   answer events), and ``effective_session`` follows the approval deadline.
 
 The app role gets SELECT and INSERT only (hard rule 18).
@@ -61,23 +72,47 @@ TABLES_NEWEST_FIRST: tuple[str, ...] = (
     "mandate_plan_batches",
 )
 
-# An answer is an event of the card's own plan, one of the four answer events, written
-# AFTER the card existed: a ``batch_member_id`` persisted by the earlier schema (a free
-# placeholder, no card table) predates every card row and so can never match one, not
-# even a card of the same plan that later takes the same id. The answer trigger stamps
-# ``created_at`` from the wall clock so a genuine answer always sorts after its card.
+# An answer is an event whose verified link names a card of the (batch, plan). The link is
+# set by the answer trigger alone, in the INSERT that passed every card check (plan, kind,
+# newest card, snapshot, expiry, single use): nothing here compares ids, event names or
+# timestamps, so a T1-era placeholder (no link) is never an answer.
 _ANSWERED = """
     EXISTS (
         SELECT 1
           FROM review.mandate_plan_batch_members x
           JOIN review.mandate_plan_events e
-            ON e.batch_member_id = x.id
-           AND e.plan_id = x.plan_id
-           AND e.created_at >= x.created_at
-           AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
+            ON e.answered_batch_member_id = x.id
          WHERE x.batch_id = {batch} AND x.plan_id = {plan}
     )
 """
+
+#: The new nullable column of the T1 events table, its FK and CHECK. Idempotent (the test
+#: schema bootstrap installs it on top of create_all too); NOT VALID then VALIDATE keeps
+#: writers unblocked (every existing row is NULL).
+COLUMN_DDL: tuple[str, ...] = (
+    # a no-op here (create_table makes it); it widens a test DB that holds the table of an
+    # earlier bootstrap, whose rows the trigger no longer reads
+    "ALTER TABLE review.mandate_plan_batches "
+    "ADD COLUMN IF NOT EXISTS created_xact_id BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE review.mandate_plan_events "
+    "ADD COLUMN IF NOT EXISTS answered_batch_member_id BIGINT",
+    "ALTER TABLE review.mandate_plan_events "
+    "DROP CONSTRAINT IF EXISTS fk_mandate_plan_events_answered_batch_member",
+    "ALTER TABLE review.mandate_plan_events "
+    "ADD CONSTRAINT fk_mandate_plan_events_answered_batch_member "
+    "FOREIGN KEY (answered_batch_member_id) "
+    "REFERENCES review.mandate_plan_batch_members (id) ON DELETE RESTRICT NOT VALID",
+    "ALTER TABLE review.mandate_plan_events "
+    "VALIDATE CONSTRAINT fk_mandate_plan_events_answered_batch_member",
+    "ALTER TABLE review.mandate_plan_events "
+    "DROP CONSTRAINT IF EXISTS ck_mandate_plan_events_answered_is_the_card",
+    "ALTER TABLE review.mandate_plan_events "
+    "ADD CONSTRAINT ck_mandate_plan_events_answered_is_the_card "
+    "CHECK (answered_batch_member_id IS NULL "
+    "OR answered_batch_member_id = batch_member_id) NOT VALID",
+    "ALTER TABLE review.mandate_plan_events "
+    "VALIDATE CONSTRAINT ck_mandate_plan_events_answered_is_the_card",
+)
 
 
 def _guard_ddl() -> tuple[str, ...]:
@@ -98,10 +133,10 @@ def _guard_ddl() -> tuple[str, ...]:
             """,
         ]
     ddl += [
-        # The answer lookup by card id is on the batch-closing path.
-        "CREATE INDEX IF NOT EXISTS ix_mandate_plan_events_batch_member "
-        "ON review.mandate_plan_events (batch_member_id) "
-        "WHERE batch_member_id IS NOT NULL",
+        # The answer lookup by the verified link is on the batch-closing path.
+        "CREATE INDEX IF NOT EXISTS ix_mandate_plan_events_answered_member "
+        "ON review.mandate_plan_events (answered_batch_member_id) "
+        "WHERE answered_batch_member_id IS NOT NULL",
         # --- batches (I22) ---------------------------------------------------
         """
         CREATE OR REPLACE FUNCTION review.mandate_plan_batches_guard()
@@ -113,6 +148,9 @@ def _guard_ddl() -> tuple[str, ...]:
             END IF;
             PERFORM pg_advisory_xact_lock(hashtextextended(
                 'mandate_basket:' || NEW.realm || ':' || NEW.basket_key, 0));
+            -- the creating transaction, forced here whatever the writer supplied: card 1
+            -- joins a batch only from this same transaction (top-level id, savepoint-safe)
+            NEW.created_xact_id := pg_current_xact_id()::text::bigint;
             IF EXISTS (
                 SELECT 1
                   FROM review.mandate_plan_batches b
@@ -159,7 +197,7 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'mandate batch cards need READ COMMITTED'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            SELECT realm, basket_key, market, expires_at, created_at INTO b
+            SELECT realm, basket_key, market, expires_at, created_xact_id INTO b
               FROM review.mandate_plan_batches WHERE id = NEW.batch_id;
             IF NOT FOUND THEN
                 RAISE EXCEPTION 'the card names no batch'
@@ -182,7 +220,8 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the plan is not of this batch realm and market'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            SELECT t.content_sha256, t.basket_key, t.account_ref, v.sleeve_id INTO tm
+            SELECT t.content_sha256, t.basket_key, t.account_ref, t.expires_at,
+                   v.sleeve_id INTO tm
               FROM review.mandate_terms t
               JOIN review.strategy_sleeve_versions v ON v.id = t.sleeve_version_id
              WHERE t.id = NEW.terms_id;
@@ -193,6 +232,12 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the card clause is not the plan sleeve clause of this basket'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            -- judged at the write, after the locks: a clause that expired while the writer
+            -- waited cannot be offered (the application reports the plan as skipped)
+            IF tm.expires_at <= clock_timestamp() THEN
+                RAISE EXCEPTION 'the card clause has expired'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             SELECT max(card_no) INTO last_no
               FROM review.mandate_plan_batch_members
              WHERE batch_id = NEW.batch_id AND plan_id = NEW.plan_id;
@@ -201,7 +246,8 @@ def _guard_ddl() -> tuple[str, ...]:
                     RAISE EXCEPTION 'the first card of a plan is card 1'
                         USING ERRCODE = 'restrict_violation';
                 END IF;
-                IF b.created_at IS DISTINCT FROM transaction_timestamp() THEN
+                IF b.created_xact_id
+                   IS DISTINCT FROM pg_current_xact_id()::text::bigint THEN
                     RAISE EXCEPTION 'a plan joins a batch only in the batch own transaction'
                         USING ERRCODE = 'restrict_violation';
                 END IF;
@@ -216,17 +262,9 @@ def _guard_ddl() -> tuple[str, ...]:
                            SELECT 1
                              FROM review.mandate_plan_batch_members m
                             WHERE m.batch_id = o.id AND m.card_no = 1
-                              AND NOT EXISTS (
-                                  SELECT 1
-                                    FROM review.mandate_plan_batch_members x
-                                    JOIN review.mandate_plan_events e
-                                      ON e.batch_member_id = x.id
-                                     AND e.plan_id = x.plan_id
-                                     AND e.created_at >= x.created_at
-                                     AND e.event IN ('approved', 'rejected', 'terms_rebound', 'retired')
-                                   WHERE x.batch_id = m.batch_id
-                                     AND x.plan_id = m.plan_id
-                              )
+                              AND NOT """
+        + _ANSWERED.format(batch="m.batch_id", plan="m.plan_id")
+        + """
                        )
                 ) THEN
                     RAISE EXCEPTION 'the basket has an open batch; a plan joins only one open batch'
@@ -297,23 +335,17 @@ def _guard_ddl() -> tuple[str, ...]:
         RETURNS trigger AS $$
         DECLARE
             floor_day date;
-            floor_member bigint;
-            floor_created timestamptz;
+            floor_link bigint;
         BEGIN
-            SELECT e.effective_session, e.batch_member_id, e.created_at
-              INTO floor_day, floor_member, floor_created
+            SELECT e.effective_session, e.answered_batch_member_id
+              INTO floor_day, floor_link
               FROM review.mandate_plan_events e
              WHERE e.plan_id = NEW.plan_id
                AND e.event IN ('approved', 'terms_rebound')
              ORDER BY e.seq DESC LIMIT 1;
-            -- a card id on a persisted event proves nothing by itself (an earlier schema
-            -- allowed a placeholder): it counts only when the card row belongs to this plan
-            IF floor_member IS NOT NULL AND floor_day IS NOT NULL
-               AND EXISTS (
-                   SELECT 1 FROM review.mandate_plan_batch_members m
-                    WHERE m.id = floor_member AND m.plan_id = NEW.plan_id
-                      AND floor_created >= m.created_at
-               )
+            -- only the verified link counts: a card id a T1 writer stored, and any
+            -- timestamp, prove nothing; an approval without the link keeps the old rules
+            IF floor_link IS NOT NULL AND floor_day IS NOT NULL
                AND NEW.effective_session < floor_day THEN
                 RAISE EXCEPTION 'a resume cannot take effect before the approval it follows'
                     USING ERRCODE = 'restrict_violation';
@@ -342,6 +374,15 @@ def _guard_ddl() -> tuple[str, ...]:
         BEGIN
             IF current_setting('transaction_isolation') <> 'read committed' THEN
                 RAISE EXCEPTION 'mandate batch answers need READ COMMITTED'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            -- the verified link is this trigger's output: no writer can name it
+            IF NEW.answered_batch_member_id IS NOT NULL THEN
+                RAISE EXCEPTION 'the answer link is set by the answer check, never by a writer'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            IF NEW.batch_member_id IS NULL THEN
+                RAISE EXCEPTION 'an answer names its card'
                     USING ERRCODE = 'restrict_violation';
             END IF;
             SELECT m.batch_id, m.plan_id, m.card_no, m.kind, m.terms_id,
@@ -437,20 +478,21 @@ def _guard_ddl() -> tuple[str, ...]:
                 RAISE EXCEPTION 'the batch has expired'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            -- stamped from the wall clock: a genuine answer sorts after its card
-            NEW.created_at := clock_timestamp();
+            -- every card check passed in this INSERT: record the verified link
+            NEW.answered_batch_member_id := NEW.batch_member_id;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
         """,
         "DROP TRIGGER IF EXISTS trg_mandate_plan_events_batch_guard "
         "ON review.mandate_plan_events",
-        # No function call in WHEN (#789 Stage 4: an event without a card id never
-        # runs trigger code).
+        # No function call in WHEN (#789 Stage 4: an event without a card id or a link
+        # never runs trigger code).
         """
         CREATE TRIGGER trg_mandate_plan_events_batch_guard
         BEFORE INSERT ON review.mandate_plan_events
-        FOR EACH ROW WHEN (NEW.batch_member_id IS NOT NULL)
+        FOR EACH ROW WHEN (NEW.batch_member_id IS NOT NULL
+                           OR NEW.answered_batch_member_id IS NOT NULL)
         EXECUTE FUNCTION review.mandate_plan_events_batch_guard()
         """,
     ]
@@ -470,7 +512,7 @@ DOWNGRADE_GUARD = """
            OR EXISTS (SELECT 1 FROM review.mandate_plan_batch_members)
            OR EXISTS (
                SELECT 1 FROM review.mandate_plan_events
-                WHERE batch_member_id IS NOT NULL
+                WHERE answered_batch_member_id IS NOT NULL
            ) THEN
             RAISE EXCEPTION 'mandate batch tables hold rows; in-place downgrade is unavailable once a batch is recorded (the history is kept)'
                 USING ERRCODE = 'restrict_violation';
@@ -514,6 +556,8 @@ def _create_tables() -> None:
         sa.Column("expires_at", postgresql.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("created_by", sa.Text(), nullable=False),
         _ts(),
+        # forced by the insert trigger (NOT NULL is checked after BEFORE triggers)
+        sa.Column("created_xact_id", sa.BigInteger(), nullable=False),
         _ck("mandate_plan_batches", "realm", "realm IN ('live','mock')"),
         _ck(
             "mandate_plan_batches",
@@ -609,7 +653,7 @@ def _create_tables() -> None:
 
 def upgrade() -> None:
     _create_tables()
-    for statement in GUARD_DDL:
+    for statement in (*COLUMN_DDL, *GUARD_DDL):
         op.execute(statement)
     grants = "".join(
         [
@@ -641,7 +685,11 @@ def downgrade() -> None:
         "DROP TRIGGER IF EXISTS trg_mandate_plan_events_batch_guard "
         "ON review.mandate_plan_events"
     )
-    op.execute("DROP INDEX IF EXISTS review.ix_mandate_plan_events_batch_member")
+    op.execute("DROP INDEX IF EXISTS review.ix_mandate_plan_events_answered_member")
+    op.execute(
+        "ALTER TABLE review.mandate_plan_events "
+        "DROP COLUMN IF EXISTS answered_batch_member_id"
+    )
     op.drop_index(
         "ix_mandate_plan_batch_members_plan",
         table_name="mandate_plan_batch_members",

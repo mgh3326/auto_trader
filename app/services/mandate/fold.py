@@ -11,9 +11,9 @@ Pure: standard library plus ``vocabulary``. No database, no clock.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -55,10 +55,11 @@ class PlanEvent:
     first_fill_amount: Decimal | None = None
     first_fill_quantity: Decimal | None = None
     activation_profile_id: int | None = None
-    #: the morning-batch card an approval/rebind answers (None for a non-batch approval)
+    #: the card id a writer names as its input (T1 free value; proves nothing alone)
     batch_member_id: int | None = None
-    #: when the row was written (None for events built in memory)
-    created_at: datetime | None = None
+    #: the card this event verifiably answered: set by the database in the INSERT that
+    #: passed every card check, NULL on all earlier rows and on events built in memory
+    answered_batch_member_id: int | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     actor: str = ""
 
@@ -525,22 +526,16 @@ def _trade_date(event: PlanEvent) -> date | None:
     return None
 
 
-def check_resume_floor(
-    history: Sequence[PlanEvent],
-    candidate: PlanEvent,
-    *,
-    plan_members: Mapping[int, datetime] | None = None,
-) -> None:
+def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> None:
     """Refuse a NEW ``resumed`` event dated before the batch approval it follows (§5.1).
 
     The floor applies only when the plan's latest ``approved``/``terms_rebound`` event
-    answers a morning-batch card of THIS plan: its ``batch_member_id`` is a card issued
-    for the plan (``plan_members``: card id -> created_at) AND the event was written after
-    that card. An id persisted by the earlier schema proves nothing; it predates every
-    card, even one of the same plan that later takes the same id. That approval was recorded
-    for a session after the bell, and a resume must not pull the plan back before it.
-    A non-batch (legacy) approval keeps the behaviour it always had, so an operator can
-    still resume such a plan to any date. A resume may otherwise move its own date around.
+    verifiably answered a morning-batch card: ``answered_batch_member_id`` is set by the
+    database in the INSERT that passed the card checks, so neither a card id a T1 writer
+    stored nor any date comparison is read. That approval was recorded for a session after
+    the bell, and a resume must not pull the plan back before it. A non-batch (legacy or
+    earlier-schema) approval keeps the behaviour it always had, so an operator can still
+    resume such a plan to any date. A resume may otherwise move its own date around.
     This is a write-time check only; ``fold_plan_events`` replays stored rows unchanged.
     """
     if candidate.event != "resumed" or candidate.effective_session is None:
@@ -549,14 +544,7 @@ def check_resume_floor(
         (e for e in reversed(history) if e.event in ("approved", "terms_rebound")),
         None,
     )
-    if binding is None or binding.batch_member_id is None:
-        return
-    card_created = (plan_members or {}).get(binding.batch_member_id)
-    if (
-        card_created is None
-        or binding.created_at is None
-        or binding.created_at < card_created
-    ):
+    if binding is None or binding.answered_batch_member_id is None:
         return
     _require(
         binding.effective_session is None

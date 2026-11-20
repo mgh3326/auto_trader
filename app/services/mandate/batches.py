@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +96,22 @@ def _now(now: datetime) -> datetime:
     if now.tzinfo is None:
         raise ms.MandateError(v.MandateRefusal.INVALID_FIELDS, "now needs a time zone")
     return now.astimezone(UTC)
+
+
+async def database_now(session: AsyncSession) -> datetime:
+    """The database wall clock, the clock the card and answer triggers read."""
+    value = (await session.execute(text("SELECT clock_timestamp()"))).scalar_one()
+    return value.astimezone(UTC)
+
+
+async def _checked_at(session: AsyncSession, now: datetime) -> datetime:
+    """The instant expiry is judged at, read AFTER the basket lock is held.
+
+    A writer that waited for the lock may have been overtaken by the clock: the later of
+    the caller's instant and the database's is used, so a clause or a batch that expired
+    while it waited is never offered or re-sent.
+    """
+    return max(now, await database_now(session))
 
 
 def map_batch_error(exc: DBAPIError) -> ms.MandateError:
@@ -253,25 +269,24 @@ async def latest_card(
 async def answer_event(
     session: AsyncSession, batch_id: int, plan_id: int
 ) -> MandatePlanEvent | None:
-    """The one plan event that answered this plan of this batch, if any."""
+    """The one plan event that answered this plan of this batch, if any.
+
+    An answer is the event whose ``answered_batch_member_id`` names a card of this
+    (batch, plan): the database sets that link only in the INSERT that passed every card
+    check, so no date, id or event-name comparison decides it, and a T1-era ``batch_member_id``
+    placeholder (no link) can never count.
+    """
     return (
         await session.execute(
             select(MandatePlanEvent)
             .join(
                 MandatePlanBatchMember,
-                MandatePlanBatchMember.id == MandatePlanEvent.batch_member_id,
+                MandatePlanBatchMember.id == MandatePlanEvent.answered_batch_member_id,
             )
             .where(
                 MandatePlanBatchMember.batch_id == batch_id,
                 MandatePlanBatchMember.plan_id == plan_id,
-                # a card id on an event counts only for the plan the card belongs to
                 MandatePlanEvent.plan_id == MandatePlanBatchMember.plan_id,
-                # written after the card: an id persisted by the earlier schema predates
-                # every card, even a card of the same plan that later takes that id
-                MandatePlanEvent.created_at >= MandatePlanBatchMember.created_at,
-                MandatePlanEvent.event.in_(
-                    [e for ev in v.BATCH_ANSWER_EVENTS.values() for e in ev]
-                ),
             )
             .limit(1)
         )
@@ -346,8 +361,9 @@ async def create_batch(
             v.MandateRefusal.INVALID_FIELDS, f"unknown realm {realm!r}"
         )
     await acquire_basket_lock(session, realm, basket_key)
+    checked = await _checked_at(session, moment)
     found, skipped = await candidates(
-        session, realm=realm, basket_key=basket_key, now=moment
+        session, realm=realm, basket_key=basket_key, now=checked
     )
     market = await _basket_market(session, realm, basket_key)
     calendar = calendar or rules.ExchangeCalendar()
@@ -355,6 +371,11 @@ async def create_batch(
         window = rules.batch_window(market, moment, calendar)
     except rules.NoSession as exc:
         raise ms.MandateError(v.MandateRefusal.CALENDAR_UNKNOWN, str(exc)) from exc
+    if checked >= window.expires_at:
+        raise ms.MandateError(
+            v.MandateRefusal.BATCH_EXPIRED,
+            "the batch session closed while the basket lock was awaited",
+        )
     batch = MandatePlanBatch(
         realm=realm,
         basket_key=basket_key,
@@ -404,18 +425,28 @@ async def _basket_market(session: AsyncSession, realm: str, basket_key: str) -> 
     return next(iter(markets))
 
 
-async def reissue_cards(
+@dataclass(frozen=True)
+class Reissued:
+    cards: tuple[IssuedCard, ...]
+    #: unanswered plans that got no new card, with the reason (never silently dropped)
+    skipped: tuple[SkippedPlan, ...]
+
+
+async def reissue(
     session: AsyncSession,
     *,
     batch_id: int,
     actor: str,
     now: datetime,
-) -> list[IssuedCard]:
+) -> Reissued:
     """Re-send: the next card, with a new nonce, of every plan still unanswered.
 
-    The snapshot is the card 1 snapshot. A plan whose clause is no longer the
-    live one keeps its old snapshot and its card stays answerable only until the
-    answer is refused for it (the answer path re-checks the live clause); that plan
+    The snapshot is the card 1 snapshot. The expiry of the batch and of each clause is
+    judged after the basket lock, at the later of ``now`` and the database clock: a plan
+    whose clause expired while the writer waited is reported as skipped
+    (``terms_expired``), and the others still get their card. A plan whose clause is no
+    longer the live one keeps its old snapshot and its card stays answerable only until
+    the answer is refused for it (the answer path re-checks the live clause); that plan
     is covered again by the next day's batch.
     """
     who = _operator(actor)
@@ -424,9 +455,11 @@ async def reissue_cards(
     if batch is None:
         raise ms.MandateError(v.MandateRefusal.UNSUPPORTED, f"batch {batch_id} missing")
     await acquire_basket_lock(session, batch.realm, batch.basket_key)
-    if moment >= batch.expires_at:
+    checked = await _checked_at(session, moment)
+    if checked >= batch.expires_at:
         raise ms.MandateError(v.MandateRefusal.BATCH_EXPIRED, "the batch has expired")
     issued: list[IssuedCard] = []
+    skipped: list[SkippedPlan] = []
     for first in await members_of_batch(session, batch_id):
         if await answer_event(session, batch_id, first.plan_id) is not None:
             continue
@@ -435,12 +468,25 @@ async def reissue_cards(
         plan = await ms.get_plan(session, first.plan_id)
         terms = await session.get(MandateTerms, first.terms_id)
         assert plan is not None and terms is not None
-        if terms.expires_at <= moment:
-            continue  # an expired clause cannot be answered; the next batch re-offers it
+        if terms.expires_at <= checked:
+            # an expired clause cannot be answered; the next batch re-offers it
+            skipped.append(SkippedPlan(plan.id, plan.symbol, "terms_expired"))
+            continue
         card = _card(
             batch, plan, first.kind, terms, card_no=last.card_no + 1, actor=who
         )
         session.add(card.member)
         issued.append(card)
     await _flush(session)
-    return issued
+    return Reissued(tuple(issued), tuple(skipped))
+
+
+async def reissue_cards(
+    session: AsyncSession,
+    *,
+    batch_id: int,
+    actor: str,
+    now: datetime,
+) -> list[IssuedCard]:
+    """The cards of ``reissue`` (kept for callers that do not report skips)."""
+    return list((await reissue(session, batch_id=batch_id, actor=actor, now=now)).cards)

@@ -273,19 +273,26 @@ async def test_resend_preview_and_commit(wired, monkeypatch) -> None:
 
     async def reissue(db, *, batch_id, actor, now):
         wired.session.log.append("reissue")
-        return [
-            bt.IssuedCard(
-                SimpleNamespace(
-                    id=200, plan_id=10, card_no=2, kind="new_plan", terms_id=21
+        return bt.Reissued(
+            (
+                bt.IssuedCard(
+                    SimpleNamespace(
+                        id=200, plan_id=10, card_no=2, kind="new_plan", terms_id=21
+                    ),
+                    "C" * 22,
                 ),
-                "C" * 22,
-            )
-        ]
+            ),
+            (bt.SkippedPlan(11, "AAA", "terms_expired"),),
+        )
 
     monkeypatch.setattr(bt, "get_batch", get_batch)
-    monkeypatch.setattr(bt, "reissue_cards", reissue)
+    monkeypatch.setattr(bt, "reissue", reissue)
     code, body = await run(wired, "resend", "--batch-id", "9", *ACTOR)
     assert code == 0 and body["mode"] == "preview" and wired.sent == []
+    # a plan that got no new card is reported with its reason, never dropped silently
+    assert body["skipped"] == [
+        {"plan_id": 11, "symbol": "AAA", "reason": "terms_expired"}
+    ]
     assert wired.session.log == ["reissue", "rollback"]
     wired.session.log.clear()
     code, body = await run(wired, "resend", "--batch-id", "9", *ACTOR, "--commit")
@@ -508,10 +515,10 @@ async def test_resend_with_no_unanswered_card_still_sends_the_summary(
 
     async def reissue(db, *, batch_id, actor, now):
         wired.session.log.append("reissue")
-        return []
+        return bt.Reissued((), ())
 
     monkeypatch.setattr(bt, "get_batch", get_batch)
-    monkeypatch.setattr(bt, "reissue_cards", reissue)
+    monkeypatch.setattr(bt, "reissue", reissue)
     code, body = await run(wired, "resend", "--batch-id", "9", *ACTOR, "--commit")
     assert code == 0
     assert [r["message"] for r in body["sent"]] == ["summary"]

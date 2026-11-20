@@ -163,6 +163,10 @@ def test_every_orm_check_is_in_the_migration_under_the_same_name_and_text() -> N
     assert seen > 40
 
 
+#: columns a later migration adds to a T1 table (hk 5648 T3a: the verified answer link)
+ADDED_LATER = {("mandate_plan_events", "answered_batch_member_id")}
+
+
 def test_orm_and_migration_agree_on_columns_and_unique_constraints() -> None:
     sql = _render("upgrade")
     for table in TABLES:
@@ -170,6 +174,8 @@ def test_orm_and_migration_agree_on_columns_and_unique_constraints() -> None:
         start = sql.index(f"CREATE TABLE review.{table} (")
         block = sql[start : sql.index(";", start)]
         for column in orm.columns:
+            if (table, column.name) in ADDED_LATER:
+                continue
             assert re.search(rf"^\s+{column.name} ", block, re.M), (table, column.name)
             line = next(
                 ln for ln in block.splitlines() if re.match(rf"^\s+{column.name} ", ln)
