@@ -36,6 +36,7 @@ from app.models.review import TossLiveOrderLedger
 from app.services.mandate import loss_guard as mandate_loss_guard
 from app.services.mandate import proposal_gate
 from app.services.mandate import store as mandate_store
+from app.services.mandate import vocabulary as vocab
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
@@ -926,6 +927,14 @@ class OrderProposalsService:
                 account_mode, settings.MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES
             ):
                 raise OrderProposalError("mandate_account_not_enabled")
+            if (
+                vocab.realm_of(account_mode) == "live"
+                and settings.ORDER_PROPOSALS_AUTO_APPROVE
+            ):
+                # hk 3795 §4.6 "배포 순서" (1): until T5 gives every automatic send the
+                # same fence-area protocol, the legacy automatic dispatch must be
+                # stopped for the whole human pilot. A refusal only; nothing is sent.
+                raise OrderProposalError("mandate_auto_dispatch_active")
             if broker_account_id is not None:
                 raise OrderProposalError("mandate_account_mismatch")
             if (

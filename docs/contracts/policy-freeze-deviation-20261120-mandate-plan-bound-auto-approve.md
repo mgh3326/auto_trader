@@ -26,6 +26,9 @@ consumer_paths:
   - app/services/order_proposals/service.py
   - app/services/order_proposals/telegram_callback.py
   - app/services/order_proposals/revalidation.py
+  - app/services/order_proposals/mandate_send.py
+  - app/services/strategy_sleeves/store.py
+  - alembic/versions/20261120_hk5651_mandate_fence.py
 effective_at: >-
   실전 사람 카드 체크리스트 충족 후 실전 위임장 버전 승인과
   MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES 설정에 대한 별도 운영자 결정 이후.

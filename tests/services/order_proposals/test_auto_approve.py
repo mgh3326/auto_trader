@@ -2867,3 +2867,51 @@ async def test_mandate_create_binds_plan_and_appends_events(monkeypatch):
         "tranche_proposed",
     ]
     assert append.await_args.kwargs["proposal_id"] == inserted["proposal_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auto_dispatch", "reaches_the_plan"),
+    [(True, False), (False, True)],
+    ids=["legacy-auto-dispatch-running", "legacy-auto-dispatch-stopped"],
+)
+async def test_t4c_a_live_plan_proposal_needs_the_legacy_auto_dispatch_stopped(
+    monkeypatch, auto_dispatch, reaches_the_plan
+):
+    """§4.6 deployment order (1): the T4c-only human pilot keeps the existing automatic
+    dispatch off, and the code refuses to create the proposal otherwise (refusal only)."""
+    from app.services.mandate import proposal_gate
+    from app.services.order_proposals import service as service_module
+    from app.services.order_proposals.errors import OrderProposalError
+
+    class ReachedThePlan(Exception):
+        pass
+
+    monkeypatch.setattr(
+        service_module.settings, "MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES", "kis_live"
+    )
+    monkeypatch.setattr(
+        service_module.settings, "ORDER_PROPOSALS_AUTO_APPROVE", auto_dispatch
+    )
+    monkeypatch.setattr(
+        proposal_gate, "lock_plan_proposal", AsyncMock(side_effect=ReachedThePlan)
+    )
+    service = OrderProposalsService(AsyncMock())
+
+    kwargs = {
+        "symbol": "005930",
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "side": "buy",
+        "order_type": "limit",
+        "proposer": "test",
+        "rungs": [RungInput(0, "buy", Decimal(1), Decimal(90), None)],
+        "mandate_plan_id": 42,
+        "tranche_index": 1,
+        "now": datetime(2026, 11, 20, 1, tzinfo=UTC),
+    }
+    expected = ReachedThePlan if reaches_the_plan else OrderProposalError
+    with pytest.raises(expected) as caught:
+        await service.create_proposal(**kwargs)
+    if not reaches_the_plan:
+        assert "mandate_auto_dispatch_active" in str(caught.value)

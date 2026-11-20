@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -177,6 +177,9 @@ class SendFence:
     closed: bool = False
     group: Any = None
     request: fence.FenceRequest | None = None
+    now_fn: Callable[[], datetime] = field(
+        default=lambda: datetime.now(UTC), repr=False
+    )
     _inner: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def hook(
@@ -191,9 +194,9 @@ class SendFence:
             if self._inner is not None:
                 await self._inner()
             assert self.request is not None
-            refusal = await self.port.boundary_refusal(
-                self.request, fenced_seq=self.seq
-            )
+            # the freeze and the plan are judged as of the edge, not as of the fence
+            request = replace(self.request, now=self.now_fn())
+            refusal = await self.port.boundary_refusal(request, fenced_seq=self.seq)
             if refusal is not None:
                 self.refused_code = refusal
                 raise PreSendFreshnessError((refusal,))

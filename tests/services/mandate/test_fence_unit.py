@@ -313,3 +313,36 @@ async def test_the_mutex_and_authority_keys_are_stable_and_validated():
     )
     with pytest.raises(ValueError):
         fence_locks.basket_day_mutex_key("nope", "b", day)
+
+
+async def test_the_fence_modules_import_no_order_proposal_or_broker_module():
+    """The decision and writer side (§4.6) stay below the send path: only
+    ``order_proposals/mandate_send.py`` connects them, and it lives on the other side."""
+    from pathlib import Path
+
+    import app.services.mandate as pkg
+
+    root = Path(pkg.__file__).parent
+    for name in (
+        "fence",
+        "fence_rules",
+        "fence_locks",
+        "loss_guard",
+        "account_ref",
+        "buy_freeze",
+    ):
+        tree = ast.parse((root / f"{name}.py").read_text())
+        for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
+            elif isinstance(node, ast.Import):
+                modules.extend(a.name for a in node.names)
+            for module in modules:
+                assert not module.startswith(
+                    (
+                        "app.services.order_proposals",
+                        "app.services.brokers",
+                        "app.mcp_server",
+                    )
+                ), (name, module)

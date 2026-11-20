@@ -245,9 +245,13 @@ tests/services/kis_mock_runner/test_control.py
 tests/services/kis_mock_runner/test_correlation.py
 tests/services/kis_websocket/test_protocol.py
 tests/services/mandate/test_cli.py
+tests/services/mandate/test_fence_migration_shape.py
+tests/services/mandate/test_fence_rules.py
+tests/services/mandate/test_fence_unit.py
 tests/services/mandate/test_fold.py
 tests/services/mandate/test_hashing.py
 tests/services/mandate/test_invariants.py
+tests/services/mandate/test_loss_guard_unit.py
 tests/services/mandate/test_migration_shape.py
 tests/services/mandate/test_projection_cli.py
 tests/services/mandate/test_projection_rules.py
@@ -290,6 +294,7 @@ tests/services/order_proposals/test_cash_funding_service.py
 tests/services/order_proposals/test_defensive_ttl.py
 tests/services/order_proposals/test_dispatch.py
 tests/services/order_proposals/test_loss_cut_approval_migration.py
+tests/services/order_proposals/test_mandate_send_boundary.py
 tests/services/order_proposals/test_no_repository_imports.py
 tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_rob1284_sweep_seams.py
