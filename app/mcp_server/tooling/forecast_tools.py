@@ -15,6 +15,10 @@ from app.services.decision_evidence import (
     DecisionEvidence,
     DecisionEvidenceService,
     DecisionRung,
+    DeclinedEntry,
+    DeclinedEntryError,
+    ReferencePrice,
+    parse_declined_entry,
 )
 from app.services.invalid_sample_eligibility.cohort import (
     COMPATIBILITY_CALIBRATION_COHORT,
@@ -63,10 +67,30 @@ async def forecast_save(
     report_item_uuid: str | None = None,
     correlation_id: str | None = None,
     decision_bucket: str | None = None,
+    declined_limit_price: str | float | int | None = None,
+    declined_quantity: str | float | int | None = None,
+    declined_notional: str | float | int | None = None,
+    declined_quote_price: str | float | int | None = None,
+    declined_quote_asof: str | None = None,
+    declined_account_mode: str | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
         return {"success": False, "error": "symbol is required"}
+    # The would-be entry is validated before any forecast row is flushed.
+    try:
+        declined_entry = parse_declined_entry(
+            instrument_type=instrument_type,
+            bucket=decision_bucket,
+            limit_price=declined_limit_price,
+            quantity=declined_quantity,
+            notional=declined_notional,
+            quote_price=declined_quote_price,
+            quote_asof=declined_quote_asof,
+            account_mode=declined_account_mode,
+        )
+    except DeclinedEntryError as exc:
+        return {"success": False, "error": exc.code, "error_code": exc.code}
     try:
         async with _session_factory()() as db:
             action, row = await save_forecast(
@@ -95,29 +119,27 @@ async def forecast_save(
                 correlation_id=correlation_id,
                 decision_bucket=decision_bucket,
             )
-            if (
+            records_declined = (
                 action == "created"
                 and row.decision_bucket == "deferred_no_action"
                 and instrument_type in {"equity_kr", "equity_us", "crypto"}
-            ):
-                await DecisionEvidenceService(db).record(
-                    DecisionEvidence(
-                        decision_kind="declined",
-                        decided_by=created_by.strip(),
-                        market=cast(Any, instrument_type),
-                        symbol=row.symbol,
-                        decided_at=datetime.now(UTC),
-                        side="buy",
-                        forecast_ids=(row.forecast_id,),
-                        report_item_uuid=(
-                            UUID(str(row.report_item_uuid))
-                            if row.report_item_uuid is not None
-                            else None
-                        ),
-                        policy_version=row.policy_version,
-                    ),
-                    [DecisionRung(rung_index=0, side="buy")],
-                    [],
+            )
+            if declined_entry is not None and not records_declined:
+                # Nothing is committed yet, so this discards the flushed row
+                # (or the update) and leaves zero forecast and evidence rows.
+                await db.rollback()
+                return {
+                    "success": False,
+                    "error": "declined_not_created",
+                    "error_code": "declined_not_created",
+                }
+            if records_declined:
+                await _record_declined_evidence(
+                    db,
+                    row,
+                    created_by=created_by,
+                    instrument_type=instrument_type,
+                    entry=declined_entry,
                 )
             await db.commit()
             await db.refresh(row)
@@ -133,6 +155,81 @@ async def forecast_save(
     except Exception as exc:  # noqa: BLE001
         logger.exception("forecast_save failed")
         return {"success": False, "error": f"forecast_save failed: {exc}"}
+
+
+def _declined_evidence(
+    row: Any,
+    *,
+    created_by: str,
+    instrument_type: str,
+    decided_at: datetime,
+    account_mode: Any,
+) -> DecisionEvidence:
+    return DecisionEvidence(
+        decision_kind="declined",
+        decided_by=created_by.strip(),
+        market=cast(Any, instrument_type),
+        symbol=row.symbol,
+        decided_at=decided_at,
+        account_mode=account_mode,
+        side="buy",
+        forecast_ids=(row.forecast_id,),
+        report_item_uuid=(
+            UUID(str(row.report_item_uuid))
+            if row.report_item_uuid is not None
+            else None
+        ),
+        policy_version=row.policy_version,
+    )
+
+
+async def _record_declined_evidence(
+    db: AsyncSession,
+    row: Any,
+    *,
+    created_by: str,
+    instrument_type: str,
+    entry: DeclinedEntry | None,
+    decided_at: datetime | None = None,
+) -> None:
+    now = decided_at or datetime.now(UTC)
+    if entry is None:
+        evidence = _declined_evidence(
+            row,
+            created_by=created_by,
+            instrument_type=instrument_type,
+            decided_at=now,
+            account_mode=None,
+        )
+        rungs = [DecisionRung(rung_index=0, side="buy")]
+        prices: list[ReferencePrice] = []
+    else:
+        evidence = _declined_evidence(
+            row,
+            created_by=created_by,
+            instrument_type=instrument_type,
+            decided_at=now,
+            account_mode=entry.account_mode,
+        )
+        rungs = [
+            DecisionRung(
+                rung_index=0,
+                side="buy",
+                planned_quantity=entry.quantity,
+                planned_notional=entry.notional,
+                limit_price=entry.limit_price,
+            )
+        ]
+        prices = [ReferencePrice(kind="limit", price=entry.limit_price, rung_index=0)]
+        if entry.quote_price is not None:
+            prices.append(
+                ReferencePrice(
+                    kind="quote_at_decision",
+                    price=entry.quote_price,
+                    asof=entry.quote_asof,
+                )
+            )
+    await DecisionEvidenceService(db).record(evidence, rungs, prices)
 
 
 async def forecast_resolve(

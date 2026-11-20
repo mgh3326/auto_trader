@@ -4,7 +4,7 @@ from decimal import Decimal
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -512,4 +512,122 @@ async def test_explicit_candidate_is_honoured_for_sell(monkeypatch):
     assert any(
         price.kind == "candidate_price" and price.price == Decimal("5")
         for price in prices
+    )
+
+
+# --------------------------------------------------------------------------- #
+# hk 5719 — would-be entry on a declined decision (parse before any write)
+# --------------------------------------------------------------------------- #
+from app.services.decision_evidence import (  # noqa: E402
+    DeclinedEntry,
+    DeclinedEntryError,
+    parse_declined_entry,
+)
+
+_DECLINED_OK = {
+    "instrument_type": "equity_kr",
+    "bucket": "deferred_no_action",
+    "limit_price": "70000",
+    "quantity": "3",
+    "account_mode": "kis_live",
+}
+
+
+def _parse(**overrides):
+    return parse_declined_entry(**{**_DECLINED_OK, **overrides})
+
+
+def test_no_declined_input_keeps_legacy_path():
+    assert (
+        parse_declined_entry(
+            instrument_type="equity_kr",
+            bucket="deferred_no_action",
+        )
+        is None
+    )
+
+
+def test_complete_would_be_entry_parses_to_exact_decimals():
+    entry = _parse(
+        quote_price=69500.5,
+        quote_asof="2026-11-20T09:00:00+09:00",
+    )
+    assert entry == DeclinedEntry(
+        limit_price=Decimal("70000"),
+        quantity=Decimal("3"),
+        quote_price=Decimal("69500.5"),
+        quote_asof=datetime(2026, 11, 20, 9, tzinfo=timezone(timedelta(hours=9))),
+        account_mode="kis_live",
+    )
+    assert isinstance(entry.limit_price, Decimal)
+
+
+def test_notional_sizing_and_bucket_whitespace_are_accepted():
+    entry = _parse(quantity=None, notional=" 210000 ", bucket=" deferred_no_action ")
+    assert entry.notional == Decimal("210000") and entry.quantity is None
+
+
+@pytest.mark.parametrize(
+    "overrides,code",
+    [
+        ({"bucket": "new_buy_candidate"}, "declined_bucket_required"),
+        ({"bucket": None}, "declined_bucket_required"),
+        ({"instrument_type": "forex"}, "declined_market_unsupported"),
+        ({"limit_price": None}, "declined_limit_price_required"),
+        ({"quantity": None}, "declined_size_required"),
+        ({"notional": "1"}, "declined_size_ambiguous"),
+        ({"quote_price": "69000"}, "declined_quote_incomplete"),
+        ({"quote_asof": "2026-11-20T09:00:00+09:00"}, "declined_quote_incomplete"),
+        ({"quantity": "0"}, "declined_value_invalid"),
+        ({"quantity": "-1"}, "declined_value_invalid"),
+        ({"limit_price": "NaN"}, "declined_value_invalid"),
+        ({"limit_price": float("inf")}, "declined_value_invalid"),
+        ({"limit_price": True}, "declined_value_invalid"),
+        ({"limit_price": "abc"}, "declined_value_invalid"),
+        ({"limit_price": "1e30"}, "declined_value_invalid"),
+        ({"limit_price": "1.0000000000001"}, "declined_value_invalid"),
+        ({"limit_price": ["70000"]}, "declined_value_invalid"),
+        ({"account_mode": "binance"}, "declined_account_mode_invalid"),
+        ({"account_mode": 3}, "declined_account_mode_invalid"),
+        ({"account_mode": "upbit"}, "declined_account_mode_invalid"),
+        (
+            {
+                "instrument_type": "crypto",
+                "account_mode": "kis_live",
+                "limit_price": "100",
+            },
+            "declined_account_mode_invalid",
+        ),
+    ],
+)
+def test_each_invalid_shape_returns_a_closed_code(overrides, code):
+    with pytest.raises(DeclinedEntryError) as raised:
+        _parse(**overrides)
+    assert raised.value.code == code
+    assert str(raised.value) == code
+
+
+def test_naive_quote_asof_is_rejected():
+    with pytest.raises(DeclinedEntryError) as raised:
+        _parse(quote_price="69000", quote_asof="2026-11-20T09:00:00")
+    assert raised.value.code == "declined_value_invalid"
+
+
+def test_declined_evidence_hash_is_unchanged_by_new_inputs():
+    # The evidence hash covers DecisionEvidence only. Rung and reference-price
+    # inputs live outside it, so the legacy hash must stay pinned.
+    evidence = DecisionEvidence(
+        decision_kind="declined",
+        decided_by="session",
+        market="equity_kr",
+        symbol="005930",
+        decided_at=datetime(2026, 11, 20, 1, 0, tzinfo=UTC),
+        side="buy",
+        forecast_ids=(UUID(int=1),),
+        report_item_uuid=None,
+        policy_version="v1",
+    )
+    assert (
+        evidence_hash(evidence)
+        == "ee5f44d3aed074413d32e01788c25d974856a6992ede9ad76f4ee702fcaf7afb"
     )
