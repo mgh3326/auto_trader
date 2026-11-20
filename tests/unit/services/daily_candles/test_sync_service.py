@@ -181,6 +181,72 @@ async def test_crypto_universe_uses_canonical_upbit_partition() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("holdings_failed", [False, True])
+async def test_default_crypto_sync_adds_only_held_krw_markets(
+    monkeypatch, holdings_failed
+):
+    from app.core import db
+    from app.services.brokers.kis import client as kis
+    from app.services.brokers.upbit import client as upbit
+    from app.services.daily_candles.sync_service import _build_default_service
+
+    session = AsyncMock()
+    session.execute.return_value = [SimpleNamespace(market="KRW-BTC")]
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(kis, "KISClient", lambda: SimpleNamespace(close=AsyncMock()))
+    accounts = AsyncMock(
+        return_value=[
+            {"currency": "KRW", "balance": "100", "locked": "0"},
+            {"currency": "BTC", "balance": "1", "locked": "0"},
+            {"currency": "PCI", "balance": "0", "locked": "1"},
+            {"currency": "SPACE", "balance": "1", "locked": "0"},
+            {"currency": "XYM", "balance": "2", "locked": "0"},
+            {"currency": "ETH", "balance": "0", "locked": "0"},
+            {"currency": "NONKRW", "balance": "1", "locked": "0"},
+            {"currency": "BAD", "balance": "NaN", "locked": "0"},
+        ],
+        side_effect=TimeoutError if holdings_failed else None,
+    )
+    market_codes = AsyncMock(
+        return_value=[
+            "KRW-BTC",
+            "KRW-PCI",
+            "KRW-SPACE",
+            "KRW-XYM",
+            "KRW-ETH",
+            "KRW-BAD",
+            "USDT-NONKRW",
+        ],
+    )
+    fetch_candles = AsyncMock(return_value=pd.DataFrame())
+    monkeypatch.setattr(upbit, "fetch_my_coins", accounts)
+    monkeypatch.setattr(upbit, "fetch_all_market_codes", market_codes)
+    monkeypatch.setattr(upbit, "fetch_ohlcv", fetch_candles)
+    service = await _build_default_service()
+    try:
+        await service.sync_market_universe(market="crypto", horizon_bars=1)
+    finally:
+        await service.close()
+
+    accounts.assert_awaited_once()
+    expected = (
+        ["KRW-BTC"]
+        if holdings_failed
+        else [
+            "KRW-BTC",
+            "KRW-PCI",
+            "KRW-SPACE",
+            "KRW-XYM",
+        ]
+    )
+    assert [call.kwargs["market"] for call in fetch_candles.await_args_list] == expected
+    seeded = session.execute.await_args_list[1].args[1]
+    assert [target["venue_symbol"] for target in seeded] == expected
+    if holdings_failed:
+        market_codes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_crypto_sync_rejects_partition_that_disagrees_with_symbol() -> None:
     repo = MagicMock()
     repo.session = MagicMock()
