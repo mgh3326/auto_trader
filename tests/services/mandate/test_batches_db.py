@@ -1340,11 +1340,12 @@ async def test_i22_an_answer_whose_transaction_began_before_the_close_is_refused
     ]
 
 
-async def test_i22_an_answer_straddling_the_opening_deadline_keeps_the_session_it_was_decided_for(
+async def test_i22_an_answer_straddling_the_opening_deadline_takes_the_next_session(
     db_session, seed, monkeypatch
 ) -> None:
-    """The decision instant is read once (before the deadline) and handed to the trigger:
-    the INSERT lands after the opening bell and is neither refused nor re-classified."""
+    """Decided just before the opening bell, written just after it: the trigger judges
+    the write on its own clock, so the approval is recorded for the session after the
+    target (§5.1) instead of being refused or landing on the target session."""
     sym = new_symbol()
     sleeve, terms = await seed.clause_sleeve(symbols=(sym,), account_mode="kiwoom_mock")
     plan = await register(seed, sleeve, terms, sym)
@@ -1362,7 +1363,8 @@ async def test_i22_an_answer_straddling_the_opening_deadline_keeps_the_session_i
     real_append = ms.append_plan_event
 
     async def slow_append(session, **kwargs):
-        # the application side is done deciding; the write reaches the trigger late
+        # decided before the deadline (effective = target); the write lands after it
+        assert kwargs["effective_session"] == sc.target
         await asyncio.sleep(
             max(0.0, (sc.deadline - datetime.now(UTC)).total_seconds()) + 0.5
         )
@@ -1381,20 +1383,35 @@ async def test_i22_an_answer_straddling_the_opening_deadline_keeps_the_session_i
             {"p": plan.id},
         )
     ).scalar_one()
-    assert effective == sc.target  # decided before the deadline
+    assert effective == sc.target + timedelta(days=1)
 
 
-async def test_the_decision_instant_must_be_current(db_session, seed) -> None:
-    """A writer cannot backdate ``mandate.decided_at`` to get the target session late."""
+async def test_a_writer_supplied_time_cannot_pull_a_late_approval_onto_the_target_session(
+    db_session, seed
+) -> None:
+    """A fresh transaction after the deadline that supplies a recent pre-open timestamp
+    (the old ``mandate.decided_at`` idea) or a next session that is not after the target
+    still cannot persist a target-session approval."""
     sc = await scene(db_session, seed, when="after")  # the deadline passed an hour ago
     plan = sc.plans[0]
     card = sc.cards[plan.id]
-    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    pre_open = (sc.deadline - timedelta(seconds=1)).isoformat()
     async with AsyncSessionLocal() as session:
         await session.execute(
-            sa.text("SELECT set_config('mandate.decided_at', :at, true)"), {"at": old}
+            sa.text("SELECT set_config('mandate.decided_at', :at, true)"),
+            {"at": pre_open},
         )
         message = await _try(
             session, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id
         )
-    assert message is not None and "the decision instant is not current" in message
+    assert message is not None and "takes effect after the target session" in message
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            sa.text("SELECT set_config('mandate.next_session', :d, true)"),
+            {"d": sc.target.isoformat()},
+        )
+        message = await _try(
+            session, ANSWER, p=plan.id, t=sc.terms.id, e=sc.target, m=card.id
+        )
+    assert message is not None and "takes effect after the target session" in message
+    assert await events_of(db_session, plan.id) == ["proposed"]

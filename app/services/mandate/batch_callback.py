@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -190,12 +190,12 @@ async def answer(
     """Check 4 and the write. Commits on success, rolls back on every refusal.
 
     The decision instant is read once, from the database clock, after the basket and
-    sleeve locks are held. Expiry, the approval deadline and the effective session are
-    all judged at that instant, and it is handed to the answer trigger
-    (``mandate.decided_at``, transaction-local), which accepts it only within seconds of
-    its own clock: a valid click that straddles the opening bell is neither refused nor
-    given the wrong session, and a request that waited on a lock cannot answer after
-    the batch closed (the trigger checks expiry against its own wall clock at insert).
+    sleeve locks are held; refusals and the effective session are judged at it. The
+    answer trigger judges expiry and the approval deadline again with its own wall clock
+    at the write and trusts no time from the writer. For an approval the callback also
+    passes the session after the target (``mandate.next_session``, a date,
+    transaction-local): a valid click decided just before the opening bell whose write
+    lands just after it is then recorded for that next session instead of refused.
     """
     member = await bt.get_member(session, auth.parsed.member_id)
     if member is None:
@@ -231,6 +231,7 @@ async def answer(
         "terms_sha256": member.terms_sha256,
     }
     evidence: dict[str, Any] = {}
+    next_session: date | None = None
     if approve:
         window = rules.BatchWindow(
             batch.target_session, batch.approval_deadline_at, batch.expires_at
@@ -244,6 +245,14 @@ async def answer(
             await session.rollback()
             return Outcome(False, v.MandateRefusal.BATCH_EXPIRED.value)
         fields["effective_session"] = effective
+        try:
+            next_session = rules.next_session(
+                batch.market, batch.target_session, calendar
+            )
+        except rules.NoSession:
+            next_session = (
+                None  # a write that straddles the bell is then refused, retried
+            )
     else:
         evidence["reason_code"] = (
             "reapproval_rejected" if member.kind == "reapproval" else "batch_rejected"
@@ -252,10 +261,11 @@ async def answer(
             evidence["open_order_count"] = await bt.open_order_count(session, plan.id)
     facts = await _card_facts(session, batch, plan, member, terms)
     try:
-        await session.execute(
-            text("SELECT set_config('mandate.decided_at', :at, true)"),
-            {"at": moment.isoformat()},
-        )
+        if approve and next_session is not None:
+            await session.execute(
+                text("SELECT set_config('mandate.next_session', :day, true)"),
+                {"day": next_session.isoformat()},
+            )
         await ms.append_plan_event(
             session,
             plan_id=plan.id,

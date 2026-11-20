@@ -268,7 +268,7 @@ def _guard_ddl() -> tuple[str, ...]:
         DECLARE
             mem record;
             cur_terms bigint;
-            decided timestamptz;
+            next_day date;
         BEGIN
             IF current_setting('transaction_isolation') <> 'read committed' THEN
                 RAISE EXCEPTION 'mandate batch answers need READ COMMITTED'
@@ -296,19 +296,6 @@ def _guard_ddl() -> tuple[str, ...]:
                 'mandate_batch_member:' || mem.batch_id || ':' || mem.plan_id, 0));
             IF clock_timestamp() >= mem.expires_at THEN
                 RAISE EXCEPTION 'the batch has expired'
-                    USING ERRCODE = 'restrict_violation';
-            END IF;
-            -- The decision instant: the application reads the database clock once,
-            -- after the locks, picks the effective session at that instant and passes
-            -- it here (transaction-local). It is accepted only within seconds of this
-            -- trigger's own clock, so a click that straddles the opening bell keeps the
-            -- session it was decided for; without it the wall clock is the instant.
-            decided := nullif(current_setting('mandate.decided_at', true), '')::timestamptz;
-            IF decided IS NULL THEN
-                decided := clock_timestamp();
-            ELSIF decided > clock_timestamp() + interval '1 second'
-               OR clock_timestamp() - decided > interval '5 seconds' THEN
-                RAISE EXCEPTION 'the decision instant is not current'
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF EXISTS (
@@ -349,14 +336,25 @@ def _guard_ddl() -> tuple[str, ...]:
                     USING ERRCODE = 'restrict_violation';
             END IF;
             IF NEW.event IN ('approved', 'terms_rebound') THEN
-                IF decided < mem.approval_deadline_at THEN
+                -- The effective session follows this trigger's own wall clock at the
+                -- write; no time supplied by the writer is trusted. A click decided just
+                -- before the opening bell whose write lands just after it takes the
+                -- session after the target: the application passes that date as
+                -- mandate.next_session (a date, never a time; the worst a writer gains
+                -- by lying is a later session, not an earlier one).
+                IF clock_timestamp() < mem.approval_deadline_at THEN
                     IF NEW.effective_session <> mem.target_session THEN
                         RAISE EXCEPTION 'before the deadline an approval takes effect on the target session'
                             USING ERRCODE = 'restrict_violation';
                     END IF;
                 ELSIF NEW.effective_session <= mem.target_session THEN
-                    RAISE EXCEPTION 'after the deadline an approval takes effect after the target session'
-                        USING ERRCODE = 'restrict_violation';
+                    next_day := nullif(current_setting('mandate.next_session', true), '')::date;
+                    IF next_day IS NOT NULL AND next_day > mem.target_session THEN
+                        NEW.effective_session := next_day;
+                    ELSE
+                        RAISE EXCEPTION 'after the deadline an approval takes effect after the target session'
+                            USING ERRCODE = 'restrict_violation';
+                    END IF;
                 END IF;
             END IF;
             RETURN NEW;

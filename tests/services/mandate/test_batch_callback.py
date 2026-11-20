@@ -859,11 +859,12 @@ def test_every_answer_with_a_card_id_passes_the_writers_own_checks_and_the_fold(
 
 # -------------------------------------- the decision instant (review round 2)
 @pytest.mark.asyncio
-async def test_the_decision_instant_is_read_after_the_locks_and_handed_to_the_trigger(
+async def test_the_decision_instant_is_read_after_the_locks_and_the_next_session_goes_to_the_trigger(
     world,
 ) -> None:
-    """One instant, read once after the basket and sleeve locks: refusal checks, the
-    effective session and the trigger's ``mandate.decided_at`` all use it."""
+    """One instant read after the basket and sleeve locks drives the refusal checks and
+    the effective session; an approval also hands the trigger the session after the
+    target (a date, never a time)."""
     decided = BEFORE_OPEN  # before the 09:00 deadline: effective on the target session
 
     async def clock(session):
@@ -882,9 +883,22 @@ async def test_the_decision_instant_is_read_after_the_locks_and_handed_to_the_tr
     assert world.rec.moments == [decided]
     assert world.rec.events[0]["effective_session"] == date(2026, 11, 23)
     (sql, params) = world.rec.statements[0]
-    assert "set_config('mandate.decided_at'" in sql and "true)" in sql
-    assert params == {"at": decided.isoformat()}
+    assert "set_config('mandate.next_session'" in sql and "true)" in sql
+    assert params == {"day": "2026-11-24"}
     assert order.index("append") > order.index("statement")  # set before the insert
+    assert all("decided_at" not in stmt for stmt, _ in world.rec.statements)
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_hands_the_trigger_no_session_setting(world) -> None:
+    """Rejections have no effective session: no setting, no freshness window to miss."""
+    out = await cb.answer(
+        world.session,
+        auth_for("reject"),
+        calendar=FixedCalendar(),
+        decision_clock=at(AFTER_OPEN + timedelta(minutes=30)),
+    )
+    assert out.handled and world.rec.statements == []
 
 
 @pytest.mark.asyncio
