@@ -85,7 +85,6 @@ tests/routers/test_invest_protected_positions.py
 tests/routers/test_investment_reports_snapshot_evidence_router.py
 tests/routers/test_investment_symbol_reports_http.py
 tests/routers/test_news_relevance_ingest.py
-tests/routers/test_ops_task_kick.py
 tests/routers/test_pagination.py
 tests/routers/test_portfolio_actions.py
 tests/routers/test_research_retrospective_router.py
