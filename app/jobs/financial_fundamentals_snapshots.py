@@ -23,6 +23,18 @@ from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsUpsert,
 )
 from app.services.snapshot_commit_guard import PartialCommitBlocked
+from app.services.snapshot_fill_rate import FillRateTally
+
+# Key fields for the dry-run fill-rate line (hk 5752).
+FUNDAMENTALS_FILL_RATE_FIELDS: tuple[str, ...] = (
+    "revenue",
+    "net_income",
+    "gross_profit",
+    "roe",
+    "payout_ratio",
+    "filing_date",
+    "currency",
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +81,10 @@ class FinancialFundamentalsSnapshotBuildResult:
     samples: tuple[FinancialFundamentalsSnapshotSample, ...] = ()
     warnings: tuple[str, ...] = ()
     projected_requests: int | None = None
+    fill_rate: dict = field(default_factory=dict)
+    # True when a commit was requested but the DART daily budget stopped the build
+    # before it wrote anything. The CLI reports this as a failure (hk 5752 r1).
+    commit_suppressed: bool = False
 
 
 _KR_DART_SYMBOL_RE = re.compile(r"^\d{6}$")
@@ -329,6 +345,8 @@ async def run_financial_fundamentals_snapshot_build(
         warnings = exc.warnings
         should_commit = False
 
+    tally = FillRateTally(FUNDAMENTALS_FILL_RATE_FIELDS)
+    tally.add(payloads)
     idempotency = (
         await _classify_idempotency(payloads)
         if payloads
@@ -354,4 +372,6 @@ async def run_financial_fundamentals_snapshot_build(
         idempotency=idempotency,
         samples=tuple(_sample(p) for p in payloads[:10]),
         warnings=tuple(final_warnings),
+        fill_rate=tally.summary(),
+        commit_suppressed=request.commit and not should_commit,
     )

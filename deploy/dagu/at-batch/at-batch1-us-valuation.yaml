@@ -22,7 +22,7 @@ schedule: "CRON_TZ=UTC 30 23 * * 1-5"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
-  host: ncp
+  host: pi
 dotenv: /root/at-secrets/.env.dagu-at-batch
 steps:
   - name: build

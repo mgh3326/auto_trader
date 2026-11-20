@@ -31,7 +31,7 @@ reconcile 이 이 스냅샷을 읽는다). 등록은 머지 후 운영자 단계
 
 ## 사전 조건 (이름만 적는다. 값은 이 레포에 없다)
 
-NCP Dagu 워커(`worker_selector: host: ncp`)에서:
+Dagu 워커(`worker_selector: host: pi`)에서:
 
 - **도구**: `docker`(root), `curl`. 각 step 이 `docker run` 으로 auto_trader 이미지를 띄운다.
 - **이미지 포인터**: `/root/at-run/deployed-digest` (deploy 스크립트가 쓰는 전체 이미지 참조).

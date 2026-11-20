@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,6 +120,75 @@ class InvestScreenerSnapshotsRepository:
             stale_count=int(row.stale or 0),
             last_computed_at=row.last_computed_at,
         )
+
+    async def recent_snapshot_dates(self, *, market: str, limit: int) -> list[dt.date]:
+        """Newest distinct snapshot dates for a market, newest first (hk 5752)."""
+        result = await self._session.execute(
+            select(InvestScreenerSnapshot.snapshot_date)
+            .where(InvestScreenerSnapshot.market == market)
+            .distinct()
+            .order_by(InvestScreenerSnapshot.snapshot_date.desc())
+            .limit(limit)
+        )
+        return [row[0] for row in result.all()]
+
+    async def latest_support_computed_date(self, *, market: str) -> dt.date | None:
+        """Newest snapshot date that carries support-proximity data (hk 5752 r1).
+
+        The support-proximity preset reads this partition, so retention must
+        never delete it, even when it is older than the newest ordinary dates.
+        """
+        result = await self._session.execute(
+            select(func.max(InvestScreenerSnapshot.snapshot_date)).where(
+                InvestScreenerSnapshot.market == market,
+                InvestScreenerSnapshot.support_computed_at.is_not(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def count_before(
+        self, *, market: str, cutoff: dt.date, keep_date: dt.date | None = None
+    ) -> int:
+        """Rows older than ``cutoff``, excluding ``keep_date`` (the preserved partition)."""
+        conditions = [
+            InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date < cutoff,
+        ]
+        if keep_date is not None:
+            conditions.append(InvestScreenerSnapshot.snapshot_date != keep_date)
+        result = await self._session.execute(select(func.count()).where(*conditions))
+        return int(result.scalar_one() or 0)
+
+    async def delete_before_batch(
+        self,
+        *,
+        market: str,
+        cutoff: dt.date,
+        batch_size: int,
+        keep_date: dt.date | None = None,
+    ) -> int:
+        """Delete up to ``batch_size`` rows older than ``cutoff``; return the count.
+
+        ``keep_date`` (the preserved support-proximity partition) is never deleted.
+        The caller commits each batch and repeats while the count equals
+        ``batch_size``. Re-running after completion deletes nothing.
+        """
+        conditions = [
+            InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date < cutoff,
+        ]
+        if keep_date is not None:
+            conditions.append(InvestScreenerSnapshot.snapshot_date != keep_date)
+        doomed = (
+            select(InvestScreenerSnapshot.id)
+            .where(*conditions)
+            .order_by(InvestScreenerSnapshot.id)
+            .limit(batch_size)
+        )
+        result = await self._session.execute(
+            delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.id.in_(doomed))
+        )
+        return int(result.rowcount or 0)
 
     async def latest_partition(self, *, market: str) -> dt.date | None:
         result = await self._session.execute(

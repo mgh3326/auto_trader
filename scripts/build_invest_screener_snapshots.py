@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import date
 
 from app.core.cli import setup_logging_and_sentry
 from app.jobs import invest_screener_snapshots as snapshot_job
+from app.services.snapshot_fill_rate import format_fill_rate_line
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -88,11 +90,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "us_symbol_universe.is_common_stock IS TRUE."
         ),
     )
+    parser.add_argument(
+        "--keep-trading-days",
+        type=int,
+        default=None,
+        help=(
+            "After the build, keep only the newest N distinct snapshot dates for "
+            "this market and delete older rows. Commit deletes; dry-run only counts. "
+            "Omit to leave history untouched."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
     if args.common_stocks_only and args.market != "us":
         parser.error("--common-stocks-only is only supported with --market us")
+    if args.keep_trading_days is not None and args.keep_trading_days < 1:
+        parser.error("--keep-trading-days must be >= 1")
     if args.limit is None:
         args.limit = 20
     args.dry_run = not args.commit
@@ -137,10 +151,27 @@ def _print_result(result) -> None:
         print("warnings:")
         for warning in result.warnings:
             print(f"  - {warning}")
+    if result.fill_rate:
+        print(format_fill_rate_line("invest_screener_snapshots", result.fill_rate))
     if not result.committed:
         print("\n--dry-run: no rows written.\n")
     else:
         print(f"\ncommitted {result.snapshots_built} rows.\n")
+
+
+def _print_retention(result: snapshot_job.RetentionResult) -> None:
+    verb = "deleted" if result.committed else "would delete"
+    cutoff = result.cutoff.isoformat() if result.cutoff else None
+    print(
+        f"retention: market={result.market} keep={result.keep_trading_days} "
+        f"cutoff={cutoff} preserved_support={result.preserved_support_date} "
+        f"{verb}={result.rows}"
+    )
+    if not result.committed:
+        print(
+            f"retention: db_rows={result.db_rows} "
+            f"pending_rows_upper_bound={result.pending_rows_upper_bound}"
+        )
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -169,6 +200,30 @@ async def run(args: argparse.Namespace) -> int:
         print(f"\nCOMMIT BLOCKED: {exc}\n")
         return 2
     _print_result(result)
+    if args.keep_trading_days is None:
+        return 0
+    if not args.commit:
+        # Dry-run: the rows are not written yet, so their dates join the cutoff.
+        pending = {
+            date.fromisoformat(day): count
+            for day, count in result.snapshot_date_distribution.items()
+        }
+        retention = await snapshot_job.prune_snapshot_history(
+            args.market,
+            keep_trading_days=args.keep_trading_days,
+            commit=False,
+            pending_dates=pending,
+        )
+        _print_retention(retention)
+        return 0
+    if not (result.committed and result.snapshots_built > 0):
+        # A commit that wrote nothing must not trigger a market-wide delete.
+        print("retention: skipped (the commit wrote no rows; history left untouched)")
+        return 4
+    retention = await snapshot_job.prune_snapshot_history(
+        args.market, keep_trading_days=args.keep_trading_days, commit=True
+    )
+    _print_retention(retention)
     return 0
 
 

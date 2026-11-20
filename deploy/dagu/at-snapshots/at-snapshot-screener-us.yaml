@@ -1,0 +1,27 @@
+# 제안 복사본(hk 5752). 저장소는 이 파일을 등록하지 않는다. 설계 세션이 dry-run 채움률을 확인한 뒤 호스트에 등록한다(docs/runbooks/snapshot-refresh-dagu.md).
+# 시각 근거: 미국 일봉 at-batch2-daily-candles-us 는 22:00 UTC 월–금에 돈다. at-batch1-us-valuation(23:30 UTC 월–금)과
+#   data-plane-us(23:00 UTC 월–금)가 끝난 뒤, 01:30 UTC 화–토에 돈다. at-batch1-crypto-* 와 data-plane-crypto(00:00–00:50 UTC)보다도 뒤다.
+# 보관: --keep-trading-days 5 는 빌드 성공 뒤 US 시장의 최신 5거래일 밖 행을 지운다. dry-run 에서는 개수만 센다.
+# commit 게이트: AT_SNAPSHOT_SCREENER_US_COMMIT_ENABLED 가 참일 때만 --commit. 미설정 = dry-run.
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다).
+# 환경: dotenv 파일에서만 읽는다. 값은 이 파일과 레포에 없다.
+# 실패 경로: handler_on 이 journal 한 줄(`logger -t at-dagu-batch`)을 먼저 남기고, 핑 URL 이 있을 때만 healthchecks 핑을 보낸다.
+description: "US invest screener snapshot build (DB 쓰기, 5거래일 보관)"
+schedule: "CRON_TZ=UTC 30 1 * * 2-6"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: build
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_invest_screener_snapshots --market us --all --common-stocks-only --keep-trading-days 5 $(case "$(printf %s "${AT_SNAPSHOT_SCREENER_US_COMMIT_ENABLED}" | tr A-Z a-z)" in 1|true|yes|on) echo --commit;; esac)
+    timeout_sec: 3600
+    retry_policy:
+      limit: 1
+      interval_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-snapshot-screener-us status=success"; [ -z "${AT_BATCH_PING_URL_SNAPSHOT_SCREENER_US:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_SNAPSHOT_SCREENER_US}"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-snapshot-screener-us status=failure"; [ -z "${AT_BATCH_PING_URL_SNAPSHOT_SCREENER_US:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_SNAPSHOT_SCREENER_US}/fail"'
