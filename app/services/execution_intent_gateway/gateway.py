@@ -161,6 +161,10 @@ class IntentGateway:
             return None
         if await self._upbit.account_of(intent_id) != UPBIT_LIVE_ACCOUNT:
             return None
+        # The lookup waits for the key's lock, which every reservation holds
+        # until it commits, so it cannot read past a row that is inserted and
+        # not committed yet. If it cannot get the lock or cannot read, it
+        # raises and the transport answers 503: unknown, not a refusal.
         if await self._upbit.key_is_journaled(idempotency_key):
             # The key already names a child, perhaps a working order. A changed
             # body under it is a conflict, exactly as in ``handle``: a refusal

@@ -60,6 +60,7 @@ from app.services.execution_intent_gateway.store import (
     IntentNotStorable,
     _child_snapshot,
     _intent_snapshot,
+    lock_child_key,
 )
 from app.services.execution_intent_gateway.upbit_decisions import (
     UPBIT_ACCOUNTS,
@@ -257,9 +258,25 @@ class UpbitGatewayStore:
             return account
 
     async def key_is_journaled(self, idempotency_key: str) -> bool:
-        """Whether any child, of any intent, already holds this key."""
+        """Whether any child, of any intent, holds this key. Waits for the key.
+
+        ``False`` is a statement the caller acts on: it answers a definite
+        refusal and the executor then treats the key as never sent. A plain
+        read cannot say that, because it does not see a reservation that has
+        inserted its row and not committed yet. So this takes the key lock
+        every reservation holds until its commit, and only then reads, in a
+        new statement of a READ COMMITTED transaction: the read sees whatever
+        the reservation it waited for committed.
+
+        The wait is bounded. If the lock or the read fails this raises, and
+        the transport answers 503: unknown, never a refusal.
+        """
         async with self._session_factory() as session:
-            await session.execute(text("SET TRANSACTION READ ONLY"))
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY")
+            )
+            await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await lock_child_key(session, idempotency_key)
             found = await session.scalar(
                 select(ExecutionChildRequest.id).where(
                     ExecutionChildRequest.idempotency_key == idempotency_key
@@ -637,6 +654,11 @@ class UpbitGatewayStore:
     ) -> UpbitReservation:
         key = request.idempotency_key
         async with self._session_factory() as session:
+            # The key lock comes first, before the sleeve lock, the mandate row
+            # and the intent row, and is held until the commit below. A shape
+            # refusal of the same key waits here instead of reading past a row
+            # that is inserted and not committed (``key_is_journaled``).
+            await lock_child_key(session, key)
             scope = (
                 await session.execute(
                     select(ExecutionIntent.sleeve_id, ExecutionIntent.mandate_id).where(

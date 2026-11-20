@@ -95,6 +95,28 @@ class GatewayStore(Protocol):
     ) -> bool: ...
 
 
+async def lock_child_key(session: AsyncSession, idempotency_key: str) -> None:
+    """Serialize every decision about one journal key until the transaction ends.
+
+    The journal's keys are unique across all intents and both accounts, so the
+    lock is on the key alone. It is the **first** lock a transaction takes:
+
+    * a reservation (kis_mock or upbit_live) takes it before it reads anything
+      and holds it until its ``sending`` or ``refused`` row is committed;
+    * the Upbit shape refusal (design 5438 §3.3), which journals nothing, takes
+      it before it looks the key up.
+
+    So a reader that holds the lock sees either the committed row of that key
+    or the certainty that no reservation of it is in flight. Without it, a
+    refusal could be answered for a key whose row was inserted and not yet
+    committed, and the caller would believe nothing was sent under it.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"review.execution_child_requests.idempotency_key:{idempotency_key}"},
+    )
+
+
 def _intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
     if row.schema_version != 1:
         return _v2_intent_snapshot(row)
@@ -244,6 +266,9 @@ class SqlAlchemyGatewayStore:
     ) -> Reservation:
         key = request.idempotency_key
         async with self._session_factory() as session:
+            # hk 5441: the journal is shared with upbit_live. The key lock comes
+            # first and is held until this reservation commits.
+            await lock_child_key(session, key)
             intent_row = await session.scalar(
                 select(ExecutionIntent)
                 .where(ExecutionIntent.id == request.intent_id)

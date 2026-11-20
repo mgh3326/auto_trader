@@ -267,6 +267,33 @@ async def test_concurrent_children_cannot_spend_one_cap_twice(
 
 
 @pytest.mark.asyncio
+async def test_a_reservation_waits_for_the_journal_key(
+    store: SqlAlchemyGatewayStore,
+) -> None:
+    """hk 5441 (PR 2486 review 65wMjP): the journal is shared with upbit_live,
+    whose shape refusal decides on a key while holding its lock. A kis_mock
+    reservation takes the same lock first, so it cannot insert the key under a
+    decision that is being made about it. Nothing else of the path changes."""
+    from app.services.execution_intent_gateway.store import lock_child_key
+
+    intent = _intent()
+    await store.store_intent(intent, now=_now())
+    broker = FakeBroker()
+    gateway = _gateway(store, broker)
+    async with AsyncSessionLocal() as holder:
+        await lock_child_key(holder, "child-0001")
+        waiting = asyncio.create_task(
+            gateway.handle(_submit(intent, "child-0001"), confirm=True)
+        )
+        _done, pending = await asyncio.wait({waiting}, timeout=0.5)
+        assert waiting in pending and broker.calls == []
+        await holder.rollback()
+    outcome = await waiting
+    assert outcome.status == "accepted"
+    assert broker.calls == [("submit", "child-0001")]
+
+
+@pytest.mark.asyncio
 async def test_key_used_under_another_intent_is_a_conflict(
     store: SqlAlchemyGatewayStore,
 ) -> None:

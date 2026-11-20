@@ -12,6 +12,7 @@ every test creates its own uniquely named rows and leaves them.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -1696,3 +1697,85 @@ async def test_a_reused_key_is_found_before_a_shape_refusal() -> None:
     assert (await path.handle(_submit(intent, key))).status == "accepted"
 
     assert await store.key_is_journaled(key) is True
+
+
+# ------------------------------------------------- review round 3 (PR 2486)
+
+
+@pytest.mark.asyncio
+async def test_a_shape_refusal_waits_for_a_reservation_of_the_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR 2486 review (65wMjP): a valid submit has inserted its ``sending`` row
+    for key K and not committed yet, and a malformed request with K asks
+    whether K is journaled. A plain read does not see the row and would answer
+    a definite refusal; the reservation then commits and sends. The lookup
+    waits for the key the reservation holds, and then finds the row."""
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    key = _key()
+    inserted, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_before_the_commit(*_args: Any, **_kwargs: Any) -> None:
+        # ``reserve`` awaits this after it flushed the row and before it commits.
+        inserted.set()
+        await release.wait()
+
+    monkeypatch.setattr(store, "_stop_sleeve", pause_before_the_commit)
+    reservation = asyncio.create_task(
+        store.reserve(
+            _submit(intent, key, quantity="1"),
+            request_digest="digest",
+            decide=lambda *_a: UpbitDecision(),
+            now_fn=_now,
+        )
+    )
+    try:
+        await asyncio.wait_for(inserted.wait(), timeout=10)
+        lookup = asyncio.create_task(
+            UpbitGatewayStore(AsyncSessionLocal).key_is_journaled(key)
+        )
+        _done, pending = await asyncio.wait({lookup}, timeout=0.5)
+        assert lookup in pending, "the key was read past an uncommitted reservation"
+    finally:
+        release.set()
+
+    reserved = await reservation
+    assert reserved.is_new is True and reserved.child is not None
+    assert await lookup is True
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_takes_its_key_before_any_other_lock() -> None:
+    """The key lock is the first thing a reservation waits for: while another
+    transaction holds the key, the reservation has not taken the sleeve lock,
+    so a different key of the same sleeve is reserved meanwhile."""
+    from app.services.execution_intent_gateway.store import lock_child_key
+
+    sleeve = await _sleeve("live")
+    mandate = await _mandate(sleeve, "live")
+    store = UpbitGatewayStore(AsyncSessionLocal)
+    intent = _intent(mandate)
+    await store.store_intent(intent, now=_now(), reads=_reads())
+    held, free = _key(), _key()
+
+    async def reserve(key: str) -> Any:
+        return await store.reserve(
+            _submit(intent, key, quantity="1"),
+            request_digest="digest",
+            decide=lambda *_a: UpbitDecision(),
+            now_fn=_now,
+        )
+
+    async with AsyncSessionLocal() as holder:
+        await lock_child_key(holder, held)
+        waiting = asyncio.create_task(reserve(held))
+        _done, pending = await asyncio.wait({waiting}, timeout=0.5)
+        assert waiting in pending
+        other = await asyncio.wait_for(reserve(free), timeout=10)
+        assert other.is_new is True
+        await holder.rollback()
+    assert (await waiting).is_new is True

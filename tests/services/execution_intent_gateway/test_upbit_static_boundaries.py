@@ -463,3 +463,57 @@ def test_the_loss_sell_guard_cooldown_and_loss_cut_are_not_bypassed_from_here() 
         source = path.read_text("utf-8")
         for name in bypasses:
             assert name not in source, (path.name, name)
+
+
+def _method(path: Path, class_name: str, method: str) -> ast.AsyncFunctionDef:
+    tree = ast.parse(path.read_text("utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, ast.AsyncFunctionDef) and item.name == method:
+                    return item
+    raise AssertionError(f"{class_name}.{method} not found in {path.name}")
+
+
+def _awaited_calls(function: ast.AsyncFunctionDef) -> list[str]:
+    """Every awaited call of ``function`` in source order, as its dotted name."""
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+    ]
+    calls.sort(key=lambda node: (node.lineno, node.col_offset))
+    return [ast.unparse(node.value.func) for node in calls]
+
+
+@pytest.mark.parametrize(
+    ("module", "class_name", "method"),
+    [
+        ("upbit_store.py", "UpbitGatewayStore", "reserve"),
+        ("store.py", "SqlAlchemyGatewayStore", "reserve"),
+    ],
+)
+def test_every_reservation_takes_the_journal_key_lock_first(
+    module: str, class_name: str, method: str
+) -> None:
+    """PR 2486 review (65wMjP): the shape refusal decides on a key under its
+    lock. That only means something if every writer of the journal -- both
+    accounts share it -- takes the same lock before it reads or locks anything
+    else. The waiting itself is exercised against PostgreSQL in CI
+    (``test_upbit_db.py``, ``test_store_db.py``)."""
+    awaited = _awaited_calls(_method(PACKAGE / module, class_name, method))
+    assert awaited[0] == "lock_child_key", awaited[:3]
+
+
+def test_the_shape_refusal_reads_the_key_only_under_its_lock() -> None:
+    lookup = _method(
+        PACKAGE / "upbit_store.py", "UpbitGatewayStore", "key_is_journaled"
+    )
+    awaited = _awaited_calls(lookup)
+    assert awaited.index("lock_child_key") < awaited.index("session.scalar")
+    source = ast.unparse(lookup)
+    # A new statement after the wait must see what the waited-for reservation
+    # committed, and a wait that cannot end must not turn into a refusal.
+    assert "ISOLATION LEVEL READ COMMITTED" in source
+    assert "lock_timeout" in source
+    assert "except" not in source
