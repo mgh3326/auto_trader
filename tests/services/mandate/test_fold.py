@@ -399,31 +399,61 @@ def test_i19_an_open_proposal_blocks_orders_settled_and_release() -> None:
         s.add("orders_settled")
 
 
-def test_a_resume_cannot_take_effect_before_the_approval_it_follows() -> None:
+def _late_approval_history():
+    """proposed -> approved for the NEXT session -> suspended (as plain event rows)."""
+    later = date(SESSION.year, SESSION.month, SESSION.day + 1)
+    history = [
+        ev("proposed", seq=1),
+        ev(
+            "approved",
+            seq=2,
+            terms_id=1,
+            terms_sha256="a" * 64,
+            effective_session=later,
+        ),
+        ev("suspended", seq=3),
+    ]
+    return history, later
+
+
+def _resume(seq: int, day: date):
+    return ev("resumed", seq=seq, resume_target="approved", effective_session=day)
+
+
+def test_a_new_resume_cannot_take_effect_before_the_approval_it_follows() -> None:
     """A late (batch) approval is recorded for the next session; a same-day suspend and
     resume with the earlier session must not pull the plan back before it."""
-    later = date(SESSION.year, SESSION.month, SESSION.day + 1)
-    s = Stream()
-    s.add("proposed")
-    s.add("approved", terms_id=1, terms_sha256="a" * 64, effective_session=later)
-    s.add("suspended")
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history()
     with refused(v.MandateRefusal.INVALID_TRANSITION):
-        apply_event(
-            s.state,
-            ev(
-                "resumed",
-                seq=s.state.last_seq + 1,
-                resume_target="approved",
-                effective_session=SESSION,
-            ),
-        )
-    # the same date or a later one is fine, and the bound then moves with the resume
-    s.add("resumed", resume_target="approved", effective_session=later)
-    assert s.state.effective_session == later
-    s.add("suspended")
-    s.add(
-        "resumed", resume_target="approved", effective_session=later + (later - SESSION)
-    )
-    with pytest.raises(InvalidPlanEvent):
-        s.add("suspended")
-        s.add("resumed", resume_target="approved", effective_session=later)
+        check_resume_floor(history, _resume(4, SESSION))
+    # on or after the approval date is fine; other events are never checked
+    check_resume_floor(history, _resume(4, later))
+    check_resume_floor(history, ev("suspended", seq=4))
+
+
+def test_a_resume_may_correct_its_own_date_but_never_below_the_approval() -> None:
+    from app.services.mandate.fold import check_resume_floor
+
+    history, later = _late_approval_history()
+    far = later + (later - SESSION) * 4
+    history += [_resume(4, far), ev("suspended", seq=5)]
+    # correcting the resume date back down to the approval date is allowed ...
+    check_resume_floor(history, _resume(6, later))
+    # ... below it is not
+    with refused(v.MandateRefusal.INVALID_TRANSITION):
+        check_resume_floor(history, _resume(6, SESSION))
+
+
+def test_histories_written_before_the_floor_existed_still_replay() -> None:
+    """Replay is unchanged: a stream the old writer and trigger accepted (approved for a
+    later day, resumed for an earlier one, resumed again) folds, and can still be retired."""
+    from app.services.mandate.fold import fold_plan_events
+
+    history, later = _late_approval_history()
+    history += [_resume(4, SESSION), ev("suspended", seq=5), _resume(6, SESSION)]
+    state = fold_plan_events(history)
+    assert state.effective_session == SESSION and state.authority == "approved"
+    state = apply_event(state, ev("retired", seq=7))
+    assert state.authority == "retired"

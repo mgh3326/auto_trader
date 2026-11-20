@@ -125,12 +125,15 @@ def wired(monkeypatch):
     monkeypatch.setattr(cli, "_card_facts", card_facts)
     monkeypatch.setattr(cli, "_armed_tranches", armed)
 
-    async def sender(text, keyboard):
+    replies: list[int | None] = []
+
+    async def sender(text, keyboard, reply_to=None):
         session.log.append("send")
         sent.append((text, keyboard))
-        return True, None
+        replies.append(reply_to)
+        return True, None, 1000 + len(sent)  # Telegram's message id for this send
 
-    return SimpleNamespace(session=session, sent=sent, sender=sender)
+    return SimpleNamespace(session=session, sent=sent, replies=replies, sender=sender)
 
 
 def parse(*argv: str):
@@ -150,7 +153,7 @@ async def run(world, *argv: str, sender="default"):
 
 @pytest.mark.asyncio
 async def test_preview_runs_the_store_then_rolls_back_and_sends_nothing(wired) -> None:
-    async def forbidden(text, keyboard):
+    async def forbidden(text, keyboard, reply_to=None):
         raise AssertionError("a preview sent a message")
 
     code, body = await run(
@@ -224,10 +227,12 @@ async def test_the_output_never_contains_a_nonce(wired) -> None:
 async def test_a_failed_send_keeps_the_rows_and_exits_2(wired) -> None:
     calls = {"n": 0}
 
-    async def flaky(text, keyboard):
+    async def flaky(text, keyboard, reply_to=None):
         calls["n"] += 1
-        return (calls["n"] != 2), (
-            None if calls["n"] != 2 else "telegram_transport_error"
+        return (
+            (calls["n"] != 2),
+            (None if calls["n"] != 2 else "telegram_transport_error"),
+            None,
         )
 
     code, body = await run(
@@ -389,9 +394,9 @@ def test_an_astral_heavy_card_is_published_whole_in_utf16_bounded_parts() -> Non
     assert story.startswith("논지: ")
     # the actionable card keeps the clause, the plan hash and what a rejection does
     assert "a" * 64 in action and "b" * 64 in action and "기각하면" in action
-    assert "위 메시지" in action
-    # the answered card is bounded too and keeps the same terms
-    answered = cards.render_answered(big, "승인했습니다.")
+    assert "답장으로 이어진 위 메시지" in action
+    # the answered card is bounded too and keeps the same terms (the published text)
+    answered = cards.render_answered_text(action, "승인했습니다.")
     assert telegram_text_length(answered) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
     assert "a" * 64 in answered and "결과: 승인했습니다." in answered
 
@@ -526,18 +531,24 @@ async def test_the_default_sender_uses_the_approval_bot_token_of_the_trade_notif
 
     async def fake_send(**kwargs):
         seen.update(kwargs)
-        return SimpleNamespace(ok=True, failure_code=None)
+        return SimpleNamespace(ok=True, failure_code=None, message_id=42)
 
     monkeypatch.setattr(transports, "send_telegram_message", fake_send)
     monkeypatch.setattr(settings, "telegram_token", "notifier-token")
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "-1")
     sender = cli.default_sender(object())
-    assert await sender("hello", None) == (True, None)
+    assert await sender("hello", None, None) == (True, None, 42)
     assert seen["bot_token"] == "notifier-token" and seen["chat_id"] == "-1"
-    assert seen["parse_mode"] is None
+    assert seen["parse_mode"] is None and seen["reply_to_message_id"] is None
+    assert await sender("again", None, 41) == (True, None, 42)
+    assert seen["reply_to_message_id"] == 41  # a reply names its exact target
     monkeypatch.setattr(settings, "telegram_token", None)
-    assert await sender("hello", None) == (False, "telegram_not_configured")
+    assert await sender("hello", None, None) == (
+        False,
+        "telegram_not_configured",
+        None,
+    )
 
 
 @pytest.mark.asyncio
@@ -597,3 +608,133 @@ async def test_status_builds_its_payload_before_the_rollback_expires_the_objects
     assert payload["batch"]["id"] == 9
     assert payload["plans"][0]["symbol"] == "005930"
     assert payload["plans"][0]["latest_card_no"] == 2
+
+
+@pytest.mark.asyncio
+async def test_each_part_of_a_card_replies_to_the_exact_previous_message(
+    wired, monkeypatch
+) -> None:
+    """The chain is the card's identity in a shared chat: part 1 starts it, every later part
+    and the card with the buttons answer the message sent just before."""
+
+    async def card_facts(db, batch, member):
+        return oversize_facts()
+
+    monkeypatch.setattr(cli, "_card_facts", card_facts)
+    code, _ = await run(
+        wired,
+        "create",
+        "--realm",
+        "mock",
+        "--basket-key",
+        "basket-1",
+        *ACTOR,
+        "--commit",
+    )
+    assert code == cli.EXIT_OK
+    messages = len(cards.render_card_messages(oversize_facts()))
+    assert messages >= 3
+    start = len(wired.sent) - 2 * messages  # everything before is the summary
+    assert start >= 1
+    for card_no in range(2):
+        first = start + card_no * messages
+        replies = wired.replies[first : first + messages]
+        assert replies[0] is None  # the first context part answers nothing
+        # every later message answers the id its predecessor's send returned (1000 + n)
+        assert replies[1:] == [1000 + first + i + 1 for i in range(messages - 1)]
+        keyboards = [b for _, b in wired.sent[first : first + messages]]
+        assert keyboards[-1] is not None and all(b is None for b in keyboards[:-1])
+
+
+@pytest.mark.asyncio
+async def test_no_button_goes_out_when_a_context_send_returns_no_message_id(
+    wired, monkeypatch
+) -> None:
+    async def card_facts(db, batch, member):
+        return oversize_facts()
+
+    monkeypatch.setattr(cli, "_card_facts", card_facts)
+    seen: list[dict | None] = []
+
+    async def no_id(text, keyboard, reply_to=None):
+        seen.append(keyboard)
+        return True, None, None  # an ok send whose message id is lost
+
+    code, body = await run(
+        wired,
+        "create",
+        "--realm",
+        "mock",
+        "--basket-key",
+        "basket-1",
+        *ACTOR,
+        "--commit",
+        sender=no_id,
+    )
+    assert code == cli.EXIT_SEND_FAILED
+    assert all(b is None for b in seen)  # nothing actionable was published
+    cards_sent = [r for r in body["sent"] if r["message"] == "card"]
+    assert all(
+        not r["sent"] and r["failure_code"] == "telegram_message_id_missing"
+        for r in cards_sent
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_transport_sends_a_strict_reply_reference() -> None:
+    from app.monitoring.trade_notifier import transports
+
+    posted: list[dict] = []
+
+    class Client:
+        async def post(self, url, json):
+            posted.append(json)
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"ok": True, "result": {"message_id": 9}},
+                text="",
+            )
+
+    result = await transports.send_telegram_message(
+        http_client=Client(),
+        bot_token="t",
+        chat_id="1",
+        text="x",
+        parse_mode=None,
+        reply_to_message_id=8,
+    )
+    assert result.ok and result.message_id == 9
+    assert posted[0]["reply_parameters"] == {
+        "message_id": 8,
+        "allow_sending_without_reply": False,
+    }
+    await transports.send_telegram_message(
+        http_client=Client(), bot_token="t", chat_id="1", text="y", parse_mode=None
+    )
+    assert "reply_parameters" not in posted[1]
+
+
+@pytest.mark.asyncio
+async def test_the_transport_can_clear_only_the_buttons() -> None:
+    from app.monitoring.trade_notifier import transports
+
+    posted: list[tuple[str, dict]] = []
+
+    class Client:
+        async def post(self, url, json):
+            posted.append((url, json))
+            return SimpleNamespace(
+                status_code=200, json=lambda: {"ok": True, "result": {}}, text=""
+            )
+
+    result = await transports.edit_message_reply_markup(
+        http_client=Client(),
+        bot_token="t",
+        chat_id="1",
+        message_id=5,
+        reply_markup={"inline_keyboard": []},
+    )
+    assert result.ok and result.message_id == 5
+    (url, body) = posted[0]
+    assert url.endswith("/editMessageReplyMarkup")
+    assert "text" not in body and body["reply_markup"] == {"inline_keyboard": []}

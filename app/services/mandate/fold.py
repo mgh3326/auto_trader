@@ -11,6 +11,7 @@ Pure: standard library plus ``vocabulary``. No database, no clock.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
@@ -227,15 +228,6 @@ def _apply_authority_event(state: PlanState, event: PlanEvent) -> PlanState:
             event.resume_target == expected,
             v.MandateRefusal.INVALID_TRANSITION,
             f"resume_target must be {expected} for this plan",
-        )
-        # The approval (or rebind) date is a lower bound: a resume cannot pull the
-        # plan back before the session its batch approval was recorded for (§5.1).
-        _require(
-            state.effective_session is None
-            or event.effective_session is None
-            or event.effective_session >= state.effective_session,
-            v.MandateRefusal.INVALID_TRANSITION,
-            "a resume cannot take effect before the approval it follows",
         )
         return replace(
             state,
@@ -527,6 +519,32 @@ def _trade_date(event: PlanEvent) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def check_resume_floor(history: Sequence[PlanEvent], candidate: PlanEvent) -> None:
+    """Refuse a NEW ``resumed`` event dated before the approval it follows (§5.1).
+
+    The floor is the effective session of the last ``approved``/``terms_rebound`` event:
+    a resume may move the date around (suspend, resume, correct) but never pull the plan
+    back before the session its approval was recorded for. This is a write-time check
+    only; ``fold_plan_events`` replays rows committed before it existed unchanged, so a
+    stream that was valid then stays readable (and retire-able) now.
+    """
+    if candidate.event != "resumed" or candidate.effective_session is None:
+        return
+    floor = next(
+        (
+            e.effective_session
+            for e in reversed(history)
+            if e.event in ("approved", "terms_rebound")
+        ),
+        None,
+    )
+    _require(
+        floor is None or candidate.effective_session >= floor,
+        v.MandateRefusal.INVALID_TRANSITION,
+        "a resume cannot take effect before the approval it follows",
+    )
 
 
 def fold_plan_events(events: list[PlanEvent] | tuple[PlanEvent, ...]) -> PlanState:

@@ -53,6 +53,7 @@ from app.services.mandate.fold import (
     PlanEvent,
     PlanState,
     apply_event,
+    check_resume_floor,
     fold_plan_events,
 )
 from app.services.mandate.invariants import (
@@ -1506,7 +1507,9 @@ async def append_plan_event(
         raise MandateError(
             v.MandateRefusal.ACCOUNT_MISMATCH, "the fence account is not the plan's"
         )
-    state = await plan_state(session, plan_id)
+    rows = await list_plan_events(session, plan_id)
+    history = [event_to_fold(r) for r in rows]
+    state = fold_plan_events(history)
     candidate = fold_candidate(
         event=event,
         seq=state.last_seq + 1,
@@ -1515,6 +1518,7 @@ async def append_plan_event(
         fields=fields,
     )
     try:
+        check_resume_floor(history, candidate)  # a new resume only; replay is unchanged
         apply_event(state, candidate)
     except InvalidPlanEvent as exc:
         raise MandateError(exc.code, str(exc)) from exc

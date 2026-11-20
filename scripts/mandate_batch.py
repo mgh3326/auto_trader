@@ -59,8 +59,11 @@ from scripts.mandate import (
 )
 
 EXIT_SEND_FAILED = 2
-#: ``(text, inline_keyboard | None) -> (ok, failure_code)``
-Sender = Callable[[str, dict | None], Awaitable[tuple[bool, str | None]]]
+#: ``(text, inline_keyboard | None, reply_to_message_id | None) ->
+#: (ok, failure_code, message_id)``. A reply is strict: a missing target fails the send.
+Sender = Callable[
+    [str, dict | None, int | None], Awaitable[tuple[bool, str | None, int | None]]
+]
 
 
 def default_sender(client: httpx.AsyncClient) -> Sender:
@@ -71,13 +74,15 @@ def default_sender(client: httpx.AsyncClient) -> Sender:
     ``ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`` is not read anywhere.
     """
 
-    async def send(text: str, keyboard: dict | None) -> tuple[bool, str | None]:
+    async def send(
+        text: str, keyboard: dict | None, reply_to: int | None
+    ) -> tuple[bool, str | None, int | None]:
         from app.monitoring.trade_notifier.transports import send_telegram_message
 
         token = settings.telegram_token
         chats = settings.order_proposals_telegram_chat_allowlist
         if not token or not chats:
-            return False, "telegram_not_configured"
+            return False, "telegram_not_configured", None
         result = await send_telegram_message(
             http_client=client,
             bot_token=token,
@@ -85,8 +90,11 @@ def default_sender(client: httpx.AsyncClient) -> Sender:
             text=text,
             parse_mode=None,
             reply_markup=keyboard,
+            reply_to_message_id=reply_to,
         )
-        return bool(result.ok), None if result.ok else result.failure_code
+        if not result.ok:
+            return False, result.failure_code, None
+        return True, None, result.message_id
 
     return send
 
@@ -207,17 +215,25 @@ def _outgoing(pairs: list[tuple[bt.IssuedCard, cards.CardFacts]]) -> list[Outgoi
 async def _deliver_cards(
     sender: Sender, outgoing: list[Outgoing]
 ) -> list[dict[str, Any]]:
-    """Context messages, then the card with its buttons. A failed card never stops the others."""
+    """One card = a chain of replies: each context message answers the one before it and
+    the card with its buttons answers the last one, so the card points at its own messages
+    even when several issuances interleave in the chat. The buttons go out only after every
+    context message returned its message id; a failed card never stops the others."""
     results: list[dict[str, Any]] = []
     for card in outgoing:
         ok, failure = True, None
+        previous: int | None = None
         for text in card.messages[:-1]:
-            ok, failure = await sender(text, None)
+            ok, failure, previous = await sender(text, None, previous)
+            if ok and previous is None:
+                ok, failure = False, "telegram_message_id_missing"
             if not ok:
                 break
         if ok:
-            ok, failure = await sender(
-                card.messages[-1], rules.inline_keyboard(card.member_id, card.nonce)
+            ok, failure, _ = await sender(
+                card.messages[-1],
+                rules.inline_keyboard(card.member_id, card.nonce),
+                previous,
             )
         results.append(
             {
@@ -258,7 +274,7 @@ async def _summary_messages(
 async def _send_all(sender: Sender, texts: tuple[str, ...]) -> dict[str, Any]:
     ok, failure = True, None
     for text in texts:
-        ok, failure = await sender(text, None)
+        ok, failure, _ = await sender(text, None, None)
         if not ok:
             break
     return {"message": "summary", "sent": ok, "failure_code": failure}

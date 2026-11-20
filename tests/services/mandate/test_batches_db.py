@@ -1288,9 +1288,9 @@ async def test_resend_of_a_summary_only_batch_sends_the_summary(
     assert sc.cards == {}
     sent: list[str] = []
 
-    async def sender(text, keyboard):
+    async def sender(text, keyboard, reply_to=None):
         sent.append(text)
-        return True, None
+        return True, None, 1000 + len(sent)
 
     args = cli._parser().parse_args(
         [
@@ -1605,3 +1605,28 @@ async def test_a_late_approval_cannot_be_pulled_back_by_a_same_day_suspend_and_r
     )
     await db_session.commit()
     assert (await events_of(db_session, plan.id))[-1] == "resumed"
+    # a resume may move its own date and correct it back down to the approval date,
+    # never below it
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    await ms.append_plan_event(
+        db_session,
+        plan_id=plan.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=later + timedelta(days=3),
+    )
+    await ms.append_plan_event(
+        db_session, plan_id=plan.id, event="suspended", actor="operator:test"
+    )
+    await ms.append_plan_event(
+        db_session,
+        plan_id=plan.id,
+        event="resumed",
+        actor="operator:test",
+        resume_target="approved",
+        effective_session=later,
+    )
+    await db_session.commit()

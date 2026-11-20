@@ -23,8 +23,8 @@ before the batch closed must not be able to answer after it closed:
   account reference, clause hash); the plan holds the authority state the card kind
   needs; card 1 only comes with its batch; later cards follow ``card_no`` and repeat the
   snapshot, and only while the batch is open and the plan is unanswered;
-* ``resumed`` events: the effective session cannot be earlier than the approval (or
-  rebind, or earlier resume) it follows;
+* new ``resumed`` events: the effective session cannot be earlier than the last
+  approval (or rebind) it follows (rows written before this migration are untouched);
 * plan event insert carrying ``batch_member_id`` (answers): under the sleeve lock and
   the per-plan card lock (the card insert takes the same one), the card is the newest
   card of its plan, the batch is not expired, the plan has no other answer, the event
@@ -288,7 +288,7 @@ def _guard_ddl() -> tuple[str, ...]:
             SELECT e.effective_session INTO floor_day
               FROM review.mandate_plan_events e
              WHERE e.plan_id = NEW.plan_id
-               AND e.event IN ('approved', 'terms_rebound', 'resumed')
+               AND e.event IN ('approved', 'terms_rebound')
              ORDER BY e.seq DESC LIMIT 1;
             IF floor_day IS NOT NULL AND NEW.effective_session < floor_day THEN
                 RAISE EXCEPTION 'a resume cannot take effect before the approval it follows'

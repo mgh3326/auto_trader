@@ -40,6 +40,7 @@ def update(
     chat: object = CHAT,
     action: str = "approve",
     member_id: int = 7,
+    text: str | None = "승인 카드 본문",
 ) -> dict[str, Any]:
     data = (
         data
@@ -51,7 +52,11 @@ def update(
         "callback_query": {
             "id": "cbq-1",
             "from": {"id": user},
-            "message": {"message_id": 55, "chat": {"id": chat}},
+            "message": {
+                "message_id": 55,
+                "chat": {"id": chat},
+                **({} if text is None else {"text": text}),
+            },
             "data": data,
         },
     }
@@ -68,6 +73,10 @@ class Notifier:
         self.answers: list[tuple[str, str | None]] = []
         self.edits: list[tuple[str, int, str, dict | None]] = []
         self.edit_modes: list[Any] = []
+        self.cleared: list[tuple[str, int, dict | None]] = []
+
+    async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None):
+        self.cleared.append((chat_id, message_id, reply_markup))
 
     async def answer_callback(self, callback_query_id, text=None):
         self.answers.append((callback_query_id, text))
@@ -971,8 +980,8 @@ async def test_a_card_at_the_publishing_limit_still_renders_its_answered_text() 
         except ValueError:
             hi = mid - 1
     edge = bc.CardFacts(**{**base.__dict__, "thesis": "가" * lo})
-    assert len(bc.render_card_messages(edge)) == 1
-    answered = bc.render_answered(edge, "승인했습니다.")
+    (published,) = bc.render_card_messages(edge)
+    answered = bc.render_answered_text(published, "승인했습니다.")
     assert telegram_text_length(answered) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
 
 
@@ -980,10 +989,10 @@ async def test_a_card_at_the_publishing_limit_still_renders_its_answered_text() 
 async def test_a_failing_render_after_the_commit_never_escapes_the_handler(
     world, monkeypatch
 ) -> None:
-    def boom(facts, outcome):
-        raise ValueError("too long")
+    def boom(original, outcome):
+        raise RuntimeError("render exploded")
 
-    monkeypatch.setattr(cb.cards, "render_answered", boom)
+    monkeypatch.setattr(cb.cards, "render_answered_text", boom)
 
     class Factory:
         def __call__(self):
@@ -1006,3 +1015,59 @@ async def test_a_failing_render_after_the_commit_never_escapes_the_handler(
     )
     assert result == {"handled": True, "reason": "approved"}
     assert world.rec.commits == 1 and notifier.edits == []
+
+
+async def _answer_with(world, text, notifier):
+    class Factory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return world.session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    return await cb.handle_mandate_callback(
+        update(text=text),
+        now=AFTER_OPEN,
+        decision_clock=at(AFTER_OPEN),
+        session_factory=Factory(),
+        notifier=notifier,
+        calendar=FixedCalendar(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_answered_edit_extends_the_text_that_was_published(world) -> None:
+    """The layout of the published card is kept; nothing is re-rendered from display facts."""
+    notifier = Notifier()
+    published = "발행된 승인 카드\n열린 주문 3건\n논지 전문"
+    result = await _answer_with(world, published, notifier)
+    assert result == {"handled": True, "reason": "approved"}
+    ((_, _, text, markup),) = notifier.edits
+    assert text == f"{published}\n\n결과: {cb.ANSWER_TEXT['approved']}"
+    assert markup == {"inline_keyboard": []} and notifier.cleared == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [None, "가" * 4096])
+async def test_a_card_whose_text_is_missing_or_cannot_take_the_outcome_only_loses_its_buttons(
+    world, text
+) -> None:
+    notifier = Notifier()
+    result = await _answer_with(world, text, notifier)
+    assert result == {"handled": True, "reason": "approved"}
+    assert notifier.edits == []
+    assert notifier.cleared == [(CHAT, 55, {"inline_keyboard": []})]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_button_clear_never_escapes_the_handler(world) -> None:
+    class Broken(Notifier):
+        async def edit_message_reply_markup(self, *a, **k):
+            raise RuntimeError("telegram down")
+
+    result = await _answer_with(world, None, Broken())
+    assert result == {"handled": True, "reason": "approved"}
+    assert world.rec.commits == 1

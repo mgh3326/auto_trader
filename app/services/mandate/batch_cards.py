@@ -157,8 +157,8 @@ def render_card_messages(facts: CardFacts) -> tuple[str, ...]:
         for i, chunk in enumerate(chunks, 1)
     )
     pointer = [
-        f"논지와 훼손 조건: 위 메시지 {len(chunks)}개에 전문이 있습니다 "
-        f"(같은 발급 · {_tag(facts)})."
+        f"논지와 훼손 조건: 이 카드가 답장으로 이어진 위 메시지 {len(chunks)}개에 "
+        f"전문이 있습니다 (같은 발급 · {_tag(facts)})."
     ]
     return (*context, _check("\n".join(_card_lines(facts, story=pointer))))
 
@@ -204,10 +204,11 @@ def render_summary_messages(facts: SummaryFacts) -> tuple[str, ...]:
     return tuple(out)
 
 
-def render_answered(facts: CardFacts, outcome: str) -> str:
-    """The card text after an answer; the buttons are removed by the caller.
+def render_answered_text(original_text: str, outcome: str) -> str:
+    """The published action text with the outcome under it, for the best-effort edit.
 
-    The published layout reserves room for the outcome, so this fits the real
-    Telegram limit wherever the card itself fit.
+    The text is the one that was actually published (from the callback message), so the
+    layout never drifts with display facts read later. A text that no longer fits raises
+    ``ValueError``; the caller then clears the buttons only.
     """
-    return _check(f"{render_card_messages(facts)[-1]}\n\n결과: {outcome}", MAX_UNITS)
+    return _check(f"{original_text}\n\n결과: {outcome}", MAX_UNITS)

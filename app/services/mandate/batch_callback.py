@@ -98,6 +98,8 @@ class Authorized:
     message_id: int | None
     callback_query_id: str | None
     user_id: int
+    #: the action text as published (display only; never a decision input)
+    message_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,12 +133,14 @@ def authorize(update: dict[str, Any]) -> Authorized | Rejected:
     if user_id not in settings.mandate_approver_telegram_user_ids:
         return Rejected(v.MandateRefusal.APPROVER_NOT_ALLOWED.value, query_id)
     message_id = message.get("message_id")
+    message_text = message.get("text")
     return Authorized(
         parsed,
         chat_id,
         message_id if type(message_id) is int else None,
         query_id,
         user_id,
+        message_text if type(message_text) is str and message_text else None,
     )
 
 
@@ -361,7 +365,7 @@ async def handle_mandate_callback(
         ANSWER_TEXT.get(outcome.reason, ANSWER_TEXT["internal_error"]),
     )
     if outcome.handled and outcome.facts is not None:
-        await _edit(notifier, auth, outcome.facts, ANSWER_TEXT[outcome.reason])
+        await _edit(notifier, auth, ANSWER_TEXT[outcome.reason])
     return {"handled": outcome.handled, "reason": outcome.reason}
 
 
@@ -384,21 +388,36 @@ async def _reply(
         logger.warning("mandate.batch_callback.reply_failed")
 
 
-async def _edit(
-    notifier: Any, auth: Authorized, facts: cards.CardFacts, outcome_text: str
-) -> None:
-    """Rewrite the answered card. Rendering is inside the boundary: the decision is
-    already durable, so nothing here may fail the webhook."""
+async def _edit(notifier: Any, auth: Authorized, outcome_text: str) -> None:
+    """Show the outcome on the answered card and remove its buttons.
+
+    The decision is already durable, so nothing here may fail the webhook, and nothing
+    here is a decision input. The edit extends the text that was actually published (the
+    callback's own message), so the layout and the reply reference of the published card
+    cannot drift with display facts read later. If that text is missing or no longer fits
+    one message, only the buttons are removed.
+    """
     if auth.message_id is None:
         return
+    empty = {"inline_keyboard": []}
     try:
-        text_ = cards.render_answered(facts, outcome_text)
-        await _notifier(notifier).edit_message(
-            str(auth.chat_id),
-            auth.message_id,
-            text_,
-            reply_markup={"inline_keyboard": []},
-            parse_mode=None,  # the card was sent as plain text
-        )
+        text_ = None
+        if auth.message_text is not None:
+            try:
+                text_ = cards.render_answered_text(auth.message_text, outcome_text)
+            except ValueError:
+                text_ = None
+        if text_ is not None:
+            await _notifier(notifier).edit_message(
+                str(auth.chat_id),
+                auth.message_id,
+                text_,
+                reply_markup=empty,
+                parse_mode=None,  # the card was sent as plain text
+            )
+        else:
+            await _notifier(notifier).edit_message_reply_markup(
+                str(auth.chat_id), auth.message_id, empty
+            )
     except Exception:  # noqa: BLE001
         logger.warning("mandate.batch_callback.edit_failed")
