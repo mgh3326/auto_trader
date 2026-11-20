@@ -127,9 +127,9 @@ async def events_of(db, plan_id: int) -> list[str]:
     return [r[0] for r in rows.all()]
 
 
-async def register(seed: MandateSeed, sleeve, terms, symbol: str):
+async def register(seed: MandateSeed, sleeve, terms, symbol: str, **over):
     """Register a plan and return a plain snapshot of it."""
-    return seed.plan_snapshot((await seed.register(sleeve, terms, symbol)).plan)
+    return seed.plan_snapshot((await seed.register(sleeve, terms, symbol, **over)).plan)
 
 
 class Scene(SimpleNamespace):
@@ -152,8 +152,9 @@ async def scene(
         symbols=syms, account_mode="kiwoom_mock", market=market
     )
     plans = []
-    for sym in syms:
-        plan = await register(seed, sleeve, terms, sym)
+    for i, sym in enumerate(syms):
+        # one sector per plan: two plans of one sector would hit the 35% sector cap
+        plan = await register(seed, sleeve, terms, sym, sector=f"sector-{i}")
         plans.append(plan)
         if approved_first:
             await seed.approve_plan(plan.id, terms)
