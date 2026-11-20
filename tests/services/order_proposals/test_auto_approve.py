@@ -13,7 +13,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services.mandate.proposal_gate import proposal_account_allowed
-from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import OrderProposalsService, mandate_send
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     auto_veto_thesis_summary,
@@ -255,15 +255,16 @@ def test_i23_mandate_buy_below_market_requires_human_approval():
     assert decision.reason == "mandate_not_eligible"
 
 
-def test_mandate_proposal_accounts_default_closed_and_only_accept_kiwoom_mock():
+def test_mandate_proposal_accounts_default_closed_and_only_kiwoom_mock_is_accepted():
     default = Settings.model_fields["MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES"].default
     assert default == ""
     assert not proposal_account_allowed("kiwoom_mock", default)
     configured = "kiwoom_mock,kiwoom_mock_us,kis_live,toss_live"
     assert proposal_account_allowed("kiwoom_mock", configured)
-    assert not proposal_account_allowed("kiwoom_mock_us", configured)
-    assert not proposal_account_allowed("kis_live", configured)
-    assert not proposal_account_allowed("toss_live", configured)
+    # hk 5651 T4c opens no live account (typed send evidence and quote provenance for
+    # KIS and Toss are follow-up hk 5696), listed or not
+    for mode in ("kis_live", "toss_live", "kiwoom_mock_us", "upbit"):
+        assert not proposal_account_allowed(mode, configured)
 
 
 @pytest.mark.asyncio
@@ -302,11 +303,13 @@ async def test_i23_mandate_auto_revalidation_blocks_before_broker(monkeypatch):
         expected_policy_stamp="fixture",
     )
 
+    # T4c: the automatic path stays closed until T5 (no switch, no D2 release):
+    # the rung falls back to a person and nothing reaches the broker or the gate.
     assert outcomes == [
         RungOutcome(
             rung.rung_index,
-            "guard_blocked",
-            {"reason": "mandate_send_boundary_pending"},
+            "approval_required",
+            {"reason": "mandate_switch_off"},
         )
     ]
     broker.assert_not_called()
@@ -317,7 +320,12 @@ async def test_i23_mandate_auto_revalidation_blocks_before_broker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkeypatch):
-    group = _group(mandate_plan_id=42, account_mode="kiwoom_mock")
+    group = _group(
+        mandate_plan_id=42,
+        mandate_tranche_index=1,
+        proposal_id=uuid.uuid4(),
+        account_mode="kiwoom_mock",
+    )
     rung = _rung(state="pending_approval")
     service = AsyncMock()
     service.get_proposal.return_value = (group, [rung])
@@ -333,6 +341,21 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
     )
     submit = AsyncMock(side_effect=AssertionError("unexpected submit call"))
     proposal_id = uuid.uuid4()
+    # T4c: the callback asks the send boundary before the nonce; a refusal leaves
+    # the nonce, the lease and the rung untouched.
+    monkeypatch.setattr(
+        mandate_send.DEFAULT_PORT,
+        "boundary_refusal",
+        AsyncMock(return_value="mandate_plan_not_active"),
+    )
+    monkeypatch.setattr(
+        mandate_send.settings, "MANDATE_APPROVER_TELEGRAM_USER_IDS", "1"
+    )
+    monkeypatch.setattr(
+        mandate_send.DEFAULT_PORT,
+        "account_ref_resolver",
+        AsyncMock(return_value="acct-ref"),
+    )
 
     result = await _handle_approve(
         session=AsyncMock(),
@@ -350,7 +373,7 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
 
     assert result == {
         "handled": False,
-        "reason": "mandate_send_boundary_pending",
+        "reason": "mandate_plan_not_active",
         "proposal_id": str(proposal_id),
     }
     submit.assert_not_called()
@@ -2729,7 +2752,7 @@ async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeyp
     monkeypatch.setattr(
         dispatch.proposal_gate,
         "check_dispatch",
-        AsyncMock(return_value=("mandate_send_boundary_pending", {})),
+        AsyncMock(return_value=("mandate_switch_off", {})),
     )
     card = AsyncMock()
     monkeypatch.setattr(dispatch, "send_proposal_for_approval", card)
@@ -2750,7 +2773,7 @@ async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeyp
     decisions = service.record_auto_approve_rejections.await_args.kwargs["decisions"]
     assert [decision["reason"] for decision in decisions] == [
         "mandate_not_eligible",
-        "mandate_send_boundary_pending",
+        "mandate_switch_off",
     ]
 
 
@@ -2843,3 +2866,44 @@ async def test_mandate_create_binds_plan_and_appends_events(monkeypatch):
         "tranche_proposed",
     ]
     assert append.await_args.kwargs["proposal_id"] == inserted["proposal_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_dispatch", [True, False])
+async def test_t4c_no_live_account_gets_a_plan_bound_proposal(
+    monkeypatch, auto_dispatch
+):
+    """T4c opens the Kiwoom mock account only (live opening is follow-up hk 5696): a live
+    account is refused whatever the settings say (refusal only)."""
+    from app.services.mandate import proposal_gate
+    from app.services.order_proposals import service as service_module
+    from app.services.order_proposals.errors import OrderProposalError
+
+    monkeypatch.setattr(
+        service_module.settings,
+        "MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES",
+        "kis_live,toss_live,kiwoom_mock",
+    )
+    monkeypatch.setattr(
+        service_module.settings, "ORDER_PROPOSALS_AUTO_APPROVE", auto_dispatch
+    )
+    monkeypatch.setattr(
+        proposal_gate,
+        "lock_plan_proposal",
+        AsyncMock(side_effect=AssertionError("the plan is never reached")),
+    )
+    service = OrderProposalsService(AsyncMock())
+    for account_mode in ("kis_live", "toss_live"):
+        with pytest.raises(OrderProposalError, match="mandate_account_not_enabled"):
+            await service.create_proposal(
+                symbol="005930",
+                market="equity_kr",
+                account_mode=account_mode,
+                side="buy",
+                order_type="limit",
+                proposer="test",
+                rungs=[RungInput(0, "buy", Decimal(1), Decimal(90), None)],
+                mandate_plan_id=42,
+                tranche_index=1,
+                now=datetime(2026, 11, 20, 1, tzinfo=UTC),
+            )

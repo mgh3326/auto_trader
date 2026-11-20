@@ -187,7 +187,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # 20261120_hk5441_upbit_gw so the DB tests run its exact DDL. The two journal
 # triggers of 20261101 are installed here too: production has them, a database
 # built from the models did not.
-SCHEMA_BOOTSTRAP_VERSION = 74
+# v75 (hk 5651): review.mandate_basket_authority / review.mandate_cap_mutex (two ORM
+# tables via create_all) and the three guard triggers incl. the automatic-fence
+# profile guard, loaded from the production migration 20261120_hk5651_mandate_fence.
+SCHEMA_BOOTSTRAP_VERSION = 75
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2562,6 +2565,27 @@ def _mandate_model_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _mandate_model_ddl()
+
+
+def _mandate_fence_ddl() -> tuple[str, ...]:
+    """hk 5651 guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261120_hk5651_mandate_fence.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "hk5651_mandate_fence_migration", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.GUARD_DDL)
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _mandate_fence_ddl()
 
 
 def _sleeve_kiwoom_ddl() -> tuple[str, ...]:

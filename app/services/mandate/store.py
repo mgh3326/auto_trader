@@ -45,8 +45,9 @@ from app.models.mandate import (
     MandateTerms,
 )
 from app.models.order_proposals import OrderProposal
+from app.models.review import TradeRetrospective
 from app.models.strategy_sleeves import StrategySleeve, StrategySleeveVersion
-from app.services.mandate import hashing
+from app.services.mandate import fence_locks, hashing
 from app.services.mandate import vocabulary as v
 from app.services.mandate.fold import (
     InvalidPlanEvent,
@@ -873,6 +874,25 @@ def _parse_ts(text_: str) -> datetime:
     return datetime.strptime(text_, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
 
 
+async def _bump_basket_authority(
+    session: AsyncSession, realm: str, basket_key: str, *, create: bool
+) -> None:
+    """F2 as a writer (§4.6): a clause, profile or plan registration is a fact a send
+    fence reads, so its basket's authority row is counted up in this same transaction.
+
+    A clause or a plan registration may be the first to see its basket and creates the
+    row. A profile writer does not: zero rows updated means no fence could have
+    serialized against it, so it fails instead of writing."""
+    try:
+        if create:
+            await fence_locks.ensure_authority_row(session, realm, basket_key)
+        await fence_locks.bump_authority(session, realm, basket_key)
+    except fence_locks.AuthorityRowMissing as exc:
+        raise MandateError(
+            v.MandateRefusal.UNREADABLE, "the basket authority row is missing"
+        ) from exc
+
+
 async def _write_terms(
     session: AsyncSession,
     request: MandateApprovalRequest,
@@ -894,6 +914,10 @@ async def _write_terms(
         horizon_sessions=s["prereg_horizon_sessions"],
         max_duration_days=s["prereg_max_duration_days"],
     )
+    # F2 of every basket this approval touches is taken once, ascending, with the
+    # sleeve version (§4.6): the destination basket's row exists before it is bumped.
+    destination = (realm_and_market(sleeve)[0], c["basket_key"])
+    await fence_locks.ensure_authority_row(session, *destination)
     try:
         version = await sleeve_store.append_version_with_terms(
             session,
@@ -905,6 +929,7 @@ async def _write_terms(
             prereg=prereg,
             reason=f"mandate terms approved: {request.approval_ref}"[:500],
             set_by=f"operator:telegram:{principal}",
+            extra_baskets=(destination,),
         )
     except SleeveError as exc:
         raise MandateError(v.MandateRefusal.REQUEST_STALE, str(exc)) from exc
@@ -959,6 +984,18 @@ async def _write_profile(
     session.add(profile)
     await _flush(session)
     await session.refresh(profile)
+    profile_terms = await session.get(MandateTerms, profile.terms_id)
+    profile_sleeve = await _sleeve(session, profile.sleeve_id)
+    if profile_terms is None:
+        raise MandateError(
+            v.MandateRefusal.BINDING_BROKEN, "the profile's clause row is missing"
+        )
+    await _bump_basket_authority(
+        session,
+        realm_and_market(profile_sleeve)[0],
+        profile_terms.basket_key,
+        create=False,
+    )
     if (
         hashing.content_sha256(profile_content_from_row(profile))
         != profile.content_sha256
@@ -1308,6 +1345,7 @@ async def register_plan(
     )
     session.add(reservation)
     await _flush(session)
+    await _bump_basket_authority(session, realm, terms.basket_key, create=True)
     return RegisteredPlan(plan, tranches, reservation, proposed)
 
 
@@ -1389,6 +1427,74 @@ def _event_field_problem(event: str, fields: Mapping[str, Any]) -> str | None:
     if fenced_auto != (fields.get("activation_profile_id") is not None):
         return "activation_profile_id is for auto fences only, and required there"
     return None
+
+
+#: §5.2: only a thesis-change retrospective of the plan's own symbol evidences a broken
+#: thesis. The generic loss-cut validators also accept ``stop_loss``; the mandate does not.
+THESIS_RETROSPECTIVE_TRIGGER = "thesis_change"
+
+
+def retrospective_defect(
+    trigger_type: Any,
+    retro_symbol: Any,
+    instrument_type: Any,
+    *,
+    plan_symbol: str,
+    market: str,
+) -> str | None:
+    """Why a stored retrospective cannot evidence a broken thesis of this plan, or None.
+
+    Shared by the event writer (before it sets the proof) and the loss guard (at read
+    time, for events already marked), so both judge the same three facts: the trigger,
+    the instrument (the same ticker text can name another market's instrument) and the
+    symbol.
+    """
+    if trigger_type != THESIS_RETROSPECTIVE_TRIGGER:
+        return (
+            f"the retrospective's trigger_type must be {THESIS_RETROSPECTIVE_TRIGGER!r}"
+        )
+    if str(getattr(instrument_type, "value", instrument_type) or "") != market:
+        return "the retrospective is of another instrument type"
+    if sleeve_store.sleeve_symbol(str(retro_symbol or ""), market) != plan_symbol:
+        return "the retrospective is of another symbol"
+    return None
+
+
+async def _require_cited_retrospective(
+    session: AsyncSession,
+    evidence: Mapping[str, Any],
+    *,
+    plan_symbol: str,
+    market: str,
+) -> None:
+    raw = evidence.get("retrospective_id")
+    try:
+        retro_id = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        retro_id = None
+    found = (
+        None
+        if retro_id is None
+        else (
+            await session.execute(
+                select(
+                    TradeRetrospective.trigger_type,
+                    TradeRetrospective.symbol,
+                    TradeRetrospective.instrument_type,
+                ).where(TradeRetrospective.id == retro_id)
+            )
+        ).first()
+    )
+    if found is None:
+        raise MandateError(
+            v.MandateRefusal.INVALID_FIELDS,
+            "the cited retrospective does not exist yet; create it before the event",
+        )
+    defect = retrospective_defect(
+        found[0], found[1], found[2], plan_symbol=plan_symbol, market=market
+    )
+    if defect is not None:
+        raise MandateError(v.MandateRefusal.INVALID_FIELDS, defect)
 
 
 async def append_plan_event(
@@ -1475,6 +1581,16 @@ async def append_plan_event(
     problem = _event_field_problem(event, fields)
     if problem is not None:
         raise MandateError(v.MandateRefusal.INVALID_FIELDS, problem)
+    if event in ("thesis_broken", "thesis_evidence_refreshed"):
+        # §5.2 "증거의 순서": the retrospective the event cites must already exist in
+        # this writer's snapshot. A write-time visibility check orders the writes
+        # themselves; the transaction-start ``created_at`` defaults cannot.
+        _realm, plan_market = realm_and_market(await _sleeve(session, plan.sleeve_id))
+        await _require_cited_retrospective(
+            session, clean_evidence, plan_symbol=plan.symbol, market=plan_market
+        )
+        # durable proof, written by this writer only (callers cannot send the key)
+        clean_evidence[v.PROOF_KEY] = True
     if event == "holdings_disposed":
         validate_holdings_evidence(
             clean_evidence, scope_account_refs=list(plan.scope_account_refs), actor=who

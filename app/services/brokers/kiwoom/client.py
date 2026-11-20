@@ -22,6 +22,7 @@ import httpx
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.auth import KiwoomAuthClient
+from app.services.brokers.pre_send_account import PRE_DISPATCH_HOOK
 
 _log = logging.getLogger(__name__)
 
@@ -423,6 +424,13 @@ class KiwoomMockClient:
                         "Kiwoom mock request resolved to non-mock host "
                         f"{request.url.host!r}; refusing to send."
                     )
+                # hk 3795 T4c: a hook that must see the world as of the request
+                # itself (token and rate-limit waits are over) runs here, still
+                # before dispatch: a refusal is a provable non-send.
+                edge_hook = PRE_DISPATCH_HOOK.get()
+                if edge_hook is not None:
+                    stage = "pre_dispatch_hook"
+                    await edge_hook()  # type: ignore[operator]
                 dispatch_started = True
                 response = await client.send(request)
         except Exception as exc:

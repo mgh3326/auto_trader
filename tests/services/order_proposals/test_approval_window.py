@@ -1053,6 +1053,9 @@ class _FakeRevalidationService:
             raise OrderProposalDispatchNoLongerAuthorized(reason)
         return self.group
 
+    async def mandate_loss_cut_refusal(self, group):
+        return None  # hk 3795 T4c: no plan in this fake
+
     async def preflight_published_proposal_callback(self, proposal_id, *, callback):
         assert proposal_id == self.group.proposal_id
         OrderProposalsService._assert_published_proposal_binding(

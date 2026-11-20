@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.services.brokers.credential_firewall import (
     assert_broker_credentials_allowed,
 )
+from app.services.brokers.pre_send_account import PRE_SEND_ACCOUNT
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
@@ -196,7 +197,14 @@ class TossReadClient:
 
         async def send() -> tuple[httpx.Response, TossRateLimitHeaders]:
             if pre_send_hook is not None:
-                await pre_send_hook()
+                # The hook sees the account this very request carries (hk 3795 I15).
+                account_token = PRE_SEND_ACCOUNT.set(
+                    headers.get("X-Tossinvest-Account")
+                )
+                try:
+                    await pre_send_hook()
+                finally:
+                    PRE_SEND_ACCOUNT.reset(account_token)
             response = await self._client.request(
                 method, path, params=params, json=json, headers=headers
             )

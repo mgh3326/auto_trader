@@ -395,6 +395,21 @@ async def create_sleeve(
     return sleeve, version
 
 
+async def _bump_mandate_authority(
+    session: AsyncSession,
+    sleeve_id: int,
+    extra_baskets: tuple[tuple[str, str], ...] = (),
+) -> None:
+    """A sleeve version is a fact a mandate send fence reads (hk 3795 T4c, §4.6 F2).
+
+    A sleeve with no mandate clause belongs to no basket and nothing happens. The
+    import is lazy: the mandate package imports this module.
+    """
+    from app.services.mandate.fence_locks import bump_for_sleeve_version
+
+    await bump_for_sleeve_version(session, sleeve_id, extra_baskets=extra_baskets)
+
+
 async def set_sleeve_version(
     session: AsyncSession,
     *,
@@ -466,6 +481,7 @@ async def set_sleeve_version(
     )
     session.add(row)
     await session.flush()
+    await _bump_mandate_authority(session, sleeve_id)
     return row
 
 
@@ -480,6 +496,7 @@ async def append_version_with_terms(
     prereg: PreRegistration,
     reason: str,
     set_by: str,
+    extra_baskets: tuple[tuple[str, str], ...] = (),
 ) -> StrategySleeveVersion:
     """Append the next version as the mandate approval writes it (hk 3795 T1).
 
@@ -520,6 +537,7 @@ async def append_version_with_terms(
     )
     session.add(row)
     await session.flush()
+    await _bump_mandate_authority(session, sleeve_id, extra_baskets)
     return row
 
 
@@ -553,6 +571,7 @@ async def stop_at_loss_limit(
     )
     session.add(row)
     await session.flush()
+    await _bump_mandate_authority(session, expected.sleeve_id)
     return row
 
 

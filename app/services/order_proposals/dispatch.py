@@ -137,7 +137,7 @@ _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
     {
         "eligibility_error",
-        "mandate_send_boundary_pending",
+        "mandate_switch_off",
         "multi_rung_requires_approval",
     }
 )

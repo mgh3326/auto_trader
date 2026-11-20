@@ -33,8 +33,10 @@ from app.models.order_proposals import (
     OrderProposalRung,
 )
 from app.models.review import TossLiveOrderLedger
+from app.services.mandate import loss_guard as mandate_loss_guard
 from app.services.mandate import proposal_gate
 from app.services.mandate import store as mandate_store
+from app.services.mandate import vocabulary as vocab
 from app.services.order_proposals import mandate_quote
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
@@ -931,6 +933,14 @@ class OrderProposalsService:
                 account_mode, settings.MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES
             ):
                 raise OrderProposalError("mandate_account_not_enabled")
+            if (
+                vocab.realm_of(account_mode) == "live"
+                and settings.ORDER_PROPOSALS_AUTO_APPROVE
+            ):
+                # hk 3795 §4.6 "배포 순서" (1): until T5 gives every automatic send the
+                # same fence-area protocol, the legacy automatic dispatch must be
+                # stopped for the whole human pilot. A refusal only; nothing is sent.
+                raise OrderProposalError("mandate_auto_dispatch_active")
             if broker_account_id is not None:
                 raise OrderProposalError("mandate_account_mismatch")
             if (
@@ -1034,6 +1044,20 @@ class OrderProposalsService:
             source_asof=merged_source_asof,
             now=now,
         )
+        if exit_intent == "loss_cut":
+            # hk 3795 T4c, I14 (§5.2): a loss sale of an instrument with an unreleased
+            # live plan needs that plan's thesis_broken evidence. Taken under the
+            # symbol lock so a plan registration and this proposal each see the
+            # other's committed row. Only ever adds a refusal.
+            refusal = await self.mandate_loss_cut_refusal(
+                market=market,
+                symbol=symbol,
+                retrospective_id=retrospective_id,
+                approval_issue_id=approval_issue_id,
+                lock_symbol=True,
+            )
+            if refusal is not None:
+                raise OrderProposalError(refusal)
         proposal_id = uuid.uuid4()
         root_id = proposal_id
         superseded_group: OrderProposal | None = None
@@ -1194,6 +1218,43 @@ class OrderProposalsService:
                 approval_nonce_used_at=now,
             )
         return group
+
+    async def mandate_loss_cut_refusal(
+        self,
+        group: Any = None,
+        *,
+        market: str | None = None,
+        symbol: str | None = None,
+        retrospective_id: Any = None,
+        approval_issue_id: Any = None,
+        lock_symbol: bool = False,
+    ) -> str | None:
+        """I14 reader: ``None`` or a closed ``mandate_*`` refusal (hk 3795 T4c).
+
+        Pass a stored proposal as ``group`` (approval callback, pre-send) or the
+        fields of one being created. A group that is not a ``loss_cut`` is never
+        looked at. A plan or event that cannot be read refuses (fail closed).
+        """
+        if group is not None:
+            if getattr(group, "exit_intent", None) != "loss_cut":
+                return None
+            market = group.market
+            symbol = group.symbol
+            retrospective_id = group.retrospective_id
+            approval_issue_id = group.approval_issue_id
+        assert market is not None and symbol is not None
+        try:
+            return await mandate_loss_guard.loss_cut_refusal(
+                self._session,
+                market=market,
+                symbol=symbol,
+                retrospective_id=retrospective_id,
+                approval_issue_id=approval_issue_id,
+                lock_symbol=lock_symbol,
+            )
+        except Exception:  # noqa: BLE001 - an unreadable plan refuses the loss sale
+            logger.warning("mandate loss_cut guard could not read plans", exc_info=True)
+            return "mandate_unreadable"
 
     async def _validate_sleeve_binding(
         self, *, sleeve_id: int, account_mode: str, market: str
