@@ -178,6 +178,22 @@
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "HK-5624",
+      "title": "동일 매수 결정의 기존 깊은 지정가와 첫 정규장 시가 지정가 모의 비교",
+      "tracker": "hk 5624",
+      "markets": [
+        "kr",
+        "us"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-20",
+      "manifest": "research/experiments/manifests/hk-5624-entry-ab-mock.json",
+      "manifest_sha256": "39ae89d38381839ac52d39cea706e8b29f792564fb85a3e67b308d0bf20cbde8",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }
