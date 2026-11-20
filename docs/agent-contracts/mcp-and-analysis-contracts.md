@@ -222,6 +222,7 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   (`NEWS_RELEVANCE_INGEST_TOKEN`, default-off, GET도 토큰 필요)
 - **런북**: `docs/runbooks/news-relevance-judgment.md`
 - **스케줄러 연결 없음**: 판정 Job은 레포 밖(Hermes류 세션/operator)
+- **enqueue 없음 (hk 5753)**: `get_news` 는 판정 task 를 TaskIQ 로 enqueue 하지 않는다. 대기 행은 응답의 `pending` 으로 남고, 판정은 외부 루프(GET `pending` → 판정 → ingest)가 한다. task 정의와 `run_news_relevance_judgment` 본문은 운영자 수동 호출용으로 남는다.
 - **주의**: 공유 `KR_INVEST_KEYWORDS`(ROB-169 브리핑 스코어러 공용)에 hint용
   키워드를 추가하지 말 것 — ROB-491 로컬 텀은 `symbol_news_relevance.py`의
   `_KR_EXTRA_INVEST_HINT_TERMS`에만

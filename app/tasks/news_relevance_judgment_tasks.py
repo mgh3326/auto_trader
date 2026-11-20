@@ -1,9 +1,9 @@
 """ROB-506 — TaskIQ task for async news-relevance judgment.
 
-NO recurring schedule (TaskIQ/cron/Prefect activation is operator-owned and
-out of repo). Enqueued from the ``get_news`` KR persist path when
-``NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED`` is on, or invoked manually for
-smoke. Commit mode is refused while the flag is off; ``dry_run=True`` (the
+NO recurring schedule and NO enqueue: ``get_news`` no longer dispatches this
+task (hk 5753, TaskIQ worker retired). The definition is kept so an operator
+can invoke it deliberately. Commit mode is refused while
+``NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED`` is off; ``dry_run=True`` (the
 default) is always allowed and performs no client call / no writes.
 """
 
