@@ -154,6 +154,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # hk 5528 mandate tables are later than this boundary and reference the
     # sleeve tables, so they drop first (children before parents; the
     # order_proposals mandate columns referencing the plans drop before).
+    "review.mandate_cap_mutex",
+    "review.mandate_basket_authority",
     "review.mandate_symbol_reservation_releases",
     "review.mandate_symbol_reservations",
     "review.mandate_plan_events",
