@@ -22,6 +22,7 @@ from app.models.mandate import (
 from app.models.strategy_sleeves import StrategySleeve
 from app.services.mandate import store
 from app.services.mandate import vocabulary as v
+from app.services.mandate.buy_freeze import FreezeVerdict, buy_freeze_state
 from app.services.mandate.fold import PlanState
 from app.services.mandate.hashing import content_sha256
 from app.services.mandate.invariants import (
@@ -117,27 +118,6 @@ async def lock_plan_proposal(
             v.MandateRefusal.BINDING_MISMATCH, "plan tranche or basket differs"
         )
     return PlanProposalContext(plan, sleeve, state, terms, tranche)
-
-
-@dataclass(frozen=True)
-class FreezeVerdict:
-    frozen: bool
-    reason: str
-    evidence: dict[str, Any]
-    observed_version: int | None = None
-    valid_until: datetime | None = None
-
-
-async def buy_freeze_state(
-    session: AsyncSession,
-    *,
-    account_mode: str,
-    market: str,
-    sleeve_id: int,
-    now: datetime,
-) -> FreezeVerdict:
-    """Fail closed until the shared T4c/hk 4900 freeze reader is available."""
-    return FreezeVerdict(frozen=True, reason="unavailable", evidence={})
 
 
 async def _is_frozen(
@@ -314,7 +294,9 @@ async def check_dispatch(
             "daily_notional_after": format(global_total, "f"),
             "daily_cap": format(global_budget.daily_cap, "f"),
         }
-    return "mandate_send_boundary_pending", basket_detail
+    # Everything the evidence can show holds, but no automatic path exists until
+    # T5 binds ``mandate_binding`` and the switch: automation is off, a person decides.
+    return "mandate_switch_off", basket_detail
 
 
 @dataclass(frozen=True)
@@ -471,3 +453,11 @@ async def _approval_matches(
         and request.content_sha256 == approval.subject_sha256 == digest
         and content_sha256(request.content) == content_sha256(content) == digest
     )
+
+
+async def approval_matches(*args: Any, **kwargs: Any) -> bool:
+    """Public name of the approval/hash check the fence transaction shares."""
+    return await _approval_matches(*args, **kwargs)
+
+
+__all__ = ["FreezeVerdict", "approval_matches", "buy_freeze_state"]

@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "20261120_hk5651_mandate_fence"
@@ -203,9 +204,7 @@ def _create_tables() -> None:
         "mandate_basket_authority",
         sa.Column("realm", sa.Text(), nullable=False),
         sa.Column("basket_key", sa.Text(), nullable=False),
-        sa.Column(
-            "authority_seq", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("authority_seq", sa.BigInteger(), nullable=False, server_default="0"),
         _ts(),
         sa.PrimaryKeyConstraint(
             "realm", "basket_key", name="pk_mandate_basket_authority"
@@ -247,7 +246,10 @@ def upgrade() -> None:
     grants = "".join(
         [
             "GRANT USAGE ON SCHEMA review TO at_app; ",
-            *(f"GRANT SELECT, INSERT, UPDATE ON review.{t} TO at_app; " for t in TABLES),
+            *(
+                f"GRANT SELECT, INSERT, UPDATE ON review.{t} TO at_app; "
+                for t in TABLES
+            ),
         ]
     )
     # The Stage 4 role may not exist in dev and CI databases (hard rule 18).

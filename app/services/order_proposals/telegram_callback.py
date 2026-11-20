@@ -59,6 +59,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.fill_notification import resolve_display_name_db
+from app.services.order_proposals import mandate_send
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
@@ -114,7 +115,6 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
-    mandate_send_block_reason,
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import (
@@ -734,6 +734,22 @@ async def _handle_auto_veto(
     }
 
 
+async def _mandate_pre_nonce_block(
+    service: OrderProposalsService, group: Any, rungs: list[Any], *, now: datetime
+) -> str | None:
+    """hk 3795 T4c: refusals that must leave the single-use nonce unspent.
+
+    A plan-bound send that the fence would refuse (§4.7 blocking codes) and a loss
+    sale without its plan's ``thesis_broken`` evidence (I14). Fast, lock-free advice;
+    the fence transaction and the pre-send check decide again. Only ever refuses, and
+    returns ``None`` at once for a proposal with neither a plan nor a loss_cut.
+    """
+    block = await mandate_send.pre_nonce_refusal(group, rungs, now=now)
+    if block is None:
+        block = await service.mandate_loss_cut_refusal(group)
+    return block
+
+
 async def _handle_approve(
     *,
     session: AsyncSession,
@@ -771,7 +787,9 @@ async def _handle_approve(
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
     target_group, target_rungs = await service.get_proposal(proposal_id)
-    mandate_block = mandate_send_block_reason(target_group)
+    mandate_block = await _mandate_pre_nonce_block(
+        service, target_group, target_rungs, now=now_fn()
+    )
     if mandate_block is not None:
         await session.commit()
         return {
@@ -1211,8 +1229,10 @@ async def _handle_batch_approve(
         if len(proposals) < 2:
             await session.commit()
             return {"handled": False, "reason": "approval_batch_too_small"}
-        for group, _rungs in proposals:
-            mandate_block = mandate_send_block_reason(group)
+        for group, member_rungs in proposals:
+            mandate_block = await _mandate_pre_nonce_block(
+                service, group, member_rungs, now=gate_now
+            )
             if mandate_block is not None:
                 await session.commit()
                 return {"handled": False, "reason": mandate_block}

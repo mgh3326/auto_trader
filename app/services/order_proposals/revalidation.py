@@ -28,7 +28,7 @@ import inspect
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -44,6 +44,7 @@ from app.services.mechanical_loss_cut.plans import (
     EXIT_PLAN_SOURCE_KEY,
     record_buy_exit_plan,
 )
+from app.services.order_proposals import mandate_send
 from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     ApprovalWindowDecision,
@@ -1215,14 +1216,6 @@ def _default_correlation_mint(
     )
 
 
-def mandate_send_block_reason(group: object) -> str | None:
-    # T4a denies every plan-bound send until T4c replaces this check with the
-    # fence transaction. Keep this check before any broker work.
-    if getattr(group, "mandate_plan_id", None) is not None:
-        return "mandate_send_boundary_pending"
-    return None
-
-
 async def revalidate_and_submit(
     *,
     service: OrderProposalsService,
@@ -1241,6 +1234,7 @@ async def revalidate_and_submit(
     expected_policy_stamp: str | None = None,
     now_fn: Clock | None = None,
     parking_sell_auto_enabled: bool = False,
+    mandate_port: mandate_send.MandateSendPort | None = None,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -1249,13 +1243,27 @@ async def revalidate_and_submit(
     revalidation cycle from this call.
     """
     group, rungs = await service.get_proposal(proposal_id)
-    mandate_block = mandate_send_block_reason(group)
-    if mandate_block is not None:
-        return [
-            RungOutcome(rung.rung_index, "guard_blocked", {"reason": mandate_block})
-            for rung in rungs
-            if rung.state == "pending_approval"
-        ]
+    if mandate_send.is_plan_bound(group):
+        # hk 3795 T4c: a plan-bound send has no automatic path yet (T5) and one
+        # shape (a single resting buy). Everything else is refused before any
+        # broker work; the fence itself is committed in ``_revalidate_place_rung``.
+        mandate_block = mandate_send.unsupported_shape_refusal(group, rungs)
+        if mandate_block is None and eligibility_gate is not None:
+            return [
+                RungOutcome(
+                    rung.rung_index,
+                    "approval_required",
+                    {"reason": "mandate_switch_off"},
+                )
+                for rung in rungs
+                if rung.state == "pending_approval"
+            ]
+        if mandate_block is not None:
+            return [
+                RungOutcome(rung.rung_index, "guard_blocked", {"reason": mandate_block})
+                for rung in rungs
+                if rung.state == "pending_approval"
+            ]
     block_reason = proposal_approval_block_reason(group)
     if block_reason is not None:
         return [
@@ -1359,6 +1367,7 @@ async def revalidate_and_submit(
                 expected_policy_stamp=active_policy_stamp,
                 now_fn=clock,
                 parking_sell_auto_enabled=parking_sell_auto_enabled,
+                mandate_port=mandate_port or mandate_send.DEFAULT_PORT,
             )
         outcomes.append(outcome)
     return outcomes
@@ -1462,6 +1471,7 @@ async def _revalidate_place_rung(
     expected_policy_stamp: str,
     now_fn: Clock,
     parking_sell_auto_enabled: bool,
+    mandate_port: mandate_send.MandateSendPort | None = None,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -1717,6 +1727,33 @@ async def _revalidate_place_rung(
         )
         return lifecycle_outcome
 
+    send_fence: mandate_send.SendFence | None = None
+    if mandate_send.is_plan_bound(group):
+        # hk 3795 T4c (§4.6): the fence is committed on its own session before the
+        # rung leaves ``revalidating``; without a committed fence nothing is sent.
+        fenced = await mandate_send.commit_fence_for_rung(
+            group,
+            rung,
+            preview,
+            now=now_fn(),
+            port=mandate_port or mandate_send.DEFAULT_PORT,
+        )
+        if not isinstance(fenced, mandate_send.SendFence):
+            await _release_after_rejection(
+                buying_power_releaser=buying_power_releaser,
+                group=group,
+                reservation=buying_power_reservation,
+            )
+            await service.transition_rung(
+                proposal_id, rung_index, new_state="pending_approval"
+            )
+            return RungOutcome(
+                rung_index,
+                "guard_blocked",
+                {"reason": fenced.refusal, **fenced.detail},
+            )
+        send_fence = fenced
+
     await service.transition_rung(proposal_id, rung_index, new_state="approved")
     await service.transition_rung(proposal_id, rung_index, new_state="submitting")
 
@@ -1734,6 +1771,19 @@ async def _revalidate_place_rung(
             eligibility_gate is not None and group.exit_intent == "loss_cut"
         ),
     )
+
+    send_hook: Callable[[], Awaitable[None]] = transport_gate
+    loss_cut_hook: mandate_send.LossCutGuardHook | None = None
+    if group.exit_intent == "loss_cut":
+        # hk 3795 T4c, I14: just before the broker call a loss sale is checked once
+        # more against its plan's thesis_broken evidence (best effort, refuses only).
+        loss_cut_hook = mandate_send.LossCutGuardHook(
+            inner=send_hook,
+            refusal_fn=lambda: service.mandate_loss_cut_refusal(group),
+        )
+        send_hook = loss_cut_hook
+    if send_fence is not None:
+        send_hook = send_fence.hook(send_hook)
 
     try:
         with _optional_order_link_context(
@@ -1769,7 +1819,7 @@ async def _revalidate_place_rung(
                     ),
                     rung=rung_index,
                     correlation_id=corr,
-                    pre_send_hook=transport_gate,
+                    pre_send_hook=send_hook,
                     **_cash_funding_revalidation_kwargs(group),
                     **(
                         {"parking_sell_ctx": parking_sell_ctx}
@@ -1779,7 +1829,21 @@ async def _revalidate_place_rung(
                 )
             )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
+        refused = _mandate_refusal_code(send_fence, loss_cut_hook)
+        if refused is not None:
+            return await _mandate_pre_send_refused(
+                service=service,
+                group=group,
+                rung=rung,
+                send_fence=send_fence,
+                refused_code=refused,
+                buying_power_releaser=buying_power_releaser,
+                reservation=buying_power_reservation,
+                now=now,
+            )
         if transport_gate.blocked_decision is not None:
+            if send_fence is not None:
+                await send_fence.close_unsent("pre_send_refused")
             await _release_after_rejection(
                 buying_power_releaser=buying_power_releaser,
                 group=group,
@@ -1819,7 +1883,21 @@ async def _revalidate_place_rung(
             outcome = RungOutcome(rung_index, "unverified", {"error": str(exc)})
         return outcome
 
+    refused = _mandate_refusal_code(send_fence, loss_cut_hook)
+    if refused is not None:
+        return await _mandate_pre_send_refused(
+            service=service,
+            group=group,
+            rung=rung,
+            send_fence=send_fence,
+            refused_code=refused,
+            buying_power_releaser=buying_power_releaser,
+            reservation=buying_power_reservation,
+            now=now,
+        )
     if transport_gate.blocked_decision is not None:
+        if send_fence is not None:
+            await send_fence.close_unsent("pre_send_refused")
         await _release_after_rejection(
             buying_power_releaser=buying_power_releaser,
             group=group,
@@ -1848,6 +1926,10 @@ async def _revalidate_place_rung(
         fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
     if outcome.result == "error":
+        if send_fence is not None:
+            # An explicit rejection proves nothing was accepted (§4.6): the fence
+            # closes. Every other outcome (acked, resting, unverified) keeps it.
+            await send_fence.close_rejected()
         await _release_after_rejection(
             buying_power_releaser=buying_power_releaser,
             group=group,
@@ -1855,6 +1937,42 @@ async def _revalidate_place_rung(
         )
     await _record_exit_plan_after_accepted_buy(group, rung, outcome, now=now)
     return outcome
+
+
+def _mandate_refusal_code(
+    send_fence: mandate_send.SendFence | None,
+    loss_cut_hook: mandate_send.LossCutGuardHook | None,
+) -> str | None:
+    if send_fence is not None and send_fence.refused_code is not None:
+        return send_fence.refused_code
+    if loss_cut_hook is not None:
+        return loss_cut_hook.refused_code
+    return None
+
+
+async def _mandate_pre_send_refused(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    send_fence: mandate_send.SendFence | None,
+    refused_code: str,
+    buying_power_releaser: BuyingPowerReleaser,
+    reservation: tuple[str, Decimal, str | None] | None,
+    now: datetime,
+) -> RungOutcome:
+    """A mandate recheck at the HTTP edge refused: nothing was sent, a fence closes."""
+    if send_fence is not None:
+        await send_fence.close_unsent("pre_send_refused")
+    await _release_after_rejection(
+        buying_power_releaser=buying_power_releaser,
+        group=group,
+        reservation=reservation,
+    )
+    await service.restore_rung_after_pre_send_block(
+        group.proposal_id, rung.rung_index, now=now, expired=False
+    )
+    return RungOutcome(rung.rung_index, "guard_blocked", {"reason": refused_code})
 
 
 async def _record_exit_plan_after_accepted_buy(

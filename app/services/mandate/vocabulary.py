@@ -156,6 +156,15 @@ HOLDINGS_DISPOSITIONS: tuple[str, ...] = (
 #: Closed ``evidence`` keys of a plan event (§3.2). ``holdings_account_refs`` is the
 #: set of account references the holdings check read: I19 compares it with the
 #: ``scope_account_refs`` fixed at registration.
+#: Why a send fence may be closed without a ledger reconcile (§4.6): only a send that
+#: provably never started, or one the broker explicitly rejected. Nothing else
+#: (a timeout, a lost result, a crash, an ambiguous reply) closes a fence.
+RELEASE_REASONS: tuple[str, ...] = (
+    "pre_send_refused",
+    "explicit_rejection",
+    "pre_post_failure",
+)
+
 EVIDENCE_KEYS: tuple[str, ...] = (
     "ledger_row_ids",
     "trade_date",

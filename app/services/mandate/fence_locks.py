@@ -157,7 +157,9 @@ async def bump_authority(session: AsyncSession, realm: str, basket_key: str) -> 
     return int(row[0])
 
 
-async def sleeve_baskets(session: AsyncSession, sleeve_id: int) -> list[tuple[str, str]]:
+async def sleeve_baskets(
+    session: AsyncSession, sleeve_id: int
+) -> list[tuple[str, str]]:
     """Every ``(realm, basket_key)`` a sleeve has had a clause or a plan in, sorted."""
     rows = (
         await session.execute(
@@ -212,6 +214,8 @@ async def lock_mutex(session: AsyncSession, key: str, scope: str) -> None:
         {"key": key, "scope": scope},
     )
     await session.execute(
-        text("SELECT 1 FROM review.mandate_cap_mutex WHERE mutex_key = :key FOR UPDATE"),
+        text(
+            "SELECT 1 FROM review.mandate_cap_mutex WHERE mutex_key = :key FOR UPDATE"
+        ),
         {"key": key},
     )
