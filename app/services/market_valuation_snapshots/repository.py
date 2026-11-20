@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
@@ -71,6 +72,37 @@ class ValuationCoverageCounts:
     total_symbols: int
 
 
+def superseded_by_newer_row(source: str) -> sa.ColumnElement[bool]:
+    """True for a row of ``source`` that has a strictly newer row of the same
+    ``source`` for the same ``(market, symbol)`` (later ``snapshot_date``, or the
+    same date with a larger ``id``).
+
+    Used by the Toss writer retention (hk 5751: keep only the latest market-cap
+    row per market/symbol) and by the operator prune CLI. The subquery is
+    correlated to the outer ``market_valuation_snapshots`` row, so it works in
+    both SELECT and DELETE statements.
+    """
+    newer = aliased(MarketValuationSnapshot)
+    return (
+        sa.select(sa.literal(1))
+        .select_from(newer)
+        .where(
+            newer.market == MarketValuationSnapshot.market,
+            newer.symbol == MarketValuationSnapshot.symbol,
+            newer.source == source,
+            sa.or_(
+                newer.snapshot_date > MarketValuationSnapshot.snapshot_date,
+                sa.and_(
+                    newer.snapshot_date == MarketValuationSnapshot.snapshot_date,
+                    newer.id > MarketValuationSnapshot.id,
+                ),
+            ),
+        )
+        .correlate(MarketValuationSnapshot)
+        .exists()
+    )
+
+
 def _normalize_payload(row: MarketValuationSnapshotUpsert) -> dict:
     values = row.model_dump()
     values["market"] = values["market"].strip().lower()
@@ -113,6 +145,36 @@ class MarketValuationSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return result.rowcount or 0
+
+    async def prune_superseded(
+        self,
+        *,
+        source: str,
+        market: str,
+        symbols: Iterable[str],
+    ) -> int:
+        """Delete ``source`` rows for ``(market, symbols)`` that a newer row of the
+        same source supersedes, keeping the latest row per symbol (hk 5751).
+
+        Runs in the caller's transaction. Only rows strictly older than the
+        newest row of the same source are removed, so a just-upserted latest row
+        is never deleted and a late backfill of an older date cannot evict it.
+        """
+        norm_market = market.strip().lower()
+        norm_source = source.strip().lower()
+        norm_symbols = sorted({s.strip().upper() for s in symbols if s.strip()})
+        total = 0
+        for start in range(0, len(norm_symbols), _MAX_BIND_PARAMS):
+            chunk = norm_symbols[start : start + _MAX_BIND_PARAMS]
+            stmt = sa.delete(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.market == norm_market,
+                MarketValuationSnapshot.source == norm_source,
+                MarketValuationSnapshot.symbol.in_(chunk),
+                superseded_by_newer_row(norm_source),
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount or 0
+        return total
 
     async def coverage_counts(
         self, market: str, *, fresh_date: dt.date

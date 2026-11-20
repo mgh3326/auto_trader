@@ -347,6 +347,14 @@ async def sync_toss_symbol_master(
     if request.commit:
         if payloads:
             await repo.upsert(payloads)
+            # hk 5751: toss_openapi market-cap rows are latest-only per
+            # (market, symbol). Older Toss rows for the symbols just written
+            # are removed in the same transaction; other sources are untouched.
+            await repo.prune_superseded(
+                source=TOSS_VALUATION_SOURCE,
+                market=market,
+                symbols={p.symbol for p in payloads},
+            )
         await db.flush()
 
     warnings: tuple[str, ...] = ()
