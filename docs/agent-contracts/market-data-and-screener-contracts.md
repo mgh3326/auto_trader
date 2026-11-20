@@ -614,3 +614,29 @@ unchanged.
 ### US 지정가 깊이 연구 shadow 설계 (hk 3737)
 
 `docs/design/3737-us-limit-depth-shadow.md`는 후속 연구의 제안이며 구현·실험 활성화가 아니다. ROB-1474의 기록된 US 매수 진입 episode를 읽기 전용으로 비교하고, 1분봉 GET 파일의 불변 세대와 출처를 고정한다. 매수 반사실은 `low < limit`일 때만 체결 가정, 동등 접촉은 별도 계수하며 결과는 journal·브로커 체결과 별도 라벨이다. 사전등록·미결 설계 확정 후에만 후속 구현한다. 주문·원장 쓰기·소급·스케줄러 및 기존 시장가 실험 변경은 없다.
+
+### 비가격 이력 정리 (hk 5751)
+
+운영자 결정 `decision/2026-11-20/at-direction-daily-plan-nonprice-go` 항목 5에 따른 정리 계약이다.
+CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/runbooks/nonprice-history-prune.md`다.
+
+- **삭제 허용 목록은 닫혀 있다**: 뉴스 피드 20개(`NEWS_RETIRED_FEEDS`), 시장 이벤트 트리플 3개(`MARKET_EVENT_RETIRED_TRIPLES`),
+  Toss `market_cap` 최신이 아닌 행. 남기는 목록(`naver_item_news`·`finnhub_company_news`·`finnhub_general_news`·
+  `research_on_demand_naver`·`research_on_demand_finnhub`·`dart`·`finnhub`·`naver_finance`·`tvscreener`과 Toss 최신 행)과
+  뉴스 피드 삭제 목록이 남기는 뉴스 피드와 겹치면 모듈 로드가 실패한다.
+- **보류 피드 `http_naver_stock_aggregate`**: spike attribution 의 유일한 KR 정확 시각 근거(`KR_EXACT`)이고 backfill 대상이다.
+  `--allow-held-feed` 로 명시하지 않으면 커밋에서 빠지고 결과에 `held_news_feeds_kept`로 보고된다.
+  `--allow-held-feed`에는 보류 피드 이름만 받는다(오타·보존 피드는 입력 오류).
+- **의존 행은 같은 배치 트랜잭션에서 먼저 지운다**: `symbol_news_relevance`, `news_article_related_symbols`,
+  `news_analysis_results`(스키마상 CASCADE이지만 명시 삭제해 건수를 남긴다). 시장 이벤트는 `market_event_values`와
+  `market_event_ingestion_partitions`를 같은 트리플로 지운다. 밸류에이션은 의존 행이 없다.
+- **배치와 재실행**: 배치마다 자기 트랜잭션, 커서는 `id` 오름차순, 선택 수와 삭제 수가 다르면 그 배치는 롤백하고 실패한다.
+  두 번째 실행은 아무것도 지우지 않는다.
+- **읽기 경로 판정**: `get_news`의 정규 읽기는 `feed_source` 필터 없이 `symbol_news_relevance`를 최신순으로 읽는다.
+  삭제 피드의 연결 행은 해당 종목의 `get_news`에서 사라진다(설계 세션 결정 대기, 미리보기 `by_feed` 건수로 확인).
+  `get_latest_news_preview`는 시간 창 없이 최신 기사를 고르므로 삭제 피드만 남은 실행 소스에서는 빈 미리보기가 된다.
+- **Toss 시가총액은 최신만**: `MarketValuationSnapshotsRepository.prune_superseded`가 커밋 때 같은 트랜잭션에서 써 넣은
+  심볼의 더 오래된 `toss_openapi` 행을 지운다. 다른 소스의 행은 건드리지 않으며, `latest_for_symbols`·`coverage_counts`
+  같은 최신 기준 읽기는 그대로 동작한다. 판정식은 CLI와 writer가 같은 `superseded_by_newer_row`다.
+- **시장 이벤트 판정**: `forexfactory`·`wisefn`은 `expected_sources`의 수동 전용 트리플이라 freshness에 영향이 없다.
+  `tradingview` 경제 이벤트는 2026-06-10 이후 수집이 멈췄다. 삭제 뒤 `economic/global` 캘린더 행은 비게 된다.
