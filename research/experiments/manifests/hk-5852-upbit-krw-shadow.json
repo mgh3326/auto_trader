@@ -1,0 +1,151 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "HK-5852",
+  "version": 1,
+  "title": "Upbit KRW 코인 shadow: 추세 대 눌림목 진입, 레짐 게이트 켬 대 끔 (진입 창 60일, 총 91일)",
+  "question": "같은 유니버스(거래대금 상위 20 KRW 마켓)·같은 청산 규칙(하드 손절 -10%, 추세 이탈, 30일 시간 손절, +2/+4/+6% 순차 익절 사다리) 아래에서, 눌림목 진입 계열이 추세 즉시 진입 계열보다 진입당 비용 차감 순수익률을 높이는가, 그리고 레짐 게이트(공포탐욕·스테이블코인 공급·김치 프리미엄·funding)가 각 계열의 진입당 순수익률을 높이는가?",
+  "status": "draft",
+  "markets": [
+    "crypto"
+  ],
+  "hashes": {
+    "preregistration_text": "docs/design/5852-upbit-krw-shadow-strategy.md",
+    "preregistration_sha256": {
+      "pending": "봉인 시 설계 문서의 sha256 을 고정한다. 문서가 바뀌면 새 manifest 버전이다."
+    },
+    "dataset_manifest": {
+      "pending": "봉인일 S 의 에포크 유니버스 U0(거래대금 상위 20, u0_sha256)와 일봉·녹화 호가·게이트 입력의 출처·해시를 고정한다."
+    },
+    "evaluation_contract": "docs/design/5852-upbit-krw-shadow-strategy.md §7.2, §8",
+    "code_sha": {
+      "pending": "T1(규칙 라이브러리), T4(일일 잡), T5(fillwire 재생기), T7(연구 하네스)의 코드 sha 를 봉인 시 기록한다."
+    },
+    "policy": {
+      "pending": "해당 없음이 아니면 봉인 시 기록한다. 이 실험은 trading_policy.yaml 키를 새로 쓰지 않는다."
+    },
+    "cost_table": {
+      "pending": "봉인 시 수수료 0.05%/편도와 체결 규칙(지연 1.0초, through/touch)을 해시로 고정한다."
+    },
+    "fill_rules": {
+      "pending": "설계 §7.2 규칙 1~7 의 sha256 을 봉인 시 고정한다. 이후 바꾸지 않는다."
+    }
+  },
+  "features": [
+    {
+      "name": "마감 일봉 C_0..C_60 (R60, RSI14, 20일 EWMA 변동성)",
+      "available_at": "09:00 KST(00:00 UTC) 일봉 마감. 발행은 09:10 KST 이후 60분 이내이고 늦으면 그 날은 late_issue 로 진입하지 않는다.",
+      "source": "crypto_candles_1d(is_closed, Upbit KRW)"
+    },
+    {
+      "name": "에포크 유니버스 U0 와 일일 적격(경고·상장 이력 90일·가격 100 KRW·유동성)",
+      "available_at": "U0 는 봉인일, 일일 적격은 09:10 KST 발행 전에 동결된 입력",
+      "source": "upbit_symbol_universe(market_warning), crypto_candles_1d(quote_volume), research.crypto_universe 제외 목록 + USDT"
+    },
+    {
+      "name": "레짐 게이트 입력 G1-G4 (공포탐욕, 스테이블코인 공급 7일 변화, BTC 김치 프리미엄, BTC funding 최근 3회 평균)",
+      "available_at": "observed_at <= 09:10 KST 발행 시각이고 나이 36시간 이하. 모르거나 오래되면 게이트 팔은 그 날 진입하지 않는다.",
+      "source": "crypto_insight_snapshots(공포탐욕·defillama·funding), 김치 프리미엄과 funding 3회 이력은 T3 수집 후"
+    },
+    {
+      "name": "녹화된 Upbit orderbook(15단계)와 trade 프레임",
+      "available_at": "프레임의 received_at. 체결 재생은 발행 시각 + 1.0초 이후 프레임만 쓴다.",
+      "source": "fillwire upbit 녹화기 (<dir>/upbit/<UTC 날짜>/<마켓>.jsonl, 마켓 20개)"
+    }
+  ],
+  "labels": [
+    {
+      "name": "episode_net_return_on_intended_notional",
+      "definition": "한 팔·한 마켓의 한 진입 신호의 모든 체결(익절 단·청산)을 합쳐 수수료 0.05%/편도를 차감한 순손익을 의도한 진입 금액으로 나눈 값. 미체결 에피소드는 0 으로 코호트에 남는다. 91일에 열려 있는 에피소드는 unmeasured 이며 0 으로 채우지 않는다.",
+      "horizon_sessions": 30
+    }
+  ],
+  "calendar": {
+    "crypto": "24/7"
+  },
+  "splits": {
+    "scheme": "전향 시험만 사용. 과거 회고·기존 일봉은 가설과 상수 선정에만 쓰였고(상수는 인용값 또는 통념값, 튜닝 없음) 학습·튜닝을 하지 않는다.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 30,
+    "gap_sessions": 30,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {
+        "pending": "T1-T8 구현, 시작 전 점검(설계 S7)과 게이트 입력 8일 예열이 끝난 뒤 시작일을 봉인한다. 진입 창 60일, 이후 마지막 진입의 30일 시간 손절까지 총 91일(shadow 위임장 수명 91일). 연장 없음."
+      },
+      "exposure_audit": "봉인 이후 발행분만 시험이다. 설계 작성(2026-11-21) 이전 계정 이력과 ROB-1458 증거는 가설 선정에만 쓰였고 시험 밖이다. 열람 기록을 봉인 기록과 대조한다.",
+      "seal_rule": "진입 창과 총 기간의 달력 날짜를 봉인 때 고정하고 이후 연장하지 않는다. 91일이 지난 뒤 한 번 채점한다."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "A0",
+      "description": "추세 계열, 게이트 끔: R60 = C_0/C_60 - 1 > 0 이면 진입(롱 전용), 팔당 동시 4포지션, 후보 초과 시 유동성 순위로 채운다."
+    },
+    {
+      "id": "A1",
+      "description": "추세 계열, 게이트 켬: A0 와 같고, G1-G4 중 하나라도 막거나 모르면 신규 진입 없음."
+    },
+    {
+      "id": "B0",
+      "description": "눌림목 계열, 게이트 끔: R60 > 0 이고 RSI14 <= 40 이고 C_0 > C_1 이면 진입. 보유 마켓에는 의도를 만들지 않는다(물타기 없음)."
+    },
+    {
+      "id": "B1",
+      "description": "눌림목 계열, 게이트 켬: B0 와 같고 게이트 규칙은 A1 과 같다."
+    },
+    {
+      "id": "cash",
+      "description": "통제군: 예산을 쓰지 않고 수익 0."
+    },
+    {
+      "id": "btc-hold",
+      "description": "통제군: 같은 예산을 첫 발행 슬롯에 BTC 로 사서 창 끝까지 보유(편도 수수료 1회). 연구에서 계산하고 레포에는 기록하지 않는다."
+    }
+  ],
+  "costs_fills": {
+    "cost_table": {
+      "pending": "봉인 시 수수료 0.05%/편도(계정 실제 적용률은 미확인)를 해시로 고정한다. 슬리피지는 모형화하지 않고 녹화 호가 체결가에 이미 반영된다."
+    },
+    "fill_models": [
+      "through(판정에 쓰는 값): 주문 가격을 엄격히 통과한 trade 프레임만 그 체결 수량만큼 채운다. 체결가는 주문 지정가. 테이커 부분은 발행 시각 + 1.0초 이후 첫 프레임의 반대편 표시 수량만큼 각 단계 가격으로 체결.",
+      "touch(상한): 주문 가격의 체결 또는 반대편 호가가 가격에 닿으면 남은 수량 전부를 지정가로 체결.",
+      "stop-slot(판정에 쓰는 값): 6시간 점검 슬롯(09:10, 15:10, 21:10, 03:10 KST)의 최우선 매수호가가 손절가 이하일 때만 발동, 슬롯 + 1초 이후 프레임에서 매도.",
+      "stop-continuous(보조): 녹화된 어느 프레임이든 매수호가가 손절가 이하이면 발동."
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 0,
+    "search": "없음. 신호 상수(60, 40, 1일), 손절 -10%, 사다리 +2/+4/+6%, 크기 상수, 게이트 임계, 유동성 하한, 체결 지연은 봉인 전 고정이고 이후 바꾸지 않는다.",
+    "notes": "상수는 인용(TREND-TSMOM-v1 L=60, 손절 10%, 480,000 KRW, 시그마 0.60)이거나 통념값이며 데이터로 맞추지 않았다. 바꾸려면 새 manifest 버전(새 에포크)이다."
+  },
+  "seeds": [
+    0
+  ],
+  "metrics": {
+    "primary": "비교 C1 (B0 - A0), C2 (A1 - A0, B1 - B0) 는 에피소드 순수익률 평균의 차(%p), C3 는 각 팔의 에피소드 순수익률 평균과 예산 대비 누적 순손익이 현금(0)보다 큰지. 서술 통계이며 판정은 through 와 stop-slot 값으로만 한다.",
+    "secondary": [
+      "체결률, 진입 지연, 발행 호가 대비 슬리피지, 손절 슬롯 대 연속 감시 차이",
+      "게이트별 막음 일수(서술만), 팔별 최악 에피소드, already_held 수",
+      "게이트웨이 shadowed/refused 건수와 path_divergence 분류(판정에 쓰지 않음)",
+      "touch 규칙 값과 btc-hold 대비"
+    ],
+    "family": [
+      "HK-5852: C1, C2(2), C3(4) 총 7개 비교의 서술적 판정. 유의성 검정이 아니며 다중 비교 보정을 주장하지 않는다."
+    ],
+    "alpha": "0.05",
+    "delta_min": "0.01"
+  },
+  "stopping_rules": [
+    "진입 창 60일 + 청산 30일, 총 91일 고정. 91일 뒤 한 번 열람한다. 연장 없음. 중간에는 안전·완결성(S1-S6)만 보고 비교 지표를 읽거나 규칙을 바꾸지 않는다.",
+    "비교에 드는 두 팔의 완결 에피소드가 하나라도 15 미만이면 그 비교는 INSUFFICIENT_SAMPLE 이다. 진입 창 또는 에피소드 일수의 unverified 가 10% 를 넘으면 UNVERIFIED 이다.",
+    "through 와 touch 사이에서 판정이 뒤집히면 BRACKET_SENSITIVE 이고 SUPPORTED 가 될 수 없다.",
+    "실주문, live 위임장, live sleeve, 제안, 감시 등록이 이 경로에서 생기거나 ROB-501 위반이 생기면 즉시 중단한다.",
+    "팔 누적 순손실이 1,000,000 KRW 이상이면 그 팔의 신규 진입을 멈춘다. 녹화 커버리지 부족(필요 마켓의 동기화 호가 없는 일수 10% 초과)이면 UNVERIFIED 로 종결한다.",
+    "게이트웨이 어긋남 중 설명되지 않는 것이 5% 를 넘으면 결과를 내기 전에 원인을 수리한다. 규칙·유니버스·상수·체결 규칙·코드 sha 변경은 새 에포크이다."
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}
