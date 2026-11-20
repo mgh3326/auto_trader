@@ -10,7 +10,7 @@
   ],
   "hashes": {
     "preregistration_text": "docs/design/5750-kr-daily-plan-v0.md",
-    "preregistration_sha256": "bd6de34a61a97d12848789d93f1a31c7dfa0ac29c7a3e1f83a4d065aae98a53b",
+    "preregistration_sha256": "a3cc5dc48bc05e59191a675d1235dc721a45b4ed54ffd666d55fe47c8506ca34",
     "dataset_manifest": {
       "pending": "봉인 전 후보 집합 정의(원천 프리셋·상한·합집합 규칙, candidate_set_sha256)와 데이터 출처, 달력 버전, 가격 결손·정지 의심 처리 규칙을 고정한다."
     },
@@ -28,7 +28,7 @@
       "pending": "대조 순위 c_rank 의 지표 목록·부호·동일 가중 평균 규칙을 봉인 시 해시로 고정한다. 제안은 설계 §4.2 표. 이후 튜닝 없음."
     },
     "grade_spec": {
-      "pending": "등급 축(value, quality)·세 단계 매핑(+1/0/-1)·1:1 합성·동점 처리를 봉인 시 해시로 고정한다."
+      "pending": "등급 축(value, quality)·세 단계 매핑(+1/0/-1)·1:1 합성과 경계 동점 처리(N=10 경계의 동점 구간 후보 전부에 남은 몫을 같은 가중으로 분할, 임의 순서 규칙 없음)를 봉인 시 해시로 고정한다."
     }
   },
   "features": [
@@ -76,7 +76,7 @@
   "candidate_policies": [
     {
       "id": "S",
-      "description": "세션 합성 등급(value+quality, strong=+1, neutral=0, weak=-1) 상위 10. 등급이 유효한 후보(오늘 판단했거나 이월 5세션 이내)와 규칙 문턱 통과 후보로 구성된 풀 P_t 에서 고른다."
+      "description": "세션 합성 등급(value+quality, strong=+1, neutral=0, weak=-1) 상위 10(경계 동점은 동점 구간 전부에 남은 몫을 같은 가중으로 분할). 등급이 유효한 후보(오늘 판단했거나 이월 5세션 이내)와 규칙 문턱 통과 후보로 구성된 풀 P_t 에서 고른다."
     },
     {
       "id": "C",

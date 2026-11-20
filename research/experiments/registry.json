@@ -207,7 +207,7 @@
       "status": "draft",
       "registered_at": "2026-11-20",
       "manifest": "research/experiments/manifests/hk-5750-daily-plan-score-vs-control.json",
-      "manifest_sha256": "feb2d41f83f457040a4f8bca18cb941dafcd0e1f610d435ad51073c265b78fe9",
+      "manifest_sha256": "5fff6577951b5cc56905ace1de7a0912cee84d1291a0a9e153c07e37d5434d7b",
       "previous_manifest_sha256": [],
       "k": 0,
       "test_looks": []

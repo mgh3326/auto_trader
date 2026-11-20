@@ -23,7 +23,7 @@
 | 계획이 담는 것 | 이미 있는 저장소 | 계획이 하는 일 |
 |---|---|---|
 | 후보와 원천 순위 | `review.screener_pick_log` — 호출·원천·심볼·`rank`·`admission`·`gate_features`(`app/models/screener_pick_log.py:120-156`) | 후보 행이 `candidate_call_id`+심볼을 가리킨다 |
-| 판단(손절가·목표가·기간·후보 연결·rung·기준가) | `review.decision_evidence` + `decision_evidence_rungs` + `decision_reference_prices`(`app/services/decision_evidence.py:21,47,56`) | 판단을 쓰지 않고 `decision_id`를 가리킨다. 기각 판단의 "샀다면 넣었을" 지정가·수량은 #2501 입력(`parse_declined_entry`, `app/services/decision_evidence.py:169`; MCP `forecast_save(declined_*)`, `app/mcp_server/tooling/forecast_tools.py:73`) |
+| 판단(손절가·목표가·기간·후보 연결·rung·기준가) | `review.decision_evidence` + `decision_evidence_rungs` + `decision_reference_prices`(`app/services/decision_evidence.py:21,47,56`) | 판단을 쓰지 않고 `decision_id`를 가리킨다(`forecast_save` 응답이 `decision_id`를 주지 않으므로 `forecast_id`에서 해석, §8·Q15). 기각 판단의 "샀다면 넣었을" 지정가·수량은 #2501 입력(`parse_declined_entry`, `app/services/decision_evidence.py:169`; MCP `forecast_save(declined_*)`, `app/mcp_server/tooling/forecast_tools.py:73`) |
 | 확률 예측과 채점 | `review.trade_forecasts`(`app/models/review.py:1747`), 기각 코호트 버킷 `deferred_no_action`(`app/models/decision_vocabulary.py:26`, `app/models/review.py:1832`) | `forecast_id`를 가리킨다 |
 | 승인된 분할 계획 | `review.mandate_plans`·`mandate_plan_tranches`·`mandate_plan_events`(`app/models/mandate.py:357,429,460`), 설계 `docs/design/3795-mandate.md` §3.2 | 매수 행이 같은 등록 어휘를 쓴다(§1.4). 계획이 있으면 `mandate_plan_id`로 가리킨다 |
 | lot별 손절 계획과 기계식 손절 shadow 판정 | `review.lot_exit_plans`·`review.mechanical_loss_cut_decisions`(`app/models/mechanical_loss_cut.py:36,106`) | 위험 매도 행이 같은 판정 함수의 결과를 읽는다(§3) |
@@ -64,7 +64,7 @@ head(market='kr', session_date=D, mode='plan_only')
 
 ### 1.4 매수 행의 어휘 = 위임장 계획 등록 어휘
 
-`PlanInput`(`app/services/mandate/store.py:1012-1033`)의 필드 중 세션이 채울 수 있는 것만 같은 이름·같은 한도로 쓴다. 한도의 정본은 등록 함수다: `thesis` ≤ 1000자(`app/services/mandate/store.py:1257`), `invalidation_conditions` 각 ≤ 500자·최대 3개(`app/services/mandate/store.py:1258-1264`), `sector_key` ≤ 100자.
+`PlanInput`(`app/services/mandate/store.py:1012-1027`)의 필드 중 세션이 채울 수 있는 것만 같은 이름·같은 한도로 쓴다. 한도의 정본은 등록 함수다: `thesis` ≤ 1000자(`app/services/mandate/store.py:1257`), `invalidation_conditions` 각 ≤ 500자·최대 3개(`app/services/mandate/store.py:1258-1264`), `sector_key` ≤ 100자.
 
 | 행의 열(매수 계열: new·add) | 위임장 등록 입력 | 비고 |
 |---|---|---|
@@ -78,7 +78,7 @@ head(market='kr', session_date=D, mode='plan_only')
 
 ### 1.5 체결 뒤 재계산은 T4b fold를 재사용한다
 
-두 번째 재계산기를 만들지 않는다. 위임장 계획이 가리키는 종목은 `fold_plan_events`(`app/services/mandate/fold.py:557`)와 `project`(`app/services/mandate/projection_rules.py:335`)가 낸 상태를 행의 `mandate_state`로 읽는다. 계획에 묶이지 않은 보유 행은 (a) 포지션 FIFO 재로드(`load_held_lots`, `app/services/mechanical_loss_cut/positions.py:122`)와 (b) 같은 순수 규칙 함수(`evaluate_lot`, `app/services/mechanical_loss_cut/rules.py:577`)를 그 종목에만 다시 부른다. 체결·사건 한 건은 그 종목의 행만 바꾼다(§6.3).
+두 번째 재계산기를 만들지 않는다. 다만 v0에서는 3788 동결과 자동 등록 없음 때문에 실계좌 위임장 계획이 0건이라 아래 fold 재사용은 계약만 정하고 실제로는 쓰이지 않는다. **v0에서 체결 뒤 실제로 다시 계산되는 것은 포지션 FIFO 재로드와 `evaluate_lot` 재호출뿐이다.** 위임장 계획이 가리키는 종목은 `fold_plan_events`(`app/services/mandate/fold.py:557`)와 `project`(`app/services/mandate/projection_rules.py:335`)가 낸 상태를 행의 `mandate_state`로 읽는다. 계획에 묶이지 않은 보유 행은 (a) 포지션 FIFO 재로드(`load_held_lots`, `app/services/mechanical_loss_cut/positions.py:122`)와 (b) 같은 순수 규칙 함수(`evaluate_lot`, `app/services/mechanical_loss_cut/rules.py:577`)를 그 종목에만 다시 부른다. 체결·사건 한 건은 그 종목의 행만 바꾼다(§6.3).
 
 ## 2. 행동 정의
 
@@ -116,7 +116,7 @@ head(market='kr', session_date=D, mode='plan_only')
 - 행의 `rule_verdict`에 `{result: cut|skip, skip_reason?, trigger_key?, close, stop, unrealized_pct, plan_version, policy_version, policy_content_hash}`를 싣는다. `cut`이면 `action=risk_sell`, `action_basis=rule`이다. 세션은 이 행의 `action`·`quantity`를 바꾸지 못하고, 서버가 같은 입력(버전의 `input_bundle_sha256`이 고정한 번들)으로 다시 계산해 일치하지 않는 쓰기를 거부한다(§9 T1 검증).
 - 🔴 증거 부족은 안전 확인이 아니다: `price_missing`·`price_stale`·`halted_suspect`·`position_unreadable`·`no_exit_plan`·`open_sell_unknown`·`protected_unknown`은 행을 `hold`+`rule_status=unknown`+같은 사유로 남긴다. `not_underwater`·`above_planned_stop`·`floor_not_reached`·`rising` 등 평가가 끝난 skip만 `rule_status=evaluated`다. 위험 상태를 모를 때 "위험 없음"으로 보이지 않게 한다.
 - 세션은 별도로 **논지 훼손 여부**만 기록한다: 행의 `thesis_status ∈ {intact, weakening, broken, unrecorded}`. 이 값은 정보이며 어떤 이벤트·제안·주문도 만들지 않는다. 위임장 쪽 `thesis_broken` 이벤트는 승인 이슈와 회고가 있어야 쓸 수 있고(`docs/design/3795-mandate.md` §5.2), v0는 그 경로를 부르지 않는다.
-- **읽기 전용 경로가 필요하다(현재 코드 사실)**: `evaluate_all_lots`는 읽기 전용이 아니다. lot에 계획이 없으면 backfill 계획을 쓰고(`app/services/mechanical_loss_cut/job.py:228-231`) 판정마다 shadow 행을 쓰며(`app/services/mechanical_loss_cut/job.py:275`), `commit=False`는 커밋만 건너뛴다(`app/services/mechanical_loss_cut/job.py:282-283`). 반환은 cut 판정 목록과 skip **개수**뿐이라 lot별 skip 사유가 나오지 않는다(`app/services/mechanical_loss_cut/job.py:250,289`). 또 `run_mechanical_loss_cut`은 `MECHANICAL_LOSS_CUT_SHADOW_ENABLED`가 꺼지면 `disabled`를 돌려준다(`app/services/mechanical_loss_cut/job.py:326`). 그래서 v0는 **스위치를 켜지 않고** 같은 순수 `evaluate_lot`을 읽기 포트(`held_lots`·`latest_plans`·`bars`·`open_sell_quantities`·`protected_quantities`)만으로 lot별로 부르는 읽기 전용 평가기를 새로 둔다(하드룰 19: 스위치 기본 off 유지·shadow 모듈은 브로커·주문 import 금지). 계획이 없는 lot은 backfill을 쓰지 않고 `no_exit_plan`(unknown)으로 남긴다. shadow 행을 테이블에 남기는 기존 수동 lever(`mechanical_loss_cut.evaluate`, 스케줄 없음, `app/tasks/mechanical_loss_cut_tasks.py:20`)는 별개이며 이 문서가 바꾸지 않는다(Q4).
+- **읽기 전용 경로가 필요하다(현재 코드 사실)**: `evaluate_all_lots`는 읽기 전용이 아니다. lot에 계획이 없으면 backfill 계획을 쓰고(`app/services/mechanical_loss_cut/job.py:228-231`) 판정마다 shadow 행을 쓰며(`app/services/mechanical_loss_cut/job.py:275`), `commit=False`는 커밋만 건너뛴다(`app/services/mechanical_loss_cut/job.py:282-283`). 반환은 cut 판정 목록과 skip **개수**뿐이라 lot별 skip 사유가 나오지 않는다(`app/services/mechanical_loss_cut/job.py:250,289`). 또 `run_mechanical_loss_cut`은 `MECHANICAL_LOSS_CUT_SHADOW_ENABLED`가 꺼지면 `disabled`를 돌려준다(`app/services/mechanical_loss_cut/job.py:327`). 그래서 v0는 **스위치를 켜지 않고** 같은 순수 `evaluate_lot`을 읽기 포트(`held_lots`·`latest_plans`·`bars`·`open_sell_quantities`·`protected_quantities`)만으로 lot별로 부르는 읽기 전용 평가기를 새로 둔다(하드룰 19: 스위치 기본 off 유지·shadow 모듈은 브로커·주문 import 금지). 계획이 없는 lot은 backfill을 쓰지 않고 `no_exit_plan`(unknown)으로 남긴다. shadow 행을 테이블에 남기는 기존 수동 lever(`mechanical_loss_cut.evaluate`, 스케줄 없음, `app/tasks/mechanical_loss_cut_tasks.py:20`)는 별개이며 이 문서가 바꾸지 않는다(Q4).
 - 🔴 파라미터는 잠정이다: 정책 `mechanical_loss_cut`은 `parameter_source: "provisional shadow defaults pending ROB-1458 evidence"`, `thresholds_confirmed: false`, KR `unrealized_floor_pct: -5`, 기본 손절 `pct_floor 15`(`config/trading_policy.yaml:1842-1857`). 따라서 `risk_sell` 행은 shadow 판정이며 "실전에서 자를 것"이라는 주장이 아니다. 행에 `policy_version/hash`를 싣고 정책이 확정되기 전의 판정임을 `rule_verdict.thresholds_confirmed=false`로 남긴다.
 
 ### 3.2 물타기 금지: −8% 이하 lot의 추가매수는 가점·감점이 아니라 "실행 불가"
@@ -134,7 +134,7 @@ head(market='kr', session_date=D, mode='plan_only')
 - **AT가 결정론으로 계산**: 지표 번들(§7), 규칙 문턱(§2.1), 위험 매도(§3.1), 물타기 금지(§3.2), 대조 순위 `c_rank`(§4.2), 변경 플래그(§6.2).
 - **세션이 쓴다**: 두 축의 닫힌 등급, 논지, 무효 조건, 채택·탈락 사유 코드.
   - 축: `value`(가치) · `quality`(사업 건전성). 각 `strong | neutral | weak` 세 단계. 자유 점수·숫자 확신도는 받지 않는다.
-  - 합성: `composite = grade_value + grade_quality`, 매핑 strong=+1·neutral=0·weak=−1(범위 −2~+2), 동점은 `c_rank`로 깨지 않고 `symbol` 오름차순(결정적). **가중(1:1)과 매핑은 에포크 동안 고정**이다. 주간 검토는 변경을 제안만 할 수 있고, 변경은 새 manifest 버전(새 에포크)으로만 적용된다. 이는 `hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §3.3의 "숫자 가중 합은 주간 검토 전까지 고정"을 사전등록과 양립시키는 해석이다(Q1).
+  - 합성: `composite = grade_value + grade_quality`, 매핑 strong=+1·neutral=0·weak=−1(범위 −2~+2), 합성 값은 5단계뿐이라 N=10 경계에 동점이 생긴다. 동점은 `c_rank`로 깨지 않고, 경계 동점 구간의 후보 전부에 남은 몫(N − 경계 위 후보 수)을 **같은 가중으로 나눠** 평균에 넣는다(`symbol` 순서 같은 임의 규칙으로 구성원을 정하지 않는다, Q14). C의 `c_rank`는 연속값이라 동점이 드물지만 같은 분할 규칙을 쓴다. **가중(1:1)과 매핑은 에포크 동안 고정**이다. 주간 검토는 변경을 제안만 할 수 있고, 변경은 새 manifest 버전(새 에포크)으로만 적용된다. 이는 `hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §3.3의 "숫자 가중 합은 주간 검토 전까지 고정"을 사전등록과 양립시키는 해석이다(Q1).
 - 근거(점수가 검증되지 않음): 세션의 확률 예측 Brier 0.247(n=2,523), 신규 매수 후보만 0.201(`hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §3.3).
 
 ### 4.2 대조군 C: 같은 후보를 AT 지표만으로 줄 세운 순위
@@ -171,17 +171,17 @@ head(market='kr', session_date=D, mode='plan_only')
 
 ## 5. v0 통과·중단 기준 (20 계획 세션)
 
-지난 모의가 실패한 세 원인(기준 없음, 청산·채점 미완주, 실전과 다른 체결, `hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §3.4)을 v0에 적용한다. 기준은 **세션 시작 전 고정**이며 사후에 바꾸지 않는다.
+지난 모의가 실패한 세 원인(기준 없음, 청산·채점 미완주, 실전과 다른 체결, `hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §3.4)을 v0에 적용한다. 기준은 **세션 시작 전 고정**이며 사후에 바꾸지 않는다. P1~P5는 브리프의 "매일"·"마다"를 그대로 20/20으로 적었다. 결손일 허용 폭은 Q13에서 따로 정한다(정하기 전까지 허용 0).
 
 ### 5.1 통과 (모두 만족)
 
 | # | 기준 | 측정 |
 |---|---|---|
-| P1 | 매일 보유 전체에 행이 있다 | 계획 세션마다, premarket 시점 KIS·Toss KR 보유 심볼(계좌별)에 대해 버전 1에 행이 있는 비율 = 100%. **20세션 중 ≥19세션**이 100%이고 어느 날도 95% 미만이 아니다 |
-| P2 | 후보마다 채택·탈락 사유가 있다 | 같은 세션의 후보 집합 전체(`candidate_set_sha256`)에 `disposition`+닫힌 `reason_code`가 있는 비율 = 100%, ≥19세션 |
-| P3 | 마감 채점이 사람 없이 끝난다 | 다음 계획 세션의 premarket 시작 전까지 그 세션의 모든 행에 대한 마감 outcomes(§1.3 `close`)가 사람 개입 없이 써진다: ≥19세션. 사람 개입 = 수동 도구 호출·DB 수정 |
+| P1 | 매일 보유 전체에 행이 있다 | 계획 세션마다, premarket 시점 KIS·Toss KR 보유 심볼(계좌별)에 대해 버전 1에 행이 있는 비율 = 100%. **20/20세션** |
+| P2 | 후보마다 채택·탈락 사유가 있다 | 같은 세션의 후보 집합 전체(`candidate_set_sha256`)에 `disposition`+닫힌 `reason_code`가 있는 비율 = 100%. **20/20세션** |
+| P3 | 마감 채점이 사람 없이 끝난다 | 다음 계획 세션의 premarket 시작 전까지 그 세션의 모든 행에 대한 마감 outcomes(§1.3 `close`)가 사람 개입 없이 써진다. 사람 개입 = 수동 도구 호출·DB 수정. **20/20세션** |
 | P4 | 세션 1회 비용이 기록된다 | 모든 premarket 버전에 `session_cost`{wall_seconds, input_tokens, output_tokens, tool_calls}가 있다: 20/20. **문턱은 두지 않는다**(비용이 얼마인지 `[모름]`이므로 기록이 목적. 5세션 뒤 문턱 필요 여부를 운영자가 정한다, Q9) |
-| P5 | 장전에 있다 | 버전 1이 08:30 KST 전에 커밋됨: ≥18세션 |
+| P5 | 장전에 있다 | 버전 1이 08:30 KST 전에 커밋됨. **20/20세션**. 08:30은 기존 사전등록 H-admit의 결정 시각을 따른 값이다(`research/experiments/manifests/h-admit.json`의 "decided 08:30 KST of t+1"). NXT 프리마켓(08:00)·정규장(09:00) 대비 적절한지는 Q12 |
 | P6 | 규칙 행 무결성 | 서버 재계산과 일치하지 않는 `risk_sell`·물타기 금지 행 0건 |
 
 ### 5.2 중단 (하나라도 해당하면 v0를 멈춘다)
@@ -240,7 +240,7 @@ head(market='kr', session_date=D, mode='plan_only')
 - **3788 매수 동결은 유지한다.** 이 문서는 동결을 읽거나 풀지 않는다. v0의 모든 행은 `mode='plan_only'`다. 위임장 쪽의 `buy_freeze_state`는 hk 4900이 측정을 공급하기 전까지 모든 계좌를 막는 fail-closed 스텁이다(`app/services/mandate/buy_freeze.py:26-36`) — 계획은 이 스텁도 건드리지 않는다.
 - **위임장 자동 등록 없음.** 매수 행은 §1.4 어휘를 쓰지만 `mandate_plans`·승인 요청·묶음 카드를 만들지 않는다. 승격(후속)은 운영자가 행의 네 필드를 복사해 `scripts/mandate.py register-plan`으로 등록하는 절차다(`docs/design/3795-mandate.md` §3.2·§5.1).
 - **Go 실행기 없음.** 이 문서가 낳는 코드는 Python이다.
-- **기각 매수 행은 #2501의 형식을 따라 5624 모집단을 채운다.** 채택된 `new`/`add` 행마다(하루 `max_adopt` 개, 기본 10, Q2) 세션이 기존 `forecast_save(decision_bucket='deferred_no_action', declined_limit_price, declined_quantity 또는 declined_notional, [declined_quote_price+declined_quote_asof], [declined_account_mode])`를 호출한다. 이 호출이 `decision_kind='declined'` 판단 행(BUY rung 0 + `limit` 참조가)을 쓰므로(`app/services/decision_evidence.py:169`, 5624 짝 모집단 `docs/design/5624-entry-ab-mock.md` §2) 계획 행은 그 `decision_id`·`forecast_id`를 **가리키기만** 한다(행이 판단을 복제하지 않는다). 🔴 주문이 아니다: 판단 행은 `decision_order_links`를 만들지 않고 retro는 계획 필드만 채우며 주문·체결로 세지 않는다(`docs/agent-contracts/market-data-and-screener-contracts.md` hk 5719 절). 기록 이전은 소급하지 않는다. KR만이므로 5624의 US 다리는 이 문서가 채우지 않는다.
+- **기각 매수 행은 #2501의 형식을 따라 5624 모집단을 채운다.** 채택된 `new`/`add` 행마다(하루 `max_adopt` 개, 기본 10, Q2) 세션이 기존 `forecast_save`(필수 인자 `probability`·`review_date` 포함)를 `decision_bucket='deferred_no_action'`, `declined_limit_price`, `declined_quantity` 또는 `declined_notional`, 선택 `declined_quote_price`+`declined_quote_asof`·`declined_account_mode`와 함께 호출한다. 이 호출이 `decision_kind='declined'` 판단 행(BUY rung 0 + `limit` 참조가)을 쓰므로(`app/services/decision_evidence.py:169`, 5624 짝 모집단 `docs/design/5624-entry-ab-mock.md` §2) 계획 행은 그 판단·예측을 **가리키기만** 한다(행이 판단을 복제하지 않는다). 🔴 단, `forecast_save` 응답에는 `decision_id`가 없다: 응답은 `{success, action, data(예측 행), warnings}`뿐이고(`app/mcp_server/tooling/forecast_tools.py:154-161`) `_record_declined_evidence`는 `DecisionEvidenceService.record`가 돌려준 `decision_id`를 버린다(`app/mcp_server/tooling/forecast_tools.py:189-234`, `app/services/decision_evidence.py:246-277`). 판단 행은 `forecast_ids=(forecast_id,)`를 가지므로(`app/mcp_server/tooling/forecast_tools.py:179`) 계획 행은 응답의 `forecast_id`를 저장하고 `decision_id`는 `decision_evidence.forecast_ids`로 **해석**한다(T1이 해석 읽기를 포함하거나 `forecast_save` 응답에 `decision_id`를 더하는 작은 변경을 함께 한다, Q15). 🔴 주문이 아니다: 판단 행은 `decision_order_links`를 만들지 않고 retro는 계획 필드만 채우며 주문·체결로 세지 않는다(`docs/agent-contracts/market-data-and-screener-contracts.md` hk 5719 절). 기록 이전은 소급하지 않는다. KR만이므로 5624의 US 다리는 이 문서가 채우지 않는다.
 - **retro/v1·Factortrail이 계획 버전을 읽는 법(후속 T6)**: 호환 확장으로 읽기 전용 operation `retro_daily_plan`을 더한다(`contracts/retro/v1/openapi.yaml`, 기존 `retro_decisions`의 모양을 따른다 — `app/services/retro_v1/retro_decisions.py:1317`, 라우트 `app/routers/retro_v1.py:25,37`). 규칙: reader 자기 `REPEATABLE READ READ ONLY` 트랜잭션(8초), 모르는 값은 null+닫힌 사유(0으로 만들지 않음), 불투명 해시 ref, 계좌번호·원문 payload 비노출, 금액은 decimal 문자열, 호환 확장 → 소비자 커밋 → `consumers.lock` 핀 갱신의 순서(`docs/runbooks/retro-consumer-pin.md`, `contracts/retro/v1/consumers.lock`). 행의 `decision_id`는 `retro_decisions`의 `decision_ref`로 이어진다. 계획 읽기는 v0 시작의 선행 조건이 아니다.
 - **하드룰 점검**: 스케줄러 등록 없음(하드룰 6 — 일일 트리거는 v0에서 기존 라이브 슬롯의 세션이 MCP 도구를 호출, Dagu 등록은 별도 운영자 승인, Q6). 게이트 완화 없음(새 `DAILY_PLAN_ENABLED` 기본 false, 하드룰 4 정신). 레저 직접 쓰기 없음(하드룰 5, `execution_ledger_in_effect()` AND). 새 MCP 도구는 레인 allowlist 계약 테스트와 live 프롬프트 핀 테스트를 통과해야 한다(하드룰 17: `config/mcp_lane_allowlists/`, `tests/mcp_server/test_lane_allowlist_contract.py`, `tests/mcp_server/test_profile_tool_snapshot.py`). 새 테이블은 객체별 `at_app` GRANT(하드룰 18).
 
@@ -250,11 +250,11 @@ head(market='kr', session_date=D, mode='plan_only')
 
 | # | 티켓 | 내용 | 선행(blocking) |
 |---|---|---|---|
-| T0 | 정책 키 operator PR | `config/trading_policy.yaml`에 `daily_plan`(`no_add_floor_pct: -8`, `max_adopt`, `judged_top_n`, `carry_max_sessions`, 변경 플래그 띠) — operator PR로만 | 없음 |
+| T0 | 정책 키 operator PR | `config/trading_policy.yaml`에 `daily_plan`(`no_add_floor_pct: -8`, `max_adopt`, `judged_top_n`, `carry_max_sessions`, 변경 플래그 띠) **그리고 스키마 변경**: 정책 문서 모델이 `extra="forbid"`(`app/schemas/trading_policy.py:2335-2336`)라 새 최상위 키는 스키마에 필드를 더해야 로드된다(`mechanical_loss_cut`이 그 선례, `app/schemas/trading_policy.py:2362`). 키를 더하면 정책 `content_hash`가 바뀌므로 정책을 인용하는 기록은 새 해시를 따른다 — operator PR로만 | 없음 |
 | T1 | 저장소 + MCP 쓰기·읽기 + 검증기 | 마이그레이션(네 테이블·append-only 트리거·닫힌 어휘 CHECK·`at_app` GRANT), 모델, 어휘 모듈, `app/services/daily_plan/` 저장소·검증기(형식·한도·정확한 decimal·`would_be` 크기 XOR·**규칙 행 서버 재계산 일치 검사**·§2·§3 어휘), MCP `daily_plan_write_version`/`daily_plan_get`/`daily_plan_list`(`DAILY_PLAN_ENABLED` 기본 false). 매수 행 형식 검증이 `decision_table_validate` 재사용 가능한지 스파이크(Q8) | T0 |
 | T2 | 장전 입력 번들 | 후보 집합 빌더(해시 고정)·보유 lot 로드·**읽기 전용 위험 평가기**(§3.1)·물타기 금지 판정·지표·`c_rank`·변경 플래그·`J_t`·이월·결측 사유. 번들 생성은 DB-only·브로커 호출 없음 | T1(어휘·타입). 소프트: hk 5752(스냅샷 일 빌드), hk 5622(후보 로그) |
 | T3 | 체결·사건 재계산 | 영향 종목 버전 쓰기, fold 재사용(위임장에 묶인 종목은 `fold_plan_events`+`project` 결과를 읽음) | T1, T2 |
-| T4 | 운영자 레포 장전 프롬프트 | 세션이 번들을 읽고 등급·논지·무효 조건·처분 사유를 쓰고 `forecast_save(declined_*)`를 호출. **이 레포 밖**(`auto_trader-operator`) | T1, T2 |
+| T4 | 운영자 레포 장전 프롬프트 | 세션이 번들을 읽고 등급·논지·무효 조건·처분 사유를 쓰고 채택 행마다 `forecast_save(declined_*)`를 호출. 🔴 `forecast_save`는 `probability`와 `review_date`가 필수 인자이므로(`app/mcp_server/tooling/forecast_tools.py:44-50`) 채택 행마다 세션이 확률 예측도 함께 써야 한다 — 이 예측은 점수 대조(§4)와 별개의 기록이다. **이 레포 밖**(`auto_trader-operator`) | T1, T2 |
 | T5 | 마감 채점 + 대조 비교 하네스 | `outcomes` 쓰기(마감 사실·성숙 라벨), `research/daily_plan_v0/`의 S·C·E 비교(연구 호스트에서 실행, pi 아님), `kind=close` 버전. 사람 없이 끝남(P3) | T1 |
 | T6 | retro 읽기 | `retro_daily_plan` operation + 계약 + 소비자 게이트 통과 | T1 (v0 시작에는 불필요) |
 | T7 | 봉인·등록 | manifest 봉인(dataset·code sha·policy·비용표·대조 지표 목록·시작·끝 날짜·달력), 레지스트리 `draft → sealed → running`, heartbeat epoch 등록, pi 부하 측정 위치 결정(S5) | T1~T5 |
@@ -274,6 +274,10 @@ head(market='kr', session_date=D, mode='plan_only')
 9. **세션 비용 문턱** — v0는 기록만(P4). 권고: 5세션 뒤 운영자가 문턱 필요 여부를 정한다.
 10. **후보 집합의 정의** — 후보 약 123개의 원천 합집합과 프리셋 목록을 확정해야 한다 `[모름]`. 권고: T2에서 프리셋별 상한과 합집합 규칙을 정해 `candidate_set_sha256`으로 고정하고 T7 봉인에 포함.
 11. **마감 채점 시각의 완결성** — 일봉이 늦게 들어오는 날을 "채점 불가"로 둘지 재시도할지. 권고: 다음 premarket 전까지 재시도 1회, 그래도 없으면 해당 행 outcomes=`unknown`(0 금지)이며 P3는 그 날을 실패로 센다.
+12. **계획 마감 시각** — v0는 08:30 KST로 둔다(H-admit의 결정 시각 선례). NXT 프리마켓 08:00 구간과 정규장 09:00 사이 어디가 맞는지는 라이브 슬롯 시각에 달렸다 `[모름]`. 권고: 08:30 유지, 슬롯 시각 확인 뒤 T7 봉인 때 확정.
+13. **결손일 허용 폭** — P1~P5를 20/20으로 적었다. 외부 입력 장애가 하루 있어도 v0 통과를 막을지. 권고: P1·P2·P6는 허용 0(자동 규칙 필드), P3·P5는 원인이 기록된 장애일 1일까지 허용하되 허용일은 보고서에 따로 표시하고 5.2 S4(5세션 연속 실패)는 그대로.
+14. **동점 처리** — N=10 경계의 동점을 분할 가중으로 처리(§4.1). 권고: 그대로(구성원을 임의 규칙으로 정하지 않기 위해). 대안은 `c_rank`로 깨는 것이나 S와 C가 섞인다.
+15. **판단 id 해석** — `forecast_save`가 `decision_id`를 돌려주지 않는다(§8). (a) 계획 행이 `forecast_id`만 저장하고 `decision_evidence.forecast_ids`로 해석 vs (b) `forecast_save` 응답에 `decision_id`를 더함. 권고: (a). `forecast_save`의 응답 계약을 건드리지 않고 읽기에서 해결한다.
 
 ## 10. 근거 핀 (`auto_trader@bdd4c776b`)
 
@@ -281,7 +285,7 @@ head(market='kr', session_date=D, mode='plan_only')
 |---|---|
 | 위임장 계획 이벤트 fold | `app/services/mandate/fold.py:35,95,160,557` |
 | T4b 투영 규칙 | `app/services/mandate/projection_rules.py:237,335` |
-| 계획 등록 입력·한도 | `app/services/mandate/store.py:1012-1033,1257-1264` |
+| 계획 등록 입력·한도 | `app/services/mandate/store.py:1012-1027,1257-1264` |
 | 계획 모델 | `app/models/mandate.py:357,429,460` |
 | 계정 참조 | `app/services/mandate/account_ref.py:19` |
 | 매수 동결 스텁(hk 4900) | `app/services/mandate/buy_freeze.py:26-36` |
@@ -296,7 +300,9 @@ head(market='kr', session_date=D, mode='plan_only')
 | 후보 로그 모델·게이트 | `app/models/screener_pick_log.py:120-156`, `app/services/screener_pick_log.py:79`, `app/core/config.py:1436` |
 | 판단 근거 | `app/services/decision_evidence.py:21,47,56,118,139,169` |
 | 예측·기각 버킷 | `app/models/review.py:1747,1832`, `app/models/decision_vocabulary.py:26` |
-| `forecast_save` 기각 입력 | `app/mcp_server/tooling/forecast_tools.py:73` |
+| `forecast_save` 시그니처·기각 입력·응답·판단 기록 | `app/mcp_server/tooling/forecast_tools.py:44-50,73,154-161,179,189-234`, `app/services/decision_evidence.py:246-277` |
+| 정책 스키마(`extra="forbid"`) | `app/schemas/trading_policy.py:2335-2336,2362` |
+| H-admit 결정 시각 선례 | `research/experiments/manifests/h-admit.json` (features `available_at`: "decided 08:30 KST of t+1") |
 | 스냅샷 모델 | `app/models/invest_screener_snapshot.py:22,84,93` |
 | quick 지표·RSI·지지 | `app/mcp_server/tooling/analysis_quick.py:734`, `app/mcp_server/tooling/market_data_indicators.py:459,928` |
 | 정지 의심 | `app/services/halt_detection.py:184,233` |
