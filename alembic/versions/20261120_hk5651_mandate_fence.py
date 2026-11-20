@@ -26,6 +26,10 @@ SELECT, INSERT and UPDATE (a ``FOR SHARE``/``FOR UPDATE`` lock needs the privile
 but never DELETE; triggers refuse DELETE, TRUNCATE and any change but the
 authority counter's ``+1`` for every role.
 
+The trigger compares expiry with the database clock (``clock_timestamp()``) while the
+fence transaction compares with the caller's ``now``; a difference at an expiry boundary can
+only make the trigger refuse a fence the Python check allowed (the safe direction).
+
 Downgrade drops the two tables and the trigger; they hold no authority value.
 
 Revision ID: 20261120_hk5651_mandate_fence

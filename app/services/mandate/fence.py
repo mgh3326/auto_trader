@@ -234,7 +234,9 @@ async def _terms_integrity(
     )
     if terms is None or terms.basket_key != loaded.basket_key:
         return None, False
-    version = await session.get_one(StrategySleeveVersion, terms.sleeve_version_id)
+    version = await session.get(StrategySleeveVersion, terms.sleeve_version_id)
+    if version is None:
+        return None, False
     ok = (
         state.current_terms_sha256 == terms.content_sha256
         and await proposal_gate.approval_matches(

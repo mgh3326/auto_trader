@@ -466,3 +466,15 @@ async def test_the_send_port_defaults_are_the_real_fence_functions():
     assert port.commit_fence is mf.commit_send_fence
     assert port.release_fence is mf.release_send_fence
     assert port.boundary_refusal is mf.send_boundary_refusal
+
+
+async def test_the_batch_and_single_approval_handlers_check_before_any_nonce_use():
+    """T4a's denial lived in both handlers; its replacement must too, ahead of the nonce."""
+    import inspect
+
+    from app.services.order_proposals import telegram_callback as cb
+
+    single = inspect.getsource(cb._handle_approve)
+    batch = inspect.getsource(cb._handle_batch_approve)
+    assert single.index("_mandate_pre_nonce_block(") < single.index("consume_")
+    assert batch.index("_mandate_pre_nonce_block(") < batch.index("consume_")
