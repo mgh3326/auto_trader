@@ -16,7 +16,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.market_events import (
     MarketEvent,
     MarketEventIngestionPartition,
@@ -26,6 +26,9 @@ from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.models.news import NewsAnalysisResult, NewsArticle, NewsArticleRelatedSymbol
 from app.models.symbol_news_relevance import SymbolNewsRelevance
 from scripts import prune_nonprice_history as prune
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
