@@ -131,6 +131,38 @@ per-source-family round-robin (declared family order, one new symbol per
 family per round, empty families yield) so a dominant family cannot take the
 whole 10-slot pool.
 
+**`screen_stocks`·`screen_stocks_snapshot` 관측 기록 (hk 5622, `collection_version="screener-tools-v1"`)**:
+KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다(fanout은 H1/H3 파일럿 프롬프트뿐이라 파일럿이
+멈춘 10/30 이후 로그가 비었다). 그래서 두 도구가 돌려준 후보도 같은 바깥 관측자 패턴으로
+`review.screener_pick_log`에 기록한다 — `app/services/screener_tool_pick_log.py`, 호출은 MCP 등록 계층
+`analysis_registration.py` 한 곳뿐이다(`test_only_the_registration_layer_wires_the_observer`).
+🔴 `screen_stocks_impl`·`screen_stocks_snapshot_impl`·`screen_stocks_enrich_impl`·`buy_candidate_fanout`은 계속 쓰기가 없다 —
+`screen_stocks_impl`은 fanout과 웹 스크리너가 재사용하므로 impl 안에서 기록하면 하드룰 13이 깨진다.
+`SCREENER_PICK_LOG_ENABLED` 기본 false, fail-open(기록 예외는 도구 출력을 바꾸지 않는다), 스케줄러 금지, 과거 소급 없음.
+- **행**: 반환된 후보마다 1행(`admission='admitted'`, `admission_reason='returned_to_session'`, `selection_seq` = 반환 목록 안 1-based 위치(offset 포함),
+  `rank` = `screen_stocks`는 반환 순서, snapshot은 도구의 rank — 다중 preset 병합 행은 첫 매칭 preset에만 rank가 있고 나머지 preset 행은 null).
+  도구 자신이 이미 아는 제거는 `not_admitted` + 닫힌 사유: `halted_suspect`(screen_stocks, `meta.halted_suspect_excluded`),
+  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`(snapshot; `exclude_held`는
+  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
+  `screen_stocks_enrich`의 만성 실패 제외·`isHeld`는 이 변경 범위 밖이며 enrich는 기록하지 않는다. 시장은 kr/us만 기록한다(kospi/kosdaq/konex/all → kr, crypto 미기록).
+- **source**: `screen_stocks` / `screen_stocks_snapshot:<preset>`(다중 preset 스윕에서도 (call, source, symbol) 유일키 유지). `family`는 `screen_stocks_live`/`screener_snapshot`.
+  US 심볼은 DB 형식(`BRK.B`, `app/core/symbol.py`)으로 저장해 `decision_evidence`의 candidate ref(`call_id`+정규 심볼)가 그대로 해석된다.
+- **가격**: 정확한 decimal 문자열. `screen_stocks`는 도구의 `price` 필드(float는 `Decimal(str())`), snapshot은 `priceLabel`("75,000원", "$12.30")을
+  파싱한 값이라 라벨 정밀도다(`call_context.price_basis`). 해석 불가·비유한 값은 null이다.
+- **source_status/data_asof**: 기록 행은 모두 `ok`다 — snapshot 자체의 fresh/partial/stale 판정은 컬럼 어휘에 대응이 없어 `call_context.freshness.<preset>`에 둔다.
+  `data_asof`는 snapshot은 snapshotDate(없으면 computedAt), `screen_stocks`는 응답 timestamp다. 원 행은 JSONB-safe(NaN/Inf→null)로 `raw_row`에 둔다.
+  마이그레이션은 없다(기존 컬럼·CHECK로 모두 표현된다).
+- **call id**: 도구 호출마다 `call_id` 하나. 게이트가 켜져 있고 행을 하나 이상 썼을 때만 응답 최상위에 선택 키 `pick_log_call_id`가 붙는다
+  (꺼짐·0행·오류 응답·기록 실패는 키 생략, 출력은 바이트 동일). 세션은 이를 `decision_evidence` 후보 ref로 인용한다.
+  🔴 `decision_evidence`는 후보 ref 없는 같은 KST 날짜 매수 place에서 `admitted` 행을 `inference`로 연결하므로, 세션이 반환받은 후보는 이제 그 추론 대상이 된다.
+- **스냅샷 provenance**: 병합 행의 표시 가격은 첫 매칭 preset의 것이므로, 그 가격을 싣는 모든 행의 `data_asof`/`fetched_at`도 첫 매칭 preset 기준이다
+  (`source_params.price_provenance_preset`). 행 자신의 preset freshness는 `source_params.matched_preset_freshness`에 따로 둔다.
+- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다.
+  초과하면 태그 없는 원 응답을 돌려주고, 호출자 취소는 그대로 전파된다. `raw_row`/`gate_features`/`call_context`는 `JSONB(none_as_null=True)`라
+  파이썬 None이 JSON `null`이 아니라 SQL NULL로 저장된다(`*_object` CHECK는 SQL NULL 또는 객체만 허용).
+- **fanout 규칙은 그대로**: `funnel-a1` A-record(소스 top-10 전수·admission·`dropped_preselection`)는 `discover_buy_candidates_fanout` 전용이고 이 두 도구는 위 규칙을 따른다.
+- 테스트: `tests/services/screener_pick_log/test_screener_tool_pick_log.py`(순수·fail-open·게이트 off 동일성·등록 배선·경계), `..._db.py`(CI DB 왕복).
+
 ### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
 
 Sentry 실측(p50 38.11s / p95 54.73s, 호출당 ~214 HTTP call, 120s 예산 내 타임아웃 8건)에서
@@ -620,3 +652,30 @@ unchanged.
 스크리너·컨센서스·재무제표 빌더의 dry-run 결과는 `FILL_RATE_JSON {...}` 한 줄을 출력한다(`app/services/snapshot_fill_rate.py`, 핵심 필드별 `non_null`·`share`, 행 0이면 `share=null`). 이 줄은 등록 판단용 읽기 값이며 쓰기 경로와 게이트를 바꾸지 않는다. 재무제표 빌더의 설정되지 않은 DAG 분기는 `--estimate-only`이고 DART 를 호출하지 않는다.
 
 `--keep-trading-days N`(스크리너 CLI, 기본 생략)은 빌드 성공 뒤 같은 시장의 **최신 N개 서로 다른 snapshot_date** 밖 행을 지운다(`app/services/invest_screener_snapshots/retention.py`의 순수 컷오프, `app/jobs/invest_screener_snapshots.py::prune_snapshot_history`). dry-run 은 삭제 대상 개수만 세고, 커밋은 배치 삭제이며 컷오프를 삭제 전에 고정한다. 날짜가 N개 미만이면 아무것도 지우지 않는다. 읽기 경로(`latest_partition`)는 최신 날짜만 쓰므로 보관 뒤에도 같다. 보관은 `invest_screener_snapshots` 한 테이블에만 쓰며 다른 snapshot 테이블과 스케줄러 등록은 없다. DAG 등록과 채움률 기준은 `docs/runbooks/snapshot-refresh-dagu.md`를 따른다.
+### 비가격 이력 정리 (hk 5751)
+
+운영자 결정 `decision/2026-11-20/at-direction-daily-plan-nonprice-go` 항목 5에 따른 정리 계약이다.
+CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/runbooks/nonprice-history-prune.md`다.
+
+- **삭제 허용 목록은 닫혀 있다**: 뉴스 피드 20개(`NEWS_RETIRED_FEEDS`), 시장 이벤트 트리플 3개(`MARKET_EVENT_RETIRED_TRIPLES`),
+  Toss `market_cap` 최신이 아닌 행. 남기는 목록(`naver_item_news`·`finnhub_company_news`·`finnhub_general_news`·
+  `research_on_demand_naver`·`research_on_demand_finnhub`·`dart`·`finnhub`·`naver_finance`·`tvscreener`과 Toss 최신 행)과
+  뉴스 피드 삭제 목록이 남기는 뉴스 피드와 겹치면 모듈 로드가 실패한다.
+- **보존 링크가 있는 기사는 지우지 않는다**: 삭제 피드 기사라도 보존 피드(`naver_item_news` 등)의 `symbol_news_relevance` 연결이 있으면 보호되며 미리보기 `protected_by_retained_feed_link`로 보고된다. `symbol_news_store`가 URL 충돌 때 첫 기사 행을 유지하고 연결에 현재 피드를 기록하기 때문이다.
+- **배치 상한**: `MAX_BATCH_SIZE`는 10,000이다(asyncpg 바인드 파라미터 상한 32,767 아래). 배치 행 수 불일치는 트랜잭션 안에서 검사해 그 배치를 롤백한다.
+- **보류 피드 `http_naver_stock_aggregate`**: spike attribution 의 유일한 KR 정확 시각 근거(`KR_EXACT`)이고 backfill 대상이다.
+  `--allow-held-feed` 로 명시하지 않으면 커밋에서 빠지고 결과에 `held_news_feeds_kept`로 보고된다.
+  `--allow-held-feed`에는 보류 피드 이름만 받는다(오타·보존 피드는 입력 오류).
+- **의존 행은 같은 배치 트랜잭션에서 먼저 지운다**: `symbol_news_relevance`, `news_article_related_symbols`,
+  `news_analysis_results`(스키마상 CASCADE이지만 명시 삭제해 건수를 남긴다). 시장 이벤트는 `market_event_values`와
+  `market_event_ingestion_partitions`를 같은 트리플로 지운다. 밸류에이션은 의존 행이 없다.
+- **배치와 재실행**: 배치마다 자기 트랜잭션, 커서는 `id` 오름차순, 선택 수와 삭제 수가 다르면 그 배치는 롤백하고 실패한다.
+  두 번째 실행은 아무것도 지우지 않는다.
+- **읽기 경로 판정**: `get_news`의 정규 읽기는 `feed_source` 필터 없이 `symbol_news_relevance`를 최신순으로 읽는다.
+  삭제 피드의 연결 행은 해당 종목의 `get_news`에서 사라진다(설계 세션 결정 대기, 미리보기 `by_feed` 건수로 확인).
+  `get_latest_news_preview`는 시간 창 없이 최신 기사를 고르므로 삭제 피드만 남은 실행 소스에서는 빈 미리보기가 된다.
+- **Toss 시가총액은 최신만**: `MarketValuationSnapshotsRepository.prune_superseded`가 커밋 때 같은 트랜잭션에서 써 넣은
+  심볼의 더 오래된 `toss_openapi` 행을 지운다. 다른 소스의 행은 건드리지 않으며, `latest_for_symbols`·`coverage_counts`
+  같은 최신 기준 읽기는 그대로 동작한다. 판정식은 CLI와 writer가 같은 `superseded_by_newer_row`다.
+- **시장 이벤트 판정**: `forexfactory`·`wisefn`은 `expected_sources`의 수동 전용 트리플이라 freshness에 영향이 없다.
+  `tradingview` 경제 이벤트는 2026-06-10 이후 수집이 멈췄다. 삭제 뒤 `economic/global` 캘린더 행은 비게 된다.

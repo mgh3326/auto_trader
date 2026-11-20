@@ -196,6 +196,21 @@
       ],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "HK-5750",
+      "title": "국내주식 일일 계획 v0: 세션 등급 상위 후보 대 AT 지표만의 순위 상위 후보 비교",
+      "tracker": "hk 5750",
+      "markets": [
+        "kr"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-20",
+      "manifest": "research/experiments/manifests/hk-5750-daily-plan-score-vs-control.json",
+      "manifest_sha256": "5fff6577951b5cc56905ace1de7a0912cee84d1291a0a9e153c07e37d5434d7b",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

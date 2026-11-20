@@ -149,8 +149,14 @@ class ScreenerPickLog(Base):
     fetched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    raw_row: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
-    gate_features: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
+    # none_as_null: an explicit Python None must persist as SQL NULL, not JSON
+    # ``null`` — the *_object CHECKs accept only SQL NULL or a JSON object.
+    raw_row: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
     )
-    call_context: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    gate_features: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    call_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
