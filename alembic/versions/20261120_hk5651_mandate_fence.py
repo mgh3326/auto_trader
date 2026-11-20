@@ -10,7 +10,8 @@ Additive. Two coordination tables and one trigger, nothing else changes:
 * ``review.mandate_cap_mutex`` — one row per serialization key (a sleeve, a
   basket day, an account-mode/market day), the lock target F3s/F3/F4. It carries
   no amount: totals are always re-summed from their sources.
-* ``trg_mandate_fence_profile_guard`` — the second defence of the §4.6 "자격의
+* ``trg_mandate_plan_events_guard_fence_profile`` (named so that it fires after
+  ``trg_mandate_plan_events_guard``, which checks the row's own shape first) — the second defence of the §4.6 "자격의
   재확인": an automatic ``tranche_send_fenced`` must cite the latest activation
   profile of the plan's sleeve, and that profile, the clause it opens and the
   sleeve's current version must still allow it. The first defence is the fence
@@ -167,10 +168,10 @@ GUARD_DDL: tuple[str, ...] = (
     END;
     $$ LANGUAGE plpgsql
     """,
-    "DROP TRIGGER IF EXISTS trg_mandate_fence_profile_guard "
+    "DROP TRIGGER IF EXISTS trg_mandate_plan_events_guard_fence_profile "
     "ON review.mandate_plan_events",
     """
-    CREATE TRIGGER trg_mandate_fence_profile_guard
+    CREATE TRIGGER trg_mandate_plan_events_guard_fence_profile
     BEFORE INSERT ON review.mandate_plan_events
     FOR EACH ROW
     WHEN (NEW.event = 'tranche_send_fenced' AND NEW.approval_mode = 'auto')
@@ -261,7 +262,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "DROP TRIGGER IF EXISTS trg_mandate_fence_profile_guard "
+        "DROP TRIGGER IF EXISTS trg_mandate_plan_events_guard_fence_profile "
         "ON review.mandate_plan_events"
     )
     for table in reversed(TABLES):

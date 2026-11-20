@@ -2567,7 +2567,9 @@ def _mandate_fence_ddl() -> tuple[str, ...]:
         Path(__file__).resolve().parents[1]
         / "alembic/versions/20261120_hk5651_mandate_fence.py"
     )
-    spec = importlib.util.spec_from_file_location("hk5651_mandate_fence_migration", path)
+    spec = importlib.util.spec_from_file_location(
+        "hk5651_mandate_fence_migration", path
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

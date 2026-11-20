@@ -75,7 +75,13 @@ class PlanProposalContext:
 
 
 def proposal_account_allowed(account_mode: str, configured: str) -> bool:
-    return account_mode == "kiwoom_mock" and account_mode in {
+    """A plan-bound proposal may be created only for an account the operator listed.
+
+    The setting is empty by default. Since T4c has a send boundary (the fence), the
+    accounts of a mandate realm (the two live accounts and the Kiwoom mock) can be
+    listed; an account with no realm never is, listed or not.
+    """
+    return account_mode in v.REALM_BY_ACCOUNT_MODE and account_mode in {
         mode.strip() for mode in configured.split(",")
     }
 

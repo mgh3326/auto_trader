@@ -13,7 +13,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services.mandate.proposal_gate import proposal_account_allowed
-from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import OrderProposalsService, mandate_send
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     auto_veto_thesis_summary,
@@ -255,15 +255,20 @@ def test_i23_mandate_buy_below_market_requires_human_approval():
     assert decision.reason == "mandate_not_eligible"
 
 
-def test_mandate_proposal_accounts_default_closed_and_only_accept_kiwoom_mock():
+def test_mandate_proposal_accounts_default_closed_and_accept_realm_accounts_only_when_listed():
     default = Settings.model_fields["MANDATE_PLAN_PROPOSAL_ACCOUNT_MODES"].default
     assert default == ""
-    assert not proposal_account_allowed("kiwoom_mock", default)
+    for mode in ("kiwoom_mock", "kis_live", "toss_live"):
+        assert not proposal_account_allowed(mode, default)
     configured = "kiwoom_mock,kiwoom_mock_us,kis_live,toss_live"
+    # T4c: the live accounts are accepted once a send boundary exists, but only
+    # when the operator lists them; an account with no mandate realm never is.
     assert proposal_account_allowed("kiwoom_mock", configured)
+    assert proposal_account_allowed("kis_live", configured)
+    assert proposal_account_allowed("toss_live", configured)
     assert not proposal_account_allowed("kiwoom_mock_us", configured)
-    assert not proposal_account_allowed("kis_live", configured)
-    assert not proposal_account_allowed("toss_live", configured)
+    assert not proposal_account_allowed("upbit", "upbit,kis_live")
+    assert not proposal_account_allowed("toss_live", "kis_live")
 
 
 @pytest.mark.asyncio
@@ -302,11 +307,13 @@ async def test_i23_mandate_auto_revalidation_blocks_before_broker(monkeypatch):
         expected_policy_stamp="fixture",
     )
 
+    # T4c: the automatic path stays closed until T5 (no switch, no D2 release):
+    # the rung falls back to a person and nothing reaches the broker or the gate.
     assert outcomes == [
         RungOutcome(
             rung.rung_index,
-            "guard_blocked",
-            {"reason": "mandate_send_boundary_pending"},
+            "approval_required",
+            {"reason": "mandate_switch_off"},
         )
     ]
     broker.assert_not_called()
@@ -317,7 +324,12 @@ async def test_i23_mandate_auto_revalidation_blocks_before_broker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkeypatch):
-    group = _group(mandate_plan_id=42, account_mode="kiwoom_mock")
+    group = _group(
+        mandate_plan_id=42,
+        mandate_tranche_index=1,
+        proposal_id=uuid.uuid4(),
+        account_mode="kiwoom_mock",
+    )
     rung = _rung(state="pending_approval")
     service = AsyncMock()
     service.get_proposal.return_value = (group, [rung])
@@ -333,6 +345,18 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
     )
     submit = AsyncMock(side_effect=AssertionError("unexpected submit call"))
     proposal_id = uuid.uuid4()
+    # T4c: the callback asks the send boundary before the nonce; a refusal leaves
+    # the nonce, the lease and the rung untouched.
+    monkeypatch.setattr(
+        mandate_send.DEFAULT_PORT,
+        "boundary_refusal",
+        AsyncMock(return_value="mandate_plan_not_active"),
+    )
+    monkeypatch.setattr(
+        mandate_send.DEFAULT_PORT,
+        "account_ref_resolver",
+        AsyncMock(return_value="acct-ref"),
+    )
 
     result = await _handle_approve(
         session=AsyncMock(),
@@ -350,7 +374,7 @@ async def test_i23_mandate_telegram_approve_blocks_before_nonce_or_submit(monkey
 
     assert result == {
         "handled": False,
-        "reason": "mandate_send_boundary_pending",
+        "reason": "mandate_plan_not_active",
         "proposal_id": str(proposal_id),
     }
     submit.assert_not_called()
@@ -2729,7 +2753,7 @@ async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeyp
     monkeypatch.setattr(
         dispatch.proposal_gate,
         "check_dispatch",
-        AsyncMock(return_value=("mandate_send_boundary_pending", {})),
+        AsyncMock(return_value=("mandate_switch_off", {})),
     )
     card = AsyncMock()
     monkeypatch.setattr(dispatch, "send_proposal_for_approval", card)
@@ -2750,7 +2774,7 @@ async def test_i23_mandate_dispatch_uses_human_card_without_revalidation(monkeyp
     decisions = service.record_auto_approve_rejections.await_args.kwargs["decisions"]
     assert [decision["reason"] for decision in decisions] == [
         "mandate_not_eligible",
-        "mandate_send_boundary_pending",
+        "mandate_switch_off",
     ]
 
 
