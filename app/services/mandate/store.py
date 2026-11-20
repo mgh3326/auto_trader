@@ -1435,17 +1435,26 @@ THESIS_RETROSPECTIVE_TRIGGER = "thesis_change"
 
 
 def retrospective_defect(
-    trigger_type: Any, retro_symbol: Any, *, plan_symbol: str, market: str
+    trigger_type: Any,
+    retro_symbol: Any,
+    instrument_type: Any,
+    *,
+    plan_symbol: str,
+    market: str,
 ) -> str | None:
     """Why a stored retrospective cannot evidence a broken thesis of this plan, or None.
 
     Shared by the event writer (before it sets the proof) and the loss guard (at read
-    time, for events already marked), so both judge the same two facts.
+    time, for events already marked), so both judge the same three facts: the trigger,
+    the instrument (the same ticker text can name another market's instrument) and the
+    symbol.
     """
     if trigger_type != THESIS_RETROSPECTIVE_TRIGGER:
         return (
             f"the retrospective's trigger_type must be {THESIS_RETROSPECTIVE_TRIGGER!r}"
         )
+    if str(getattr(instrument_type, "value", instrument_type) or "") != market:
+        return "the retrospective is of another instrument type"
     if sleeve_store.sleeve_symbol(str(retro_symbol or ""), market) != plan_symbol:
         return "the retrospective is of another symbol"
     return None
@@ -1469,7 +1478,9 @@ async def _require_cited_retrospective(
         else (
             await session.execute(
                 select(
-                    TradeRetrospective.trigger_type, TradeRetrospective.symbol
+                    TradeRetrospective.trigger_type,
+                    TradeRetrospective.symbol,
+                    TradeRetrospective.instrument_type,
                 ).where(TradeRetrospective.id == retro_id)
             )
         ).first()
@@ -1480,7 +1491,7 @@ async def _require_cited_retrospective(
             "the cited retrospective does not exist yet; create it before the event",
         )
     defect = retrospective_defect(
-        found[0], found[1], plan_symbol=plan_symbol, market=market
+        found[0], found[1], found[2], plan_symbol=plan_symbol, market=market
     )
     if defect is not None:
         raise MandateError(v.MandateRefusal.INVALID_FIELDS, defect)

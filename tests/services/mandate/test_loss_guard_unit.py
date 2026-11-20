@@ -14,7 +14,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
 EVENT_AT = datetime(2026, 11, 20, 12, tzinfo=UTC)
-RETRO_ROW = ("thesis_change", "005930")  # (trigger_type, symbol) of the stored row
+RETRO_ROW = ("thesis_change", "005930", "equity_kr")  # (trigger, symbol, instrument)
 
 
 def _ev(event: str, seq: int, evidence=None, thesis_seq=None):
@@ -347,23 +347,26 @@ async def test_the_proof_key_is_set_by_the_writer_and_cannot_be_supplied():
 
 
 @pytest.mark.parametrize(
-    ("trigger", "symbol", "market", "plan_symbol", "ok"),
+    ("trigger", "symbol", "instrument", "market", "plan_symbol", "ok"),
     [
-        ("thesis_change", "005930", "equity_kr", "005930", True),
-        ("thesis_change", "brk-b", "equity_us", "BRK.B", True),
-        ("stop_loss", "005930", "equity_kr", "005930", False),  # not a thesis change
-        (None, "005930", "equity_kr", "005930", False),
-        ("thesis_change", "000660", "equity_kr", "005930", False),  # another symbol
-        ("thesis_change", None, "equity_kr", "005930", False),
+        ("thesis_change", "005930", "equity_kr", "equity_kr", "005930", True),
+        ("thesis_change", "brk-b", "equity_us", "equity_us", "BRK.B", True),
+        ("stop_loss", "005930", "equity_kr", "equity_kr", "005930", False),
+        (None, "005930", "equity_kr", "equity_kr", "005930", False),
+        ("thesis_change", "000660", "equity_kr", "equity_kr", "005930", False),
+        ("thesis_change", None, "equity_kr", "equity_kr", "005930", False),
+        # the same ticker text recorded for another market's instrument (review)
+        ("thesis_change", "005930", "equity_us", "equity_kr", "005930", False),
+        ("thesis_change", "005930", None, "equity_kr", "005930", False),
     ],
 )
-async def test_i14_the_retrospective_must_be_a_thesis_change_of_the_plans_symbol(
-    trigger, symbol, market, plan_symbol, ok
+async def test_i14_the_retrospective_must_be_a_thesis_change_of_the_plans_instrument(
+    trigger, symbol, instrument, market, plan_symbol, ok
 ):
     from app.services.mandate import store
 
     defect = store.retrospective_defect(
-        trigger, symbol, plan_symbol=plan_symbol, market=market
+        trigger, symbol, instrument, plan_symbol=plan_symbol, market=market
     )
     assert (defect is None) is ok
 
@@ -390,9 +393,10 @@ async def test_i14_a_marked_event_citing_a_stop_loss_retrospective_is_refused_at
         "approval_issue_id": "hk:9",
     }
     for row, expected in (
-        (("stop_loss", "005930"), "mandate_thesis_not_broken"),
-        (("thesis_change", "000660"), "mandate_thesis_not_broken"),
-        (("thesis_change", "005930"), None),
+        (("stop_loss", "005930", "equity_kr"), "mandate_thesis_not_broken"),
+        (("thesis_change", "000660", "equity_kr"), "mandate_thesis_not_broken"),
+        (("thesis_change", "005930", "equity_us"), "mandate_thesis_not_broken"),
+        (("thesis_change", "005930", "equity_kr"), None),
     ):
         monkeypatch.setattr(loss_guard, "_retrospective_row", _lookup(row))
         assert await loss_guard.loss_cut_refusal(None, **args) == expected

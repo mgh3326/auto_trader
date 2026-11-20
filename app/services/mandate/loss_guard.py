@@ -89,15 +89,17 @@ def evidence_matches(
 
 
 async def _retrospective_row(session: AsyncSession, retrospective_id: Any):
-    """The stored retrospective (``trigger_type``, ``symbol``); ``None`` if there is none."""
+    """The stored retrospective (trigger, symbol, instrument); ``None`` if there is none."""
     try:
         rid = int(retrospective_id)
     except (TypeError, ValueError):
         return None
     row = await session.execute(
-        select(TradeRetrospective.trigger_type, TradeRetrospective.symbol).where(
-            TradeRetrospective.id == rid
-        )
+        select(
+            TradeRetrospective.trigger_type,
+            TradeRetrospective.symbol,
+            TradeRetrospective.instrument_type,
+        ).where(TradeRetrospective.id == rid)
     )
     return row.first()
 
@@ -155,7 +157,7 @@ async def loss_cut_refusal(
         # retrospective must be a thesis_change of this plan's own symbol
         if retro is None or (
             store.retrospective_defect(
-                retro[0], retro[1], plan_symbol=norm, market=market
+                retro[0], retro[1], retro[2], plan_symbol=norm, market=market
             )
             is not None
         ):

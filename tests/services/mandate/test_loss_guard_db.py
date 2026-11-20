@@ -32,7 +32,13 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 async def _retro(
-    db, symbol: str, *, created_at=None, row_id=None, trigger_type="thesis_change"
+    db,
+    symbol: str,
+    *,
+    created_at=None,
+    row_id=None,
+    trigger_type="thesis_change",
+    instrument_type="equity_kr",
 ) -> int:
     """A stored retrospective; the guard checks it existed when the event cited it."""
     from datetime import timedelta
@@ -42,7 +48,7 @@ async def _retro(
     row = TradeRetrospective(
         **({"id": row_id} if row_id is not None else {}),
         symbol=symbol,
-        instrument_type="equity_kr",
+        instrument_type=instrument_type,
         account_mode="kis_live",
         market="kr",
         outcome="filled",
@@ -359,12 +365,14 @@ async def test_i14_j_the_writer_refuses_a_fresh_matching_stop_loss_retrospective
     db_session, seed, retro
 ) -> None:
     """§5.2: a same-symbol stop_loss retrospective exists and is fresh, but it is not a
-    thesis_change — the event is refused, and so is one citing another symbol's."""
+    thesis_change — the event is refused, and so is one citing another symbol's or the
+    same ticker text recorded for another instrument type."""
     sym, _s, _t, plan = await _planned(seed, db_session)
     retro["symbol"] = sym
     stop = await _retro(db_session, sym, trigger_type="stop_loss")
     other = await _retro(db_session, new_kr_symbol())
-    for rid in (stop, other):
+    wrong_instrument = await _retro(db_session, sym, instrument_type="equity_us")
+    for rid in (stop, other, wrong_instrument):
         with pytest.raises(ms.MandateError) as caught:
             await ms.append_plan_event(
                 db_session,
