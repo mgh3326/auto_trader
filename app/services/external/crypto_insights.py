@@ -242,6 +242,219 @@ async def fetch_binance_funding_rates(
     return CryptoInsightProviderResult(metrics=tuple(metrics), warnings=tuple(warnings))
 
 
+UPBIT_TICKER_URL = "https://api.upbit.com/v1/ticker"
+BINANCE_SPOT_PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
+OPEN_ER_API_USD_URL = "https://open.er-api.com/v6/latest/USD"
+BINANCE_FUNDING_HISTORY_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
+KIMCHI_PREMIUM_METRIC = "kimchi_premium"
+KIMCHI_PREMIUM_PROVIDER = "upbit_binance"
+FUNDING_SETTLEMENT_METRIC = "funding_settlement_rate"
+FUNDING_SETTLEMENT_PROVIDER = "binance_settlement"
+FUNDING_PRINT_COUNT = 3
+_KIMCHI_QUANTUM = Decimal("0.0001")
+
+
+def _finite_decimal(value: Any) -> Decimal | None:
+    """Parse a provider number exactly; NaN/Inf/bool/unparseable are None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _positive_decimal(value: Any) -> Decimal | None:
+    parsed = _finite_decimal(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+async def _upbit_btc_krw_price(http: httpx.AsyncClient) -> tuple[Decimal, Any]:
+    response = await http.get(UPBIT_TICKER_URL, params={"markets": "KRW-BTC"})
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise ValueError("unexpected upbit ticker payload")
+    row = rows[0]
+    if row.get("market") != "KRW-BTC":
+        raise ValueError("upbit ticker market mismatch")
+    price = _positive_decimal(row.get("trade_price"))
+    if price is None:
+        raise ValueError("upbit trade_price unreadable")
+    return price, row.get("trade_timestamp")
+
+
+async def _binance_btc_usdt_price(http: httpx.AsyncClient) -> Decimal:
+    response = await http.get(BINANCE_SPOT_PRICE_URL, params={"symbol": "BTCUSDT"})
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("symbol") != "BTCUSDT":
+        raise ValueError("unexpected binance spot payload")
+    price = _positive_decimal(payload.get("price"))
+    if price is None:
+        raise ValueError("binance spot price unreadable")
+    return price
+
+
+async def _open_er_usd_krw_rate(http: httpx.AsyncClient) -> Decimal:
+    response = await http.get(OPEN_ER_API_USD_URL)
+    response.raise_for_status()
+    payload = response.json()
+    rates = payload.get("rates") if isinstance(payload, dict) else None
+    rate = _positive_decimal(rates.get("KRW") if isinstance(rates, dict) else None)
+    if rate is None:
+        raise ValueError("usd/krw rate unreadable")
+    return rate
+
+
+async def fetch_upbit_binance_kimchi_premium(
+    client: httpx.AsyncClient | None = None,
+    *,
+    now: dt.datetime | None = None,
+) -> CryptoInsightProviderResult:
+    """BTC kimchi premium: Upbit KRW vs Binance USDT converted at open.er-api USD/KRW.
+
+    Fail-closed: all three legs must be readable. A missing or unreadable leg yields
+    no metric and a warning, so the regime gate sees unknown, never zero.
+    """
+    observed_at = (now or _utc_now()).astimezone(dt.UTC).replace(microsecond=0)
+    close_client = client is None
+    http = client or httpx.AsyncClient(timeout=10.0)
+    try:
+        upbit_krw, upbit_trade_ts = await _upbit_btc_krw_price(http)
+        binance_usdt = await _binance_btc_usdt_price(http)
+        usd_krw = await _open_er_usd_krw_rate(http)
+    except Exception as exc:  # noqa: BLE001
+        return CryptoInsightProviderResult(
+            warnings=(f"{KIMCHI_PREMIUM_PROVIDER}: {exc}",)
+        )
+    finally:
+        if close_client:
+            await http.aclose()
+    global_krw = binance_usdt * usd_krw
+    premium_pct = ((upbit_krw - global_krw) / global_krw * Decimal(100)).quantize(
+        _KIMCHI_QUANTUM
+    )
+    return CryptoInsightProviderResult(
+        metrics=(
+            CryptoInsightMetric(
+                metric=KIMCHI_PREMIUM_METRIC,
+                provider=KIMCHI_PREMIUM_PROVIDER,
+                symbol="BTC",
+                value=premium_pct,
+                unit="%",
+                label=None,
+                source_url=UPBIT_TICKER_URL,
+                observed_at=observed_at,
+                freshness_seconds=0,
+                raw_payload={
+                    "upbit_krw": str(upbit_krw),
+                    "upbit_trade_timestamp_ms": upbit_trade_ts,
+                    "binance_usdt": str(binance_usdt),
+                    "usd_krw": str(usd_krw),
+                    "global_krw": str(global_krw),
+                    "observed_at": observed_at.isoformat(),
+                    "sources": [
+                        UPBIT_TICKER_URL,
+                        BINANCE_SPOT_PRICE_URL,
+                        OPEN_ER_API_USD_URL,
+                    ],
+                },
+            ),
+        )
+    )
+
+
+def _funding_label(rate: Decimal) -> str:
+    if rate > 0:
+        return "longs pay shorts"
+    if rate < 0:
+        return "shorts pay longs"
+    return "neutral"
+
+
+async def fetch_binance_settlement_funding_prints(
+    client: httpx.AsyncClient | None = None,
+    *,
+    symbol: str = "BTCUSDT",
+    now: dt.datetime | None = None,
+) -> CryptoInsightProviderResult:
+    """The last FUNDING_PRINT_COUNT settlement prints, one row per settlement.
+
+    snapshot_at is the settlement time, so re-running the job upserts the same
+    rows. All-or-nothing: fewer, more, duplicate or malformed prints yield no
+    metric and a warning, because a 3-print average over 2 prints is a wrong value.
+    """
+    observed_at = (now or _utc_now()).astimezone(dt.UTC).replace(microsecond=0)
+    close_client = client is None
+    http = client or httpx.AsyncClient(timeout=10.0)
+    try:
+        response = await http.get(
+            BINANCE_FUNDING_HISTORY_URL,
+            params={"symbol": symbol, "limit": FUNDING_PRINT_COUNT},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("unexpected funding history payload")
+        prints: list[tuple[int, Decimal, dict[str, Any]]] = []
+        for row in payload:
+            if not isinstance(row, dict) or str(row.get("symbol") or "") != symbol:
+                raise ValueError("funding row symbol mismatch")
+            settle_ms = row.get("fundingTime")
+            if (
+                not isinstance(settle_ms, int)
+                or isinstance(settle_ms, bool)
+                or settle_ms <= 0
+            ):
+                raise ValueError("funding fundingTime unreadable")
+            rate = _finite_decimal(row.get("fundingRate"))
+            if rate is None:
+                raise ValueError("funding fundingRate unreadable")
+            prints.append((settle_ms, rate, row))
+        if len(prints) != FUNDING_PRINT_COUNT:
+            raise ValueError(
+                f"expected {FUNDING_PRINT_COUNT} funding prints, got {len(prints)}"
+            )
+        if len({settle_ms for settle_ms, _, _ in prints}) != FUNDING_PRINT_COUNT:
+            raise ValueError("duplicate funding settlement times")
+    except Exception as exc:  # noqa: BLE001
+        return CryptoInsightProviderResult(
+            warnings=(f"{FUNDING_SETTLEMENT_PROVIDER}:{symbol}: {exc}",)
+        )
+    finally:
+        if close_client:
+            await http.aclose()
+    metrics: list[CryptoInsightMetric] = []
+    for settle_ms, rate, row in sorted(prints, key=lambda item: item[0]):
+        settled_at = dt.datetime.fromtimestamp(settle_ms / 1000, tz=dt.UTC)
+        metrics.append(
+            CryptoInsightMetric(
+                metric=FUNDING_SETTLEMENT_METRIC,
+                provider=FUNDING_SETTLEMENT_PROVIDER,
+                symbol=symbol,
+                value=rate,
+                unit="ratio",
+                label=_funding_label(rate),
+                source_url=BINANCE_FUNDING_HISTORY_URL,
+                observed_at=settled_at,
+                freshness_seconds=max(
+                    0, int((observed_at - settled_at).total_seconds())
+                ),
+                raw_payload={
+                    "symbol": symbol,
+                    "fundingTime": settle_ms,
+                    "fundingRate": str(rate),
+                    "markPrice": row.get("markPrice"),
+                    "rateType": row.get("rateType"),
+                    "observed_at": observed_at.isoformat(),
+                },
+            )
+        )
+    return CryptoInsightProviderResult(metrics=tuple(metrics))
+
+
 def _matches_defillama_slug(row: dict[str, Any], slug: str) -> bool:
     candidates = (
         row.get("gecko_id"),

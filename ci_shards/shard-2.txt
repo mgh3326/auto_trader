@@ -110,6 +110,7 @@ tests/scripts/test_binance_spot_demo_d2_root_reconcile_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_dagu_at_batch_dags.py
 tests/scripts/test_dagu_daily_candles_and_night_sweep_dags.py
+tests/scripts/test_dagu_gate_inputs_dag.py
 tests/scripts/test_dagu_snapshot_refresh_dags.py
 tests/scripts/test_dagu_terminal_reconcile_dag.py
 tests/scripts/test_daily_candle_and_night_sweep_clis.py

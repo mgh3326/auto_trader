@@ -1,0 +1,38 @@
+# 제안(PROPOSAL) — hk 5889 / 설계 docs/design/5852-upbit-krw-shadow-strategy.md §9 T3.
+# 어디에도 등록되어 있지 않다. 등록은 설계 세션(desk)이 정한다.
+# 등록 전 확인: 이 사본의 실행 결과를 at-batch1-crypto-insight 와 대조한 뒤에만 그 잡을 대체한다.
+#
+# 목적: 레짐 게이트 G1·G2·G3·G4 의 입력을 crypto_insight_snapshots 에 쌓는다.
+#   G1 fear_greed (alternative_me)        G2 stablecoin_supply (defillama)
+#   G3 kimchi_premium (upbit_binance)     G4 funding_settlement_rate (binance_settlement, 최근 3회)
+#
+# 이 사본은 at-batch1-crypto-insight 와 같은 명령을 쓰되 provider 목록을 명시한다.
+# 기본 잡(scripts/build_crypto_insight_snapshots.py 의 DEFAULT_FLOW_PROVIDERS)은 바꾸지 않았다.
+# 새 provider 두 개는 이 DAG 에서만 켜진다.
+#
+# 쓰기 여부: CRYPTO_INSIGHT_COMMIT_ENABLED 가 /root/at-secrets/.env.api 에서 참일 때만 커밋된다.
+#   이 명령은 그 값을 -e 로 넘기지 않는다(env 파일 값이 그대로 쓰인다). dry run 은 쓰지 않는다.
+# 실패 조건: 원천을 읽지 못하면 그 provider 는 행을 쓰지 않고 warnings 에 남는다(unknown 은 0 이 아니다).
+#
+# 스케줄은 UTC 로 쓴다(OCI Dagu 스케줄러가 UTC 로 돈다). 00:50 UTC = 09:50 KST, alternative.me 일 갱신 뒤.
+# 환경: dotenv 파일에서만 읽는다(이름만 여기에). 값은 이 파일과 레포에 없다.
+#   AT_BATCH_PING_URL_CRYPTO_GATE_INPUTS (선택: 실패/성공 핑 URL, 없으면 journal 한 줄만 남긴다)
+description: "PROPOSAL (미등록): Crypto regime gate inputs — G1·G2·G3(kimchi)·G4(funding 3회), 외부 공개 API, DB 쓰기"
+schedule: "CRON_TZ=UTC 50 0 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+dotenv: /root/at-secrets/.env.dagu-at-batch
+steps:
+  - name: build
+    command: docker run --rm --network host --workdir /app --env-file /root/at-secrets/.env.api -e 'CRYPTO_INSIGHT_PROVIDERS_JSON=["alternative_me","coingecko","binance","defillama","tradingview","upbit_binance","binance_settlement"]' "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_crypto_insight_snapshots
+    timeout_sec: 3600
+    retry_policy:
+      limit: 1
+      interval_sec: 120
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-t3-crypto-gate-inputs status=success"; [ -z "${AT_BATCH_PING_URL_CRYPTO_GATE_INPUTS:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_GATE_INPUTS}"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-t3-crypto-gate-inputs status=failure"; [ -z "${AT_BATCH_PING_URL_CRYPTO_GATE_INPUTS:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_BATCH_PING_URL_CRYPTO_GATE_INPUTS}/fail"'

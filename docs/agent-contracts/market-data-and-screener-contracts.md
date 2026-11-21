@@ -691,3 +691,12 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
   같은 최신 기준 읽기는 그대로 동작한다. 판정식은 CLI와 writer가 같은 `superseded_by_newer_row`다.
 - **시장 이벤트 판정**: `forexfactory`·`wisefn`은 `expected_sources`의 수동 전용 트리플이라 freshness에 영향이 없다.
   `tradingview` 경제 이벤트는 2026-06-10 이후 수집이 멈췄다. 삭제 뒤 `economic/global` 캘린더 행은 비게 된다.
+
+### 크립토 레짐 게이트 입력 — 김치 프리미엄·funding 정산 이력 (hk 5889, 5852 T3)
+
+`crypto_insight_snapshots`에 두 provider를 기존 서비스 경유로만 쓴다. 새 writer 없음, 마이그레이션 없음.
+
+- **`upbit_binance` / `kimchi_premium` (BTC, unit `%`)**: Upbit `KRW-BTC` 체결가, Binance `BTCUSDT` 현물 가격, open.er-api USD/KRW 세 다리가 모두 유한 양수로 읽혀야 행을 만든다. 하나라도 빠지면 행 없이 `warnings`만 남는다(unknown은 0이 아니다). USD/KRW 폴백(`USD_KRW_FALLBACK_RATE`)은 쓰지 않는다. `snapshot_at`은 세 다리를 읽은 실행 시각이다.
+- **`binance_settlement` / `funding_settlement_rate` (BTCUSDT, unit `ratio`)**: Binance USD-M `fundingRate?limit=3`의 정산 3회를 정산 시각(`snapshot_at`)마다 한 행으로 쓴다. 정확히 3회·중복 없음·모든 필드 판독 가능일 때만 쓰고 하나라도 어긋나면 전부 생략한다(2회 평균을 3회처럼 쓰지 않는다). 기존 `funding_rate`(premiumIndex 현재값) 행과 metric 이름이 달라 서로 덮어쓰지 않는다.
+- **기본 잡은 불변**: `DEFAULT_PROVIDERS`·`DEFAULT_FLOW_PROVIDERS`에 넣지 않았다. 이 두 provider는 `deploy/dagu/at-gate-inputs/at-t3-crypto-gate-inputs.yaml`(PROPOSAL, 미등록)에서 `CRYPTO_INSIGHT_PROVIDERS_JSON`으로만 켜진다. 커밋은 기존 `CRYPTO_INSIGHT_COMMIT_ENABLED`가 정한다.
+- **테스트**: `tests/test_crypto_insight_external_adapters.py`(파싱·누락=unknown), `tests/scripts/test_dagu_gate_inputs_dag.py`(DAG 정적 검사, 기본 제공자 집합 고정).
