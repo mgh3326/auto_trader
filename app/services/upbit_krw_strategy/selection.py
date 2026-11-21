@@ -68,9 +68,7 @@ def select_entries(
             contenders.append(market)
 
     free = max(0, MAX_POSITIONS_PER_ARM - open_positions)
-    ranked = [
-        e.market for e in liquidity_order(eligibility[m] for m in contenders)
-    ]
+    ranked = [e.market for e in liquidity_order(eligibility[m] for m in contenders)]
     for position, market in enumerate(ranked):
         if position < free:
             decisions[market] = EntryDecision(market, True, REASON_SELECTED)

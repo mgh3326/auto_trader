@@ -122,9 +122,7 @@ def take_profit_ladder(
         rungs: list[LadderRung] = []
         allocated = Decimal(0)
         for index, ret in enumerate(TAKE_PROFIT_RUNGS):
-            quantity = (
-                filled_quantity - allocated if index == rung_count - 1 else share
-            )
+            quantity = filled_quantity - allocated if index == rung_count - 1 else share
             allocated += quantity
             price = ceil_to_tick(avg_entry_price * (1 + ret))
             notional = quantity * price

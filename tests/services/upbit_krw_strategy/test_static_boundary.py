@@ -7,7 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[3] / "app" / "services" / "upbit_krw_strategy"
+PACKAGE = (
+    Path(__file__).resolve().parents[3] / "app" / "services" / "upbit_krw_strategy"
+)
 REPO = PACKAGE.parents[3]
 
 ALLOWED_TOP_LEVEL = {

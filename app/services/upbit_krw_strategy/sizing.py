@@ -17,6 +17,7 @@ from .constants import (
     QUANTITY_STEP,
     SIGMA_STAR,
 )
+from .types import require_decimal
 
 _PRECISION = 50
 SKIP_BELOW_FLOOR = "skipped_below_floor"
@@ -61,7 +62,9 @@ def target_notional_krw(sigma_hat: Decimal) -> Decimal:
         raise ValueError("sigma_hat must be a finite positive Decimal")
     with localcontext() as ctx:
         ctx.prec = _PRECISION
-        return LEG_NOTIONAL_CAP_KRW * min(Decimal(1), SIGMA_STAR / sigma_hat)
+        # cap * min(1, sigma* / sigma_hat), with the product taken before the
+        # division so an exact boundary (e.g. 50,000 KRW) is not lost to rounding.
+        return min(LEG_NOTIONAL_CAP_KRW, LEG_NOTIONAL_CAP_KRW * SIGMA_STAR / sigma_hat)
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,8 @@ def size_entry(*, sigma_hat: Decimal | None, limit_price_krw: Decimal) -> EntryS
     ``N < 50,000`` KRW skips the entry. The price must be an exact Decimal on
     the Upbit tick of its own range and at least 100 KRW (Go model limit).
     """
-    if not limit_price_krw.is_finite() or limit_price_krw < MIN_LAST_CLOSE_KRW:
+    require_decimal(limit_price_krw, "limit_price_krw")
+    if limit_price_krw < MIN_LAST_CLOSE_KRW:
         raise ValueError("limit price must be a finite Decimal >= 100 KRW")
     if not is_on_upbit_krw_tick(limit_price_krw):
         raise ValueError("limit price is not on the Upbit tick")

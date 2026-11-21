@@ -51,32 +51,31 @@ def r60(window: tuple[Decimal, ...]) -> Decimal:
 def rsi14(closes_oldest_first: tuple[Decimal, ...]) -> Decimal | None:
     """Wilder RSI of the last close, the same recurrence as ROB-1382.
 
-    ``market_data_indicators._calculate_rsi_series`` (pandas ``ewm(alpha=1/14,
-    min_periods=14, adjust=False)``) seeds each average with the first
-    difference and then ``avg = (1 - a) * avg + a * x``. ``None`` where that
-    function gives NaN: fewer than 14 differences, or no losses at all
-    (``avg_loss == 0``).
+    ``market_data_indicators._calculate_rsi_series`` computes pandas
+    ``ewm(alpha=1/14, min_periods=14, adjust=False)`` over gains and losses in
+    which the first difference (NaN) has been replaced by 0 by ``Series.where``;
+    so both averages start at 0 on the first close and then follow
+    ``avg = (1 - a) * avg + a * x`` for every later difference. A value needs 14
+    observations (14 closes). ``None`` where that function gives NaN: too few
+    closes, or ``avg_loss == 0`` (no losses at all).
     """
-    if len(closes_oldest_first) < RSI_PERIOD + 1:
+    if len(closes_oldest_first) < RSI_PERIOD:
         return None
     with localcontext() as ctx:
         ctx.prec = _PRECISION
         alpha = Decimal(1) / RSI_PERIOD
         keep = 1 - alpha
-        avg_gain: Decimal | None = None
-        avg_loss: Decimal | None = None
+        avg_gain = Decimal(0)
+        avg_loss = Decimal(0)
         for previous, current in zip(
             closes_oldest_first[:-1], closes_oldest_first[1:], strict=True
         ):
             delta = current - previous
             gain = delta if delta > 0 else Decimal(0)
             loss = -delta if delta < 0 else Decimal(0)
-            if avg_gain is None or avg_loss is None:
-                avg_gain, avg_loss = gain, loss
-            else:
-                avg_gain = keep * avg_gain + alpha * gain
-                avg_loss = keep * avg_loss + alpha * loss
-        if avg_gain is None or avg_loss is None or avg_loss == 0:
+            avg_gain = keep * avg_gain + alpha * gain
+            avg_loss = keep * avg_loss + alpha * loss
+        if avg_loss == 0:
             return None
         return Decimal(100) - Decimal(100) / (1 + avg_gain / avg_loss)
 

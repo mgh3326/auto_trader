@@ -14,7 +14,9 @@ from app.services.upbit_krw_strategy.types import DailyBar
 
 from .support import ASOF, LAST, bars, market
 
-GOLDEN = json.loads((Path(__file__).parent / "golden" / "candidate_set.json").read_text())
+GOLDEN = json.loads(
+    (Path(__file__).parent / "golden" / "candidate_set.json").read_text()
+)
 
 
 def judge(item):
@@ -60,9 +62,9 @@ def test_peg_rule_is_not_applied_to_krw_closes() -> None:
     # ~1,000 KRW closes for 90 days would "prove a peg" only if the USD 0.98-1.02
     # rule were applied; it must not be.
     assert u.exclusion_reason("XYZ") is None
-    assert judge(market("KRW-XYZ", bar_set=bars(count=90, close="1.0"))).reason_code == (
-        "price_below_min"
-    )
+    assert judge(
+        market("KRW-XYZ", bar_set=bars(count=90, close="1.0"))
+    ).reason_code == ("price_below_min")
 
 
 def test_u3_needs_90_closed_bars_and_ignores_open_candles() -> None:
@@ -115,10 +117,14 @@ def test_u5_median_not_mean_and_floor_inclusive() -> None:
         return tuple(rows)
 
     # 30 values: 15 x 5e9 and 15 x 1e12 -> median = (5e9 + 1e12)/2 >= 5e9 (mean huge)
-    high = judge(market(bar_set=with_volumes(["1000000000000"] * 15 + ["5000000000"] * 15)))
+    high = judge(
+        market(bar_set=with_volumes(["1000000000000"] * 15 + ["5000000000"] * 15))
+    )
     assert high.eligible
     # one outlier cannot lift a low median: 29 x 4.9e9 + one 1e15
-    low = judge(market(bar_set=with_volumes(["4900000000"] * 29 + ["1000000000000000"])))
+    low = judge(
+        market(bar_set=with_volumes(["4900000000"] * 29 + ["1000000000000000"]))
+    )
     assert low.reason_code == "liquidity_below_min"
     assert low.turnover30_median_krw == Decimal("4900000000")
     exact = judge(market(bar_set=with_volumes(["5000000000"] * 30)))
@@ -129,7 +135,9 @@ def test_u0_takes_top_20_by_sum_with_market_code_ties() -> None:
     items = []
     for i in range(25):
         qv = "10000000000" if i < 3 else str(11_000_000_000 + i)
-        items.append(judge(market(f"KRW-C{i:02d}", bar_set=bars(count=90, quote_volume=qv))))
+        items.append(
+            judge(market(f"KRW-C{i:02d}", bar_set=bars(count=90, quote_volume=qv)))
+        )
     u0 = u.select_u0(items)
     assert len(u0) == 20
     # C03..C24 have strictly larger turnover than C00..C02, so those three drop out
@@ -170,22 +178,39 @@ def test_candidate_set_golden() -> None:
     asof = ASOF
     u0 = GOLDEN["u0"]
     inputs = {
-        "KRW-BTC": market("KRW-BTC", bar_set=bars(count=90, close="150000000", quote_volume="8000000000")),
-        "KRW-ETH": market("KRW-ETH", bar_set=bars(count=90, close="5000000", quote_volume="4000000000")),
+        "KRW-BTC": market(
+            "KRW-BTC",
+            bar_set=bars(count=90, close="150000000", quote_volume="8000000000"),
+        ),
+        "KRW-ETH": market(
+            "KRW-ETH",
+            bar_set=bars(count=90, close="5000000", quote_volume="4000000000"),
+        ),
         "KRW-XRP": market("KRW-XRP", warning="CAUTION"),
     }
     result = u.daily_eligibility(u0, inputs, asof=asof)
     assert u.u0_sha256(u0) == GOLDEN["u0_sha256"]
-    assert u.candidate_set_payload(result, asof=asof, u0_hash=GOLDEN["u0_sha256"]) == GOLDEN["payload"]
-    assert u.candidate_set_sha256(result, asof=asof, u0_hash=GOLDEN["u0_sha256"]) == GOLDEN["sha256"]
+    assert (
+        u.candidate_set_payload(result, asof=asof, u0_hash=GOLDEN["u0_sha256"])
+        == GOLDEN["payload"]
+    )
+    assert (
+        u.candidate_set_sha256(result, asof=asof, u0_hash=GOLDEN["u0_sha256"])
+        == GOLDEN["sha256"]
+    )
     # the literal canonical text hashes to the recorded digest (independent of the code)
-    assert hashlib.sha256(GOLDEN["canonical_json"].encode()).hexdigest() == GOLDEN["sha256"]
+    assert (
+        hashlib.sha256(GOLDEN["canonical_json"].encode()).hexdigest()
+        == GOLDEN["sha256"]
+    )
 
 
 def test_candidate_set_hash_changes_with_any_field() -> None:
     base = u.daily_eligibility(["KRW-ETH"], {"KRW-ETH": market()}, asof=ASOF)
     other = u.daily_eligibility(
-        ["KRW-ETH"], {"KRW-ETH": market(bar_set=bars(count=90, close="1001"))}, asof=ASOF
+        ["KRW-ETH"],
+        {"KRW-ETH": market(bar_set=bars(count=90, close="1001"))},
+        asof=ASOF,
     )
     h = u.u0_sha256(["KRW-ETH"])
     assert u.candidate_set_sha256(base, asof=ASOF, u0_hash=h) != u.candidate_set_sha256(
