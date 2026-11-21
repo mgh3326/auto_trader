@@ -733,6 +733,9 @@ def compute_policy_table(
                 "available": breadth_payload is not None,
                 "alts_total": (breadth_payload or {}).get("alts_total"),
                 "alts_beating_btc": (breadth_payload or {}).get("alts_beating_btc"),
+                "alts_excluded_stale": (breadth_payload or {}).get(
+                    "alts_excluded_stale"
+                ),
                 "alts_beating_btc_pct": (
                     Decimal(str(breadth_payload["alts_beating_btc_pct"]))
                     if breadth_payload is not None
