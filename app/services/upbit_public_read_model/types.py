@@ -76,7 +76,7 @@ class UpbitCandlesBlock(BaseModel):
 class UpbitMarketWarningEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     market: str
-    warning: Literal["NONE", "CAUTION"] = "NONE"
+    warning: Literal["NONE", "CAUTION", "UNKNOWN"] = "NONE"
     event: dict[str, Any] | None = None
 
 

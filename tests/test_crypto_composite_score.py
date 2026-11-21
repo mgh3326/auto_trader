@@ -46,6 +46,14 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         _ = (quote_currency, fiat, db)
         return set()
 
+    async def mock_get_upbit_unknown_warning_markets(
+        db=None,
+        quote_currency: str | None = None,
+        fiat: str | None = None,
+    ):
+        _ = (quote_currency, fiat, db)
+        return set()
+
     async def mock_market_cap_cache_get():
         return {
             "data": {},
@@ -64,6 +72,11 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         screening_crypto,
         "get_upbit_warning_markets",
         mock_get_upbit_warning_markets,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_unknown_warning_markets",
+        mock_get_upbit_unknown_warning_markets,
     )
     monkeypatch.setattr(
         screening_crypto._CRYPTO_MARKET_CAP_CACHE,
