@@ -349,6 +349,7 @@ tests/services/test_trade_journal_write_service.py
 tests/services/test_trader_page_service.py
 tests/services/test_trading_decision_service_committee.py
 tests/services/test_underwater_support_net.py
+tests/services/test_upbit_market_event.py
 tests/services/test_us_symbol_universe_names.py
 tests/services/us_dual_paper/test_alpaca_adapter.py
 tests/services/us_dual_paper/test_smoke_cli_preflight.py

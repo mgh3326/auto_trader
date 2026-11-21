@@ -7,10 +7,13 @@ import sentry_sdk
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.services.upbit_market_event import STATE_WARNING
 from tests._mcp_tooling_support import (
+    DeclaredMarketEventStates,
     _mock_crypto_external_sources,
     build_tools,
     fake_crypto_tvscreener_module,
+    market_event_state,
     mock_upbit_coins,
 )
 
@@ -59,9 +62,13 @@ class TestScreenStocksCrypto:
                 {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
-            return {"KRW-ETH"}
+            return DeclaredMarketEventStates(
+                {"KRW-ETH": market_event_state(STATE_WARNING)}
+            )
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -108,8 +115,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -220,8 +227,10 @@ class TestScreenStocksCrypto:
                 }
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            return set()
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -246,7 +255,7 @@ class TestScreenStocksCrypto:
             upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
         )
         monkeypatch.setattr(
-            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+            screening_crypto, "get_upbit_market_event_states", mock_market_event_states
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", mock_market_cap_cache_get
@@ -328,8 +337,10 @@ class TestScreenStocksCrypto:
                 return [{"market": "KRW-BTC", "signed_change_rate": -0.15}]
             return [{"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0}]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            return set()
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
+            return DeclaredMarketEventStates()
 
         monkeypatch.setattr(
             screening_crypto,
@@ -343,7 +354,7 @@ class TestScreenStocksCrypto:
             upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
         )
         monkeypatch.setattr(
-            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+            screening_crypto, "get_upbit_market_event_states", mock_market_event_states
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", self._empty_cache_get
@@ -396,8 +407,10 @@ class TestScreenStocksCrypto:
                 raise RuntimeError("upbit ticker timeout")
             return [{"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0}]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            return set()
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
+            return DeclaredMarketEventStates()
 
         monkeypatch.setattr(
             screening_crypto,
@@ -411,7 +424,7 @@ class TestScreenStocksCrypto:
             upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
         )
         monkeypatch.setattr(
-            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+            screening_crypto, "get_upbit_market_event_states", mock_market_event_states
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", self._empty_cache_get
@@ -491,10 +504,12 @@ class TestScreenStocksCrypto:
             assert market_codes == ["KRW-BTC"]
             return [{"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0}]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
             assert db is mock_session
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             assert active_spans
@@ -559,8 +574,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -659,10 +674,12 @@ class TestScreenStocksCrypto:
                 "KRW-XRP": {"korean_name": "리플", "english_name": "Ripple"},
             }
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
             warning_dbs.append(db)
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -713,8 +730,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -759,9 +776,11 @@ class TestScreenStocksCrypto:
         fake_crypto_tvscreener_module,
         monkeypatch,
     ) -> None:
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -824,8 +843,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1023,9 +1042,11 @@ class TestScreenStocksCrypto:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -1053,8 +1074,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1111,9 +1132,11 @@ class TestScreenStocksCrypto:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_market_event_states(
+            db=None, *, quote_currency: str
+        ) -> dict[str, object]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, object]:
             return {
@@ -1141,8 +1164,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1596,8 +1619,10 @@ async def test_screen_stocks_crypto_filters_stop_loss_cooldown_symbols(
             {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
         ]
 
-    async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-        return set()
+    async def mock_market_event_states(
+        db=None, *, quote_currency: str
+    ) -> dict[str, object]:
+        return DeclaredMarketEventStates()
 
     mock_session = MagicMock()
     mock_session.close = AsyncMock()
@@ -1619,8 +1644,8 @@ async def test_screen_stocks_crypto_filters_stop_loss_cooldown_symbols(
     )
     monkeypatch.setattr(
         screening_crypto,
-        "get_upbit_warning_markets",
-        mock_warning_markets,
+        "get_upbit_market_event_states",
+        mock_market_event_states,
         raising=False,
     )
     monkeypatch.setattr(
@@ -1675,8 +1700,10 @@ async def test_screen_stocks_crypto_cooldown_filter_degrades_safely(
     ) -> list[dict[str, object]]:
         return [{"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0}]
 
-    async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-        return set()
+    async def mock_market_event_states(
+        db=None, *, quote_currency: str
+    ) -> dict[str, object]:
+        return DeclaredMarketEventStates()
 
     mock_session = MagicMock()
     mock_session.close = AsyncMock()
@@ -1705,8 +1732,8 @@ async def test_screen_stocks_crypto_cooldown_filter_degrades_safely(
     )
     monkeypatch.setattr(
         screening_crypto,
-        "get_upbit_warning_markets",
-        mock_warning_markets,
+        "get_upbit_market_event_states",
+        mock_market_event_states,
         raising=False,
     )
     monkeypatch.setattr(

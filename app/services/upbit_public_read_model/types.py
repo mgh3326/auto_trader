@@ -25,7 +25,6 @@ ORDERBOOK_STALE_TOLERANCE_SECONDS = 30
 TRADES_TTL_SECONDS = 5
 TRADES_STALE_TOLERANCE_SECONDS = 30
 WARNINGS_TTL_SECONDS = 300
-WARNINGS_STALE_TOLERANCE_SECONDS = 1800
 
 
 def _now_utc() -> datetime:
@@ -76,7 +75,14 @@ class UpbitCandlesBlock(BaseModel):
 class UpbitMarketWarningEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     market: str
-    warning: Literal["NONE", "CAUTION", "UNKNOWN"] = "NONE"
+    #: Legacy 유의 projection (hk 6026): CAUTION only for the ``warning`` state,
+    #: NONE for ``none``/``caution:*``, UNKNOWN for ``unknown``/``stale``.
+    warning: Literal["NONE", "CAUTION", "UNKNOWN"] = "UNKNOWN"
+    #: Closed state: ``none`` | ``warning`` | ``caution:<TYPE,...>`` |
+    #: ``unknown`` | ``stale``.
+    state: str = "unknown"
+    caution_types: list[str] = Field(default_factory=list)
+    observed_at: datetime | None = None
     event: dict[str, Any] | None = None
 
 

@@ -448,6 +448,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("ALTER TABLE review.trade_retrospectives DROP COLUMN decision_id")
             )
+            # hk 6026 market_event columns on upbit_symbol_universe are later
+            # than the stamped boundary and already in Base.metadata; drop them
+            # so the migration adds them back.
+            for column in ("market_event", "market_event_observed_at"):
+                await connection.execute(
+                    text(f"ALTER TABLE upbit_symbol_universe DROP COLUMN {column}")
+                )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

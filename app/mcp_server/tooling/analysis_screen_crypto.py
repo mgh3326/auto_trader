@@ -171,9 +171,14 @@ def _merge_coingecko_market_caps(
         cap_data = coingecko_data.get(symbol or "") if symbol else None
         if cap_data:
             if cap_data.get("market_cap") is not None:
-                item["market_cap"] = cap_data.get("market_cap")
+                item["market_cap"] = cap_data["market_cap"]
             item["market_cap_rank"] = cap_data.get("market_cap_rank")
-        item["market_warning"] = None
+        # ``market_warning``/``market_event_state``/``caution_types`` are computed
+        # by the screener from our own universe state (hk 6026); never overwrite
+        # them with a legacy tvscreener value, but keep the public keys present.
+        item.setdefault("market_warning", None)
+        item.setdefault("market_event_state", "unknown")
+        item.setdefault("caution_types", [])
         item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
         item.pop("score", None)
 
@@ -239,6 +244,7 @@ async def finalize_crypto_screen(
     filtered_by_crash: int,
     filtered_by_stop_loss_cooldown: int = 0,
     filtered_by_unknown_warning: int = 0,
+    filtered_by_stale_warning: int = 0,
     source: str | None = None,
 ) -> CryptoScreenResponse:
     _append_rsi_enrichment_warnings(warnings, rsi_enrichment)
@@ -262,6 +268,7 @@ async def finalize_crypto_screen(
         "top_by_volume": top_by_volume,
         "filtered_by_warning": filtered_by_warning,
         "filtered_by_unknown_warning": filtered_by_unknown_warning,
+        "filtered_by_stale_warning": filtered_by_stale_warning,
         "filtered_by_crash": filtered_by_crash,
         "filtered_by_stop_loss_cooldown": filtered_by_stop_loss_cooldown,
         "rsi_enriched": int(rsi_enrichment.get("succeeded", 0) or 0),

@@ -29,7 +29,11 @@ from app.mcp_server.tooling.market_data_indicators import (
     _calculate_adx,
 )
 from app.mcp_server.tooling.screening import crypto as screening_crypto
-from tests._mcp_tooling_support import build_tools, fake_crypto_tvscreener_module
+from tests._mcp_tooling_support import (
+    build_tools,
+    fake_crypto_tvscreener_module,
+    market_event_states_mock,
+)
 
 __all__ = ["fake_crypto_tvscreener_module"]
 
@@ -38,22 +42,6 @@ pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 @pytest.fixture(autouse=True)
 def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_get_upbit_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
-    async def mock_get_upbit_unknown_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
     async def mock_market_cap_cache_get():
         return {
             "data": {},
@@ -70,13 +58,8 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(
         screening_crypto,
-        "get_upbit_warning_markets",
-        mock_get_upbit_warning_markets,
-    )
-    monkeypatch.setattr(
-        screening_crypto,
-        "get_upbit_unknown_warning_markets",
-        mock_get_upbit_unknown_warning_markets,
+        "get_upbit_market_event_states",
+        market_event_states_mock(),
     )
     monkeypatch.setattr(
         screening_crypto._CRYPTO_MARKET_CAP_CACHE,

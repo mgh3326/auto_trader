@@ -18,6 +18,11 @@ from app.services.invest_crypto_screener_snapshots.provider import (
 from app.services.invest_crypto_screener_snapshots.repository import (
     CryptoSnapshotUpsert,
 )
+from app.services.upbit_market_event import STATE_WARNING
+from tests._mcp_tooling_support import (
+    DeclaredMarketEventStates,
+    market_event_state,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -255,8 +260,12 @@ async def test_tvscreener_upbit_snapshot_provider_keeps_cooldown_symbols() -> No
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
-            new=AsyncMock(return_value={"KRW-ETH"}),
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_event_states",
+            new=AsyncMock(
+                return_value=DeclaredMarketEventStates(
+                    {"KRW-ETH": market_event_state(STATE_WARNING)}
+                )
+            ),
         ),
         patch(
             "app.mcp_server.tooling.screening.crypto._run_crypto_coingecko_fetch",
@@ -281,3 +290,10 @@ async def test_tvscreener_upbit_snapshot_provider_keeps_cooldown_symbols() -> No
 
     assert cooldown_filter.await_count == 0
     assert {row.symbol for row in rows} == {"KRW-BTC", "KRW-ETH", "KRW-XRP"}
+    # hk 6026: the 유의(warning) flag survives finalize into the snapshot row
+    # instead of being wiped to False for every symbol.
+    assert {row.symbol: row.market_warning for row in rows} == {
+        "KRW-BTC": False,
+        "KRW-ETH": True,
+        "KRW-XRP": False,
+    }

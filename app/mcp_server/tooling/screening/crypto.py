@@ -35,10 +35,15 @@ from app.services.tvscreener_service import (
     TvScreenerService,
     _import_tvscreener,
 )
+from app.services.upbit_market_event import (
+    STATE_STALE,
+    STATE_UNKNOWN,
+    STATE_WARNING,
+    MarketEventState,
+)
 from app.services.upbit_symbol_universe_service import (
     get_upbit_market_display_names,
-    get_upbit_unknown_warning_markets,
-    get_upbit_warning_markets,
+    get_upbit_market_event_states,
 )
 from app.utils.symbol_mapping import (
     SymbolMappingError,
@@ -272,31 +277,27 @@ async def _normalize_crypto_results(
                 f"({type(exc).__name__}: {exc})"
             )
 
-        warning_markets: set[str] = set()
+        # hk 6026: one closed market-alert state per market, judged by Upbit's
+        # observation time. ``warning`` (유의), ``unknown`` and ``stale`` are
+        # excluded from interactive screening; ``caution:<types>`` (주의) stays
+        # visible with its types. Snapshot builds keep every provider row.
+        # ``None`` = lookup failed: keep the pre-existing fail-open (no alert
+        # filter) and say so in ``warnings``.
+        market_event_states: dict[str, MarketEventState] | None = None
         try:
-            warning_markets = await get_upbit_warning_markets(
+            market_event_states = await get_upbit_market_event_states(
                 quote_currency="KRW", db=_db
             )
         except Exception as exc:
+            if pure_market_snapshot:
+                # A snapshot persists a boolean warning flag; never write
+                # ``False`` ("no 유의") for a market whose alert state we could
+                # not read. Fail the build instead.
+                raise
             warnings.append(
-                "market warning details unavailable; warning filter skipped "
+                "market alert state (market_event) unavailable; warning filter skipped "
                 f"({type(exc).__name__}: {exc})"
             )
-
-        # hk 5945: provenance-unknown warnings fail closed — a market whose
-        # source did not say NONE is not shown as safe in interactive screening.
-        # Snapshot builds keep every provider row, so they skip this lookup.
-        unknown_warning_markets: set[str] = set()
-        if not pure_market_snapshot:
-            try:
-                unknown_warning_markets = await get_upbit_unknown_warning_markets(
-                    quote_currency="KRW", db=_db
-                )
-            except Exception as exc:
-                warnings.append(
-                    "market warning provenance unavailable; unknown-warning filter skipped "
-                    f"({type(exc).__name__}: {exc})"
-                )
     finally:
         await _db.close()
 
@@ -394,20 +395,35 @@ async def _normalize_crypto_results(
                 )
 
     # Apply warning + crash filters for interactive screening; snapshot builds keep
-    # every provider row and only carry warning metadata forward.
+    # every provider row and only carry alert metadata forward.
     filtered_by_warning = 0
     filtered_by_unknown_warning = 0
+    filtered_by_stale_warning = 0
     filtered_by_crash = 0
+    apply_alert_filter = market_event_states is not None and not pure_market_snapshot
     candidates: list[dict[str, Any]] = []
     for raw_item in raw_results:
         market_code = str(raw_item.get("symbol") or "").strip().upper()
-        is_warning_market = market_code in warning_markets
-        if is_warning_market and not pure_market_snapshot:
-            filtered_by_warning += 1
-            continue
-        if market_code in unknown_warning_markets and not pure_market_snapshot:
-            filtered_by_unknown_warning += 1
-            continue
+        alert_state = (
+            market_event_states.get(market_code)
+            if market_event_states is not None
+            else None
+        )
+        alert_state_name = (
+            alert_state.state if alert_state is not None else STATE_UNKNOWN
+        )
+        caution_types = list(alert_state.caution_types) if alert_state else []
+        is_warning_market = alert_state_name == STATE_WARNING
+        if apply_alert_filter:
+            if is_warning_market:
+                filtered_by_warning += 1
+                continue
+            if alert_state_name == STATE_STALE:
+                filtered_by_stale_warning += 1
+                continue
+            if alert_state_name == STATE_UNKNOWN:
+                filtered_by_unknown_warning += 1
+                continue
 
         coin_change_24h = raw_item.get("signed_change_rate")
         if coin_change_24h is None:
@@ -442,6 +458,8 @@ async def _normalize_crypto_results(
             "market_cap": _to_optional_float(raw_item.get("tv_market_cap")),
             "market_cap_rank": None,
             "market_warning": is_warning_market if pure_market_snapshot else None,
+            "market_event_state": alert_state_name,
+            "caution_types": caution_types,
             "rsi": _to_optional_float(raw_item.get("rsi")),
             "volume_ratio": None,
             "candle_type": "flat",
@@ -513,11 +531,21 @@ async def _normalize_crypto_results(
             with contextlib.suppress(asyncio.CancelledError):
                 await coingecko_fetch_task
 
-    if filtered_by_unknown_warning and not pure_market_snapshot:
-        warnings.append(
-            f"Upbit 유의종목 여부 미확인 {filtered_by_unknown_warning}종목 제외 "
-            "(market_warning 출처 없음 — fail-closed)"
-        )
+    if market_event_states is not None and not pure_market_snapshot:
+        if filtered_by_warning:
+            warnings.append(
+                f"Upbit 유의종목 {filtered_by_warning}종목 제외 (market_event.warning)"
+            )
+        if filtered_by_unknown_warning:
+            warnings.append(
+                f"Upbit 시장 경보 미확인 {filtered_by_unknown_warning}종목 제외 "
+                "(market_event 없음 — fail-closed)"
+            )
+        if filtered_by_stale_warning:
+            warnings.append(
+                f"Upbit 시장 경보가 오래된 {filtered_by_stale_warning}종목 제외 "
+                "(market_event stale — fail-closed)"
+            )
 
     return await finalize_crypto_screen(
         candidates=candidates,
@@ -532,6 +560,7 @@ async def _normalize_crypto_results(
         top_by_volume=len(raw_results),
         filtered_by_warning=filtered_by_warning,
         filtered_by_unknown_warning=filtered_by_unknown_warning,
+        filtered_by_stale_warning=filtered_by_stale_warning,
         filtered_by_crash=filtered_by_crash,
         filtered_by_stop_loss_cooldown=filtered_by_cooldown,
         source="tvscreener",

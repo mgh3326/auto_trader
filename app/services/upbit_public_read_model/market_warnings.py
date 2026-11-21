@@ -1,32 +1,42 @@
-"""Read-only Upbit market-warning read model."""
+"""Read-only Upbit market-alert read model (hk 6026).
+
+Reads the ``market_event`` observations stored by the universe sync and turns
+each one into exactly one closed state (``none`` / ``warning`` /
+``caution:<TYPE,...>`` / ``unknown`` / ``stale``) via
+:mod:`app.services.upbit_market_event`.
+
+🔴 Freshness is judged by the observation time stored next to the value, never
+by the row's ``updated_at``. A block whose last observation is older than
+:data:`~app.services.upbit_market_event.MARKET_EVENT_STALE_AFTER` reports
+``stale`` and ``fetchedAt`` is that observation time — old data can no longer
+read as fresh, and a market Upbit did not speak about is ``unknown``, never
+``none``. This tier makes no HTTP call: the values come from the sync.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Protocol
 
-import httpx
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
-from app.models.upbit_symbol_universe import UpbitSymbolUniverse
-from app.services.upbit_public_read_model.cache_common import (
-    classify_error,
-    read_json,
-    write_json,
+from app.services.upbit_market_event import (
+    CAUTION_STATE_PREFIX,
+    MARKET_EVENT_STALE_AFTER,
+    STATE_NONE,
+    STATE_WARNING,
+    MarketEventState,
+    load_market_event_states,
 )
 from app.services.upbit_public_read_model.types import (
-    WARNINGS_STALE_TOLERANCE_SECONDS,
     WARNINGS_TTL_SECONDS,
     UpbitBlockMeta,
     UpbitMarketWarningEntry,
     UpbitMarketWarningsBlock,
     _now_utc,
 )
-
-_UPBIT_MARKET_ALL_URL = "https://api.upbit.com/v1/market/all"
-_WARNINGS_KEY = "upbit:public:read:warnings:v1"
 
 
 class MarketWarningsProvider(Protocol):
@@ -35,60 +45,37 @@ class MarketWarningsProvider(Protocol):
     ) -> Awaitable[UpbitMarketWarningsBlock]: ...
 
 
-async def fetch_market_event_details() -> list[dict[str, Any]]:
-    timeout = httpx.Timeout(10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(_UPBIT_MARKET_ALL_URL, params={"isDetails": "true"})
-        response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, list):
-        raise ValueError("unexpected Upbit market/all response shape")
-    return payload
-
-
-def _entries_from_rows(
-    rows: list[UpbitSymbolUniverse],
-) -> dict[str, UpbitMarketWarningEntry]:
-    # Never fabricate ``NONE``: an empty stored value means the source did
-    # not say (hk 5945). Legacy rows predating provenance keep their ``NONE``.
-    return {
-        row.market.upper(): UpbitMarketWarningEntry(
-            market=row.market.upper(), warning=_entry_warning(row.market_warning)
-        )
-        for row in rows
-    }
-
-
-def _entry_warning(value: object) -> str:
-    """Closed read-model vocabulary: only explicit Upbit statements pass."""
-    if value in ("NONE", "CAUTION"):
-        return str(value)
+def _legacy_warning(state: str) -> str:
+    """Legacy 유의 projection of the closed state."""
+    if state == STATE_WARNING:
+        return "CAUTION"
+    if state == STATE_NONE or state.startswith(CAUTION_STATE_PREFIX):
+        return "NONE"
     return "UNKNOWN"
 
 
-def _merge_event_details(
-    entries: dict[str, UpbitMarketWarningEntry], details: list[dict[str, Any]]
-) -> dict[str, UpbitMarketWarningEntry]:
-    by_market = {str(item.get("market") or "").upper(): item for item in details}
-    return {
-        market: entry.model_copy(
-            update={"event": by_market.get(market, {}).get("market_event")}
-        )
-        for market, entry in entries.items()
-    }
+def _entry_from_state(
+    state: MarketEventState, *, include_event_detail: bool
+) -> UpbitMarketWarningEntry:
+    return UpbitMarketWarningEntry(
+        market=state.market,
+        warning=_legacy_warning(state.state),
+        state=state.state,
+        caution_types=list(state.caution_types),
+        observed_at=state.observed_at,
+        event=state.market_event if include_event_detail else None,
+    )
 
 
 class MarketWarningsService:
     def __init__(
         self,
         *,
-        redis=None,
         db_session_factory=AsyncSessionLocal,
-        detail_fetcher=fetch_market_event_details,
+        now_provider=_now_utc,
     ) -> None:
-        self._redis = redis
         self._db_session_factory = db_session_factory
-        self._detail_fetcher = detail_fetcher
+        self._now_provider = now_provider
 
     async def get(
         self,
@@ -98,71 +85,48 @@ class MarketWarningsService:
         db: AsyncSession | None = None,
     ) -> UpbitMarketWarningsBlock:
         requested = {m.upper() for m in markets} if markets else None
-        rows = await self._load_rows(requested=requested, db=db)
-        latest = max((getattr(row, "updated_at", None) for row in rows), default=None)
-        entries = _entries_from_rows(rows)
-        state = "fresh" if entries else "missing"
-        error_reason = None
-
-        if include_event_detail and entries:
-            try:
-                details = await self._get_detail_rows()
-                entries = _merge_event_details(entries, details)
-            except Exception as exc:  # noqa: BLE001
-                state = "stale" if entries else "unavailable"
-                error_reason = classify_error(exc)
+        now = self._now_provider()
+        states = await self._load_states(db=db, now=now)
+        selected = {
+            market: state
+            for market, state in states.items()
+            if requested is None or market in requested
+        }
+        entries = {
+            market: _entry_from_state(state, include_event_detail=include_event_detail)
+            for market, state in selected.items()
+        }
+        observed = [
+            state.observed_at for state in selected.values() if state.observed_at
+        ]
+        latest: datetime | None = max(observed, default=None)
+        if not entries:
+            state_name = "missing"
+        elif latest is None or now - latest > MARKET_EVENT_STALE_AFTER:
+            state_name = "stale"
+        else:
+            state_name = "fresh"
 
         return UpbitMarketWarningsBlock(
             meta=UpbitBlockMeta(
                 source="upbit_market_warnings",
-                state=state,
-                label="Upbit market warnings (universe)",
-                fetchedAt=latest or _now_utc(),
+                state=state_name,
+                label="Upbit market alerts (market_event)",
+                fetchedAt=latest,
                 ttlSeconds=WARNINGS_TTL_SECONDS,
-                errorReason=error_reason,
             ),
             entries=entries,
         )
 
-    async def _load_rows(
-        self, *, requested: set[str] | None, db: AsyncSession | None
-    ) -> list[UpbitSymbolUniverse]:
-        async def load(session: AsyncSession) -> list[UpbitSymbolUniverse]:
-            stmt = select(UpbitSymbolUniverse).where(
-                UpbitSymbolUniverse.quote_currency == "KRW",
-                UpbitSymbolUniverse.is_active.is_(True),
-            )
-            if requested:
-                stmt = stmt.where(UpbitSymbolUniverse.market.in_(sorted(requested)))
-            result = await session.execute(
-                stmt.order_by(UpbitSymbolUniverse.market.asc())
-            )
-            return list(result.scalars().all())
-
+    async def _load_states(
+        self, *, db: AsyncSession | None, now: datetime
+    ) -> dict[str, MarketEventState]:
         if db is not None:
-            return await load(db)
+            return await load_market_event_states(db, quote_currency="KRW", now=now)
         async with self._db_session_factory() as session:
-            return await load(session)
-
-    async def _get_detail_rows(self) -> list[dict[str, Any]]:
-        if self._redis is not None:
-            cached = await read_json(self._redis, _WARNINGS_KEY)
-            now = _now_utc()
-            if (
-                cached
-                and (now - cached["cachedAt"]).total_seconds() <= WARNINGS_TTL_SECONDS
-            ):
-                return list(cached["rows"])
-        rows = await self._detail_fetcher()
-        if self._redis is not None:
-            now = _now_utc()
-            await write_json(
-                self._redis,
-                _WARNINGS_KEY,
-                {"rows": rows, "fetchedAt": now, "cachedAt": now},
-                ex=WARNINGS_STALE_TOLERANCE_SECONDS,
+            return await load_market_event_states(
+                session, quote_currency="KRW", now=now
             )
-        return rows
 
 
 _default_service = MarketWarningsService()
@@ -173,6 +137,5 @@ __all__ = [
     "MarketWarningsProvider",
     "MarketWarningsService",
     "db_universe_warnings_provider",
-    "fetch_market_event_details",
     "get_market_warnings",
 ]

@@ -1,7 +1,15 @@
 # tests/test_screening_crypto.py
 """Verify crypto screening functions are importable from the new location."""
 
+from unittest.mock import AsyncMock
+
 import pytest
+
+from app.services.upbit_market_event import STATE_STALE, STATE_UNKNOWN
+from tests._mcp_tooling_support import (
+    DeclaredMarketEventStates,
+    market_event_state,
+)
 
 
 class _FakeFrame:
@@ -84,11 +92,9 @@ class TestCryptoScreeningPhases:
                 }
             }
 
-        async def fake_warning_markets(quote_currency, db):
-            return set()
-
-        async def fake_unknown_warning_markets(quote_currency, db):
-            return set()
+        async def fake_market_event_states(quote_currency=None, db=None, now=None):
+            _ = (quote_currency, db, now)
+            return DeclaredMarketEventStates()
 
         async def fake_tickers(markets):
             return [{"market": "KRW-IMX", "acc_trade_volume_24h": 1234}]
@@ -103,9 +109,8 @@ class TestCryptoScreeningPhases:
             }
 
         monkeypatch.setattr(crypto, "get_upbit_market_display_names", fake_names)
-        monkeypatch.setattr(crypto, "get_upbit_warning_markets", fake_warning_markets)
         monkeypatch.setattr(
-            crypto, "get_upbit_unknown_warning_markets", fake_unknown_warning_markets
+            crypto, "get_upbit_market_event_states", fake_market_event_states
         )
         monkeypatch.setattr(
             crypto.upbit_service, "fetch_multiple_tickers", fake_tickers
@@ -170,11 +175,11 @@ class TestCryptoUnknownWarningFailClosed:
                 code: {"korean_name": code, "english_name": code} for code in markets
             }
 
-        async def fake_warning_markets(quote_currency, db):
-            return set()
-
-        async def fake_unknown_warning_markets(quote_currency, db):
-            return unknown
+        async def fake_market_event_states(quote_currency=None, db=None, now=None):
+            _ = (quote_currency, db, now)
+            return DeclaredMarketEventStates(
+                {market: market_event_state(STATE_UNKNOWN) for market in unknown}
+            )
 
         async def fake_tickers(markets):
             return [{"market": code, "acc_trade_volume_24h": 1234} for code in markets]
@@ -189,9 +194,8 @@ class TestCryptoUnknownWarningFailClosed:
             }
 
         monkeypatch.setattr(crypto, "get_upbit_market_display_names", fake_names)
-        monkeypatch.setattr(crypto, "get_upbit_warning_markets", fake_warning_markets)
         monkeypatch.setattr(
-            crypto, "get_upbit_unknown_warning_markets", fake_unknown_warning_markets
+            crypto, "get_upbit_market_event_states", fake_market_event_states
         )
         monkeypatch.setattr(
             crypto.upbit_service, "fetch_multiple_tickers", fake_tickers
@@ -261,4 +265,75 @@ class TestCryptoUnknownWarningFailClosed:
             "KRW-BTC",
             "KRW-ETH",
         ]
+        assert payload["meta"]["filtered_by_unknown_warning"] == 0
+
+    @pytest.mark.asyncio
+    async def test_interactive_screening_excludes_stale_warnings(self, monkeypatch):
+        """hk 6026: an old observation is not a fresh 'no alert' statement."""
+        crypto = self._install(monkeypatch, set())
+        monkeypatch.setattr(
+            crypto,
+            "get_upbit_market_event_states",
+            AsyncMock(
+                return_value=DeclaredMarketEventStates(
+                    {"KRW-ETH": market_event_state(STATE_STALE)}
+                )
+            ),
+        )
+
+        payload = await crypto._normalize_crypto_results(
+            self._rows(),
+            market="crypto",
+            max_rsi=None,
+            min_market_cap=None,
+            filters_applied=self._filters(),
+            limit=20,
+        )
+
+        assert [row["symbol"] for row in payload["results"]] == ["KRW-BTC"]
+        assert payload["meta"]["filtered_by_stale_warning"] == 1
+        assert payload["meta"]["filtered_by_unknown_warning"] == 0
+        assert any("stale" in w for w in payload.get("warnings", []))
+
+    @pytest.mark.asyncio
+    async def test_interactive_screening_shows_caution_with_types(self, monkeypatch):
+        """hk 6026: 주의(caution) is shown with its types, not silently excluded."""
+        crypto = self._install(monkeypatch, set())
+        monkeypatch.setattr(
+            crypto,
+            "get_upbit_market_event_states",
+            AsyncMock(
+                return_value=DeclaredMarketEventStates(
+                    {
+                        "KRW-ETH": market_event_state(
+                            "caution:PRICE_FLUCTUATIONS,TRADING_VOLUME_SOARING",
+                            caution_types=(
+                                "PRICE_FLUCTUATIONS",
+                                "TRADING_VOLUME_SOARING",
+                            ),
+                        )
+                    }
+                )
+            ),
+        )
+
+        payload = await crypto._normalize_crypto_results(
+            self._rows(),
+            market="crypto",
+            max_rsi=None,
+            min_market_cap=None,
+            filters_applied=self._filters(),
+            limit=20,
+        )
+
+        by_symbol = {row["symbol"]: row for row in payload["results"]}
+        assert set(by_symbol) == {"KRW-BTC", "KRW-ETH"}
+        assert by_symbol["KRW-ETH"]["market_event_state"] == (
+            "caution:PRICE_FLUCTUATIONS,TRADING_VOLUME_SOARING"
+        )
+        assert by_symbol["KRW-ETH"]["caution_types"] == [
+            "PRICE_FLUCTUATIONS",
+            "TRADING_VOLUME_SOARING",
+        ]
+        assert payload["meta"]["filtered_by_warning"] == 0
         assert payload["meta"]["filtered_by_unknown_warning"] == 0
