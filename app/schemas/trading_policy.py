@@ -979,7 +979,8 @@ class PolicyDecisionRule(BaseModel):
         is safe to state, so it is machine-pinned.
         (2) The parking term has no repository balance source (``cash_yields``
         is a rate table). Estimating it would inflate the cap silently, so
-        "missing means zero" is pinned too.
+        "missing or unreadable means zero" is pinned; a stale stored value
+        stays at face value with a warning label instead (hk 6017).
         """
 
         tier = self._tier_by_id(DEPLOYMENT_CAP_TIER_ID)
@@ -1007,10 +1008,21 @@ class PolicyDecisionRule(BaseModel):
             raise ValueError(
                 f"{DEPLOYMENT_CAP_TIER_ID} must name its parking balance source"
             )
-        if conditions.get("parking_balance_missing_or_stale_value") != 0:
+        if conditions.get("parking_balance_missing_or_unreadable_value") != 0:
             raise ValueError(
-                f"{DEPLOYMENT_CAP_TIER_ID} must read a missing or stale parking "
-                "balance as 0"
+                f"{DEPLOYMENT_CAP_TIER_ID} must read a missing or unreadable "
+                "parking balance as 0"
+            )
+        if conditions.get("parking_balance_stale_value") != "stored_face_value":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must read a stale parking balance "
+                "at its stored face value (hk 6017, operator 2026-11-21)"
+            )
+        if "parking_balance_missing_or_stale_value" in conditions:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} retired "
+                "parking_balance_missing_or_stale_value — a stale parking "
+                "balance is no longer zeroed (hk 6017)"
             )
         if conditions.get("parking_balance_estimation") != "FORBIDDEN":
             raise ValueError(

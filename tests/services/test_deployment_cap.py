@@ -12,7 +12,7 @@ import pytest
 from app.services.deployment_cap import (
     PARKING_SOURCE_ABSENT,
     PARKING_SOURCE_MANUAL_CASH,
-    PARKING_SOURCE_STALE,
+    PARKING_SOURCE_STALE_WARNING,
     STATUS_EXCEEDS,
     STATUS_UNAVAILABLE,
     STATUS_WITHIN,
@@ -101,8 +101,8 @@ def test_missing_parking_reads_as_zero_and_is_declared_a_lower_bound():
         ({"amount": "not a number"}, Decimal("0"), PARKING_SOURCE_ABSENT),
         (
             {"amount": 7_800_000.0, "stale_warning": True},
-            Decimal("0"),
-            PARKING_SOURCE_STALE,
+            Decimal("7800000"),
+            PARKING_SOURCE_STALE_WARNING,
         ),
         (
             {"amount": 7_800_000.0, "stale_warning": False},
@@ -114,7 +114,7 @@ def test_missing_parking_reads_as_zero_and_is_declared_a_lower_bound():
 def test_parking_provenance_never_estimates(
     manual_cash, expected_amount, expected_source
 ):
-    """Stale is the case where estimating would be most tempting; it reads 0."""
+    """Absent/unreadable reads 0; stale still reads the stored value (hk 6017)."""
 
     amount, source = resolve_parking_balance_krw(manual_cash)
 

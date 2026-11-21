@@ -409,6 +409,7 @@ def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
 
     The rule itself lives in ``app.services.manual_cash_settings`` so the
     /invest settings screen shows exactly what this read applies (#671).
+    Staleness is a warning only — it never excludes the amount (hk 6017).
     """
     return is_manual_cash_stale(updated_at_iso, now=now_kst())
 
@@ -444,6 +445,8 @@ async def get_available_capital_impl(
             exchange_rate = USD_KRW_FALLBACK_RATE
 
     total_orderable_krw = 0.0
+    # hk 6017: nothing valid is excluded for age anymore, so this stays 0.0 —
+    # the key is kept so the response shape does not change for readers.
     manual_cash_excluded_krw = 0.0
     processed_accounts: list[dict[str, Any]] = []
 
@@ -503,21 +506,20 @@ async def get_available_capital_impl(
                 amount_invalid = has_amount and parsed_amount is None
                 amount = 0.0 if parsed_amount is None else float(parsed_amount)
 
-                # ROB-467: stale manual cash is no longer trustworthy as
-                # deployable capital. Keep it visible for transparency, but
-                # exclude it from the orderable total so it is not mistaken
-                # for real ammunition every session.
+                # ROB-467 / hk 6017: only an invalid stored amount is kept out
+                # of the orderable total. Staleness is a freshness warning,
+                # not an exclusion — the operator-confirmed amount keeps
+                # counting regardless of age (operator 2026-11-21) and the
+                # deployment-cap source label carries the warning instead.
                 manual_cash_result = {
                     "amount": amount,
                     "updated_at": updated_at,
                     "stale_warning": stale_warning,
-                    "included_in_total": not stale_warning and not amount_invalid,
+                    "included_in_total": not amount_invalid,
                 }
                 if amount_invalid:
                     manual_cash_result["invalid_amount"] = True
                     errors.append({"source": "manual_cash", "error": "invalid_amount"})
-                elif stale_warning:
-                    manual_cash_excluded_krw += amount
                 else:
                     total_orderable_krw += amount
         except Exception as exc:

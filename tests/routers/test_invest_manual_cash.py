@@ -34,7 +34,7 @@ from app.routers.dependencies import get_authenticated_user
 from app.services.deployment_cap import (
     PARKING_SOURCE_ABSENT,
     PARKING_SOURCE_MANUAL_CASH,
-    PARKING_SOURCE_STALE,
+    PARKING_SOURCE_STALE_WARNING,
 )
 from app.services.manual_cash_settings import (
     MANUAL_CASH_MAX_KRW,
@@ -525,7 +525,7 @@ async def test_non_admin_cannot_write(owner: int, session_user: dict[str, Any]) 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_stale_value_is_shown_stale_and_zeroed_in_deployment_cap(
+async def test_stale_value_is_shown_stale_but_still_counted(
     owner: int, session_user: dict[str, Any]
 ) -> None:
     _admin(session_user, owner)
@@ -543,14 +543,16 @@ async def test_stale_value_is_shown_stale_and_zeroed_in_deployment_cap(
     assert datetime.fromisoformat(view["stale_at"]) < datetime.now(UTC)
 
     capital = await _capital()
+    # hk 6017: staleness is a warning only — the stored amount still counts in
+    # the orderable total and feeds the deployment-cap parking term.
     assert capital["manual_cash"]["stale_warning"] is True
-    assert capital["manual_cash"]["included_in_total"] is False
-    assert capital["summary"]["manual_cash_excluded_krw"] == pytest.approx(7_000_000)
-    assert capital["summary"]["total_orderable_krw"] == pytest.approx(1_000_000)
+    assert capital["manual_cash"]["included_in_total"] is True
+    assert capital["summary"]["manual_cash_excluded_krw"] == pytest.approx(0.0)
+    assert capital["summary"]["total_orderable_krw"] == pytest.approx(8_000_000)
     cap = capital["summary"]["deployment_cap_advisory"]
-    assert cap["parking_balance_krw"] == "0"
-    assert cap["parking_balance_source"] == PARKING_SOURCE_STALE
-    assert cap["cap_is_lower_bound"] is True
+    assert cap["parking_balance_krw"] == "7000000"
+    assert cap["parking_balance_source"] == PARKING_SOURCE_STALE_WARNING
+    assert cap["cap_is_lower_bound"] is False
 
 
 @pytest.mark.integration

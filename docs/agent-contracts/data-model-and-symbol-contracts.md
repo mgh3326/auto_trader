@@ -170,6 +170,7 @@ T0 시점에는 이 블록을 읽는 코드가 없다. 🔴 변경 띠(§6.2 항
 - 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 행이 없던 상태에서의 최초 저장은 `INSERT … ON CONFLICT DO NOTHING` 이라 그 사이 다른 경로가 먼저 넣은 행을 덮어쓰지 않고 `stale_form`. 모두 쓰기 0. 확인 대화상자의 초기 포커스는 '취소'(Enter 오확정 방지).
 - **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
 - **reader 경화**: 저장된 `amount` 가 0~`MANUAL_CASH_MAX_KRW` 정수가 아니면(NaN/Infinity/음수/소수/상한 초과/판독불가) `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화. 어떤 경로로 들어온 행이든 파킹 항은 상한을 넘지 못한다.
+- **stale 은 경고일 뿐이다 (hk 6017, 운영자 2026-11-21)**: `MANUAL_CASH_STALE_AFTER`(3일) 초과 저장값도 유효하면 `total_orderable_krw`·deployment_cap 파킹 항에 나이와 무관하게 그대로 포함된다. `stale_warning`(MCP)·`stale`/`stale_at`(화면) 표시는 유지되고, deployment_cap 은 `parking_balance_source="operator_value_stale_warning"` 을 방출하며 `cap_is_lower_bound=false` 다(파킹 항이 0이 아니라 측정값이므로). 폐기된 `stale_treated_as_zero` 어휘는 더 이상 방출되지 않는다. 제외되는 것은 invalid/unreadable 값뿐이다.
 - MCP `set_user_setting("manual_cash", …)` 경로는 남아 있으나 같은 금액 규칙(0~100억 정수, 정수 float 는 int 로 정규화, `accounts` 는 합계 일치)으로 검증되고, 호출자가 넣은 출처 키(`source`/`origin`/`confirmed_*`)는 버린 뒤 `source="mcp_set_user_setting"` 로 찍는다 — 이 경로는 `operator_confirmed` 를 사칭할 수 없다. 단 50% 확인·`expected_updated_at` 가드는 화면 경로 전용이다. 다른 키는 영향 없음.
 
 ### parking_exclusion 설정 (#883)

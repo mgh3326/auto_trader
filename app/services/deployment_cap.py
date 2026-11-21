@@ -18,9 +18,12 @@ module rather than inline at a call site:
 ``missing parking means zero``
     ``cash_yields`` in the policy is a rate table with no balances, and the
     only balance store in this repo is the operator's ``manual_cash`` user
-    setting. When that is absent or stale the parking term is 0 — never
+    setting. When that is absent or unreadable the parking term is 0 — never
     estimated — so the emitted cap is a conservative lower bound, reported as
-    such through ``parking_balance_source``.
+    such through ``parking_balance_source``. A stored value older than the
+    staleness threshold is *not* zeroed (hk 6017, operator 2026-11-21): it is
+    used at face value and labelled ``operator_value_stale_warning`` so the
+    age stays visible without silently shrinking the denominator.
 """
 
 from __future__ import annotations
@@ -45,7 +48,10 @@ STATUS_UNAVAILABLE = "unavailable"
 
 PARKING_SOURCE_MANUAL_CASH = "manual_cash"
 PARKING_SOURCE_ABSENT = "absent_treated_as_zero"
-PARKING_SOURCE_STALE = "stale_treated_as_zero"
+# hk 6017: a valid stored amount older than MANUAL_CASH_STALE_AFTER is still
+# the operator's declared parking balance — it feeds the term, and this label
+# is how a reader knows the value carries a freshness warning.
+PARKING_SOURCE_STALE_WARNING = "operator_value_stale_warning"
 
 
 class DeploymentCapPolicyError(ValueError):
@@ -138,9 +144,9 @@ def resolve_parking_balance_krw(
 
     ``manual_cash`` is the shape ``get_available_capital_impl`` already builds:
     ``{"amount": float, "stale_warning": bool, ...}`` or ``None``. Anything
-    unreadable, negative, or stale contributes 0 — the policy forbids
-    estimating this term, and a stale balance is exactly the case where an
-    estimate would be most tempting and least justified.
+    unreadable, negative, or invalid contributes 0 — the policy forbids
+    estimating this term. A *stale* amount is different (hk 6017): the stored
+    operator value is still used, labelled ``operator_value_stale_warning``.
     """
 
     if not isinstance(manual_cash, dict):
@@ -149,7 +155,7 @@ def resolve_parking_balance_krw(
     if amount is None or amount <= 0:
         return Decimal("0"), PARKING_SOURCE_ABSENT
     if manual_cash.get("stale_warning") is True:
-        return Decimal("0"), PARKING_SOURCE_STALE
+        return amount, PARKING_SOURCE_STALE_WARNING
     return amount, PARKING_SOURCE_MANUAL_CASH
 
 
@@ -220,8 +226,10 @@ def evaluate_deployment_cap(
         "cap_krw": _text(cap),
         # The cap is a lower bound whenever the parking term was zeroed rather
         # than measured; saying so is the difference between a conservative
-        # number and a wrong one.
-        "cap_is_lower_bound": parking_balance_source != PARKING_SOURCE_MANUAL_CASH,
+        # number and a wrong one. A stale-but-valid amount IS measured (at the
+        # operator's last declared value), so it does not claim lower-bound.
+        "cap_is_lower_bound": parking_balance_source
+        not in (PARKING_SOURCE_MANUAL_CASH, PARKING_SOURCE_STALE_WARNING),
     }
 
     planned = _decimal_or_none(planned_new_deployment_krw)
@@ -255,7 +263,7 @@ __all__ = [
     "DEPLOYMENT_CAP_TIER_ID",
     "PARKING_SOURCE_ABSENT",
     "PARKING_SOURCE_MANUAL_CASH",
-    "PARKING_SOURCE_STALE",
+    "PARKING_SOURCE_STALE_WARNING",
     "STATUS_EXCEEDS",
     "STATUS_UNAVAILABLE",
     "STATUS_WITHIN",
