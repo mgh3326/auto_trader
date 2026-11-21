@@ -19,6 +19,7 @@
 - 보호 수량 P 규칙 추종 (#943)
 - 기계식 손절과 lot exit plan (ROB-1460)
 - KIS live KR ledger lots — get_holdings opt-in (#963)
+- KIS 국내 선물 모의 주문 경로 (hk 5946, 선물 T3)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
 - Kiwoom mock 귀속 사슬 — pre-submit 강제 (hk 4723)
@@ -709,6 +710,24 @@ allowlist change exists because `get_holdings` is already live-kr core.
   - 🔴 #678 `kis_live_get_order_history` 차단·harness deny 불변. us-open-trade 프롬프트 문장은 운영자 PR 별건.
   - **테스트**: `test_kis_lots_us.py`(순수·US 거래일·venue·팬텀·KR golden), `test_kis_lots_us_db.py`(테스트 DB·KIS/HTTP 트랩·get_holdings KR+US end-to-end),
     `test_kis_lots_us_mutants.py`(디스크에서 센 US 가드 12곳의 assertion-RED 뮤턴트).
+
+### KIS 국내 선물 모의 주문 경로 (hk 5946, 선물 T3)
+
+설계 `docs/design/5939-futures-model.md`, 운영자 결정 `decision-request/2026-11-21/at-futures-expansion`(Q1–Q12)·`decision-request/2026-11-21/at-futures-t3-values`. 하드룰 4 예외는 AGENTS.md 에 있다: **KIS 모의(주간) 미니 KOSPI200 선물의 place/cancel 만**. 🔴 MCP 도구·스케줄러·옵션·야간·실계좌·일반 KOSPI200 선물·자동 롤오버·시장가는 없다. 런북 `docs/runbooks/kis-futures-mock-order.md`.
+
+- **표면**: `app/services/kis_futures_mock/`(`constants`·`session_calendar`·`rules`(순수)·`attribution`·`ledger_service`·`place`) + 전송기 `app/services/brokers/kis/futures_orders.py`(`KISClient` 를 감싼다 — `KISClient` 에 `futures_*` 메서드를 더하지 않으므로 T1 읽기 view 의 허용 목록·메서드 집합 대조 테스트가 그대로다) + 수동 CLI `scripts/kis_futures_mock_order.py`(`place`/`cancel`, 미리보기 기본, `--confirm` 이 한 건을 보낸다, 수량·상한 인자 없음). `futures_orders`/`FuturesOrders` 를 부르는 곳은 이 레인뿐이다(`tests/services/kis_futures_mock/test_futures_mock_boundary.py`).
+- **게이트**: `KIS_FUTURES_MOCK_ENABLED` 정확히 `"true"`(기본 off) AND 호출별 `--confirm`. 읽기(마스터·잔고)는 T1 의 `KIS_FUTURES_READ_ENABLED` 와 `KIS_FUTURES_MOCK_ACCOUNT_NO`(선물옵션 계좌 8자리, 상품코드 `03` 고정)를 쓴다. 호스트는 정확히 `https://openapivts.koreainvestment.com:29443`·모의 클라이언트·8자리 숫자 계좌일 때만 진행하고, 어긋나면 예약 전에 거부한다. TR 은 모의 주간 `VTTO1101U`(주문)·`VTTO1103U`(취소)뿐이다.
+- 🔴 **잠금 상수**(`constants.LOCKED_LIMITS`, env·CLI·인자로 바꿀 수 없다): 1계약·동시 1포지션·계약 명목 50,000,000 KRW(`가격 × 50,000 × 수량`)·일일 손실 한도 1,000,000 KRW·방향 인식 가드 `g=0.02`·지정가만·야간 없음·옵션 없음·자동 롤오버 없음. `assert_limits_locked` 가 파이프라인 시작 시 독립 리터럴과 대조하고, DB CHECK 가 1계약·명목·지정가·닫힌 상품을 반복한다(올리려면 새 운영자 결정 + 상수 + 마이그레이션). 기존 `kis_mock` 상한과 기존 손실매도 가드는 바뀌지 않았다.
+- **닫힌 상품 집합**: 미니 KOSPI200 선물 하나(`MF200`, 승수 50,000, 호가 0.02pt, 틱 가치 1,000원 — [KRX 상품명세](https://open.krx.co.kr/contents/OPN/01/01040204/OPN01040204.jsp) 2026-11-21 확인). 네트워크 전에 단축코드 형식(`A05` + 연도 끝자리 + 월 2자리)으로 거르고, 그 뒤 종목마스터(`fo_idx_code_mts.mst`, T1 `futures_master`)의 행(상품종류 `B`, 이름 `미니F YYYYMM`, 기초자산 `KOSPI200`)으로 확정한다 — 결제월은 연도 문자 규칙을 추측하지 않고 마스터 이름에서만 얻는다. DB 심볼은 `MF200.YYMM`(`app/core/symbol.py` 의 `to_futures_contract_symbol`/`parse_futures_contract_symbol`).
+- **송신 순서**(확정 경로): 잠금 상수 → 형태·닫힌 상품 → env 게이트 → 호스트·계좌 → **귀속 확정**(strategy 필수, placeholder 금지 — 정의는 `kis_mock_attribution` 하나) → 마스터로 계약 확정 → **귀속 신호 행 커밋**(`review.kis_futures_mock_signal_ledger`, 실패하면 전송 없음) → 세션·포지션·일일 손실·명목·가드 판정(`rules.decide`) → **`order_send_intents` 예약 커밋**(자기 scope `kis_futures_mock`, 같은 키는 UNIQUE 위반 → 전송 없음) → 전송 직전 세션 재확인 → POST **한 번**(`retry_request_errors=False`·`max_retries_override=0`). 거부는 전부 전송 0건이고, 예약은 **송신하지 않았음이 증명된 경우에만** 풀린다(`FuturesPreDispatchError`: env·호스트·계좌·토큰·서킷·분산 게이트·pre-send 신선도). 그 밖의 모든 예외는 `uncertain` 이고 예약을 유지하며 다시 보내지 않는다.
+- **응답 분류**: `rt_cd=="0"` 이고 안전한 `ODNO` 가 있을 때만 `accepted`(주문번호 증명), `rt_cd` 가 0 이 아니고 `msg_cd` 가 있을 때만 `rejected`, 그 밖(주문번호 없는 ACK·판독 불가·예외)은 `uncertain`. **`accepted` 는 체결이 아니다.** 원장 쓰기가 브로커 응답 뒤에 실패해도 예외를 올려 재시도를 부르지 않고 `ledger_recorded=false`·`reconcile_required` 로 드러낸다.
+- **원장**(`review.kis_futures_mock_order_ledger`·`..._signal_ledger`, 마이그레이션 `20261121_hk5946_futures_mock`, 추가형): 유일 writer 는 `FuturesMockOrderLedgerService`/`attribution`(AST 테스트). 🔴 `execution_ledger` 에 쓰지 않는다(CHECK 확장 금지, 설계 §4). T3 는 `accepted`/`rejected`/`uncertain` 주문 행만 쓰고 체결·정산 열(`filled_qty`·`avg_fill_price`·`fee`·`realized_pnl_krw`·`reconciled_at`)은 nullable 로 T4/T5 가 쓴다. 같은 `client_order_id`(결정적 `kfm-<sha20>`, 거래일·내용·rung)의 재기록은 첫 행을 돌려주고 내용이 다르면 충돌이다. 취소 키는 원주문에서 결정(`kfmc-…`)되어 원주문당 취소는 한 번이다.
+- **세션·달력**(Q7·Q12): XKRX 주식 달력을 쓰지 않는다. `session_calendar.KNOWN_RANGE` 밖은 `calendar_unknown`, 범위 안의 비세션은 `calendar_closed`, 주간 08:45–15:45(최종거래일 15:20, 최종거래일 = 결제월 둘째 목요일·휴장이면 앞당김 — KRX 명세) 밖은 `session_closed`. 최종거래일에는 신규 진입을 거부하고 청산만 허용하며 그 뒤는 `contract_expired`. 🔴 시드 범위(2026-11-23~2026-12-30)는 작성자가 공휴일(12-25)만 반영했고 **KRX 공지로 확인하지 않았다** — 범위를 넓히거나 고칠 때는 KRX 공지로 이 파일을 PR 로 수정한다.
+- **방향 인식 가드**(설계 §6): 신규 진입은 가드 대상이 아니다. 청산은 브로커 잔고(`inquire-balance`)의 같은 종목 포지션 방향으로 판정한다 — 롱 청산 매도가 `진입가×(1−0.02)` 미만이거나 숏 청산 매수가 `진입가×(1+0.02)` 초과면 `requires_human_card`, 진입가·방향·포지션이 미상이면 `entry_price_unverified`/`position_ambiguous`(면제가 아니라 거부). 잔고 읽기가 실패하거나 행이 판독 불가면 `positions_unverified` 로 거부한다. 같은 방향 추가·다른 종목 보유는 `max_open_positions_exceeded`.
+- **일일 손실**: 신규 진입만 막는다. 당일(KST) place 행 중 정산 증거(`realized_pnl_krw`)가 없는 `accepted`/`pending`/`partial`/`filled`/`uncertain`/… 가 있으면 `unverified` → `daily_loss_unverified`, 확정 손실 합계가 1,000,000 KRW 이상이면 `daily_loss_halt`. 🔴 T5(대사)가 `realized_pnl_krw` 를 쓰기 전에는 체결된 왕복이 있는 날의 이후 진입이 막힌다(보수적 의도). 청산은 이 한도에 막히지 않는다.
+- **알려진 미검증(운영자 스모크가 확인)**: ① 마스터 단축코드(`A05612`)가 주문 TR 의 `SHTN_PDNO` 로 받아들여지는지(공식 샘플 예시는 `101W09`) ② 잔고 `output1` 의 방향·진입가 필드(`sll_buy_dvsn_name`/`ccld_avg_unpr1`) 의미 ③ 취소 TR 의 호가유형·주문구분 값 ④ 모의 응답의 `rt_cd`/`msg_cd`/`ODNO` 형태. 어느 것이든 어긋나면 로컬 거부 또는 `rejected`/`uncertain` 으로 끝나고 재전송은 없다.
+- **범위 밖**: 체결 통보 수집(T4)·대사(T5)·야간·옵션·실계좌·해외선물. 스케줄러 등록 없음.
+- **테스트**: `tests/services/kis_futures_mock/` — 순수 규칙·파이프라인(전송 0건 단언)·어댑터·정적 경계·스키마 정적 검사(로컬), `test_futures_mock_ledger_db.py`(CI: 예약·원장 writer·귀속 신호·CHECK 거부).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
