@@ -37,12 +37,10 @@ down_revision: str | Sequence[str] | None = "20261121_hk5946_futures_mock"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLE = "upbit_symbol_universe"
-
 
 def upgrade() -> None:
     op.add_column(
-        _TABLE,
+        "upbit_symbol_universe",
         sa.Column(
             "market_event",
             postgresql.JSONB(none_as_null=True),
@@ -50,7 +48,7 @@ def upgrade() -> None:
         ),
     )
     op.add_column(
-        _TABLE,
+        "upbit_symbol_universe",
         sa.Column(
             "market_event_observed_at",
             sa.TIMESTAMP(timezone=True),
@@ -60,5 +58,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column(_TABLE, "market_event_observed_at")
-    op.drop_column(_TABLE, "market_event")
+    op.drop_column("upbit_symbol_universe", "market_event_observed_at")
+    op.drop_column("upbit_symbol_universe", "market_event")
