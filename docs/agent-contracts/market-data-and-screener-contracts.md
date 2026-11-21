@@ -584,6 +584,18 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - U5 KR 어댑터는 D3 엔진을 감싸 자체 순위만 쓰고 거래량이 없어서, `simulator.py` 가 같은 계약 타입·체결 모델로 후보 목록과 `VolumeShare` 를 돌린다.
 - **런북**: `research/kr_boosting/README.md`. 스케줄 없음(수동 `validate`/`diagnostic`/`report`).
 
+### Upbit KRW shadow 순수 규칙 라이브러리 (hk 5888, 5852 설계 §9 T1)
+
+`app/services/upbit_krw_strategy/` — `docs/design/5852-upbit-krw-shadow-strategy.md` 의 유니버스 U1–U5, 두 신호 계열(추세·눌림목), 크기, 청산·익절 사다리, 일일 적격과 `candidate_set_sha256` 을 순수 함수로만 구현한다. 🔴 DB·브로커·네트워크·설정·스케줄러 import 가 없다(`tests/services/upbit_krw_strategy/test_static_boundary.py` 가 import 목록과 import 뒤 `sys.modules` 를 모두 검사). 허용되는 앱 밖 import 는 `app.core.upbit_tick`, `research.crypto_universe.universe`(`Dockerfile.api` 가 이미 싣는 두 파일) 둘뿐이다. 주문·게이트웨이 의도·테이블·일일 잡(T4)은 이 패키지 범위 밖이다.
+
+- **Decimal**: 돈·가격·비율은 전부 `Decimal`(float 는 `TypeError`)이다. 호가 단위는 `app/core/upbit_tick.py` 만 쓰고 표를 다시 정의하지 않는다.
+- **U2 제외**: `crypto_exclusion_reason(base, (), cutoff=…)` 의 정적 목록(레버리지·스테이블·래핑 중복)에 `USDT` 를 더한다(F10). 30일 peg 규칙은 USD 종가용이라 KRW 종가에 적용하지 않는다(`closes` 를 넘기지 않는다). `PAXG` 는 연구 함수와 같이 유지된다.
+- **날짜**: `asof` = 09:10 KST 발행 슬롯의 UTC 날짜, 가장 최근 완결 일봉 `C_0` 의 시가 날짜 = `asof − 1일`. `C_k` 는 달력 일 기준이고 `C_0..C_60` 중 하루라도 없으면 `NO_SIGNAL`(앞 값 채우기 없음).
+- **RSI14**: pandas 를 import 하지 않는 Decimal 구현이며 ROB-1382 `_calculate_rsi_series` 와 같은 재귀(첫 차분이 0 으로 바뀐 뒤 `ewm(alpha=1/14, min_periods=14, adjust=False)`, `avg_loss == 0` 이면 `None`)다. 같은 산식임은 `test_signals.py` 의 pandas 동치 테스트(1e-9)가 고정한다. 신호는 `C_60..C_0` 61개 창 위에서 계산한다(설계가 창 길이를 정하지 않아 R60 에 필요한 창을 그대로 썼다).
+- **모르는 값은 0 이 아니다**: NULL `quote_volume`·30일 창의 빠진 날은 `liquidity_unknown`, 호가가 없으면 청산 판정은 `hard_stop_unverified`, 결측 R60 은 `trend_unverified` 로 보고하고 청산·진입하지 않는다.
+- **`candidate_set_sha256`**: 정규 JSON(키 정렬, 구분자 `,`/`:`, ASCII) 의 sha256, 십진수는 지수 없는 정확한 문자열. 골든은 `tests/services/upbit_krw_strategy/golden_candidate_set.json`(리터럴 JSON 의 해시를 코드와 독립적으로 대조).
+- **`market_events` 확인 결과**: 설계 §6 이 물은 "투자유의 세부" 는 `market_events` 에 없다. taxonomy 는 `source="upbit"`·`category="crypto_exchange_notice"` 를 허용하지만 이를 쓰는 normalizer·ingestion 이 레포에 없다. DB 에는 `upbit_symbol_universe.market_warning`(NONE/CAUTION 한 값)만 저장된다. Upbit `market/all?isDetails=true` 의 `market_event` 세부는 `app/services/upbit_public_read_model/market_warnings.py` 가 읽기 시점(`include_event_detail=True`)에 가져올 뿐 저장하지 않는다. 그래서 U3 는 `CAUTION` 한 값만 쓴다.
+
 ### 종목 선별 연구 하네스 (ROB-1474)
 
 `research/stock_selection/` — KR·US·Upbit KRW의 일별 횡단면 순위 연구. 공개 무인증
