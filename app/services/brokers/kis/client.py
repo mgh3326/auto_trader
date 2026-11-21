@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
@@ -167,6 +168,31 @@ class KISClient(BaseKISClient):
         from .futures_read import FuturesRead
 
         return await FuturesRead(self).master()
+
+    async def futures_place_order(
+        self,
+        *,
+        account: str,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: Decimal,
+    ) -> dict[str, Any]:
+        """hk 5946: 모의 선물 지정가 주문 (선물 모의 서비스 전용, 읽기 view 에는 없다)."""
+        from .futures_orders import FuturesOrders
+
+        return await FuturesOrders(self).place(
+            account=account, symbol=symbol, side=side, quantity=quantity, price=price
+        )
+
+    async def futures_cancel_order(
+        self, *, account: str, original_order_no: str
+    ) -> dict[str, Any]:
+        from .futures_orders import FuturesOrders
+
+        return await FuturesOrders(self).cancel(
+            account=account, original_order_no=original_order_no
+        )
 
     @staticmethod
     def _aggregate_intraday_to_hour(df: pd.DataFrame) -> pd.DataFrame:
