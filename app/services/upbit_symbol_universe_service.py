@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 _UPBIT_MARKET_ALL_URL = "https://api.upbit.com/v1/market/all"
 _UPBIT_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_upbit_symbol_universe.py"
 
+#: Stored ``market_warning`` provenance vocabulary (hk 5945). ``NONE``/``CAUTION``
+#: are explicit Upbit statements. ``UNKNOWN`` means the source did not say:
+#: the ``market_warning`` key was absent, null, or blank at sync time. Never
+#: store ``NONE`` for an absent source — readers treat ``NONE`` as "no warning".
+UNKNOWN_MARKET_WARNING = "UNKNOWN"
+KNOWN_MARKET_WARNINGS = frozenset({"NONE", "CAUTION"})
+
 
 class UpbitSymbolUniverseLookupError(ValueError):
     pass
@@ -54,9 +61,12 @@ def _normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
 
 
-def _normalize_market_warning(value: str) -> str:
-    warning = str(value or "").strip().upper()
-    return warning or "NONE"
+def _normalize_market_warning(value: object) -> str:
+    """Keep explicit Upbit statements; absent/null/blank becomes ``UNKNOWN``."""
+    if not isinstance(value, str):
+        return UNKNOWN_MARKET_WARNING
+    warning = value.strip().upper()
+    return warning or UNKNOWN_MARKET_WARNING
 
 
 def _split_market(market: str) -> tuple[str, str] | None:
@@ -106,9 +116,7 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
             base_currency=base_currency,
             korean_name=korean_name,
             english_name=english_name,
-            market_warning=_normalize_market_warning(
-                item.get("market_warning", "NONE")
-            ),
+            market_warning=_normalize_market_warning(item.get("market_warning")),
         )
 
     if not snapshot:
@@ -557,6 +565,40 @@ async def _get_upbit_warning_markets_impl(
     return warning_markets
 
 
+async def _get_upbit_unknown_warning_markets_impl(
+    db: AsyncSession,
+    quote_currency: str | None,
+) -> set[str]:
+    """Active markets whose warning provenance is missing (hk 5945).
+
+    Matches any stored value outside the explicit Upbit vocabulary — today
+    ``UNKNOWN`` (absent/null/blank at sync), and any future upstream token
+    verbatim. Readers that treat ``NONE`` as safe must treat this set as
+    not-safe (fail closed).
+    """
+    normalized_quote_currency = str(quote_currency or "").strip().upper()
+    stmt = select(UpbitSymbolUniverse.market).where(
+        UpbitSymbolUniverse.is_active.is_(True),
+        UpbitSymbolUniverse.market_warning.notin_(sorted(KNOWN_MARKET_WARNINGS)),
+    )
+    if normalized_quote_currency:
+        stmt = stmt.where(
+            UpbitSymbolUniverse.quote_currency == normalized_quote_currency
+        )
+    result = await db.execute(stmt)
+    unknown_markets = {
+        str(symbol).strip().upper()
+        for symbol in result.scalars().all()
+        if str(symbol).strip()
+    }
+
+    if not unknown_markets and not await has_any_rows(db, UpbitSymbolUniverse.market):
+        raise UpbitSymbolUniverseEmptyError(
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
+        )
+    return unknown_markets
+
+
 async def get_active_upbit_markets(
     db: AsyncSession | None = None,
     quote_currency: str | None = None,
@@ -625,6 +667,24 @@ async def get_upbit_warning_markets(
         )
 
 
+async def get_upbit_unknown_warning_markets(
+    db: AsyncSession | None = None,
+    quote_currency: str | None = None,
+    fiat: str | None = None,
+) -> set[str]:
+    effective_quote_currency = quote_currency if quote_currency is not None else fiat
+    if db is not None:
+        return await _get_upbit_unknown_warning_markets_impl(
+            db, effective_quote_currency
+        )
+
+    async with _internal_session() as session:
+        return await _get_upbit_unknown_warning_markets_impl(
+            session,
+            effective_quote_currency,
+        )
+
+
 __all__ = [
     "UpbitSymbolUniverseLookupError",
     "UpbitSymbolUniverseEmptyError",
@@ -639,6 +699,7 @@ __all__ = [
     "get_upbit_korean_name_by_market",
     "get_upbit_market_display_names",
     "get_upbit_market_by_coin",
+    "get_upbit_unknown_warning_markets",
     "get_upbit_warning_markets",
     "get_upbit_symbol_by_name",
     "search_upbit_symbols",

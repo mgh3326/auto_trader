@@ -68,3 +68,38 @@ async def test_market_warning_detail_tier_uses_cache(fake_redis, monkeypatch):
     assert first.entries["KRW-BTC"].event == {"warning": True}
     assert second.entries["KRW-BTC"].event == {"warning": True}
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_market_warnings_preserve_explicit_values(fake_redis):
+    async def detail_fetcher():
+        raise AssertionError("must not call HTTP")
+
+    rows = [_row("KRW-BTC", "NONE"), _row("KRW-ETH", "CAUTION")]
+    block = await MarketWarningsService(
+        redis=fake_redis, detail_fetcher=detail_fetcher
+    ).get(["KRW-BTC", "KRW-ETH"], db=FakeSession(rows))
+    assert block.meta.state == "fresh"
+    assert block.entries["KRW-BTC"].warning == "NONE"
+    assert block.entries["KRW-ETH"].warning == "CAUTION"
+
+
+@pytest.mark.asyncio
+async def test_market_warnings_never_fabricate_none(fake_redis):
+    """Absent/blank/unrecognized stored warnings surface as UNKNOWN (hk 5945)."""
+
+    async def detail_fetcher():
+        raise AssertionError("must not call HTTP")
+
+    rows = [
+        _row("KRW-XRP", None),
+        _row("KRW-DOGE", ""),
+        _row("KRW-SOL", "NOTICE"),
+    ]
+    block = await MarketWarningsService(
+        redis=fake_redis, detail_fetcher=detail_fetcher
+    ).get(["KRW-XRP", "KRW-DOGE", "KRW-SOL"], db=FakeSession(rows))
+    assert block.meta.state == "fresh"
+    assert block.entries["KRW-XRP"].warning == "UNKNOWN"
+    assert block.entries["KRW-DOGE"].warning == "UNKNOWN"
+    assert block.entries["KRW-SOL"].warning == "UNKNOWN"

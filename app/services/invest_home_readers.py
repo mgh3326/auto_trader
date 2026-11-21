@@ -49,6 +49,7 @@ from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
+    get_upbit_unknown_warning_markets,
     get_upbit_warning_markets,
 )
 
@@ -409,12 +410,21 @@ class UpbitHomeReader:
             caution_markets = await get_upbit_warning_markets(
                 self._db, quote_currency="KRW"
             )
+            # hk 5945: provenance-unknown warnings are not tradable either —
+            # a missing source statement is not a "no warning" statement.
+            unknown_warning_markets = await get_upbit_unknown_warning_markets(
+                self._db, quote_currency="KRW"
+            )
 
             tradable_rows = []
             inactive_rows = []
             for c in crypto_rows:
                 market_code = f"KRW-{c.get('currency')}"
-                if market_code in active_markets and market_code not in caution_markets:
+                if (
+                    market_code in active_markets
+                    and market_code not in caution_markets
+                    and market_code not in unknown_warning_markets
+                ):
                     tradable_rows.append(c)
                 else:
                     inactive_rows.append(c)

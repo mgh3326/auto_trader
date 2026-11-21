@@ -674,6 +674,12 @@ class TestScreenStocksCrypto:
             assert quote_currency == "KRW"
             return {"KRW-ETH"}
 
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
+            assert quote_currency == "KRW"
+            return set()
+
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
                 "data": {
@@ -724,6 +730,11 @@ class TestScreenStocksCrypto:
             screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_unknown_warning_markets",
+            mock_unknown_warning_markets,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1687,6 +1698,12 @@ class TestScreenStocksFundamentalsExpansion:
             assert quote_currency == "KRW"
             return set()
 
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
+            assert quote_currency == "KRW"
+            return set()
+
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
                 "data": {},
@@ -1715,6 +1732,11 @@ class TestScreenStocksFundamentalsExpansion:
             screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_unknown_warning_markets",
+            mock_unknown_warning_markets,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1775,6 +1797,12 @@ class TestScreenStocksFundamentalsExpansion:
             assert quote_currency == "KRW"
             return set()
 
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
+            assert quote_currency == "KRW"
+            return set()
+
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
                 "data": {
@@ -1808,6 +1836,11 @@ class TestScreenStocksFundamentalsExpansion:
             screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_unknown_warning_markets",
+            mock_unknown_warning_markets,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,

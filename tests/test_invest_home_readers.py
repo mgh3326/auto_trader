@@ -473,6 +473,9 @@ async def test_upbit_reader_uses_coin_value_not_krw_cash(
     monkeypatch.setattr(
         readers, "get_upbit_warning_markets", AsyncMock(return_value=set())
     )
+    monkeypatch.setattr(
+        readers, "get_upbit_unknown_warning_markets", AsyncMock(return_value=set())
+    )
 
     result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
 
@@ -486,6 +489,57 @@ async def test_upbit_reader_uses_coin_value_not_krw_cash(
     assert result.holdings[0].valueKrw == 10_000_000
     assert result.holdings[0].pnlKrw == 2_000_000
     assert result.holdings[0].assetCategory == "crypto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_upbit_reader_hides_unknown_warning_holdings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hk 5945: provenance-unknown warnings are not tradable — hidden, not valued."""
+
+    async def _coins() -> list[dict[str, Any]]:
+        return [
+            {"currency": "KRW", "balance": "90000", "locked": "0"},
+            {
+                "currency": "BTC",
+                "balance": "0.1",
+                "locked": "0",
+                "avg_buy_price": "80000000",
+            },
+            {
+                "currency": "ETH",
+                "balance": "1.0",
+                "locked": "0",
+                "avg_buy_price": "5000000",
+            },
+        ]
+
+    async def _prices(markets: list[str]) -> dict[str, float]:
+        assert markets == ["KRW-BTC"]
+        return {"KRW-BTC": 100_000_000.0}
+
+    monkeypatch.setattr(readers, "fetch_my_coins", _coins)
+    monkeypatch.setattr(readers, "fetch_multiple_current_prices", _prices)
+    monkeypatch.setattr(
+        readers,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC", "KRW-ETH"}),
+    )
+    monkeypatch.setattr(
+        readers, "get_upbit_warning_markets", AsyncMock(return_value=set())
+    )
+    monkeypatch.setattr(
+        readers,
+        "get_upbit_unknown_warning_markets",
+        AsyncMock(return_value={"KRW-ETH"}),
+    )
+
+    result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert [h.symbol for h in result.holdings] == ["BTC"]
+    assert [h.symbol for h in result.hidden_holdings] == ["ETH"]
+    assert result.hidden_holdings[0].priceState == "missing"
 
 
 @pytest.mark.asyncio
@@ -538,6 +592,9 @@ async def test_upbit_reader_falls_back_per_market_and_skips_zero_quantity(
     monkeypatch.setattr(
         readers, "get_upbit_warning_markets", AsyncMock(return_value=set())
     )
+    monkeypatch.setattr(
+        readers, "get_upbit_unknown_warning_markets", AsyncMock(return_value=set())
+    )
 
     result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
 
@@ -572,6 +629,9 @@ async def test_upbit_reader_filters_dust(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     monkeypatch.setattr(
         readers, "get_upbit_warning_markets", AsyncMock(return_value=set())
+    )
+    monkeypatch.setattr(
+        readers, "get_upbit_unknown_warning_markets", AsyncMock(return_value=set())
     )
 
     result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
@@ -611,6 +671,9 @@ async def test_upbit_reader_does_not_show_loss_when_all_prices_missing(
     )
     monkeypatch.setattr(
         readers, "get_upbit_warning_markets", AsyncMock(return_value=set())
+    )
+    monkeypatch.setattr(
+        readers, "get_upbit_unknown_warning_markets", AsyncMock(return_value=set())
     )
 
     result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]

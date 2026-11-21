@@ -49,12 +49,21 @@ async def fetch_market_event_details() -> list[dict[str, Any]]:
 def _entries_from_rows(
     rows: list[UpbitSymbolUniverse],
 ) -> dict[str, UpbitMarketWarningEntry]:
+    # Never fabricate ``NONE``: an empty stored value means the source did
+    # not say (hk 5945). Legacy rows predating provenance keep their ``NONE``.
     return {
         row.market.upper(): UpbitMarketWarningEntry(
-            market=row.market.upper(), warning=(row.market_warning or "NONE")
+            market=row.market.upper(), warning=_entry_warning(row.market_warning)
         )
         for row in rows
     }
+
+
+def _entry_warning(value: object) -> str:
+    """Closed read-model vocabulary: only explicit Upbit statements pass."""
+    if value in ("NONE", "CAUTION"):
+        return str(value)
+    return "UNKNOWN"
 
 
 def _merge_event_details(

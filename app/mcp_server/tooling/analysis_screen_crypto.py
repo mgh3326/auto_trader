@@ -238,6 +238,7 @@ async def finalize_crypto_screen(
     filtered_by_warning: int,
     filtered_by_crash: int,
     filtered_by_stop_loss_cooldown: int = 0,
+    filtered_by_unknown_warning: int = 0,
     source: str | None = None,
 ) -> CryptoScreenResponse:
     _append_rsi_enrichment_warnings(warnings, rsi_enrichment)
@@ -260,6 +261,7 @@ async def finalize_crypto_screen(
         "total_markets": total_markets,
         "top_by_volume": top_by_volume,
         "filtered_by_warning": filtered_by_warning,
+        "filtered_by_unknown_warning": filtered_by_unknown_warning,
         "filtered_by_crash": filtered_by_crash,
         "filtered_by_stop_loss_cooldown": filtered_by_stop_loss_cooldown,
         "rsi_enriched": int(rsi_enrichment.get("succeeded", 0) or 0),

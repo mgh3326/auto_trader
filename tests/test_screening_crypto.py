@@ -87,6 +87,9 @@ class TestCryptoScreeningPhases:
         async def fake_warning_markets(quote_currency, db):
             return set()
 
+        async def fake_unknown_warning_markets(quote_currency, db):
+            return set()
+
         async def fake_tickers(markets):
             return [{"market": "KRW-IMX", "acc_trade_volume_24h": 1234}]
 
@@ -101,6 +104,9 @@ class TestCryptoScreeningPhases:
 
         monkeypatch.setattr(crypto, "get_upbit_market_display_names", fake_names)
         monkeypatch.setattr(crypto, "get_upbit_warning_markets", fake_warning_markets)
+        monkeypatch.setattr(
+            crypto, "get_upbit_unknown_warning_markets", fake_unknown_warning_markets
+        )
         monkeypatch.setattr(
             crypto.upbit_service, "fetch_multiple_tickers", fake_tickers
         )
@@ -151,3 +157,108 @@ class TestCryptoScreeningPhases:
         # recovered. KRW-IMX here is +36% (no crash candidate), so the reference
         # is irrelevant and no warning is raised (previously it was noise).
         assert not any("BTC 기준 데이터가 없어" in warning for warning in warnings)
+
+
+class TestCryptoUnknownWarningFailClosed:
+    """hk 5945: provenance-unknown warnings are not shown as safe."""
+
+    def _install(self, monkeypatch, unknown):
+        from app.mcp_server.tooling.screening import crypto
+
+        async def fake_names(markets, db):
+            return {
+                code: {"korean_name": code, "english_name": code} for code in markets
+            }
+
+        async def fake_warning_markets(quote_currency, db):
+            return set()
+
+        async def fake_unknown_warning_markets(quote_currency, db):
+            return unknown
+
+        async def fake_tickers(markets):
+            return [{"market": code, "acc_trade_volume_24h": 1234} for code in markets]
+
+        async def fake_coingecko():
+            return {
+                "data": {},
+                "cached": False,
+                "age_seconds": None,
+                "stale": False,
+                "error": None,
+            }
+
+        monkeypatch.setattr(crypto, "get_upbit_market_display_names", fake_names)
+        monkeypatch.setattr(crypto, "get_upbit_warning_markets", fake_warning_markets)
+        monkeypatch.setattr(
+            crypto, "get_upbit_unknown_warning_markets", fake_unknown_warning_markets
+        )
+        monkeypatch.setattr(
+            crypto.upbit_service, "fetch_multiple_tickers", fake_tickers
+        )
+        monkeypatch.setattr(crypto, "_run_crypto_coingecko_fetch", fake_coingecko)
+        monkeypatch.setattr(
+            crypto, "_get_crypto_trade_cooldown_service", lambda: _CooldownStub()
+        )
+        return crypto
+
+    def _rows(self):
+        return _FakeFrame(
+            [
+                {
+                    "symbol": "UPBIT:BTCKRW",
+                    "name": "Bitcoin",
+                    "price": 100_000_000,
+                    "change_percent": 0.5,
+                    "value_traded": 9000,
+                },
+                {
+                    "symbol": "UPBIT:ETHKRW",
+                    "name": "Ethereum",
+                    "price": 5_000_000,
+                    "change_percent": 0.4,
+                    "value_traded": 8000,
+                },
+            ]
+        )
+
+    def _filters(self):
+        return {"sort_by": "trade_amount", "sort_order": "desc"}
+
+    @pytest.mark.asyncio
+    async def test_interactive_screening_excludes_unknown_warnings(self, monkeypatch):
+        crypto = self._install(monkeypatch, {"KRW-ETH"})
+
+        payload = await crypto._normalize_crypto_results(
+            self._rows(),
+            market="crypto",
+            max_rsi=None,
+            min_market_cap=None,
+            filters_applied=self._filters(),
+            limit=20,
+        )
+
+        assert [row["symbol"] for row in payload["results"]] == ["KRW-BTC"]
+        assert payload["meta"]["filtered_by_unknown_warning"] == 1
+        assert payload["meta"]["filtered_by_warning"] == 0
+        assert any("제외" in warning for warning in payload.get("warnings", []))
+
+    @pytest.mark.asyncio
+    async def test_snapshot_path_keeps_unknown_warning_rows(self, monkeypatch):
+        crypto = self._install(monkeypatch, {"KRW-ETH"})
+
+        payload = await crypto._normalize_crypto_results(
+            self._rows(),
+            market="crypto",
+            max_rsi=None,
+            min_market_cap=None,
+            filters_applied=self._filters(),
+            limit=20,
+            pure_market_snapshot=True,
+        )
+
+        assert [row["symbol"] for row in payload["results"]] == [
+            "KRW-BTC",
+            "KRW-ETH",
+        ]
+        assert payload["meta"]["filtered_by_unknown_warning"] == 0

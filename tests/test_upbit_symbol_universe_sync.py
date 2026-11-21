@@ -371,3 +371,76 @@ async def test_get_upbit_warning_markets_supports_legacy_fiat_alias(monkeypatch)
 
     assert result == {"KRW-BTC"}
     impl.assert_awaited_once_with(db, "KRW")
+
+
+def test_normalize_market_warning_preserves_provenance():
+    normalize = upbit_symbol_universe_service._normalize_market_warning
+    # Explicit Upbit statements pass through, case/whitespace normalised.
+    assert normalize("NONE") == "NONE"
+    assert normalize(" none ") == "NONE"
+    assert normalize("CAUTION") == "CAUTION"
+    assert normalize(" caution ") == "CAUTION"
+    # Anything that is not an explicit statement is unknown — never NONE.
+    assert normalize(None) == "UNKNOWN"
+    assert normalize("") == "UNKNOWN"
+    assert normalize("   ") == "UNKNOWN"
+    assert normalize(0) == "UNKNOWN"
+    assert normalize(False) == "UNKNOWN"
+    # Unexpected upstream tokens are preserved verbatim (upper-cased) so
+    # readers fail closed on them instead of reading them as NONE.
+    assert normalize("NOTICE") == "NOTICE"
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_preserves_warning_provenance_from_fixture(monkeypatch):
+    """Real-shape ``/v1/market/all?isDetails=true`` rows keep their provenance.
+
+    Rows come from ``tests/fixtures/upbit_market_all_isdetails.json``: present
+    NONE/CAUTION stay explicit, absent/null/empty/blank become UNKNOWN.
+    """
+    import json
+    from pathlib import Path
+
+    fixture = Path(__file__).parent / "fixtures" / "upbit_market_all_isdetails.json"
+    rows = json.loads(fixture.read_text(encoding="utf-8"))
+    assert isinstance(rows, list) and len(rows) == 8
+
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_fetch_upbit_market_all",
+        AsyncMock(return_value=rows),
+    )
+
+    snapshot = (
+        await upbit_symbol_universe_service.build_upbit_symbol_universe_snapshot()
+    )
+
+    assert snapshot["KRW-BTC"].market_warning == "NONE"
+    assert snapshot["KRW-ETH"].market_warning == "CAUTION"
+    assert snapshot["KRW-TRX"].market_warning == "CAUTION"
+    assert snapshot["KRW-XRP"].market_warning == "UNKNOWN"
+    assert snapshot["KRW-DOGE"].market_warning == "UNKNOWN"
+    assert snapshot["KRW-SOL"].market_warning == "UNKNOWN"
+    assert snapshot["KRW-ADA"].market_warning == "UNKNOWN"
+    assert snapshot["KRW-USDT"].market_warning == "NOTICE"
+
+
+@pytest.mark.asyncio
+async def test_get_upbit_unknown_warning_markets_supports_legacy_fiat_alias(
+    monkeypatch,
+):
+    db = object()
+    impl = AsyncMock(return_value={"KRW-XRP"})
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_get_upbit_unknown_warning_markets_impl",
+        impl,
+    )
+
+    result = await upbit_symbol_universe_service.get_upbit_unknown_warning_markets(
+        db=db,
+        fiat="KRW",
+    )
+
+    assert result == {"KRW-XRP"}
+    impl.assert_awaited_once_with(db, "KRW")
