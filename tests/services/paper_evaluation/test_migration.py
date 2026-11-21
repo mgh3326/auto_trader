@@ -216,6 +216,14 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # already in Base.metadata; drop them so the upgrade chain creates them.
             for table in ("kiwoom_mock_signal_ledger", "kiwoom_mock_order_ledger"):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
+            # hk 5946 futures mock ledgers: same reason (later than this boundary,
+            # already in Base.metadata; migration 20261121_hk5946_futures_mock
+            # creates them).
+            for table in (
+                "kis_futures_mock_signal_ledger",
+                "kis_futures_mock_order_ledger",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
             # These review tables are later than this reconstructed boundary
             # and already in Base.metadata; drop them so the upgrade chain
             # creates them instead of colliding.

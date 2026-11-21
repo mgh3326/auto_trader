@@ -151,6 +151,7 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    같은 결정 항목 2는 KIS US와 Toss 주문 원장의 무인 대사를 terminal_only로 한정해
    각각 `KIS_US_TERMINAL_AUTO_RECONCILE_ENABLED`와 `TOSS_TERMINAL_AUTO_RECONCILE_ENABLED`
    하나로 허용한다. 체결·저널·실현손익은 기존 게이트 뒤에 남는다.
+   hk 5946의 명시 운영자 결정(2026-11-21, `decision-request/2026-11-21/at-futures-expansion` Q1–Q12 및 `decision-request/2026-11-21/at-futures-t3-values`)은 KIS 국내 선물 **모의(주간)** 주문의 place/cancel 경로만 예외로 허용한다 — 미니 KOSPI200 선물 한정, 지정가·1계약·동시 1포지션, 기본 off `KIS_FUTURES_MOCK_ENABLED`(정확히 `"true"`) AND 호출별 confirm 이중 게이트, 어떤 CLI·env 로도 올릴 수 없는 잠금 상수(계약 명목 50,000,000 KRW·일일 손실 한도 1,000,000 KRW·방향 인식 가드 0.02)다. 기존 상한과 기존 손실매도 가드는 바뀌지 않고, 옵션·야간 세션·실계좌·일반 KOSPI200 선물·자동 롤오버·스케줄러는 허용되지 않는다(실계좌는 새 결정이 필요하다).
    hk 5441의 명시 운영자 결정(2026-11-20, `decision/2026-11-20/at-5438-d1-d19` D3)은 의도 게이트웨이의 `upbit_live` forwarder만 예외다 — `EXECUTION_INTENT_GATEWAY_UPBIT_LIVE_ENABLED`(기본 false) AND 위임장 AND 계좌 kill 행 `ACTIVE` AND 호출별 confirm 헤더가 모두 필요하고, 기존 게이트·`LOCKED_ENVELOPE`·손실매도 가드·쿨다운·loss_cut 상수는 바뀌지 않는다.
 5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
    `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
