@@ -222,8 +222,10 @@
       "status": "draft",
       "registered_at": "2026-11-21",
       "manifest": "research/experiments/manifests/hk-5852-upbit-krw-shadow.json",
-      "manifest_sha256": "17c8202c7f374f6028f1dd83efdfc1a8371672653f12a4b96902d662910f38d9",
-      "previous_manifest_sha256": [],
+      "manifest_sha256": "e30693792571ab41375a55adc269e63c28ee56015767c4b588492a5f60112acb",
+      "previous_manifest_sha256": [
+        "17c8202c7f374f6028f1dd83efdfc1a8371672653f12a4b96902d662910f38d9"
+      ],
       "k": 0,
       "test_looks": []
     }
