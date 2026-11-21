@@ -2332,6 +2332,27 @@ class MechanicalLossCutPolicy(BaseModel):
         return self
 
 
+class DailyPlanPolicy(BaseModel):
+    """5750 T0 — KR daily-plan v0 parameters. Nothing reads this block yet.
+
+    ``no_add_floor_pct`` is the KR-only add block: a held lot whose unrealized
+    P&L is at or below this percentage cannot take an add. It is a fixed
+    pre-registered constant, separate from the provisional mechanical loss-cut
+    floor, and the two are never merged.
+
+    ``max_adopt`` is the daily cap on adopted rows, ``judged_top_n`` the
+    number of candidates the session re-judges, and ``carry_max_sessions`` the
+    number of sessions a carried row may stay before it leaves the pool.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    no_add_floor_pct: float = Field(lt=0, gt=-100)
+    max_adopt: int = Field(ge=1, le=100)
+    judged_top_n: int = Field(ge=1, le=200)
+    carry_max_sessions: int = Field(ge=1, le=60)
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2360,6 +2381,7 @@ class TradingPolicyDocument(BaseModel):
     transfer_costs: TransferCostsPolicy
     kr_trading_sessions: KrTradingSessionsPolicy
     mechanical_loss_cut: MechanicalLossCutPolicy
+    daily_plan: DailyPlanPolicy
 
     @model_validator(mode="after")
     def validate_mechanical_loss_cut_stays_inside_the_slip_band(
