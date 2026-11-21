@@ -344,6 +344,12 @@ tests/services/test_tradingview_ingestion.py
 tests/services/test_us_kis_kiwoom_readiness.py
 tests/services/test_us_symbol_universe_batch_lookup.py
 tests/services/test_us_upside_instrumentation.py
+tests/services/upbit_krw_strategy/test_exits.py
+tests/services/upbit_krw_strategy/test_selection.py
+tests/services/upbit_krw_strategy/test_signals.py
+tests/services/upbit_krw_strategy/test_sizing.py
+tests/services/upbit_krw_strategy/test_static_boundary.py
+tests/services/upbit_krw_strategy/test_universe.py
 tests/services/us_dual_paper/test_adapter_base.py
 tests/services/us_dual_paper/test_kis_mock_adapter.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
