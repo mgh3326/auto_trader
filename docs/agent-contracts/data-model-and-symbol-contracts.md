@@ -150,6 +150,15 @@ DB Tables:
 - **KR 1주 예외 (§664)**: `buy.per_symbol_notional_krw_range.one_share_exception`(`absolute_ceiling_krw` 10,000,000 · `max_deep_rungs` 1)은 US §139차 미러다. 코드 소비자는 `decision_table_validate` 하나뿐(`app/services/decision_table_validate/one_share_exception.py`) — 매수·1주·`price_max` ≤ 상한·정규 KRX 코드 단일 심볼·파킹 allowlist 심볼(459580/357870) 아님·행의 계좌/심볼에 **정확히 결속된** `position_quantity eq 0` 조건 1개·그 밖에는 **엄격한 무(無)자유텍스트 문법**(ASCII·Cc/Cf 금지, 닫힌 키, scenario_id·condition source 는 정확한 템플릿, invalidation 빈 리스트, thesis 필드 닫힌 enum, sector_concentration 숫자만, 값은 타입이 있는 숫자/bool)·표 전체(정규화 키) 심볼당 매수 rung 1개일 때만 밴드 초과를 허용한다(보유 침묵은 신규 진입이 아니다; 문법 정본은 `docs/runbooks/decision-table-validate.md`). per-order 자동승인 캡(KR 2,000,000)은 불변이며 초과 1주는 카드로 강등된다. 스키마는 밴드 `unit` 과 같은 통화의 상한 키 하나만 허용한다.
 - **관할**: 판단 임계값/decision rule 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
+### daily_plan 정책 키 (5750 T0, hk 5949)
+
+`config/trading_policy.yaml`의 최상위 `daily_plan` 블록은 KR 일일 계획 v0의 파라미터다
+(`docs/design/5750-kr-daily-plan-v0.md` §9.2 Q2·Q5). 값은 `no_add_floor_pct: -8`(KR 전용,
+기계식 손절 floor와 별개의 고정 상수), `max_adopt: 10`, `judged_top_n: 20`,
+`carry_max_sessions: 5`다. 스키마 `DailyPlanPolicy`는 `extra="forbid"`이며 블록은 필수다.
+T0 시점에는 이 블록을 읽는 코드가 없다. 🔴 변경 띠(§6.2 항목 5)는 설계상 봉인 때 고정되는
+값이라 이 블록에 숫자로 두지 않는다(T7 봉인에서 정한다). 이 블록을 더하면 정책 `content_hash`가
+바뀌므로 정책을 인용하는 기록은 새 해시를 따른다. 값은 operator PR로만 바꾼다.
 
 ### manual_cash 설정 화면 (#671)
 

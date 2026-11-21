@@ -377,7 +377,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-11-02.1"
-    assert policy_content_hash() == "ba8523081f15"
+    assert policy_content_hash() == "6df14b1fbd88"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1584,6 +1584,9 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # ROB-1460 adds the mechanical_loss_cut parameter block; same treatment.
     assert "mechanical_loss_cut" not in baseline
     baseline["mechanical_loss_cut"] = deepcopy(current_raw["mechanical_loss_cut"])
+    # 5750 T0 (hk 5949) adds the daily_plan parameter block; same seed-then-strip.
+    assert "daily_plan" not in baseline
+    baseline["daily_plan"] = deepcopy(current_raw["daily_plan"])
     # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
     # only. The schema now requires tie_breaks.tier_priority to match the
     # declared tier order, so the baseline copy is given the same appended tier
@@ -1659,6 +1662,8 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     del baseline_dump["kr_trading_sessions"]
     del current_dump["mechanical_loss_cut"]
     del baseline_dump["mechanical_loss_cut"]
+    del current_dump["daily_plan"]
+    del baseline_dump["daily_plan"]
 
     # §148차 (2026-08-24) — additive semantics-only clarification. The
     # contradiction repair is allowed to extend the prose, but it may not
@@ -4186,6 +4191,49 @@ def test_876_kr_trading_sessions_drift_fails_the_build(session, field, value):
 def test_876_kr_trading_sessions_missing_session_fails_the_build():
     raw = _raw()
     del raw["kr_trading_sessions"]["sessions"]["krx_after_market"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_5750_daily_plan_block_carries_the_approved_values():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    plan = doc.daily_plan
+
+    assert plan.no_add_floor_pct == -8
+    assert plan.max_adopt == 10
+    assert plan.judged_top_n == 20
+    assert plan.carry_max_sessions == 5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("no_add_floor_pct", 0),
+        ("no_add_floor_pct", 8),
+        ("no_add_floor_pct", -100),
+        ("max_adopt", 0),
+        ("judged_top_n", 0),
+        ("carry_max_sessions", 0),
+        ("carry_max_sessions", 61),
+    ],
+)
+def test_5750_daily_plan_out_of_range_fails_the_build(field, value):
+    raw = _raw()
+    raw["daily_plan"][field] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_5750_daily_plan_rejects_an_unknown_key():
+    raw = _raw()
+    raw["daily_plan"]["change_flag_band"] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_5750_daily_plan_block_is_required():
+    raw = _raw()
+    del raw["daily_plan"]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
 

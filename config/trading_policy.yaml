@@ -1908,3 +1908,15 @@ mechanical_loss_cut:
         max_lot_fraction: 1
       cooldown_sessions: 5
       live_include_backfilled: false
+
+# 5750 T0 (hk 5949): KR daily-plan v0 parameters. Nothing reads this block yet;
+# the plan writer, reader and MCP tools arrive in T1. The values are the ones the
+# operator approved as recommended in docs/design/5750-kr-daily-plan-v0.md §9.2
+# (Q2, Q5). no_add_floor_pct is KR-only and separate from the provisional
+# mechanical_loss_cut floor. The change-flag band (§6.2 item 5) is not a number
+# in the design: it is fixed at seal time (T7), so it is not declared here.
+daily_plan:
+  no_add_floor_pct: -8
+  max_adopt: 10
+  judged_top_n: 20
+  carry_max_sessions: 5
