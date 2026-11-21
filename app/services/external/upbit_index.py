@@ -55,8 +55,8 @@ _HTTP_TIMEOUT = 10.0
 _TICKER_STALE_AFTER_SECONDS = 1800
 # Breadth over a sliver of the KRW alt universe is not a breadth reading:
 # require at least this many contributing alts AND at least this fraction of
-# rate-bearing KRW alts still fresh, else the reading is unavailable and the
-# gate holds rather than scoring a number built on missing data.
+# the *requested* KRW alt universe still fresh, else the reading is unavailable
+# and the gate holds rather than scoring a number built on missing data.
 _MIN_CONTRIBUTING_ALTS = 30
 _MIN_CONTRIBUTING_ALT_SHARE = 0.5
 
@@ -257,7 +257,9 @@ async def _fetch_krw_breadth_24h(
     within ``_TICKER_STALE_AFTER_SECONDS`` of now (hk 6019). KRW-BTC itself
     must be fresh; stale or undatable alts leave the numerator and denominator
     and are counted in ``alts_excluded_stale``. ``None`` when the official
-    data is unavailable or fewer than the contributing-alt floor remains.
+    data is unavailable or the fresh contributing set falls below the floor —
+    an absolute minimum count or half of the requested KRW alt universe, so a
+    partial ticker response counts against coverage.
     """
     try:
         markets = await _get_json(MARKET_ALL_URL)
@@ -300,6 +302,7 @@ async def _fetch_krw_breadth_24h(
     # reading is unavailable and the gate holds.
     btc_ts_ms = _fresh_trade_ts_ms("KRW-BTC")
     if btc_ts_ms is None:
+        logger.info("upbit_index: alt breadth unavailable — KRW-BTC trade not fresh")
         return None
 
     # task-792 C1 freshness (hk 6019): only tickers provably fresh within the
@@ -307,13 +310,15 @@ async def _fetch_krw_breadth_24h(
     # One illiquid market with an hours-old trade_timestamp can no longer date
     # the whole observation — it is dropped and counted instead.
     krw_set = {str(m).upper() for m in krw}
+    # The share floor measures coverage of the *requested* KRW alt universe
+    # (market/all minus BTC), not of the ticker response: a market absent from
+    # /v1/ticker cannot be proven fresh and counts against coverage.
+    requested_alts = len(krw_set) - 1
     contributing: list[tuple[str, float, float]] = []
     alts_excluded_stale = 0
-    eligible_alts = 0
     for market, rate in rate_by_market.items():
         if market == "KRW-BTC" or rate is None or market not in krw_set:
             continue
-        eligible_alts += 1
         ts_ms = _fresh_trade_ts_ms(market)
         if ts_ms is None:
             alts_excluded_stale += 1
@@ -322,8 +327,17 @@ async def _fetch_krw_breadth_24h(
 
     if (
         len(contributing) < _MIN_CONTRIBUTING_ALTS
-        or len(contributing) < eligible_alts * _MIN_CONTRIBUTING_ALT_SHARE
+        or len(contributing) < requested_alts * _MIN_CONTRIBUTING_ALT_SHARE
     ):
+        logger.info(
+            "upbit_index: alt breadth unavailable — %d of %d requested KRW "
+            "alts contribute (floor >=%d and >=%.0f%%); %d excluded stale",
+            len(contributing),
+            requested_alts,
+            _MIN_CONTRIBUTING_ALTS,
+            _MIN_CONTRIBUTING_ALT_SHARE * 100,
+            alts_excluded_stale,
+        )
         return None
 
     beating = sum(1 for _, rate, _ in contributing if rate > btc_rate)

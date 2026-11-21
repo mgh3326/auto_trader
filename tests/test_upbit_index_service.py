@@ -8,6 +8,7 @@ response. No network. No broker/order/account API.
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import time
 from datetime import UTC, datetime
@@ -297,12 +298,41 @@ async def test_breadth_below_contributing_count_floor_is_unavailable(monkeypatch
 
 @pytest.mark.asyncio
 async def test_breadth_below_contributing_share_floor_is_unavailable(monkeypatch):
-    """70 eligible alts, 36 stale → 34 contributing: above the count floor
-    but below 50% of rate-bearing KRW alts."""
+    """70 requested alts, 36 stale → 34 contributing: above the count floor
+    but below 50% of the requested KRW alt universe."""
     markets, tickers = _breadth_universe(70, stale_alts=frozenset(range(36)))
 
     monkeypatch.setattr(upbit_index, "_get_json", _breadth_get_json(markets, tickers))
     assert await upbit_index._fetch_krw_breadth_24h() is None
+
+
+@pytest.mark.asyncio
+async def test_breadth_partial_ticker_response_counts_against_share_floor(
+    monkeypatch,
+):
+    """hk 6019 review — a market in market/all but absent from the ticker
+    response cannot be proven fresh; it counts against the share floor
+    instead of passing invisibly on the surviving sliver."""
+    markets, tickers = _breadth_universe(70)
+    # Ticker response carries KRW-BTC + only 30 of the 70 requested alts.
+    del tickers[31:]
+
+    monkeypatch.setattr(upbit_index, "_get_json", _breadth_get_json(markets, tickers))
+    assert await upbit_index._fetch_krw_breadth_24h() is None
+
+
+@pytest.mark.asyncio
+async def test_breadth_floor_trip_is_logged(monkeypatch, caplog):
+    """hk 6019 review — a floored reading is an expected steady state, so the
+    producer logs the counts an operator needs to tell floor from outage."""
+    markets, tickers = _breadth_universe(34, stale_alts=frozenset(range(5)))
+
+    monkeypatch.setattr(upbit_index, "_get_json", _breadth_get_json(markets, tickers))
+    with caplog.at_level(logging.INFO, logger="app.services.external.upbit_index"):
+        assert await upbit_index._fetch_krw_breadth_24h() is None
+    assert "alt breadth unavailable" in caplog.text
+    assert "29 of 34" in caplog.text
+    assert "5 excluded stale" in caplog.text
 
 
 def test_ticker_stale_window_matches_recovery_gate_policy():
