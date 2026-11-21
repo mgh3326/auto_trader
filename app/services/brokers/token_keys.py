@@ -15,6 +15,18 @@ def kis_mock_token_keys(*, netloc: str, app_key: str) -> tuple[str, str]:
     return f"{namespace}:access_token", f"{namespace}:token:lock"
 
 
+def kis_futures_mock_token_keys(*, netloc: str, app_key: str) -> tuple[str, str]:
+    """Return KIS futures-mock token keys in their own namespace.
+
+    The futures/options mock account has its own app key, and the namespace is
+    distinct from ``kis_mock:`` even when host and fingerprint happened to
+    collide, so neither scope can publish or consume the other's token.
+    """
+    app_key_fingerprint = hashlib.sha256(app_key.encode()).hexdigest()[:16]
+    namespace = f"kis_futures_mock:{netloc.lower()}:{app_key_fingerprint}"
+    return f"{namespace}:access_token", f"{namespace}:token:lock"
+
+
 def toss_client_fingerprint(client_id: str) -> str:
     """Return the existing non-secret Toss client-id fingerprint."""
     return hashlib.sha256(client_id.encode("utf-8")).hexdigest()[:16]

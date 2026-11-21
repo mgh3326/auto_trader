@@ -201,6 +201,7 @@ tests/services/investment_stages/test_stage_repository.py
 tests/services/investment_stages/test_symbol_report_composition_wiring.py
 tests/services/kis_futures_mock/test_futures_mock_adapter.py
 tests/services/kis_futures_mock/test_futures_mock_boundary.py
+tests/services/kis_futures_mock/test_futures_mock_credentials.py
 tests/services/kis_futures_mock/test_futures_mock_ledger_db.py
 tests/services/kis_futures_mock/test_futures_mock_place.py
 tests/services/kis_futures_mock/test_futures_mock_rules.py

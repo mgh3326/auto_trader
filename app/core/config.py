@@ -269,6 +269,14 @@ class Settings(BaseSettings):
     kis_mock_base_url: str = "https://openapivts.koreainvestment.com:29443"
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
+
+    # KIS domestic futures/options mock account (product code 03). It has its
+    # own app key/secret issued by KIS and its own token namespace — it never
+    # falls back to the stock mock or live credentials.
+    kis_futures_mock_app_key: str | None = None
+    kis_futures_mock_app_secret: str | None = None
+    kis_futures_mock_access_token: str | None = None
+
     kis_mock_scalping_enabled: bool = False
     kis_mock_terminal_min_sessions: int = Field(default=2, ge=2, le=20)
 

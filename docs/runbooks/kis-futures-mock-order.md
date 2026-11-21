@@ -8,7 +8,9 @@
 
 - 운영자가 KIS 선물옵션 모의 계좌(상품코드 `03`)를 갖고 있어야 한다(조사 `docs/research/5892-futures-options-survey.md` Q2).
 - 환경(값은 출력하지 않는다): `KIS_FUTURES_READ_ENABLED=true`, `KIS_FUTURES_MOCK_ENABLED=true`,
-  `KIS_FUTURES_MOCK_ACCOUNT_NO`(8자리), KIS 모의 앱키·시크릿, `DATABASE_URL`. 스모크가 끝나면 두 게이트를 끈다.
+  `KIS_FUTURES_MOCK_ACCOUNT_NO`(8자리), 선물옵션 계좌 전용 `KIS_FUTURES_MOCK_APP_KEY`·`KIS_FUTURES_MOCK_APP_SECRET`
+  (주식 모의 `KIS_MOCK_*` 키로 대체하지 않는다 — 누락은 네트워크 전에
+  `futures_mock_credentials_missing` 으로 거부된다), `DATABASE_URL`. 스모크가 끝나면 두 게이트를 끈다.
 - 마이그레이션 `20261121_hk5946_futures_mock` 이 적용돼 있어야 한다(`uv run alembic current`, 적용은 운영자).
 - **달력 확인**: `app/services/kis_futures_mock/session_calendar.py` 의 시드 범위(2026-11-23~2026-12-30)는
   KRX 공지로 확인되지 않았다. 스모크 날짜가 범위 안이고 개장일인지 KRX 공지와 대조한다. 범위 밖이면
