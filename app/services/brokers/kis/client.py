@@ -144,6 +144,30 @@ class KISClient(BaseKISClient):
             return 10.0
         return super()._token_request_timeout()
 
+    async def futures_balance(self, account: str) -> dict[str, Any]:
+        from .futures_read import FuturesRead
+
+        return await FuturesRead(self).balance(account)
+
+    async def futures_deposit(self, account: str) -> dict[str, Any]:
+        from .futures_read import FuturesRead
+
+        return await FuturesRead(self).deposit(account)
+
+    async def futures_orderable(
+        self, account: str, symbol: str, side: str, price: str, order_type: str
+    ) -> dict[str, Any]:
+        from .futures_read import FuturesRead
+
+        return await FuturesRead(self).orderable(
+            account, symbol, side, price, order_type
+        )
+
+    async def futures_master(self) -> list[dict[str, str]]:
+        from .futures_read import FuturesRead
+
+        return await FuturesRead(self).master()
+
     @staticmethod
     def _aggregate_intraday_to_hour(df: pd.DataFrame) -> pd.DataFrame:
         return _aggregate_minute_candles_frame(df, 60, include_partial=True)
