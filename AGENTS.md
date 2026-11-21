@@ -142,6 +142,7 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    ROB-1474 전략 CLI도 기본 off 이중 게이트와 예상 계좌 검증을 유지하며,
    `mock_strategy_orders`의 sending/uncertain을 재전송하거나 journal을 지우지 않는다.
    `decision/2026-11-20/at-mock-uncertain-and-data-gaps` 항목 1 예외는 Alpaca paper의 해당 client_order_id 조회 HTTP 404에서만 미체결 sending/uncertain leg를 종결하고 잔량을 새 ID로 보낼 수 있게 한다.
+   `decision/2026-11-21/at-binance-demo-not-found`는 같은 규칙을 `binance_spot_demo`에만 준다: 해당 client_order_id 조회가 응답 본문의 Binance 코드 -2013("order does not exist")이고 그 심볼의 완전한 `myTrades` 읽기에 이 주문으로 볼 수 있는 체결이 없을 때만 미체결 sending/uncertain leg를 `rejected`(0 fill)로 종결하고 잔량을 새 ID로 보낼 수 있다. 빈 본문·다른 코드·5xx·타임아웃·예외·잘린 `myTrades`·체결 발견은 상태와 예약을 유지하며, futures demo·Alpaca·live는 바뀌지 않는다.
    hk 4177의 명시 운영자 결정(2026-11-12, `decision/2026-11-12/at-b02-reconcile-and-3792`)은
    KIS live KR 주문 원장 대사의 무인 실행을 expiry/cancel 전이(terminal_only)로 한정해
    `KIS_LIVE_AUTO_RECONCILE_ENABLED` 하나로 허용하는 것만 예외다. fill booking(체결·저널·실현손익)은

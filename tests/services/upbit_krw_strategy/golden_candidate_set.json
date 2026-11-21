@@ -14,22 +14,31 @@
     "eligible": true,
     "reason_code": "ok",
     "turnover30_median_krw": "8000000000",
+    "turnover30_sum_krw": "240000000000",
+    "liquidity_rank": 1,
+    "tie_break_key": "KRW-BTC",
     "last_close_krw": "150000000"
    },
    "KRW-ETH": {
     "eligible": false,
     "reason_code": "liquidity_below_min",
     "turnover30_median_krw": "4000000000",
+    "turnover30_sum_krw": "120000000000",
+    "liquidity_rank": null,
+    "tie_break_key": "KRW-ETH",
     "last_close_krw": "5000000"
    },
    "KRW-XRP": {
     "eligible": false,
     "reason_code": "market_warning_caution",
     "turnover30_median_krw": null,
+    "turnover30_sum_krw": null,
+    "liquidity_rank": null,
+    "tie_break_key": "KRW-XRP",
     "last_close_krw": "1000"
    }
   }
  },
- "canonical_json": "{\"asof\":\"2026-11-22\",\"markets\":{\"KRW-BTC\":{\"eligible\":true,\"last_close_krw\":\"150000000\",\"reason_code\":\"ok\",\"turnover30_median_krw\":\"8000000000\"},\"KRW-ETH\":{\"eligible\":false,\"last_close_krw\":\"5000000\",\"reason_code\":\"liquidity_below_min\",\"turnover30_median_krw\":\"4000000000\"},\"KRW-XRP\":{\"eligible\":false,\"last_close_krw\":\"1000\",\"reason_code\":\"market_warning_caution\",\"turnover30_median_krw\":null}},\"rules_version\":\"upbit-krw-shadow-v1\",\"u0_sha256\":\"45a7581ff5fbff701a7785ba2e9f250923f394ceffddf3532313de34df977e65\"}",
- "sha256": "cec80d0ebcbb2c0a71d20266608c37a76977cc4d778be381a85a01be7208333b"
+ "canonical_json": "{\"asof\":\"2026-11-22\",\"markets\":{\"KRW-BTC\":{\"eligible\":true,\"last_close_krw\":\"150000000\",\"liquidity_rank\":1,\"reason_code\":\"ok\",\"tie_break_key\":\"KRW-BTC\",\"turnover30_median_krw\":\"8000000000\",\"turnover30_sum_krw\":\"240000000000\"},\"KRW-ETH\":{\"eligible\":false,\"last_close_krw\":\"5000000\",\"liquidity_rank\":null,\"reason_code\":\"liquidity_below_min\",\"tie_break_key\":\"KRW-ETH\",\"turnover30_median_krw\":\"4000000000\",\"turnover30_sum_krw\":\"120000000000\"},\"KRW-XRP\":{\"eligible\":false,\"last_close_krw\":\"1000\",\"liquidity_rank\":null,\"reason_code\":\"market_warning_caution\",\"tie_break_key\":\"KRW-XRP\",\"turnover30_median_krw\":null,\"turnover30_sum_krw\":null}},\"rules_version\":\"upbit-krw-shadow-v1\",\"u0_sha256\":\"45a7581ff5fbff701a7785ba2e9f250923f394ceffddf3532313de34df977e65\"}",
+ "sha256": "500066763a4e89851c08e30d8f1f813bbc54e564b66ea8d7075816ac6959ee13"
 }

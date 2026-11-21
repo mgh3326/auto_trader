@@ -101,6 +101,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/mock_strategy/crypto_orders.py",
         "app/services/mock_strategy/crypto_runner.py",
         "app/services/mock_strategy/crypto_signals.py",
+        # hk 5910 — recorder.py is the sole writer of review.mock_strategy_orders
+        # and only names the "binance_spot_demo" venue for the -2013 absence
+        # closure (decision/2026-11-21/at-binance-demo-not-found). Pure ledger
+        # state transition; no HTTP/WS, signing, credential or endpoint behavior.
+        "app/services/mock_strategy/recorder.py",
         # Task 847 — the H5-LS-ENV-v1 durable-state ORM model lives under
         # app/models/. Persistence only: review.binance_h5_* tables, no
         # HTTP/WS, signing, credential, or endpoint behavior; "Binance"

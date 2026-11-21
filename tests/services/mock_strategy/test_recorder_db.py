@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, NoResultFound
 
 from app.core.db import AsyncSessionLocal
 from app.services.mock_strategy.recorder import MockStrategyRecorder
@@ -130,6 +130,51 @@ async def test_migration_trigger_preserves_the_send_fence(db_session, recorder):
     assert absent.meta["filled_qty"] == "0"
     assert (await recorder.get(coid)).meta == absent.meta
     assert not await recorder.claim(coid)
+
+
+async def test_binance_spot_absence_closes_unbound_leg_with_zero_fill(
+    db_session, recorder
+):
+    """hk 5910: only an unbound sending/uncertain spot-demo leg can be closed."""
+    spot = f"r1474-bsa-{uuid4().hex}"
+    await recorder.record(
+        replace(intent(client_order_id=spot), venue="binance_spot_demo", side="buy")
+    )
+    assert await recorder.claim(spot)
+    # Futures demo / Alpaca rows with the same state are never closed this way.
+    futures = f"r1474-bfa-{uuid4().hex}"
+    await recorder.record(
+        replace(
+            intent(client_order_id=futures),
+            venue="binance_futures_demo",
+            side="short",
+        )
+    )
+    assert await recorder.claim(futures)
+    with pytest.raises(NoResultFound):  # venue filter: no spot row for this id
+        await recorder.confirm_binance_spot_absence(futures, account_ref="fixture")
+    assert (await recorder.get(futures)).status == "sending"
+    await recorder.update(spot, status="uncertain")
+    closed = await recorder.confirm_binance_spot_absence(spot, account_ref="fixture")
+    assert closed.status == "rejected"
+    assert closed.meta["broker_status"] == "broker_confirmed_absent"
+    assert closed.meta["filled_qty"] == "0"
+    assert closed.meta["no_order_proven"] is True
+    assert closed.meta["no_order_sent"] is True  # prior-revision readers skip it
+    stored = await recorder.get(spot)
+    assert stored.status == "rejected" and stored.broker_order_id is None
+    assert not await recorder.claim(spot)  # the id stays fenced; no resend
+    again = await recorder.confirm_binance_spot_absence(spot, account_ref="fixture")
+    assert again.meta == closed.meta  # idempotent no-op
+    # A bound or filled leg is refused by the same guard.
+    bound = f"r1474-bsb-{uuid4().hex}"
+    await recorder.record(
+        replace(intent(client_order_id=bound), venue="binance_spot_demo", side="buy")
+    )
+    await recorder.claim(bound)
+    await recorder.update(bound, status="uncertain", broker_order_id="bound-42")
+    still = await recorder.confirm_binance_spot_absence(bound, account_ref="fixture")
+    assert still.status == "uncertain"
 
 
 async def test_symbol_change_journals_on_a_planned_exit_leg_only(db_session, recorder):

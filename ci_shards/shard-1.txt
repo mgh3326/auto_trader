@@ -245,6 +245,7 @@ tests/services/market_events/test_dart_today_pending.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py
 tests/services/mock_integration/test_coordination.py
 tests/services/mock_strategy/test_crypto.py
+tests/services/mock_strategy/test_crypto_binance_absence.py
 tests/services/mock_strategy/test_us.py
 tests/services/mock_strategy/test_us_broker.py
 tests/services/mock_strategy/test_us_symbol_change.py

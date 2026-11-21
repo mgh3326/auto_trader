@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
 from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
     FillEvidence,
@@ -131,6 +132,47 @@ async def _send(
         "status": _entry_status(evidence),
         "submitted": True,
     }
+
+
+async def _confirmed_absent(
+    recorder: Any,
+    broker: Any,
+    row: Any,
+    *,
+    window_start: datetime | None,
+    all_rows: list,
+    dry_run: bool,
+) -> bool:
+    """Binance spot demo -2013 closure: lookup absent AND no own trade in myTrades.
+
+    Only a never-bound sending/uncertain leg qualifies; the caller re-raises the
+    original not-found error when this returns False, so state is unchanged.
+    """
+    if (
+        row.venue != "binance_spot_demo"
+        or row.status not in {"sending", "uncertain"}
+        or row.broker_order_id is not None
+        or window_start is None
+    ):
+        return False
+    others = frozenset(
+        str(r.broker_order_id)
+        for r in all_rows
+        if r.broker_order_id is not None
+        and r.client_order_id != row.client_order_id
+        and r.symbol == row.symbol  # Binance order IDs are per-symbol sequences
+    )
+    if not await broker.confirm_absence(
+        row, window_start=window_start, other_order_ids=others
+    ):
+        return False
+    if not dry_run:
+        closed = await recorder.confirm_binance_spot_absence(
+            row.client_order_id, account_ref=row.account_ref
+        )
+        if closed.status != "rejected":
+            return False
+    return True
 
 
 def _output(order: OrderIntent) -> dict:
@@ -371,7 +413,35 @@ async def close_due(
                     }
                 )
                 continue
-            evidence = await broker.evidence(entry)
+            try:
+                evidence = await broker.evidence(entry)
+            except BinanceDemoOrderNotFound:
+                horizon = entry.meta.get("horizon")
+                start = (
+                    entry.exit_due_at - timedelta(days=horizon)
+                    if entry.exit_due_at is not None and isinstance(horizon, int)
+                    else None
+                )
+                if not await _confirmed_absent(
+                    recorder,
+                    broker,
+                    entry,
+                    window_start=start,
+                    all_rows=await recorder.list_orders(
+                        venue=venue, account_ref=broker.account_ref
+                    ),
+                    dry_run=dry_run,
+                ):
+                    raise
+                results.append(
+                    {
+                        "client_order_id": entry.client_order_id,
+                        "status": "entry_rejected_absent"
+                        if not dry_run
+                        else "would_reject_absent",
+                    }
+                )
+                continue
             if not dry_run:
                 await _save(recorder, entry, evidence)
             if not evidence.terminal or evidence.filled_qty <= 0:
@@ -394,13 +464,30 @@ async def close_due(
             in_flight = []
             planned_count = 0
             for leg in legs:
-                if leg.status == "rejected" and leg.meta.get("no_order_sent") is True:
+                if leg.status == "rejected" and (
+                    leg.meta.get("no_order_sent") is True
+                    or leg.meta.get("no_order_proven") is True
+                ):
                     continue
                 if leg.status == "planned":
                     planned_count += 1
                     pending = leg
                     continue
-                proof = await broker.evidence(leg)
+                try:
+                    proof = await broker.evidence(leg)
+                except BinanceDemoOrderNotFound:
+                    if not await _confirmed_absent(
+                        recorder,
+                        broker,
+                        leg,
+                        window_start=entry.exit_due_at,
+                        all_rows=all_rows,
+                        dry_run=dry_run,
+                    ):
+                        raise
+                    # Proven absent: no fill, no resend of this id. The residual
+                    # is re-derived below and goes out under a new indexed id.
+                    continue
                 if not dry_run and leg.status != "closed":
                     await _save(recorder, leg, proof)
                 sold += proof.filled_qty
