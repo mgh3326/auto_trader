@@ -158,15 +158,23 @@ def test_decide_and_pipeline_have_no_limit_override_parameter():
     for func in (place.place_futures_mock_order, place.cancel_futures_mock_order):
         names = set(inspect.signature(func).parameters)
         assert not names & {"limits", "max_notional", "daily_loss_limit", "quantity"}
-    assert not {
-        f for f in place.PlaceRequest.__dataclass_fields__ if "limit" in f
-    }
+    assert not {f for f in place.PlaceRequest.__dataclass_fields__ if "limit" in f}
 
 
 # --- 닫힌 상품 집합 --------------------------------------------------------------
 @pytest.mark.parametrize(
     "symbol",
-    ["A01612", "101W09", "D0561201", "201S03370", "A06612", "A04612", "", "A0561", "a05612"],
+    [
+        "A01612",
+        "101W09",
+        "D0561201",
+        "201S03370",
+        "A06612",
+        "A04612",
+        "",
+        "A0561",
+        "a05612",
+    ],
 )
 def test_product_outside_the_closed_set_is_refused_without_network(symbol):
     assert code(precheck_product(symbol)) == "product_not_allowed"
@@ -225,9 +233,11 @@ def test_second_thursday_and_last_trade_date_from_krx_spec():
 
 
 def test_holiday_thursday_moves_the_last_trade_date_earlier(monkeypatch):
-    monkeypatch.setattr(cal, "SESSION_DAYS", {
-        d: v for d, v in cal.SESSION_DAYS.items() if d != cal.date(2026, 12, 10)
-    })
+    monkeypatch.setattr(
+        cal,
+        "SESSION_DAYS",
+        {d: v for d, v in cal.SESSION_DAYS.items() if d != cal.date(2026, 12, 10)},
+    )
     assert cal.last_trade_date("2026-12") == cal.date(2026, 12, 9)
 
 
@@ -272,14 +282,22 @@ def test_parse_positions_reads_direction_and_entry_and_skips_flat():
     assert parsed == (Position("A05612", "long", Decimal("1"), Decimal("400.00")),)
     short = parse_positions([{**ROW_LONG, "sll_buy_dvsn_name": "매도"}])
     assert short[0].direction == "short"
-    by_code = parse_positions([{**ROW_LONG, "sll_buy_dvsn_name": "", "sll_buy_dvsn_cd": "01"}])
+    by_code = parse_positions(
+        [{**ROW_LONG, "sll_buy_dvsn_name": "", "sll_buy_dvsn_cd": "01"}]
+    )
     assert by_code[0].direction == "short"
 
 
 @pytest.mark.parametrize(
     "rows",
-    [None, "x", [None], [{**ROW_LONG, "cblc_qty": "x"}], [{**ROW_LONG, "cblc_qty": "-1"}],
-     [{**ROW_LONG, "shtn_pdno": None}]],
+    [
+        None,
+        "x",
+        [None],
+        [{**ROW_LONG, "cblc_qty": "x"}],
+        [{**ROW_LONG, "cblc_qty": "-1"}],
+        [{**ROW_LONG, "shtn_pdno": None}],
+    ],
 )
 def test_unreadable_positions_are_refused_not_zero(rows):
     assert code(parse_positions(rows)) == "positions_unverified"
@@ -292,9 +310,9 @@ def test_effect_open_close_and_caps():
     assert code(position_effect(req(), (long_pos,))) == "max_open_positions_exceeded"
     other = Position("A05701", "long", Decimal(1), Decimal("400"))
     assert code(position_effect(req(), (other,))) == "max_open_positions_exceeded"
-    assert code(position_effect(req(side="sell"), (Position("A05612", None, Decimal(1), None),))) == (
-        "position_ambiguous"
-    )
+    assert code(
+        position_effect(req(side="sell"), (Position("A05612", None, Decimal(1), None),))
+    ) == ("position_ambiguous")
     assert code(position_effect(req(), (long_pos, long_pos))) == "position_ambiguous"
 
 
@@ -326,7 +344,9 @@ def test_new_entries_are_not_guarded():
     # 숏 진입(매도)은 낮은 가격이어도 가드 대상이 아니다 (envelope 만 적용).
     result = decide(
         req(side="sell", price=Decimal("300.00")),
-        contract=CONTRACT, now=NOW, positions=(),
+        contract=CONTRACT,
+        now=NOW,
+        positions=(),
         daily_loss=DailyLossState(Decimal(0), False),
     )
     assert result.effect == "open"
@@ -335,16 +355,26 @@ def test_new_entries_are_not_guarded():
 # --- 일일 손실 -------------------------------------------------------------------
 def test_daily_loss_blocks_entries_at_the_limit_and_when_unverified():
     assert daily_loss_refusal(DailyLossState(Decimal("999999.99"), False)) is None
-    assert code(daily_loss_refusal(DailyLossState(Decimal("1000000"), False))) == "daily_loss_halt"
-    assert code(daily_loss_refusal(DailyLossState(Decimal(0), True))) == "daily_loss_unverified"
-    assert code(daily_loss_refusal(DailyLossState(None, False))) == "daily_loss_unverified"
+    assert (
+        code(daily_loss_refusal(DailyLossState(Decimal("1000000"), False)))
+        == "daily_loss_halt"
+    )
+    assert (
+        code(daily_loss_refusal(DailyLossState(Decimal(0), True)))
+        == "daily_loss_unverified"
+    )
+    assert (
+        code(daily_loss_refusal(DailyLossState(None, False))) == "daily_loss_unverified"
+    )
 
 
 def test_daily_loss_does_not_block_a_closing_order():
     pos = Position("A05612", "long", Decimal(1), Decimal("400.00"))
     result = decide(
         req(side="sell", price=Decimal("400.00")),
-        contract=CONTRACT, now=NOW, positions=(pos,),
+        contract=CONTRACT,
+        now=NOW,
+        positions=(pos,),
         daily_loss=DailyLossState(Decimal("5000000"), True),
     )
     assert result.effect == "close"
@@ -354,17 +384,26 @@ def test_daily_loss_does_not_block_a_closing_order():
 def test_decide_refuses_entry_on_the_last_trade_day_but_allows_close():
     last_day = datetime(2026, 12, 10, 10, 0, tzinfo=KST)
     loss = DailyLossState(Decimal(0), False)
-    assert code(decide(req(), contract=CONTRACT, now=last_day, positions=(), daily_loss=loss)) == (
-        "last_trade_day_entry_refused"
-    )
+    assert code(
+        decide(req(), contract=CONTRACT, now=last_day, positions=(), daily_loss=loss)
+    ) == ("last_trade_day_entry_refused")
     pos = Position("A05612", "long", Decimal(1), Decimal("400.00"))
-    closing = decide(req(side="sell"), contract=CONTRACT, now=last_day, positions=(pos,), daily_loss=loss)
+    closing = decide(
+        req(side="sell"),
+        contract=CONTRACT,
+        now=last_day,
+        positions=(pos,),
+        daily_loss=loss,
+    )
     assert closing.effect == "close"
 
 
 def test_decide_approves_a_plain_entry_with_notional():
     result = decide(
-        req(), contract=CONTRACT, now=NOW, positions=(),
+        req(),
+        contract=CONTRACT,
+        now=NOW,
+        positions=(),
         daily_loss=DailyLossState(Decimal(0), False),
     )
     assert result.effect == "open"
