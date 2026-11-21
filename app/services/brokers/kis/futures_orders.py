@@ -3,8 +3,9 @@
 🔴 이 모듈은 **모의 전용**이다: 호스트가 정확히 VTS 호스트가 아니거나 클라이언트가 모의가
 아니거나 계좌가 8자리가 아니면 요청을 만들기 전에 ``FuturesPreDispatchError`` 로 거부한다.
 TR 은 모의 주간 ``VTTO1101U``/``VTTO1103U`` 뿐이다(실전·야간 TR 상수 없음). 이 모듈을
-부르는 곳은 ``app/services/kis_futures_mock/`` 하나이고(정적 테스트), T1 읽기 view
-(`kis_futures_read.view`)의 허용 목록에는 이 메서드들이 없다.
+부르는 곳은 ``app/services/kis_futures_mock/`` 하나이고(정적 테스트), ``KISClient`` 에는
+메서드를 더하지 않는다 — T1 읽기 view(`kis_futures_read.view`)의 허용 목록과 ``futures_*``
+메서드 집합 대조 테스트가 그대로 성립한다.
 
 전송은 한 번이다: ``retry_request_errors=False``·``max_retries_override=0`` 로 어떤
 재전송도 하지 않는다. HTTP 요청이 만들어지기 전에 멈췄음이 증명되는 경우(env 게이트·
@@ -54,8 +55,21 @@ def _account(account: str) -> dict[str, str]:
 
 
 class FuturesOrders:
+    """모의 선물 주문 전송기. ``KISClient`` 에 메서드를 더하지 않고 클라이언트를 감싼다."""
+
     def __init__(self, parent: Any) -> None:
         self._parent = parent
+
+    @property
+    def is_mock_client(self) -> bool:
+        return getattr(self._parent, "_is_mock_client", False) is True
+
+    @property
+    def base_url(self) -> str:
+        return str(getattr(self._parent._settings, "kis_base_url", "")).rstrip("/")
+
+    async def close(self) -> None:
+        await self._parent.close()
 
     async def _post(
         self, path: str, tr: str, body: dict[str, str], api_name: str

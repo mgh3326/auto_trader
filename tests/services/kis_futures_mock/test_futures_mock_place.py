@@ -90,21 +90,21 @@ class FakeView:
 
 
 class FakeOrderClient:
-    _is_mock_client = True
+    is_mock_client = True
 
     def __init__(self, c, response=OK_ACK, error=None, base_url=C.MOCK_HOST):
         self.c, self.response, self.error = c, response, error
-        self._settings = SimpleNamespace(kis_base_url=base_url)
+        self.base_url = base_url
         self.closed = False
 
-    async def futures_place_order(self, **kwargs):
+    async def place(self, **kwargs):
         self.c.sends += 1
         self.c.sent_kwargs.append(kwargs)
         if self.error:
             raise self.error
         return self.response
 
-    async def futures_cancel_order(self, **kwargs):
+    async def cancel(self, **kwargs):
         self.c.cancels += 1
         self.c.sent_kwargs.append(kwargs)
         if self.error:
@@ -308,7 +308,7 @@ def test_attribution_signal_is_committed_before_the_reservation_and_send():
         return await orig_reserve(**kw)
 
     h.signals.record, h.recorder.reserve = rec, res
-    h.client.futures_place_order = _wrap(h.client.futures_place_order, order, "send")
+    h.client.place = _wrap(h.client.place, order, "send")
     place(h)
     assert order == ["signal", "reserve", "send"]
 
@@ -464,7 +464,7 @@ def test_host_and_account_identity_are_checked_before_attribution_and_send(kw, c
 
 def test_non_mock_client_is_refused():
     h = Harness()
-    h.client._is_mock_client = False
+    h.client.is_mock_client = False
     assert_no_send(h, place(h), "not_mock_client")
 
 

@@ -10,7 +10,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 PKG = ROOT / "app/services/kis_futures_mock"
-ORDER_NAMES = ("futures_place_order", "futures_cancel_order", "futures_orders")
+ORDER_NAMES = (
+    "futures_place_order",
+    "futures_cancel_order",
+    "futures_orders",
+    "FuturesOrders",
+)
 
 
 def py_files(base: Path):
@@ -30,7 +35,6 @@ def imports_of(path: Path) -> set[str]:
 
 def test_order_methods_are_referenced_only_by_the_futures_mock_lane():
     allowed = {
-        ROOT / "app/services/brokers/kis/client.py",
         ROOT / "app/services/brokers/kis/futures_orders.py",
         ROOT / "scripts/kis_futures_mock_order.py",
         *PKG.glob("*.py"),
@@ -50,14 +54,19 @@ def test_t1_read_view_still_cannot_reach_the_order_methods():
     from app.services.kis_futures_read.view import ALLOWED_METHODS
 
     assert not {"futures_place_order", "futures_cancel_order"} & set(ALLOWED_METHODS)
+    client_src = (ROOT / "app/services/brokers/kis/client.py").read_text()
+    assert (
+        "futures_place_order" not in client_src and "futures_orders" not in client_src
+    )
     from app.services.kis_futures_read.view import read_only_view
 
     class Target:
         async def futures_place_order(self, **_):
             raise AssertionError("must be unreachable")
 
+    view = read_only_view(Target())
     with pytest.raises(AttributeError):
-        read_only_view(Target()).futures_place_order
+        getattr(view, "futures_place_order")  # noqa: B009
 
 
 def test_lane_never_touches_execution_ledger_mcp_or_schedulers():

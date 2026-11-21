@@ -95,8 +95,9 @@ def default_deps() -> FuturesPlaceDeps:
 
     def new_order_client() -> Any:
         from app.services.brokers.kis.client import KISClient
+        from app.services.brokers.kis.futures_orders import FuturesOrders
 
-        return KISClient(is_mock=True)
+        return FuturesOrders(KISClient(is_mock=True))
 
     return FuturesPlaceDeps(
         now=lambda: datetime.now(KST),
@@ -148,10 +149,9 @@ def _refusal(base: dict[str, Any], refusal: Refusal) -> dict[str, Any]:
 
 def identity_error(order_client: Any, account: str) -> str | None:
     """모의 호스트·클라이언트·선물 계좌 형식 확인 — 예약·전송 전에 한 번 더 본다."""
-    if not getattr(order_client, "_is_mock_client", False):
+    if not getattr(order_client, "is_mock_client", False):
         return "not_mock_client"
-    base_url = str(getattr(order_client._settings, "kis_base_url", "")).rstrip("/")
-    if base_url != C.MOCK_HOST:
+    if getattr(order_client, "base_url", "") != C.MOCK_HOST:
         return "not_mock_host"
     if len(account) != 8 or not account.isascii() or not account.isdigit():
         return "account_identity_unverified"
@@ -501,7 +501,7 @@ async def _send(
         return await release_and_refuse(late.code, late.detail)
 
     try:
-        response = await order_client.futures_place_order(
+        response = await order_client.place(
             account=deps.account_no(),
             symbol=contract.broker_symbol,
             side=request.side,
@@ -748,7 +748,7 @@ async def _send_cancel(
         released = await _release(recorder, reservation)
         return {**_refusal(base, late), "reservation_released": released}
     try:
-        response = await order_client.futures_cancel_order(
+        response = await order_client.cancel(
             account=deps.account_no(),
             original_order_no=original.broker_order_id,
         )
