@@ -1076,8 +1076,10 @@ decision_rules:
   # 🔴 parking_balance_krw 의 원천은 이 레포에 사실상 없다. cash_yields 는
   # **금리표**이지 잔고 원천이 아니며(계좌 이름과 연이율만 있고 금액이 없다),
   # 유일한 수동 잔고 저장소는 user_settings 의 manual_cash 다. 값이 없거나
-  # stale 이면 0 으로 읽는다 — 추정하지 않는다. 따라서 실무상 한도는
-  # 대개 브로커 주문가능액만으로 계산된 **하한**이며, 그만큼 보수적이다.
+  # 읽을 수 없으면 0 으로 읽는다 — 추정하지 않는다. stale 이어도 저장된
+  # 값은 그대로 쓰되 stale_warning 라벨을 단다(hk 6017, 운영자 2026-11-21).
+  # 따라서 파킹 값이 없을 때 실무상 한도는 대개 브로커 주문가능액만으로
+  # 계산된 **하한**이며, 그만큼 보수적이다.
   buy.deployment_cap:
     lanes: [buy]
     semantics: >-
@@ -1102,10 +1104,13 @@ decision_rules:
       PARKING TERM PROVENANCE: parking_balance_krw is the operator-maintained
       manual cash balance (user_settings key `manual_cash`). `cash_yields` in
       this document is a RATE table and carries no balances, so it cannot
-      supply this term. When the manual cash balance is absent, unreadable,
-      or stale, the term is 0 — never estimated, never carried forward — and
-      the resulting cap is a conservative lower bound that is reported as
-      such.
+      supply this term. When the manual cash balance is absent or unreadable,
+      the term is 0 — never estimated, never carried forward — and the
+      resulting cap is a conservative lower bound that is reported as such.
+      A stored value older than the manual-cash staleness threshold is NOT
+      zeroed (hk 6017, operator decision 2026-11-21): it is used at its stored
+      face value and surfaced with the `operator_value_stale_warning` source
+      label so the age stays visible.
     tiers:
       - id: deployment_cap
         conditions:
@@ -1113,7 +1118,8 @@ decision_rules:
           denominator_terms: [broker_orderable_total_krw, parking_balance_krw]
           denominator_currency: KRW
           parking_balance_source: user_settings.manual_cash
-          parking_balance_missing_or_stale_value: 0
+          parking_balance_missing_or_unreadable_value: 0
+          parking_balance_stale_value: stored_face_value
           parking_balance_estimation: FORBIDDEN
           cash_yields_is_rate_table_not_balance_source: true
           evaluated_at: new_deployment_only
