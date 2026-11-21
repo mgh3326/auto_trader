@@ -131,6 +131,7 @@ async def fetch_ohlcv(
             count=days,
             period=normalized_period,
             raw_fetcher=_fetch_ohlcv_raw,
+            end_date=end_date,
         )
         if cached is not None:
             return cached

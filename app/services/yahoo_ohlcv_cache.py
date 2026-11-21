@@ -211,7 +211,16 @@ async def get_closed_candles(
     count: int,
     period: str,
     raw_fetcher: Callable[[str, int, str, datetime | None], Awaitable[pd.DataFrame]],
+    *,
+    end_date: datetime | None = None,
 ) -> pd.DataFrame | None:
+    """Read closed candles, optionally ending at an inclusive ``end_date``.
+
+    ``end_date`` bounds the window by its calendar date (NYSE session date for
+    ``day``): the result is the ``count`` closed buckets ending at or before
+    that date, and rows after it are never returned.  The recorded freshness
+    cursor stays at the real latest closed bucket.
+    """
     normalized_period = _normalize_period_local(period)
     if not settings.yahoo_ohlcv_cache_enabled:
         return None
@@ -232,7 +241,10 @@ async def get_closed_candles(
         dates_key, rows_key, meta_key, lock_key = _keys(
             normalized_ticker, normalized_period
         )
-        target_closed_date = get_last_closed_bucket_nyse(normalized_period)
+        latest_closed_date = get_last_closed_bucket_nyse(normalized_period)
+        target_closed_date = latest_closed_date
+        if end_date is not None and end_date.date() < target_closed_date:
+            target_closed_date = end_date.date()
 
         return await get_closed_candles_flow(
             redis_client=redis_client,
@@ -256,6 +268,8 @@ async def get_closed_candles(
             sleep_fn=asyncio.sleep,
             log_prefix="yahoo_ohlcv_cache",
             meta_date_field="last_closed_bucket",
+            meta_target_date=latest_closed_date,
+            allow_backfill=target_closed_date >= latest_closed_date,
         )
     except Exception as exc:
         global _FALLBACK_COUNT
