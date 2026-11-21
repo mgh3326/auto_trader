@@ -251,6 +251,26 @@ class BinanceSpotDemoExecutionClient:
         response.raise_for_status()
         return [_redact(row) for row in response.json()]
 
+    async def get_symbol_trades_since(
+        self, *, symbol: str, start_time_ms: int, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Signed ``GET /api/v3/myTrades`` for a symbol from ``start_time_ms``.
+
+        Read-side only. Returns at most ``limit`` rows; a result of exactly
+        ``limit`` rows is possibly truncated and callers must treat it as
+        incomplete coverage.
+        """
+        params = {
+            "symbol": symbol,
+            "startTime": str(start_time_ms),
+            "limit": str(limit),
+            "recvWindow": str(BINANCE_SPOT_DEMO_RECV_WINDOW_MS),
+        }
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        response = await self._client.get("/api/v3/myTrades", params=signed)
+        response.raise_for_status()
+        return [_redact(row) for row in response.json()]
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

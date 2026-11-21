@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -22,6 +23,7 @@ from app.services.mock_strategy.crypto_orders import (
     positive,
 )
 
+MY_TRADES_LIMIT = 1000  # Binance myTrades max; a full page may be truncated
 VENUES = ("binance_spot_demo", "binance_futures_demo", "alpaca_paper_crypto")
 
 
@@ -323,6 +325,42 @@ class BinanceCryptoDemo:
                 symbol=order.symbol, client_order_id=order.client_order_id
             )
         return await self._evidence_with_commissions(body, order)
+
+    async def confirm_absence(
+        self,
+        order: Any,
+        *,
+        window_start: datetime,
+        other_order_ids: frozenset[str],
+    ) -> bool:
+        """True only if myTrades fully covers the window and shows no own trade.
+
+        Spot demo only. Trades already attributed to another ledger order are
+        not this order's; any other same-side trade, a truncated read or a
+        malformed row keeps the leg unresolved.
+        """
+        if self.futures:
+            return False
+        trades = await self.client.get_symbol_trades_since(
+            symbol=order.symbol,
+            start_time_ms=int(window_start.timestamp() * 1000),
+            limit=MY_TRADES_LIMIT,
+        )
+        if len(trades) >= MY_TRADES_LIMIT:
+            return False
+        buyer = order.side in {"buy", "cover"}
+        for trade in trades:
+            if (
+                trade.get("symbol") != order.symbol
+                or not isinstance(trade.get("isBuyer"), bool)
+                or "orderId" not in trade
+            ):
+                raise ValueError("demo trade row malformed")
+            if str(trade["orderId"]) in other_order_ids:
+                continue
+            if trade["isBuyer"] is buyer:
+                return False
+        return True
 
     async def aclose(self) -> None:
         await self.client.aclose()
