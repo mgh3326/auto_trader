@@ -1187,3 +1187,30 @@ retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_s
 `scripts/expire_kis_us_rows_by_inference.py`는 기본 preview이며 브로커에 접속하지 않는다. `kis`/`kis_live`/`us`의 open 주문만 대상으로 한다. 조건 (a) open 소유 상태, (b) 저장된 `order_kind`가 limit/market이고 KIS US 송신이 `ORD_DVSN` 00/01만 사용하며 ROB-671 이력 범주가 `us_day_order`, (c) 접수 시각과 미국 거래일 종료 상한 판독 및 경과, (d) 그 종료 후 90일 초과, (e) 같은 미국 거래일의 동일 주문 체결 0, (f) 접수~종료의 KIS live US 동일 종목 체결 0, (g) 해당 구간을 덮고 종료 이후 끝난 성공·커밋 KIS execution-ledger 대사 실행 모두 통과해야 한다. 격리된 체결은 제외하며 판독 불가는 실패다. (d) 통과는 (c) 통과를 함의하며 둘은 각각 보고한다.
 
 종료 상한은 `us_trading_day_window`의 종료(뉴욕 20:00, DST 반영)다. 입증된 DAY 주문의 보수적 상한이며 브로커 만료 계약이 아니다. 정확한 decision ref, actor, reason, preview 적격 집합과 같은 최대 45개 ID가 있어야 커밋한다. 주문 행 잠금 뒤 커밋 직전에 모든 조건을 다시 읽고 적격 집합이 달라지면 전체 롤백한다. 체결 원장 쓰기는 잠그지 않는다. 마지막 재검사부터 커밋까지 도착한 체결은 수용된 경합 위험이며, 90일이 지난 DAY 주문의 이런 체결은 모순 증거다. preview의 `inference_checks`는 추론 감사에 연결된 주문의 이후 in-effect 모순 체결을 읽기 전용으로 표시한다(판독 불가는 unknown). #1112 선례처럼 원본 체결 기록과 추론 마커를 보존한다. 레저의 상세와 불변 감사 행에 `expiry_basis=inference`, `expiry_caveat=no_broker_original`, 결정·규칙·조건 사실을 남긴다. fill·journal·PnL 쓰기와 스케줄 연결은 없다. 마이그레이션 배포 및 운영 레버 실행은 운영자 승인 사항이다. 절차: `docs/runbooks/kis-us-inference-expiry.md`.
+
+### KIS 국내 선물 읽기 (hk 5938)
+
+`app.services.kis_futures_read.view.open_futures_view`는 기본 비활성인
+`KIS_FUTURES_READ_ENABLED`가 정확히 `true`일 때만 KIS 클라이언트를 지연 생성해
+읽기 메서드 네 개와 `close`만 노출한다. 게이트는 토큰 발급·조회 및 마스터 다운로드
+전에도 확인한다. 이 표면에는 MCP 도구·스케줄러·주문 전송이 없다. KIS 기존 인증·
+속도 제한을 쓰며 모의 요청은 공식 VTS 호스트에만 보낸다. 계좌번호는 별도로 지정한
+선물 계좌 8자리이며 상품코드는 `03`이다. 주식 계좌를 자동 대체하지 않는다.
+
+잔고는 `CTFO6118R`/`VTFO6118R`의 `output1` 포지션과 `output2` 합계를 읽고
+연속조회가 끝나지 않으면 결과를 거부한다. 총자산은 `CTRP6550R`/`VTRP6550R`,
+주문가능은 `TTTO5105R`/`VTTO5105R`이다. 모의 총자산 ID는 공식 샘플의 V-prefix
+변환을 따른다. 근거: [KIS 선물옵션 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_futureoption/domestic_futureoption_functions.py),
+[공통 TR 변환](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/kis_auth.py),
+[잔고 필드](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_futureoption/inquire_balance/chk_inquire_balance.py),
+[총자산 필드](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_futureoption/inquire_deposit/chk_inquire_deposit.py),
+[주문가능 필드](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_futureoption/inquire_psbl_order/chk_inquire_psbl_order.py).
+지수 선물옵션 마스터는 [공식 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/stocks_info/domestic_index_future_code.py)의
+`fo_idx_code_mts.mst.zip`을 TLS 검증과 redirect 거부로 읽는다.
+
+운영자 수동 확인: 모의 KIS 자격증명과 별도의 `KIS_FUTURES_MOCK_ACCOUNT_NO`를
+설정하고 `KIS_FUTURES_READ_ENABLED=true`로 `uv run python -m scripts.kis_futures_read`를
+실행한다. `--symbol`, `--side`, `--price`, `--order-type`은 선택적인 주문가능
+조회 입력이며 `--symbol` 지정 시 `--price`가 필수다. 주문을 만들지 않는다. 출력은 계좌를 마스킹하고 금액·수량을 정확한
+10진 문자열로 표시한다. 누락·판독 실패·조회 실패는 `null`과 사유로 표시한다.
+모의 계좌 실조회는 배포 뒤 운영자가 수행한다.
