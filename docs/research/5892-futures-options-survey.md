@@ -6,7 +6,7 @@ hk 5892 조사 문서다. 코드·계정 개설·주문은 범위 밖이고 이 
 
 - 모든 사실 주장에는 출처 링크가 있거나 `[unverified]`로 표시했다. 레포 내부 사실은 `경로:` 로 인용한다.
 - **직접 확인**은 그 페이지를 이번 조사에서 읽었다는 뜻이다. **요약 기반**은 페이지 일부만 읽혔거나 검색 요약에 의존했다는 뜻이다. **제3자**는 블로그·뉴스다(공식 근거가 아니다).
-- `[의견]`은 이 문서의 권고다. 운영자가 정해야 하는 것은 §8 번호 질문(Q1…)으로만 모았다.
+- `[의견]`은 이 문서의 권고다. 운영자가 정해야 하는 것은 §9 번호 질문(Q1…)으로만 모았다.
 - 계좌번호·자격증명·키 값은 어디에도 없다.
 - 공식 문서 열람 한계: KIS 포털 API 상세 페이지는 렌더링되지 않았다(메뉴만 나옴). 그래서 KIS의 tr_id·경로는 공식 GitHub 샘플 코드에서 읽었다. README가 "샘플은 별도 공지 없이 업데이트될 수 있다"고 밝히므로 **공식 스펙이 아니라 샘플 코드**다. [출처](https://github.com/koreainvestment/open-trading-api)
 
@@ -19,8 +19,8 @@ hk 5892 조사 문서다. 코드·계정 개설·주문은 범위 밖이고 이 
 | 해외선물 모의 API가 있나 | **확인 못 함.** KIS 공식 안내는 해외선물옵션 모의투자가 eFriend Plus(64Bit)에서만 제공된다고 한다. API 모의 여부는 `[unverified]`. |
 | 키움 REST | 공식 API 목록에 선물옵션이 **없다**(국내주식·미국주식 범주만). |
 | 그 밖에 이미 붙은 브로커 | NH PLUG 포털에 국내·해외 파생 TR 그룹이 **나열**되어 있으나 서비스 상태에 의심 신호가 있다. Toss는 주식 전용, Alpaca는 옵션만(선물 못 찾음). |
-| 하드룰과의 충돌 | 새 실행 표면은 전부 새 env 게이트·호출별 confirm이 필요하고, 1계약 명목이 기존 모든 금액 상한을 넘을 가능성이 커서 **운영자 결정이 반드시 필요한 변경이 6가지**다(§5). |
-| 권고 순서 | ① KIS 국내선물 **모의(주간)** → ② 해외선물은 읽기 전용·shadow → ③ Binance live는 별도 결정(§7). |
+| 하드룰과의 충돌 | 새 실행 표면은 전부 새 env 게이트·호출별 confirm이 필요하고, 1계약 명목이 기존 모든 금액 상한을 넘을 가능성이 커서 **운영자 결정이 반드시 필요한 변경이 6가지**다(§6.8). |
+| 권고 순서 | ① KIS 국내선물 **모의(주간)** → ② 해외선물은 읽기 전용·shadow → ③ Binance live는 별도 결정(§8). |
 
 ## 2. 베뉴별 조사
 
@@ -107,7 +107,7 @@ hk 5892 조사 문서다. 코드·계정 개설·주문은 범위 밖이고 이 
 - 체결 알림: `POST/PUT/DELETE /fapi/v1/listenKey`, 60분 안에 keepalive가 없으면 닫힌다. `ORDER_TRADE_UPDATE` 이벤트 필드와 유저 스트림 URL은 `[unverified]`. [출처](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
 - 503 "알 수 없는 오류"는 실행 상태 불명이며 실패로 취급하지 말라고 문서가 말한다(레포의 `uncertain` 규율과 같은 뜻). [출처](https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info)
 - 펀딩: `GET /fapi/v1/fundingRate`(이력), `fundingInfo`(예시 값 `fundingIntervalHours: 8`). 일반 8시간이라는 진술은 `[unverified]`. 청산 수수료율·`marketTakeBound` 필드는 exchangeInfo에 있다. [출처](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information)
-- 데모의 제약(심볼 집합, 데이터 초기화, 미지원 기능)·한국 거주자의 선물 이용 가능 여부: 공식 근거를 읽지 못했다 `[unverified]`. **라이브를 연다면 첫 확인 사항이다**(§8 Q6).
+- 데모의 제약(심볼 집합, 데이터 초기화, 미지원 기능)·한국 거주자의 선물 이용 가능 여부: 공식 근거를 읽지 못했다 `[unverified]`. **라이브를 연다면 첫 확인 사항이다**(§9 Q6).
 - 레포 안의 알려진 데모 한계: BTCUSDT는 MIN_NOTIONAL 50 > cap 10이라 제외됐다(`broker-and-ledger-contracts.md`).
 
 ### 2.5 이미 레포에 붙은 다른 브로커
