@@ -25,7 +25,11 @@ task-792 C1 freshness: each reading also carries ``observed_at``, the epoch
 time of the oldest contributing observation (oldest swept ticker trade
 timestamp / oldest Binance report bucket). The gate layer compares it with the
 condition's ``stale_after_seconds`` and a stale input resolves to ``hold`` —
-it is never trusted and never counted as an inferred miss either.
+it is never trusted and never counted as an inferred miss either. For the
+breadth leg the producer (hk 6019) drops alt tickers older than that same
+window — or undatable — before computing the fraction, so ``observed_at``
+dates only what was actually used; ``alts_excluded_stale`` reports the drop
+count and too few remaining alts makes the reading unavailable.
 
 The fetch/parse split is deliberate: ``parse_*`` are pure payload-to-reading
 functions shared with ``scripts/policy_table/adapters/crypto.py`` so the
@@ -59,7 +63,7 @@ LONG_SHORT_SOURCE: Final = "binance_global_account+binance_top_trader_position"
 class GateMetricReading:
     """One resolved (or unresolved) gate metric.
 
-    ``observed_at`` is the epoch-second timestamp of the newest underlying
+    ``observed_at`` is the epoch-second timestamp of the oldest contributing
     observation, or ``None`` when the upstream payload cannot be dated. A
     condition that declares ``stale_after_seconds`` cannot be proven fresh
     without it — freshness unproven is not trusted.
@@ -133,7 +137,9 @@ def parse_alt_breadth_reading(payload: dict[str, Any] | None) -> GateMetricReadi
 
     ``breadth.alts_beating_btc_pct`` is a 0..1 fraction converted once to
     percent (the policy threshold's unit); ``breadth.latest_trade_at`` dates
-    the observation for the stale check.
+    the observation for the stale check. The producer (hk 6019) already
+    excluded stale/undatable alt tickers, so ``latest_trade_at`` is the oldest
+    *contributing* ticker and ``alts_excluded_stale`` is informational only.
     """
 
     breadth = (payload or {}).get("breadth") if isinstance(payload, dict) else None

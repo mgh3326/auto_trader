@@ -49,6 +49,17 @@ _INDEX_TTL = timedelta(seconds=60)  # datalab responses carry max-age=60
 _ALTSEASON_TTL = timedelta(minutes=5)
 _HTTP_TIMEOUT = 10.0
 
+# hk 6019 — per-ticker freshness bound for 24h breadth. Mirrors the crypto
+# recovery gate's ``alt_breadth_24h`` ``stale_after_seconds`` in
+# config/trading_policy.yaml; a test pins the two equal so they cannot drift.
+_TICKER_STALE_AFTER_SECONDS = 1800
+# Breadth over a sliver of the KRW alt universe is not a breadth reading:
+# require at least this many contributing alts AND at least this fraction of
+# rate-bearing KRW alts still fresh, else the reading is unavailable and the
+# gate holds rather than scoring a number built on missing data.
+_MIN_CONTRIBUTING_ALTS = 30
+_MIN_CONTRIBUTING_ALT_SHARE = 0.5
+
 _indices_cache: dict[str, Any] | None = None
 _indices_cache_expires: datetime | None = None
 _altseason_cache: dict[tuple[bool, int], dict[str, Any]] = {}
@@ -242,7 +253,11 @@ async def _fetch_krw_breadth_24h(
     """24h alt-vs-BTC breadth from the official Open API ticker.
 
     breadth = fraction of KRW-quoted non-BTC markets whose 24h change exceeds
-    KRW-BTC's 24h change. ``None`` if the official data is unavailable.
+    KRW-BTC's 24h change, counted over tickers whose ``trade_timestamp`` is
+    within ``_TICKER_STALE_AFTER_SECONDS`` of now (hk 6019). KRW-BTC itself
+    must be fresh; stale or undatable alts leave the numerator and denominator
+    and are counted in ``alts_excluded_stale``. ``None`` when the official
+    data is unavailable or fewer than the contributing-alt floor remains.
     """
     try:
         markets = await _get_json(MARKET_ALL_URL)
@@ -263,48 +278,77 @@ async def _fetch_krw_breadth_24h(
         str(t["market"]).upper(): _to_float_or_none(t.get("signed_change_rate"))
         for t in ticker_rows
     }
+    ts_by_market = {
+        str(t["market"]).upper(): t.get("trade_timestamp") for t in ticker_rows
+    }
     btc_rate = rate_by_market.get("KRW-BTC")
     if btc_rate is None:
         return None
 
-    alt_rates = [
-        rate
-        for market, rate in rate_by_market.items()
-        if market != "KRW-BTC" and rate is not None
-    ]
-    if not alt_rates:
+    fresh_cutoff_ms = (
+        datetime.now(UTC).timestamp() - _TICKER_STALE_AFTER_SECONDS
+    ) * 1000
+
+    def _fresh_trade_ts_ms(market: str) -> float | None:
+        ts = ts_by_market.get(market)
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            return None
+        ts_ms = float(ts)
+        return ts_ms if ts_ms >= fresh_cutoff_ms else None
+
+    # KRW-BTC is the benchmark: without a provably fresh BTC trade the breadth
+    # reading is unavailable and the gate holds.
+    btc_ts_ms = _fresh_trade_ts_ms("KRW-BTC")
+    if btc_ts_ms is None:
         return None
 
-    beating = sum(1 for rate in alt_rates if rate > btc_rate)
-    # task-792 C1 freshness: breadth uses BTC and every alt with a rate.
-    # The oldest contributing ticker dates the combined observation. If any
-    # contributing ticker is undatable, the gate must hold.
-    contributing = [
-        t
-        for t in ticker_rows
-        if str(t.get("market") or "").upper() in rate_by_market
-        and rate_by_market[str(t["market"]).upper()] is not None
-    ]
-    trade_ts = [t.get("trade_timestamp") for t in contributing]
-    all_dated = bool(trade_ts) and all(
-        isinstance(ts, (int, float)) and not isinstance(ts, bool) for ts in trade_ts
-    )
+    # task-792 C1 freshness (hk 6019): only tickers provably fresh within the
+    # gate's stale window contribute to the breadth numerator/denominator.
+    # One illiquid market with an hours-old trade_timestamp can no longer date
+    # the whole observation — it is dropped and counted instead.
+    krw_set = {str(m).upper() for m in krw}
+    contributing: list[tuple[str, float, float]] = []
+    alts_excluded_stale = 0
+    eligible_alts = 0
+    for market, rate in rate_by_market.items():
+        if market == "KRW-BTC" or rate is None or market not in krw_set:
+            continue
+        eligible_alts += 1
+        ts_ms = _fresh_trade_ts_ms(market)
+        if ts_ms is None:
+            alts_excluded_stale += 1
+            continue
+        contributing.append((market, rate, ts_ms))
+
+    if (
+        len(contributing) < _MIN_CONTRIBUTING_ALTS
+        or len(contributing) < eligible_alts * _MIN_CONTRIBUTING_ALT_SHARE
+    ):
+        return None
+
+    beating = sum(1 for _, rate, _ in contributing if rate > btc_rate)
+    # ``latest_trade_at`` keeps its meaning — the oldest *contributing*
+    # ticker — so the C1 freshness rule is unchanged for what is actually used.
     result: dict[str, Any] = {
         "window": "24h",
         "method": "open_api_ticker_24h_derived",
-        "alts_total": len(alt_rates),
+        "alts_total": len(contributing),
         "alts_beating_btc": beating,
-        "alts_beating_btc_pct": round(beating / len(alt_rates), 4),
+        "alts_beating_btc_pct": round(beating / len(contributing), 4),
+        "alts_excluded_stale": alts_excluded_stale,
         "btc_change_24h": btc_rate,
-        "latest_trade_at": (
-            datetime.fromtimestamp(min(trade_ts) / 1000, tz=UTC).isoformat()
-            if all_dated
-            else None
-        ),
+        "latest_trade_at": datetime.fromtimestamp(
+            min(btc_ts_ms, *(ts for _, _, ts in contributing)) / 1000, tz=UTC
+        ).isoformat(),
     }
     if include_constituents:
+        contributing_markets = {market for market, _, _ in contributing}
         constituents = _build_altseason_constituents(
-            ticker_rows=ticker_rows,
+            ticker_rows=[
+                t
+                for t in ticker_rows
+                if str(t.get("market") or "").upper() in contributing_markets
+            ],
             btc_rate=btc_rate,
             limit=constituents_limit,
         )

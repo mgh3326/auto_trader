@@ -1712,9 +1712,14 @@ market_rules:
           operator: gt
           threshold: 50
           unit: percent
-          # Freshness bound on the oldest contributing Upbit ticker trade_timestamp across
-          # the swept KRW markets; older than this the input is stale and the
-          # coefficient decision is hold (never an inferred 0/2).
+          # Freshness bound on the oldest *contributing* Upbit ticker
+          # trade_timestamp. The breadth producer (hk 6019) already drops alt
+          # tickers whose trade_timestamp is older than this window — or
+          # undatable — from the numerator/denominator (counted in
+          # ``alts_excluded_stale``), requires a fresh KRW-BTC, and returns
+          # unavailable below a minimum contributing-alt floor. Older than
+          # this bound the input is stale and the coefficient decision is
+          # hold (never an inferred 0/2).
           stale_after_seconds: 1800
           semantics: share of KRW alts outperforming BTC over 24h
         - id: btc_long_short_ratio
