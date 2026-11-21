@@ -230,15 +230,25 @@ def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
     reason="writes the golden; opt-in only",
 )
 def test_regenerate_golden(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regenerate exactly what the byte-identity test compares: the hk 1040 and
+    # hk 3717 moves undone, and the h3 moved cases kept at their recorded
+    # pre-#1244 digests (the test requires those to differ, not to match).
+    previous = _golden() if GOLDEN_PATH.is_file() else {}
     golden: dict[str, Any] = {
         "generated_from": "main (pre-#1244 route code)",
         "encoding": "sha256 of json.dumps(response, ensure_ascii=False), key order kept",
     }
     for gates_enabled in (True, False):
         key = "gates_enabled" if gates_enabled else "gates_disabled"
-        golden[key] = _digests(
-            collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
-        )
+        responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
+        undone, _moved = _undo_1040(responses)
+        digests = _digests(_undo_3717(undone))
+        for profile, cases in H3_MOVED_CASES.items():
+            for case in cases:
+                kept = previous.get(key, {}).get(profile, {}).get(case)
+                if kept is not None:
+                    digests[profile][case] = kept
+        golden[key] = digests
     GOLDEN_PATH.write_text(
         json.dumps(golden, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
