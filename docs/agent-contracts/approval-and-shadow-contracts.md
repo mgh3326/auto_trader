@@ -370,6 +370,10 @@ Bar gaps block collection only along new signal paths and existing active or
 still-maturing episodes. Unused missing-universe members remain in `data_gaps`
 without blocking a commit; `blocking_data_gaps` records the required missing bars.
 
+### Upbit KRW shadow 규칙 id (hk 5852 T9a)
+
+`CANARY_RULES`에 `at5852.upbit_krw_trend_shadow`(§4.1 추세)와 `at5852.upbit_krw_pullback_shadow`(§4.2 눌림목)를 추가했다. 둘 다 `crypto` 전용이다. 이 id는 팔의 계열 표지일 뿐이며 metric·horizon 문구는 참고용이다. 구속력 있는 사전등록(4필드)은 sleeve 버전마다 운영자가 정한다. 4885 trend id(`trend.upbit_long_tsmom_v1`, 제안)와는 별개다. 팔 4개의 sleeve와 shadow 위임장 4개의 생성·확인 절차는 `docs/runbooks/upbit-krw-shadow-sleeves.md`이며 운영자가 미리보기 후 `--commit`으로 실행한다. 이 절차는 live 상태·live 위임장·주문·스케줄을 만들지 않는다. 테스트: `tests/services/strategy_sleeves/test_upbit_krw_shadow_rules.py`, `tests/scripts/test_upbit_krw_shadow_runbook.py`.
+
 ### Kiwoom 모의 제안 집행 (hk 4732/4754 / 3797 T-P5/T-P8)
 
 `order_proposals` 는 Kiwoom mock **place 제안만** 받는다: `('kiwoom_mock','equity_kr')`(KR, hk 4732)와
