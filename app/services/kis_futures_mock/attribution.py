@@ -97,7 +97,7 @@ def mint_correlation_id(
 
 def resolve_attribution(
     *,
-    contract_symbol: str,
+    symbol: str,
     side: str,
     price: Decimal,
     quantity: int,
