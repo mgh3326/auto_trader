@@ -39,6 +39,7 @@ async def test_fetch_ohlcv_uses_cache_for_day(monkeypatch):
         count=1,
         period="day",
         raw_fetcher=ANY,
+        end_date=None,
     )
 
 
