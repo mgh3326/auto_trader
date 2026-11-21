@@ -1,18 +1,18 @@
 {
   "manifest_format": "experiment-manifest/v1",
   "hypothesis_id": "HK-5750",
-  "version": 1,
+  "version": 2,
   "title": "국내주식 일일 계획 v0: 세션 등급 상위 후보 대 AT 지표만의 순위 상위 후보 비교",
-  "question": "같은 후보 풀에서 장전 세션의 닫힌 등급(가치·사업 건전성) 합성 상위 10개는 AT 지표만으로 줄 세운 상위 10개보다 계획 세션 시가부터 5번째 정규장 종가까지의 비용 차감 순수익률을 시장 내 세션 평균으로 높이는가?",
+  "question": "C(AT 지표만의 순위)가 full eligible 후보 집합 위에서 미리 고른 공통 풀 안에서, 장전 세션의 닫힌 등급(가치·사업 건전성) 합성 상위 10개가 C 상위 10개보다 계획 세션 시가부터 5번째 정규장 종가까지의 비용 차감 순수익률을 세션 평균으로 높이는가? (조건부 질문이며 전체 후보 발굴의 개선을 주장하지 않는다, 설계 §4.0)",
   "status": "draft",
   "markets": [
     "kr"
   ],
   "hashes": {
     "preregistration_text": "docs/design/5750-kr-daily-plan-v0.md",
-    "preregistration_sha256": "a3cc5dc48bc05e59191a675d1235dc721a45b4ed54ffd666d55fe47c8506ca34",
+    "preregistration_sha256": "2ffd6e66b7caa10df0bd35d0a4ba8d70daf9ac489c6c19ac709af2c6fd4ebaa7",
     "dataset_manifest": {
-      "pending": "봉인 전 후보 집합 정의(원천 프리셋·상한·합집합 규칙, candidate_set_sha256)와 데이터 출처, 달력 버전, 가격 결손·정지 의심 처리 규칙을 고정한다."
+      "pending": "봉인 전 후보 집합 정의(원천 프리셋·상한·합집합 규칙, candidate_set_sha256), 입력 번들 표준 직렬화(daily-plan-bundle/v1, 설계 §7.1)와 번들 보존 규칙, 데이터 출처, 달력 버전, 가격 결손·정지 의심·기업행위 조정 처리 규칙을 고정한다."
     },
     "evaluation_contract": "docs/design/5750-kr-daily-plan-v0.md §4.2-4.3",
     "code_sha": {
@@ -25,7 +25,7 @@
       "pending": "봉인 시 정책 round_trip_cost_bps.kr 의 버전과 해시를 기록한다."
     },
     "control_spec": {
-      "pending": "대조 순위 c_rank 의 지표 목록·부호·동일 가중 평균 규칙을 봉인 시 해시로 고정한다. 제안은 설계 §4.2 표. 이후 튜닝 없음."
+      "pending": "대조 순위 c_rank 의 지표 목록·부호·출처·단위, E_t(full eligible) 위 단일 계산(P_t 재정규화 없음), 지표별 점수식 score_i=(n_worse+(n_tied-1)/2)/(n_obs-1)과 지표 최소 관측 n_obs>=30, 유효 지표 3개 미만이면 c_rank 결측, 동일 가중 평균, 경계 동점 분할, c_rank 결측 후보는 C와 P_t 양쪽에서 제외하는 대칭 규칙을 봉인 시 해시로 고정한다(설계 §4.2). 이후 튜닝 없음."
     },
     "grade_spec": {
       "pending": "등급 축(value, quality)·세 단계 매핑(+1/0/-1)·1:1 합성과 경계 동점 처리(N=10 경계의 동점 구간 후보 전부에 남은 몫을 같은 가중으로 분할, 임의 순서 규칙 없음)를 봉인 시 해시로 고정한다."
@@ -34,8 +34,8 @@
   "features": [
     {
       "name": "후보 풀과 AT 지표 번들 (지지선 거리, RSI-14, 거래대금, PBR, 외국인 순매수 합)",
-      "available_at": "계획 세션 D 의 전일(D-1) 완결 일봉과 그 이전에 공개·관측된 값. 번들 생성은 D 08:30 KST 이전이고 입력마다 available_at 을 저장한다.",
-      "source": "invest_screener_snapshots, analyze_stock_batch(quick=True), market_valuation_snapshots, investor_flow_snapshots (DB-only, 외부 HTTP 0)"
+      "available_at": "계획 세션 D 의 전일(D-1) 완결 일봉과 그 이전에 관측된 값. 입력마다 event_at·first_observed_at·bundle_stored_at·bundle_closed_at 을 따로 저장하고 event_at<=asof 이면서 first_observed_at<=bundle_closed_at 인 값만 번들에 넣는다. 갱신 이력이 있는 행(updated_at>created_at)의 값은 observed_time_unproven 으로 unknown 이다. 번들은 D 08:30 KST 이전에 마감되는 불변 객체이며 bundle_sha256 으로 고정된다.",
+      "source": "invest_screener_snapshots, analyze_stock_batch(quick=True), market_valuation_snapshots, investor_flow_snapshots (DB-only, 외부 HTTP 0), 브로커 보유 스냅샷(장전 세션의 get_holdings 결과를 번들 입력으로 고정)"
     },
     {
       "name": "세션 등급 (value, quality 각 strong|neutral|weak), 논지, 무효 조건",
@@ -44,14 +44,19 @@
     },
     {
       "name": "대조 순위 c_rank 와 변경 플래그",
-      "available_at": "premarket 입력 번들 생성 시각 (세션 판단보다 앞)",
+      "available_at": "premarket 입력 번들 생성 시각 (세션 판단보다 앞). E_t(full eligible) 위에서 한 번 계산하고 P_t 로 재정규화하지 않는다.",
       "source": "AT 결정론 계산, 세션 입력 없음"
     }
   ],
   "labels": [
     {
       "name": "net_return_open_to_close_5",
-      "definition": "계획 세션 D 의 정규장 시가에서 D 포함 5번째 정규장 종가까지의 순수익률. 정책 round_trip_cost_bps.kr 을 양팔에 같게 차감한다. 두 팔이 같은 시가 진입을 가정하므로 체결 모델 편향은 상쇄된다. 보조로 행의 would_be_limit_price 기준 접촉 괄호(touch 낙관, through 보수, 미체결 0)를 낸다.",
+      "definition": "계획 세션 D 의 정규장 시가에서 D 포함 5번째 정규장 종가까지의 순수익률. 두 팔을 같은 시가 진입 가정에 놓는 순위 비교용 라벨이며 실제 주문 가능성이나 체결 편향 상쇄의 증거가 아니다. 정책 round_trip_cost_bps.kr 을 양팔에 같게 차감하므로 S-C 차이에서 상수는 상쇄된다. 후보 단위 결측은 닫힌 어휘(no_open_price, untradable_d, no_close_d4, corporate_action_unadjustable, delisted)로 평균에서 빼고 0 으로 채우지 않는다. 팔의 유효 후보가 5개 미만이면 세션은 UNVERIFIED 이다.",
+      "horizon_sessions": 5
+    },
+    {
+      "name": "aux_limit_fill_return_d_regular_session",
+      "definition": "보조(S 대 C 효과 주장이 아님). 지정가가 기록된 채택 행 하위집합만 대상이다. 계획 세션 D 정규장 하루만 보며 시가 <= 지정가이면 시가 체결, 아니면 저가 <= 지정가(touch) 또는 저가 < 지정가(through)일 때 지정가 체결, 그 밖은 unfilled 이다. missing_input / unfilled / filled(수익 정확히 0 포함)를 분리해 센다. 체결 후 수익은 체결가에서 D 포함 5번째 종가까지다.",
       "horizon_sessions": 5
     }
   ],
@@ -76,11 +81,11 @@
   "candidate_policies": [
     {
       "id": "S",
-      "description": "세션 합성 등급(value+quality, strong=+1, neutral=0, weak=-1) 상위 10(경계 동점은 동점 구간 전부에 남은 몫을 같은 가중으로 분할). 등급이 유효한 후보(오늘 판단했거나 이월 5세션 이내)와 규칙 문턱 통과 후보로 구성된 풀 P_t 에서 고른다."
+      "description": "세션 합성 등급(value+quality, strong=+1, neutral=0, weak=-1) 상위 10(경계 동점은 동점 구간 전부에 남은 몫을 같은 가중으로 분할). 등급이 유효한 후보(오늘 판단했거나 이월 5세션 이내)와 규칙 문턱 통과 후보로 구성된 풀 P_t(c_rank 유효 후보 포함 조건 추가) 에서 고른다. P_t 크기가 10 미만이면 그 세션은 점수를 매기지 않는다(UNVERIFIED)."
     },
     {
       "id": "C",
-      "description": "같은 풀 P_t 를 AT 지표만(세션 판단 없음)으로 줄 세운 c_rank 상위 10. 동일 가중 퍼센타일 평균."
+      "description": "E_t(full eligible, 세션이 보기 전 번들에 고정)에서 계산해 저장한 c_rank 를 P_t 안에서 내림차순으로 고른 상위 10. 동일 가중 퍼센타일 평균, 결측 지표는 평균에서 뺄 뿐 0/중립으로 채우지 않으며 유효 지표 3개 미만이면 c_rank 결측으로 C 와 P_t 에서 제외한다. 서버가 E_t 위의 C 상위 10(C_full_topN)과 P_t 위의 C 상위 10(C_pool_topN)의 일치 여부를 세션마다 기록한다."
     },
     {
       "id": "E",
@@ -92,14 +97,14 @@
       "pending": "봉인 시 정책 round_trip_cost_bps.kr 버전·해시를 기록한다. 실제 체결가에 이미 반영된 슬리피지를 다시 차감하지 않는다."
     },
     "fill_models": [
-      "open-entry: 두 팔 모두 계획 세션 시가 진입을 가정한다(팔 중립).",
-      "touch bracket (optimistic): 행의 would_be_limit_price 에 대해 저가 <= 지정가이면 체결, 보조 지표로만 사용.",
-      "through bracket (conservative): 저가 < 지정가이면 체결, 보조 지표로만 사용. 미체결은 수익 0으로 두고 별도 집계."
+      "open-entry: 두 팔 모두 계획 세션 시가 진입을 가정한다(순위 비교용 동일 조건이며 체결 가능성의 증거가 아님).",
+      "touch bracket (optimistic, 보조): 행의 would_be_limit_price 에 대해 D 정규장 하루 안에서 저가 <= 지정가이면 체결. 지정가가 기록된 하위집합의 보조 관찰이며 S 대 C 효과 주장이 아니다.",
+      "through bracket (conservative, 보조): 저가 < 지정가이면 체결. 미체결은 수익 평균에 넣지 않고 체결률로 보고하며 missing_input 과 분리한다."
     ]
   },
   "tuning_budget": {
     "max_configurations": 0,
-    "search": "없음. 지표 목록·부호·등급 매핑·N·N'·K 는 봉인 전 고정이고 이후 바꾸지 않는다.",
+    "search": "없음. 지표 목록·부호·점수식·지표 최소 관측 수·등급 매핑·N·N'·K 는 봉인 전 고정이고 이후 바꾸지 않는다.",
     "notes": "주간 검토가 가중·매핑 변경을 제안해도 적용은 새 manifest 버전(새 에포크)으로만 한다."
   },
   "seeds": [
@@ -109,8 +114,8 @@
     "primary": "매 성숙 계획 세션의 (S 상위 10 평균 순수익률) - (C 상위 10 평균 순수익률)의 세션 평균, 세션 단위 짝 서술 통계",
     "secondary": [
       "S∩C 겹침률, 팔별 평균·분위·승률, E 대비 차이",
-      "등급별 평균 수익률과 판단 집합 J_t 크기, 이월 비율",
-      "접촉 괄호 체결률과 지정가 기준 수익률"
+      "등급별 평균 수익률, 판단 집합 J_t 크기, 이월 비율, 팔별 선택 후보의 결측·이월 비율, c_rank 결측 비율",
+      "보조(별도 계산, 효과 주장 아님): 지정가 기록 하위집합의 접촉 괄호 체결률과 지정가 기준 수익, 하위집합 크기(S∩기록, C∩기록), missing_input/unfilled/filled 분리 집계"
     ],
     "family": [
       "HK-5750 단일 가설 (S 대 C). 서술적 판정이며 유의성 검정 없음."
@@ -120,8 +125,8 @@
   },
   "stopping_rules": [
     "20 계획 세션 + 마지막 평가 5세션 고정. 전 행의 평가 시한 이후 한 번 검토. 기간 연장 없음.",
-    "성숙 세션 15 미만이면 INSUFFICIENT_SAMPLE, 판정 불가 세션이 10% 초과면 UNVERIFIED. 어느 쪽이든 점수 단계는 unproven 으로 동결하고 새 에포크로만 재시도한다.",
-    "성숙 세션 15 이상에서 주 지표가 delta_min(0.0025) 미만이면 NOT_SUPPORTED 이며 점수 단계를 제거하고 세션은 논지·무효 조건·처분 사유만 쓴다.",
+    "판정 순서는 품질 -> 표본 -> 효과이다(설계 §4.3.4, #5762). (1) 품질: 판정 불가·무효 세션(풀 구성·가격·비용 불가, P_t < 10, C_full_topN 과 C_pool_topN 불일치, 한 팔 유효 후보 5 미만, session_void)이 계획 세션의 10% 를 넘으면 UNVERIFIED 로 끝난다. (2) 표본: 성숙 세션 15 미만이면 INSUFFICIENT_SAMPLE. (3) 효과: 성숙 세션 15 이상에서 주 지표가 delta_min(0.0025) 이상이면 SUPPORTED, 미만이면 NOT_SUPPORTED. 앞 단계에서 끝나면 뒤 단계를 읽지 않는다.",
+    "UNVERIFIED 와 INSUFFICIENT_SAMPLE 은 점수 단계를 unproven 으로 동결하고 새 에포크로만 재시도한다. NOT_SUPPORTED 이면 점수 단계를 제거하고 세션은 논지·무효 조건·처분 사유만 쓴다.",
     "주문·제안·감시·위임장 등록이 계획 경로에서 만들어지거나 ROB-501 위반이 생기면 v0를 중단한다. 규칙 행(위험 매도·물타기 금지)을 세션이 바꾼 것이 확인되면 수리 전 재개하지 않는다. 중간에는 비교 지표를 읽거나 규칙을 바꾸지 않는다."
   ],
   "cumulative_k": {

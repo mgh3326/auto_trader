@@ -370,7 +370,7 @@ S∩C 겹침률, 팔별 평균·분위·승률, E 대비, 판단 집합 `J_t` �
 - **3788 매수 동결은 유지한다.** 이 문서는 동결을 읽거나 풀지 않는다. v0의 모든 행은 `mode='plan_only'`다. 위임장 쪽의 `buy_freeze_state`는 hk 4900이 측정을 공급하기 전까지 모든 계좌를 막는 fail-closed 스텁이다(`app/services/mandate/buy_freeze.py:26-36`) — 계획은 이 스텁도 건드리지 않는다.
 - **위임장 자동 등록 없음.** 매수 행은 §1.4 어휘를 쓰지만 `mandate_plans`·승인 요청·묶음 카드를 만들지 않는다. 승격(후속)은 운영자가 행의 네 필드를 복사해 `scripts/mandate.py register-plan`으로 등록하는 절차다(`docs/design/3795-mandate.md` §3.2·§5.1).
 - **Go 실행기 없음.** 이 문서가 낳는 코드는 Python이다.
-- **기각 매수 행은 #2501의 형식을 따라 5624 모집단을 채운다.** 채택된 `new`/`add` 행마다(하루 `max_adopt` 개, 기본 10, Q2) 세션이 기존 `forecast_save`(필수 인자 `probability`·`review_date` 포함)를 `decision_bucket='deferred_no_action'`, `declined_limit_price`, `declined_quantity` 또는 `declined_notional`, 선택 `declined_quote_price`+`declined_quote_asof`·`declined_account_mode`와 함께 호출한다. 이 호출이 `decision_kind='declined'` 판단 행(BUY rung 0 + `limit` 참조가)을 쓰므로(`app/services/decision_evidence.py:169`, 5624 짝 모집단 `docs/design/5624-entry-ab-mock.md` §2) 계획 행은 그 판단·예측을 **가리키기만** 한다(행이 판단을 복제하지 않는다). 🔴 단, `forecast_save` 응답에는 `decision_id`가 없다: 응답은 `{success, action, data(예측 행), warnings}`뿐이고(`app/mcp_server/tooling/forecast_tools.py:154-161`) `_record_declined_evidence`는 `DecisionEvidenceService.record`가 돌려준 `decision_id`를 버린다(`app/mcp_server/tooling/forecast_tools.py:189-234`, `app/services/decision_evidence.py:246-277`). 판단 행은 `forecast_ids=(forecast_id,)`를 가지므로(`app/mcp_server/tooling/forecast_tools.py:179`) 계획 행은 응답의 `forecast_id`를 저장하고 `decision_id`는 `decision_evidence.forecast_ids`로 **해석**한다(T1이 해석 읽기를 포함하거나 `forecast_save` 응답에 `decision_id`를 더하는 작은 변경을 함께 한다, Q15). 🔴 주문이 아니다: 판단 행은 `decision_order_links`를 만들지 않고 retro는 계획 필드만 채우며 주문·체결로 세지 않는다(`docs/agent-contracts/market-data-and-screener-contracts.md` hk 5719 절). 기록 이전은 소급하지 않는다. KR만이므로 5624의 US 다리는 이 문서가 채우지 않는다.
+- **기각 매수 행은 #2501의 형식을 따라 5624 모집단을 채운다.** 채택된 `new`/`add` 행마다(하루 `max_adopt` 개, 기본 10, Q2) 세션이 기존 `forecast_save`(필수 인자 `probability`·`review_date` 포함)를 `decision_bucket='deferred_no_action'`, `declined_limit_price`, `declined_quantity` 또는 `declined_notional`, 선택 `declined_quote_price`+`declined_quote_asof`·`declined_account_mode`와 함께 호출한다. 이 호출이 `decision_kind='declined'` 판단 행(BUY rung 0 + `limit` 참조가)을 쓰므로(`app/services/decision_evidence.py:169`, 5624 짝 모집단 `docs/design/5624-entry-ab-mock.md` §2) 계획 행은 그 판단·예측을 **가리키기만** 한다(행이 판단을 복제하지 않는다). 🔴 단, `forecast_save` 응답에는 `decision_id`가 없다: 응답은 `{success, action, data(예측 행), warnings}`뿐이고(`app/mcp_server/tooling/forecast_tools.py:154-161`) `_record_declined_evidence`는 `DecisionEvidenceService.record`가 돌려준 `decision_id`를 버린다(`app/mcp_server/tooling/forecast_tools.py:189-234`, `app/services/decision_evidence.py:246-277`). 판단 행은 `forecast_ids=(forecast_id,)`를 가지므로(`app/mcp_server/tooling/forecast_tools.py:179`) 계획 행은 §8.1의 결정적 `forecast_id`(세션이 호출 전에 받음)를 저장하고 `decision_id`는 확정 읽기가 `decision_evidence.forecast_ids`로 **해석**한다(T1이 해석 읽기를 포함하거나 `forecast_save` 응답에 `decision_id`를 더하는 작은 변경을 함께 한다, Q15). 🔴 주문이 아니다: 판단 행은 `decision_order_links`를 만들지 않고 retro는 계획 필드만 채우며 주문·체결로 세지 않는다(`docs/agent-contracts/market-data-and-screener-contracts.md` hk 5719 절). 쓰기 순서·부분 실패·재시도·멱등은 §8.1이 정하고, 계획 경로가 제안·주문·감시·위임장을 만들 수 없다는 검증은 §8.2가 정한다. 기록 이전은 소급하지 않는다. KR만이므로 5624의 US 다리는 이 문서가 채우지 않는다.
 - **retro/v1·Factortrail이 계획 버전을 읽는 법(후속 T6)**: 호환 확장으로 읽기 전용 operation `retro_daily_plan`을 더한다(`contracts/retro/v1/openapi.yaml`, 기존 `retro_decisions`의 모양을 따른다 — `app/services/retro_v1/retro_decisions.py:1317`, 라우트 `app/routers/retro_v1.py:25,37`). 규칙: reader 자기 `REPEATABLE READ READ ONLY` 트랜잭션(8초), 모르는 값은 null+닫힌 사유(0으로 만들지 않음), 불투명 해시 ref, 계좌번호·원문 payload 비노출, 금액은 decimal 문자열, 호환 확장 → 소비자 커밋 → `consumers.lock` 핀 갱신의 순서(`docs/runbooks/retro-consumer-pin.md`, `contracts/retro/v1/consumers.lock`). 행의 `decision_id`는 `retro_decisions`의 `decision_ref`로 이어진다. 계획 읽기는 v0 시작의 선행 조건이 아니다.
 - **하드룰 점검**: 스케줄러 등록 없음(하드룰 6 — 일일 트리거는 v0에서 기존 라이브 슬롯의 세션이 MCP 도구를 호출, Dagu 등록은 별도 운영자 승인, Q6). 게이트 완화 없음(새 `DAILY_PLAN_ENABLED` 기본 false, 하드룰 4 정신). 레저 직접 쓰기 없음(하드룰 5, `execution_ledger_in_effect()` AND). 새 MCP 도구는 레인 allowlist 계약 테스트와 live 프롬프트 핀 테스트를 통과해야 한다(하드룰 17: `config/mcp_lane_allowlists/`, `tests/mcp_server/test_lane_allowlist_contract.py`, `tests/mcp_server/test_profile_tool_snapshot.py`). 새 테이블은 객체별 `at_app` GRANT(하드룰 18).
 
@@ -427,13 +427,13 @@ v0는 `mode='plan_only'`다. 이 불변식을 allowlist 하나가 아니라 세 
 | # | 티켓 | 내용 | 선행(blocking) |
 |---|---|---|---|
 | T0 | 정책 키 operator PR | `config/trading_policy.yaml`에 `daily_plan`(`no_add_floor_pct: -8`, `max_adopt`, `judged_top_n`, `carry_max_sessions`, 변경 플래그 띠) **그리고 스키마 변경**: 정책 문서 모델이 `extra="forbid"`(`app/schemas/trading_policy.py:2335-2336`)라 새 최상위 키는 스키마에 필드를 더해야 로드된다(`mechanical_loss_cut`이 그 선례, `app/schemas/trading_policy.py:2362`). 키를 더하면 정책 `content_hash`가 바뀌므로 정책을 인용하는 기록은 새 해시를 따른다 — operator PR로만 | 없음 |
-| T1 | 저장소 + MCP 쓰기·읽기 + 검증기 | 마이그레이션(네 테이블·append-only 트리거·닫힌 어휘 CHECK·`at_app` GRANT), 모델, 어휘 모듈, `app/services/daily_plan/` 저장소·검증기(형식·한도·정확한 decimal·`would_be` 크기 XOR·**규칙 행 서버 재계산 일치 검사**·§2·§3 어휘), MCP `daily_plan_write_version`/`daily_plan_get`/`daily_plan_list`(`DAILY_PLAN_ENABLED` 기본 false). 매수 행 형식 검증이 `decision_table_validate` 재사용 가능한지 스파이크(Q8) | T0 |
-| T2 | 장전 입력 번들 | 후보 집합 빌더(해시 고정)·보유 lot 로드·**읽기 전용 위험 평가기**(§3.1)·물타기 금지 판정·지표·`c_rank`·변경 플래그·`J_t`·이월·결측 사유. 번들 생성은 DB-only·브로커 호출 없음 | T1(어휘·타입). 소프트: hk 5752(스냅샷 일 빌드), hk 5622(후보 로그) |
+| T1 | 저장소 + MCP 쓰기·읽기 + 검증기 | 마이그레이션(여섯 테이블·append-only 트리거·닫힌 어휘 CHECK·`at_app` GRANT·`row_kind`/`account_ref` CHECK와 유일 인덱스(§1.6)·`at_daily_plan_writer` 역할(§8.2)), 모델, 어휘 모듈, `app/services/daily_plan/` 저장소·검증기(형식·한도·정확한 decimal·`would_be` 크기 XOR·**규칙 행 서버 재계산 일치 검사**·§2·§3 어휘), **채택 멱등 키·충돌·직렬화·준비/확정 상태와 확정 읽기(§8.1)**, **번들 표준 직렬화·해시 재계산 검증(§7.1)**, **부작용 0 세 겹 테스트(§8.2)**, MCP `daily_plan_write_version`/`daily_plan_confirm_links`/`daily_plan_get`/`daily_plan_list`(`DAILY_PLAN_ENABLED` 기본 false). 매수 행 형식 검증이 `decision_table_validate` 재사용 가능한지 스파이크(Q8) | T0 |
+| T2 | 장전 입력 번들 | 후보 집합 빌더(해시 고정)·**브로커 보유 스냅샷 입력과 계좌별 대조 분류(§1.6)**·**시각 4종·`known_zero`/`unavailable` 직렬화와 `SKIP_REASONS` 분류 일치 테스트(§7.1·§7.2)**·`E_t`·`c_rank` 사전등록 규칙(§4.2)·보유 lot 로드·**읽기 전용 위험 평가기**(§3.1)·물타기 금지 판정·지표·`c_rank`·변경 플래그·`J_t`·이월·결측 사유. 번들 생성은 DB-only·브로커 호출 없음 | T1(어휘·타입). 소프트: hk 5752(스냅샷 일 빌드), hk 5622(후보 로그) |
 | T3 | 체결·사건 재계산 | 영향 종목 버전 쓰기, fold 재사용(위임장에 묶인 종목은 `fold_plan_events`+`project` 결과를 읽음) | T1, T2 |
-| T4 | 운영자 레포 장전 프롬프트 | 세션이 번들을 읽고 등급·논지·무효 조건·처분 사유를 쓰고 채택 행마다 `forecast_save(declined_*)`를 호출. 🔴 `forecast_save`는 `probability`와 `review_date`가 필수 인자이므로(`app/mcp_server/tooling/forecast_tools.py:44-50`) 채택 행마다 세션이 확률 예측도 함께 써야 한다 — 이 예측은 점수 대조(§4)와 별개의 기록이다. **이 레포 밖**(`auto_trader-operator`) | T1, T2 |
+| T4 | 운영자 레포 장전 프롬프트 | 세션이 번들을 읽고 등급·논지·무효 조건·처분 사유를 쓰고 채택 행마다 준비 단계 응답의 `forecast_id`·`adoption_key`를 그대로 넘겨 `forecast_save(declined_*)`를 호출(재시도 전에 먼저 읽는다, §8.1). 🔴 `forecast_save`는 `probability`와 `review_date`가 필수 인자이므로(`app/mcp_server/tooling/forecast_tools.py:44-50`) 채택 행마다 세션이 확률 예측도 함께 써야 한다 — 이 예측은 점수 대조(§4)와 별개의 기록이다. **이 레포 밖**(`auto_trader-operator`) | T1, T2 |
 | T5 | 마감 채점 + 대조 비교 하네스 | `outcomes` 쓰기(마감 사실·성숙 라벨), `research/daily_plan_v0/`의 S·C·E 비교(연구 호스트에서 실행, pi 아님), `kind=close` 버전. 사람 없이 끝남(P3) | T1 |
 | T6 | retro 읽기 | `retro_daily_plan` operation + 계약 + 소비자 게이트 통과 | T1 (v0 시작에는 불필요) |
-| T7 | 봉인·등록 | manifest 봉인(dataset·code sha·policy·비용표·대조 지표 목록·시작·끝 날짜·달력), 레지스트리 `draft → sealed → running`, heartbeat epoch 등록, pi 부하 측정 위치 결정(S5) | T1~T5 |
+| T7 | 봉인·등록 | manifest 봉인(dataset·code sha·policy·비용표·대조 지표 목록·시작·끝 날짜·달력), 레지스트리 `draft → sealed → running`, heartbeat epoch 등록, pi 부하 측정 위치 결정(S5), 봉인 전 점검표(#5754 PBR 공급·#5755 최초 관측·#5756 채움률, §4.2 7), 첫 실운영 후보 call ID 한 건의 admit/non-admit·분모 읽기 확인 | T1~T5 |
 
 의존 간선: T0→T1→{T2, T5}; T2→T3; {T1,T2}→T4; T1→T6; {T1..T5}→T7. T6은 T7과 무관하다.
 
@@ -445,15 +445,18 @@ v0는 `mode='plan_only'`다. 이 불변식을 allowlist 하나가 아니라 세 
 4. **위험 판정 읽기 경로** — (a) 스위치를 켜 shadow를 수동 실행 vs (b) 같은 순수 함수의 읽기 전용 평가기(§3.1). 권고: (b). 스위치 기본 off 유지, backfill 쓰기 회피, lot별 skip 사유 확보.
 5. **−8% 상수의 위치** — 정책 YAML `daily_plan.no_add_floor_pct`(operator PR), KR만. 권고: 그대로. 미국·코인으로의 확대는 별도 증거 뒤.
 6. **일일 트리거** — 입력 번들 생성(premarket)과 마감 채점을 누가 부르는가: v0는 기존 라이브 슬롯의 세션이 MCP 도구를 부르고, Dagu 등록은 도구가 준비된 뒤 따로 승인. 권고: 그대로(스케줄 등록은 운영자 승인 사항).
-7. **행 키** — KIS·Toss가 같은 종목을 가지면 계좌별 행 둘. 권고: 계좌별(손절 판정·물타기 금지가 lot 단위).
+7. **행 키** — (`row_kind`, 시장, 정규화 심볼, 불투명 `account_ref`), mode는 속성, 후보는 `account_ref` 없는 별도 키 유형(§1.6). 같은 mode의 계좌가 여럿이라 `(symbol, account_mode)`는 쓰지 않는다(실측 중복 7). 권고: 그대로.
 8. **매수 행 형식 검증** — `decision_table_validate`를 합성 표로 재사용 vs 얇은 계획 검증기. 권고: T1 스파이크로 합성이 닫힌 문법에 맞는지 먼저 확인하고, 안 맞으면 호가 단위(`_validate_krx_grid`)·최소 주문 금액 검사만 공용 함수로 뽑아 쓴다. 이 결정은 T1 PR에서 한다.
 9. **세션 비용 문턱** — v0는 기록만(P4). 권고: 5세션 뒤 운영자가 문턱 필요 여부를 정한다.
 10. **후보 집합의 정의** — 후보 약 123개의 원천 합집합과 프리셋 목록을 확정해야 한다 `[모름]`. 권고: T2에서 프리셋별 상한과 합집합 규칙을 정해 `candidate_set_sha256`으로 고정하고 T7 봉인에 포함.
 11. **마감 채점 시각의 완결성** — 일봉이 늦게 들어오는 날을 "채점 불가"로 둘지 재시도할지. 권고: 다음 premarket 전까지 재시도 1회, 그래도 없으면 해당 행 outcomes=`unknown`(0 금지)이며 P3는 그 날을 실패로 센다.
-12. **계획 마감 시각** — v0는 08:30 KST로 둔다(H-admit의 결정 시각 선례). NXT 프리마켓 08:00 구간과 정규장 09:00 사이 어디가 맞는지는 라이브 슬롯 시각에 달렸다 `[모름]`. 권고: 08:30 유지, 슬롯 시각 확인 뒤 T7 봉인 때 확정.
+12. **계획 마감 시각** — (NXT 프리마켓은 08:00 개장이므로 08:30은 "NXT 개장 전"이 아니며 번들은 D−1 완결 일봉 기준이다, §7.1) v0는 08:30 KST로 둔다(H-admit의 결정 시각 선례). NXT 프리마켓 08:00 구간과 정규장 09:00 사이 어디가 맞는지는 라이브 슬롯 시각에 달렸다 `[모름]`. 권고: 08:30 유지, 슬롯 시각 확인 뒤 T7 봉인 때 확정.
 13. **결손일 허용 폭** — P1~P5를 20/20으로 적었다. 외부 입력 장애가 하루 있어도 v0 통과를 막을지. 권고: P1·P2·P6는 허용 0(자동 규칙 필드), P3·P5는 원인이 기록된 장애일 1일까지 허용하되 허용일은 보고서에 따로 표시하고 5.2 S4(5세션 연속 실패)는 그대로.
 14. **동점 처리** — N=10 경계의 동점을 분할 가중으로 처리(§4.1). 권고: 그대로(구성원을 임의 규칙으로 정하지 않기 위해). 대안은 `c_rank`로 깨는 것이나 S와 C가 섞인다.
 15. **판단 id 해석** — `forecast_save`가 `decision_id`를 돌려주지 않는다(§8). (a) 계획 행이 `forecast_id`만 저장하고 `decision_evidence.forecast_ids`로 해석 vs (b) `forecast_save` 응답에 `decision_id`를 더함. 권고: (a). `forecast_save`의 응답 계약을 건드리지 않고 읽기에서 해결한다.
+16. **`read_only` 계좌 포함** — 비라우팅 KIS 계좌·원장 lot 없는 Toss 계좌를 계획 행(분모)에 넣는가(§1.6). 권고: 포함(P1을 계좌 단위로 닫기 위해), 행동은 `hold`·`watch`·`rule_status`만.
+17. **계획 쓰기 DB 역할** — 전용 역할 `at_daily_plan_writer`+`SET LOCAL ROLE`로 plan 테이블 밖 쓰기를 DB에서 막는가(§8.2). 권고: 그대로. #789 역할 구조와 충돌하면 서비스 경계·부작용 0 회귀 테스트만으로 낮추되 그 사실을 PR에 적는다.
+18. **번들 보존 기간** — 에포크+마지막 평가 5세션+보고서 동결 뒤 최소 180일(§7.1). 권고: 이 값.
 
 ## 10. 근거 핀 (`auto_trader@bdd4c776b`)
 
@@ -465,6 +468,7 @@ v0는 `mode='plan_only'`다. 이 불변식을 allowlist 하나가 아니라 세 
 | 계획 모델 | `app/models/mandate.py:357,429,460` |
 | 계정 참조 | `app/services/mandate/account_ref.py:19` |
 | 매수 동결 스텁(hk 4900) | `app/services/mandate/buy_freeze.py:26-36` |
+| forecast 저장·재시도 동작 | `app/services/trade_journal/forecast_service.py:765`, `app/mcp_server/tooling/forecast_tools.py:53,125-139`, 판단 `uuid4()` `app/services/decision_evidence.py:259` |
 | 기계식 손절 순수 규칙 | `app/services/mechanical_loss_cut/rules.py:34-55,107-110,232,376-388,577-725` |
 | 평가 잡(쓰기 포함) | `app/services/mechanical_loss_cut/job.py:165-295,318-345` |
 | shadow 행 조회 | `app/services/mechanical_loss_cut/store.py:329` |
