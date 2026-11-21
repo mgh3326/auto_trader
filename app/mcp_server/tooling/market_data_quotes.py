@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from dataclasses import dataclass
 from statistics import median
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -136,6 +137,95 @@ def _kis_end_date(end_date: datetime.datetime | None) -> pd.Timestamp | None:
     if end_date is None:
         return None
     return pd.Timestamp(end_date.date())
+
+
+# ---------------------------------------------------------------------------
+# ``get_ohlcv(end_date=...)`` row cutoff (hk 6030)
+#
+# ``end_date`` is an inclusive upper bound for every market, period and data
+# path (canonical DB, Redis cache hit/miss, provider fetch).  A date-only value
+# ("YYYY-MM-DD") keeps that whole market-local calendar day: KST for crypto and
+# KR equity, America/New_York for US equity.  A timestamped value cuts at that
+# market-local instant.  Day/week/month bars are judged by their labelled date
+# and intraday bars by their timestamp, so a bar labelled on the cutoff day is
+# returned and any bar labelled after it never is.
+# ---------------------------------------------------------------------------
+
+_OHLCV_MARKET_TZ: dict[str, ZoneInfo] = {
+    "crypto": ZoneInfo("Asia/Seoul"),
+    "equity_kr": ZoneInfo("Asia/Seoul"),
+    "equity_us": ZoneInfo("America/New_York"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _EndDateCutoff:
+    date_only: bool
+    local_date: datetime.date
+    local_datetime: datetime.datetime
+
+
+def _end_date_cutoff(
+    end_date: datetime.datetime | None,
+    *,
+    date_only: bool,
+    market_type: str,
+) -> _EndDateCutoff | None:
+    if end_date is None:
+        return None
+    tz = _OHLCV_MARKET_TZ.get(market_type)
+    local = (
+        end_date.astimezone(tz).replace(tzinfo=None)
+        if tz is not None and end_date.tzinfo is not None
+        else end_date
+    )
+    if date_only:
+        local_date = local.date()
+        return _EndDateCutoff(
+            date_only=True,
+            local_date=local_date,
+            local_datetime=datetime.datetime.combine(
+                local_date, datetime.time(23, 59, 59, 999999)
+            ),
+        )
+    return _EndDateCutoff(
+        date_only=False,
+        local_date=local.date(),
+        local_datetime=local,
+    )
+
+
+def _apply_end_date_cutoff(
+    df: pd.DataFrame,
+    cutoff: _EndDateCutoff | None,
+    *,
+    market_type: str,
+    count: int,
+) -> pd.DataFrame:
+    """Keep only rows at or before ``cutoff``, filling ``count`` backwards.
+
+    Applied before indicator enrichment so every indicator is computed from the
+    same bars the caller can see.
+    """
+    if cutoff is None or df.empty:
+        return df
+    tz = _OHLCV_MARKET_TZ.get(market_type)
+    frame = df
+    if "datetime" in frame.columns:
+        values = pd.to_datetime(frame["datetime"], errors="coerce")
+        if isinstance(values.dtype, pd.DatetimeTZDtype) and tz is not None:
+            values = values.dt.tz_convert(tz).dt.tz_localize(None)
+        if cutoff.date_only:
+            mask = values.dt.date <= cutoff.local_date
+        else:
+            mask = values <= pd.Timestamp(cutoff.local_datetime)
+        frame = frame.loc[mask]
+    elif "date" in frame.columns:
+        values = pd.to_datetime(frame["date"], errors="coerce")
+        if isinstance(values.dtype, pd.DatetimeTZDtype) and tz is not None:
+            values = values.dt.tz_convert(tz).dt.tz_localize(None)
+        frame = frame.loc[values.dt.date <= cutoff.local_date]
+    return frame.tail(count).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1279,12 +1369,24 @@ async def _fetch_ohlcv_crypto(
     end_date: datetime.datetime | None,
     *,
     include_indicators: bool,
+    cutoff: _EndDateCutoff | None = None,
+    end_date_is_date_only: bool = False,
 ) -> dict[str, Any]:
     """Fetch crypto OHLCV from Upbit."""
     capped_count = min(count, 200)
+    provider_end_date = end_date
+    if end_date is not None and end_date_is_date_only:
+        # A date-only request covers the whole KST day.  Upbit's ``to`` cursor
+        # is a candle timestamp, so midnight would exclude the cutoff day's
+        # later buckets; end-of-day makes the day itself fetchable and the row
+        # cutoff below keeps the inclusive boundary.
+        provider_end_date = datetime.datetime.combine(
+            end_date.date(), datetime.time(23, 59, 59)
+        )
     df = await upbit_service.fetch_ohlcv(
-        market=symbol, days=capped_count, period=period, end_date=end_date
+        market=symbol, days=capped_count, period=period, end_date=provider_end_date
     )
+    df = _apply_end_date_cutoff(df, cutoff, market_type="crypto", count=capped_count)
 
     if df.empty:
         payload = {
@@ -1343,6 +1445,7 @@ async def _fetch_ohlcv_equity_kr(
     end_date: datetime.datetime | None,
     *,
     include_indicators: bool = False,
+    cutoff: _EndDateCutoff | None = None,
 ) -> dict[str, Any]:
     """Fetch Korean equity OHLCV from KIS."""
     capped_count = min(count, 200)
@@ -1383,6 +1486,9 @@ async def _fetch_ohlcv_equity_kr(
                 count=capped_count,
                 end_date=end_date,
             )
+            df = _apply_end_date_cutoff(
+                df, cutoff, market_type="equity_kr", count=capped_count
+            )
             return _build_ohlcv_payload(
                 symbol=symbol,
                 instrument_type="equity_kr",
@@ -1415,6 +1521,7 @@ async def _fetch_ohlcv_equity_kr(
             end_date=_kis_end_date(end_date),
         )
 
+    df = _apply_end_date_cutoff(df, cutoff, market_type="equity_kr", count=capped_count)
     canonical_daily = await _canonical_daily_for(
         symbol, "equity_kr", period, end_date, include_indicators=include_indicators
     )
@@ -1438,6 +1545,7 @@ async def _fetch_ohlcv_equity_us(
     *,
     include_indicators: bool = False,
     end_date_is_date_only: bool = False,
+    cutoff: _EndDateCutoff | None = None,
 ) -> dict[str, Any]:
     """Fetch US equity OHLCV - intraday from KIS, daily from Yahoo Finance."""
     # Intraday periods use KIS via DB-first reader
@@ -1449,6 +1557,9 @@ async def _fetch_ohlcv_equity_us(
             count=capped_count,
             end_date=end_date,
             end_date_is_date_only=end_date_is_date_only,
+        )
+        df = _apply_end_date_cutoff(
+            df, cutoff, market_type="equity_us", count=capped_count
         )
         return _build_ohlcv_payload(
             symbol=symbol,
@@ -1476,6 +1587,7 @@ async def _fetch_ohlcv_equity_us(
             end_date=end_date,
         )
         source = "toss"
+    df = _apply_end_date_cutoff(df, cutoff, market_type="equity_us", count=capped_count)
     canonical_daily = await _canonical_daily_for(
         symbol, "equity_us", period, end_date, include_indicators=include_indicators
     )
@@ -1771,13 +1883,12 @@ async def _get_ohlcv_impl(
     end_date_is_date_only = False
     if end_date:
         try:
-            is_date_only = len(end_date) == 10  # "YYYY-MM-DD"
+            end_date_is_date_only = len(end_date) == 10  # "YYYY-MM-DD"
             if (
                 market_type == "equity_us"
                 and period in US_INTRADAY_OHLCV_PERIODS
-                and is_date_only
+                and end_date_is_date_only
             ):
-                end_date_is_date_only = True
                 parsed_end_date = datetime.datetime.combine(
                     datetime.date.fromisoformat(end_date),
                     datetime.time(20, 0),  # 20:00 ET = post-market close
@@ -1788,6 +1899,12 @@ async def _get_ohlcv_impl(
             raise ValueError(
                 "end_date must be ISO format (e.g., '2024-01-15')"
             ) from exc
+
+    cutoff = _end_date_cutoff(
+        parsed_end_date,
+        date_only=end_date_is_date_only,
+        market_type=market_type,
+    )
 
     # Period-aware source mapping
     if market_type == "equity_us" and period in US_INTRADAY_OHLCV_PERIODS:
@@ -1803,6 +1920,8 @@ async def _get_ohlcv_impl(
                 period,
                 parsed_end_date,
                 include_indicators=include_indicators,
+                cutoff=cutoff,
+                end_date_is_date_only=end_date_is_date_only,
             )
         if market_type == "equity_kr":
             return await _fetch_ohlcv_equity_kr(
@@ -1811,6 +1930,7 @@ async def _get_ohlcv_impl(
                 period,
                 parsed_end_date,
                 include_indicators=include_indicators,
+                cutoff=cutoff,
             )
         return await _fetch_ohlcv_equity_us(
             symbol,
@@ -1819,6 +1939,7 @@ async def _get_ohlcv_impl(
             parsed_end_date,
             include_indicators=include_indicators,
             end_date_is_date_only=end_date_is_date_only,
+            cutoff=cutoff,
         )
     except Exception as exc:
         if str(exc).startswith("Crypto minute OHLCV response missing columns:"):
@@ -1979,7 +2100,10 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_ohlcv",
         description=(
             "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
-            "plus 1m/5m/15m/30m for KR/US equity and crypto, 4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
+            "plus 1m/5m/15m/30m for KR/US equity and crypto, 4h for crypto, 1h for KR/US equity/crypto, "
+            "and date-based pagination. end_date is an inclusive cutoff: a date (YYYY-MM-DD) covers that "
+            "whole market-local day (KST for crypto/KR, America/New_York for US), a timestamp cuts at that "
+            "instant; count fills backwards from the cutoff and no row after it is returned."
         ),
     )
     async def get_ohlcv(

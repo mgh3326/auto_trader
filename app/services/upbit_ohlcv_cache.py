@@ -147,7 +147,16 @@ async def get_closed_candles(
         Awaitable[pd.DataFrame],
     ]
     | None = None,
+    *,
+    end_date: datetime | None = None,
 ) -> pd.DataFrame | None:
+    """Read closed candles, optionally ending at an inclusive ``end_date``.
+
+    ``end_date`` is a read upper bound, not a backfill target: the returned
+    window is the ``count`` closed buckets ending at (and including) that
+    KST calendar date, and rows after it are never returned.  Without it the
+    window ends at the latest closed bucket (unchanged behaviour).
+    """
     normalized_period = _normalize_period_local(period)
     if not settings.upbit_ohlcv_cache_enabled:
         return None
@@ -170,9 +179,12 @@ async def get_closed_candles(
             normalized_market, normalized_period
         )
         if normalized_period == "day":
-            target_closed_date = get_target_closed_date_kst()
+            latest_closed_date = get_target_closed_date_kst()
         else:
-            target_closed_date = get_last_closed_bucket_kst(normalized_period)
+            latest_closed_date = get_last_closed_bucket_kst(normalized_period)
+        target_closed_date = latest_closed_date
+        if end_date is not None and end_date.date() < target_closed_date:
+            target_closed_date = end_date.date()
 
         return await get_closed_candles_flow(
             redis_client=redis_client,
@@ -195,6 +207,8 @@ async def get_closed_candles(
             release_lock_fn=_release_lock,
             sleep_fn=asyncio.sleep,
             log_prefix="upbit_ohlcv_cache",
+            meta_target_date=latest_closed_date,
+            allow_backfill=target_closed_date >= latest_closed_date,
         )
     except Exception as exc:
         global _FALLBACK_COUNT
