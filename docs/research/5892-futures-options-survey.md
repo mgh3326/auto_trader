@@ -223,7 +223,7 @@ NH PLUG의 레포 계약은 지정가·KRX·비SOR 모의 **주식** 주문에 �
 
 | 책임 | 위치 | 이유 |
 |---|---|---|
-| 체결통보 WebSocket 수집(`H0IFCNI0`, `HDFFF2C0`, Binance `listenKey`) | **venueport** | fillwire가 이미 KIS 체결·Upbit 호가를 기록하는 곳이다. 원장 쓰기는 기존 HTTP ingest(`/trading/api/execution-ledger/fills/ingest`, `source=websocket` 강제)를 그대로 쓴다. |
+| 체결통보 WebSocket 수집(`H0IFCNI0`, `HDFFF2C0`, Binance `listenKey`) | **venueport** | fillwire가 이미 KIS 체결·Upbit 호가를 기록하는 곳이다. 수집한 프레임을 auto_trader로 넘기는 경로는 **T2가 원장을 고른 뒤에 정한다**. 기존 ingest 라우트(`/trading/api/execution-ledger/fills/ingest`)는 `ExecutionLedgerRepository`로 `execution_ledger`에만 쓰고 그 테이블은 선물을 담지 못하므로(§6.4), 분리 원장(Q5)을 고르면 그대로는 못 쓴다. 이 경우 별도 ingest 라우트와 새 원장 writer 서비스가 필요하다(같은 토큰 인증·멱등키·항목별 savepoint·`source` 강제 규칙을 복사). `execution_ledger`를 확장하는 쪽을 고르면 기존 라우트를 쓰되 broker·instrument_type·currency CHECK 확장(하드룰 16 예외 결정)이 선행한다. |
 | 시세·호가 읽기(야간 포함) | **venueport** | 모의에서는 호가 WS가 실전 키만 지원하므로 키 분리·소유자가 먼저 정해져야 한다. |
 | 주문 전송·한도·kill·위임장·귀속·원장 | **auto_trader (authority core)** | 5438이 Upbit에서 정한 형태: 게이트웨이가 위임장·kill·상한을 검사하고 forwarder가 주문 서비스를 호출한다. 새 베뉴는 `*_forwarder` 하나씩 추가한다. |
 | 타이밍·지정가 추격 | 1단계는 없음, 이후 **venueport** 실행기 | 5438 D11(추격은 1단계에서 제외)과 같은 이유. |
@@ -252,7 +252,7 @@ NH PLUG의 레포 계약은 지정가·KRX·비SOR 모의 **주식** 주문에 �
 | T1 | KIS 선물 **읽기 어댑터** (설계 포함, 주문 없음) | 계좌 상품코드 `03` 지원, 잔고·예수금·주문가능·종목마스터 읽기, 읽기 전용 view로 주문 TR 도달 불가(AST 테스트, data_plane `broker_adapters.py` 패턴) | 모의 계좌로 읽기 1회 라운드트립(운영자 수동), 주문 TR 경로 부재 테스트 | 새 env 게이트(읽기용)만 |
 | T2 | 파생 상품·계좌 모델 설계 문서 | 승수·틱·결제월·일일정산·증거금, 거래일 정의(야간), 원장 분리안 | Q3·Q4·Q5의 운영자 결정이 문서에 기록된 뒤 승인 | **운영자 결정 §6.8 #3~#6** |
 | T3 | KIS 선물 **모의 주문 경로** (주간, 지정가, 1계약) | `VTTO1101U`/`VTTO1103U`, 귀속 사슬, 송신 전 예약, 신규 원장·서비스, 기본 off 이중 게이트, 스케줄 없음 | 모의 주문 1건 왕복(운영자 수동 스모크), uncertain은 재전송하지 않음, 가드 우회 없음 | T2의 결정, 하드룰 4 |
-| T4 | 체결통보 수집 (`H0IFCNI0`) | venueport 읽기 하위 명령 → 기존 ingest 라우트. 선물용 원장 투입 방식은 T2 결정에 따름 | 모의 체결이 ingest에 `unchanged` 멱등으로 들어감 | 선물 체결을 어느 원장에 둘지 |
+| T4 | 체결통보 수집 (`H0IFCNI0`) | venueport 읽기 하위 명령 + T2가 고른 원장의 ingest 경로. 분리 원장이면 **새 ingest 라우트·writer 서비스·토큰 미들웨어 항목**을 이 티켓에 포함(기존 라우트는 `execution_ledger` 전용이라 그대로 못 씀), `execution_ledger` 확장이면 기존 라우트 + CHECK 마이그레이션(T2의 결정 뒤) | 모의 체결이 **선택된 원장**에 같은 payload 재전송 시 `unchanged` 멱등으로 들어감(기존 `(broker, account_mode, venue, broker_order_id, fill_seq)` 키 규칙 유지) | T2의 원장 결정(§6.8 #5) |
 | T5 | 선물 **대사**(reconcile) | `TTTO5201R`/`VTTO5201R` 기반 terminal-only → 이후 full, 기존 대사 게이트 모델 재사용 | terminal-only 먼저, 체결 부킹은 별도 게이트 | 하드룰 4 |
 | T6 | 해외선물 읽기 + shadow | `OTFM*` 읽기 TR, 유료 시세 신청 여부 결정 후 호가 | 값이 없으면 null+사유(0 금지) | 시세 비용 Q9 |
 | T7 | Binance 라이브 사전 점검(문서만) | 한국 거주자 이용 가능, 호스트 allowlist 변경안, 라이브 전용 상수·kill | Q6의 결정이 hk doc에 있어야 구현 티켓 생성 | **하드룰 4** |
@@ -267,7 +267,7 @@ NH PLUG의 레포 계약은 지정가·KRX·비SOR 모의 **주식** 주문에 �
 | Q2 | 국내·해외 파생 계좌 개설과 사전교육(1시간)·모의거래(3시간) 이수는 누가 언제? | 운영자 본인. 이수 전에는 T1(읽기)·모의 계좌 신청만 진행. 현재 요건·예탁금은 `[unverified]` 항목이 있으니 증권사 최신 공지를 먼저 확인. |
 | Q3 | 선물 전용 상한 상수는? (최대 계약 수, 1계약 명목 상한, 동시 포지션, 일일 손실 한도) | 금액은 운영자가 정한다. 시작은 **최소 단위 1계약·동시 1포지션**으로 두고, 값은 T2 문서에서 확정. 기존 상한은 건드리지 않는다. |
 | Q4 | 손실매도 가드의 선물 의미 | **선물 전용 방향 인식 가드를 새로 만들고** 기존 가드는 불변. 신규 진입(매도 숏)은 가드 대상이 아니고, 청산 가격이 진입가 기준 미달이면 사람 카드로 보낸다. 값은 운영자. |
-| Q5 | 원장 | **분리 원장**(베뉴별 신규 테이블)으로 시작. `execution_ledger` 확장은 선물이 모의에서 증명된 뒤 별도 결정(하드룰 16 예외 형식). |
+| Q5 | 원장 | **분리 원장**(베뉴별 신규 테이블)으로 시작. 이 경우 체결 ingest도 기존 `execution_ledger` 전용 라우트를 못 쓰므로 별도 ingest 경로가 필요하다(T4). `execution_ledger` 확장은 선물이 모의에서 증명된 뒤 별도 결정(하드룰 16 예외 형식). |
 | Q6 | Binance 라이브 | **지금은 열지 않는다.** 한국 거주자 이용 가능 여부와 데모 대 라이브 차이(공식 근거)를 먼저 확인하고, 호스트 allowlist 확장은 별도 결정으로. |
 | Q7 | 야간 세션 | **1단계 제외.** 모의 야간이 없고(요약 기반) 거래일 정의가 날짜를 넘긴다. |
 | Q8 | 옵션 | **선물만 먼저.** 옵션 매도는 무한 손실이며 매도 자격에 경험 요건이 있다. 옵션 매수는 이후 단계. |
