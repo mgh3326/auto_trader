@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import zipfile
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -119,6 +120,12 @@ class FuturesRead:
             isinstance(v, str) and v for v in (symbol, side, price, order_type)
         ) or side not in {"01", "02"}:
             raise ValueError("주문가능 조회 입력이 올바르지 않습니다")
+        try:
+            decimal_price = Decimal(price)
+        except InvalidOperation:
+            raise ValueError("주문가능 조회 가격이 올바르지 않습니다") from None
+        if not decimal_price.is_finite() or decimal_price <= 0:
+            raise ValueError("주문가능 조회 가격이 올바르지 않습니다")
         params = _account(account) | {
             "PDNO": symbol,
             "SLL_BUY_DVSN_CD": side,

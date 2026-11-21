@@ -95,13 +95,15 @@ def main() -> int:
     parser.add_argument(
         "--side", choices=("01", "02"), default="02", help="01 매도, 02 매수"
     )
-    parser.add_argument("--price", default="1", help="주문가능 조회 가격")
+    parser.add_argument("--price", help="주문가능 조회 가격 (--symbol 지정 시 필수)")
     parser.add_argument("--order-type", default="01", help="KIS 주문구분 코드")
     args = parser.parse_args()
+    if args.symbol and not args.price:
+        parser.error("--symbol 지정 시 --price가 필요합니다")
     account = os.environ.get("KIS_FUTURES_MOCK_ACCOUNT_NO", "")
     try:
         result = asyncio.run(
-            preview(account, args.symbol, args.side, args.price, args.order_type)
+            preview(account, args.symbol, args.side, args.price or "", args.order_type)
         )
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"오류": type(exc).__name__}, ensure_ascii=False))

@@ -220,3 +220,55 @@ def test_preview_masks_account_and_reports_unavailable(monkeypatch):
     assert "12345678" not in str(result)
     assert result["잔고"]["cash_mgna"]["value"] == "10.20"
     assert result["예수금"] == {"value": None, "reason": "RuntimeError"}
+
+
+def test_live_trs_and_request_fields(monkeypatch):
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    parent = Parent(
+        [({"rt_cd": "0", "output": {}}, {}), ({"rt_cd": "0", "output": {}}, {})]
+    )
+    parent._is_mock_client = False
+    reader = backend.FuturesRead(parent)
+    run(reader.deposit("12345678"))
+    run(reader.orderable("12345678", "101W09", "01", "250.125", "01"))
+    calls = [call for call in parent.calls if isinstance(call, tuple)]
+    assert [call[2]["headers"]["tr_id"] for call in calls] == ["CTRP6550R", "TTTO5105R"]
+    assert calls[1][2]["params"]["PDNO"] == "101W09"
+    assert calls[1][2]["params"]["SLL_BUY_DVSN_CD"] == "01"
+
+
+def test_master_gate_off_before_network(monkeypatch):
+    monkeypatch.delenv("KIS_FUTURES_READ_ENABLED", raising=False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("network client created")
+
+    monkeypatch.setattr(backend.httpx, "AsyncClient", forbidden)
+    with pytest.raises(RuntimeError):
+        run(backend.FuturesRead(Parent([])).master())
+
+
+def test_real_client_delegates_only_to_futures_reader():
+    tree = ast.parse((ROOT / "app/services/brokers/kis/client.py").read_text())
+    cls = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "KISClient"
+    )
+    names = {
+        node.name: node
+        for node in cls.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name.startswith("futures_")
+    }
+    assert set(names) == view.ALLOWED_METHODS - {"close"}
+    for method in names.values():
+        calls = [n for n in ast.walk(method) if isinstance(n, ast.Call)]
+        assert len(calls) == 2
+        assert any(
+            isinstance(n.func, ast.Name) and n.func.id == "FuturesRead" for n in calls
+        )
+        assert any(
+            isinstance(n.func, ast.Attribute)
+            and n.func.attr in {"balance", "deposit", "orderable", "master"}
+            for n in calls
+        )
