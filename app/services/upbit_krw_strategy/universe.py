@@ -33,12 +33,19 @@ REASON_INACTIVE = "inactive"
 REASON_NOT_KRW = "not_krw_market"
 REASON_NO_MARKET_DATA = "no_market_data"
 REASON_CAUTION = "market_warning_caution"
+REASON_WARNING_UNKNOWN = "market_warning_unknown"
 REASON_INSUFFICIENT_HISTORY = "insufficient_history"
 REASON_LAST_CLOSE_MISSING = "last_close_missing"
 REASON_PRICE_BELOW_MIN = "price_below_min"
 REASON_LIQUIDITY_UNKNOWN = "liquidity_unknown"
 REASON_LIQUIDITY_BELOW_MIN = "liquidity_below_min"
 _EXCLUDED_PREFIX = "excluded_"
+
+#: Closed ``market_warning`` vocabulary (Upbit ``market/all`` ``NONE``/``CAUTION``).
+#: Only ``NONE`` may trade; anything outside the vocabulary (empty, null, a new
+#: upstream value) is unknown and fails closed instead of passing through.
+WARNING_NONE = "NONE"
+WARNING_CAUTION = "CAUTION"
 
 
 def last_closed_day(asof: date) -> date:
@@ -94,6 +101,14 @@ def _median(values: list[Decimal]) -> Decimal:
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
+def _normalised_warning(value: object) -> str | None:
+    """Upper-cased warning text, or ``None`` for null / non-text / blank."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().upper()
+    return text or None
+
+
 def judge_market(item: MarketInput, *, asof: date) -> Eligibility:
     """U1-U5 for one market at ``asof``. Unknown inputs exclude, never pass."""
     last_day = last_closed_day(asof)
@@ -119,8 +134,11 @@ def judge_market(item: MarketInput, *, asof: date) -> Eligibility:
     excluded = exclusion_reason(base)  # U2
     if excluded is not None:
         return out(_EXCLUDED_PREFIX + excluded)
-    if item.market_warning.strip().upper() == "CAUTION":  # U3
+    warning = _normalised_warning(item.market_warning)  # U3
+    if warning == WARNING_CAUTION:
         return out(REASON_CAUTION)
+    if warning != WARNING_NONE:
+        return out(REASON_WARNING_UNKNOWN)
     if len(by_day) < MIN_CLOSED_DAILY_BARS:  # U3: reliable history length
         return out(REASON_INSUFFICIENT_HISTORY)
     if last_close is None:  # U4
@@ -159,6 +177,18 @@ def u0_sha256(u0: Iterable[str]) -> str:
     return sha256_hex(canonical_json(sorted(set(u0))))
 
 
+def u0_ordered_sha256(u0: Iterable[str]) -> str:
+    """Seal-day liquidity order of U0 (rank 1 first). Duplicates are a defect.
+
+    ``u0_sha256`` is membership only; this hash also pins the order U0 was cut
+    in, so two seals with the same members but a different ranking differ.
+    """
+    markets = list(u0)
+    if len(markets) != len(set(markets)):
+        raise ValueError("duplicate market in ordered U0")
+    return sha256_hex(canonical_json(markets))
+
+
 def daily_eligibility(
     u0: Iterable[str], inputs: Mapping[str, MarketInput], *, asof: date
 ) -> dict[str, Eligibility]:
@@ -175,9 +205,24 @@ def daily_eligibility(
     return result
 
 
+def liquidity_ranks(eligibility: Mapping[str, Eligibility]) -> dict[str, int]:
+    """1-based selection rank of every eligible market (same order as slot filling)."""
+    return {
+        e.market: rank
+        for rank, e in enumerate(liquidity_order(eligibility.values()), start=1)
+    }
+
+
 def candidate_set_payload(
     eligibility: Mapping[str, Eligibility], *, asof: date, u0_hash: str
 ) -> dict[str, object]:
+    """Hashed decision input: everything entry selection reads, nothing less.
+
+    Selection orders by the 30-day turnover *sum* with the market code as the
+    tie-break, so the sum, the resulting rank and the tie-break key are sealed
+    next to the median and last close. Ineligible markets carry ``rank: null``.
+    """
+    ranks = liquidity_ranks(eligibility)
     return {
         "asof": asof.isoformat(),
         "rules_version": RULES_VERSION,
@@ -187,6 +232,9 @@ def candidate_set_payload(
                 "eligible": e.eligible,
                 "reason_code": e.reason_code,
                 "turnover30_median_krw": decimal_text(e.turnover30_median_krw),
+                "turnover30_sum_krw": decimal_text(e.turnover30_sum_krw),
+                "liquidity_rank": ranks.get(market),
+                "tie_break_key": market,
                 "last_close_krw": decimal_text(e.last_close_krw),
             }
             for market, e in sorted(eligibility.items())
