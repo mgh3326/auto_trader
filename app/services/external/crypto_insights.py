@@ -253,6 +253,34 @@ FUNDING_SETTLEMENT_PROVIDER = "binance_settlement"
 FUNDING_PRINT_COUNT = 3
 _KIMCHI_QUANTUM = Decimal("0.0001")
 
+# --- Gate-input timing contract (hk 5932, dots review B2) -------------------------
+# Every gate-input row carries raw_payload["timing"] with three separate times:
+#   event_at           economic time the value describes (funding: settlement time;
+#                      kimchi: the latest input time, never later than receipt)
+#   source_at          time the SOURCE says it produced the value, or None when the
+#                      source gives none (never filled in from our own clock)
+#   first_available_at when WE first received it; always the wall clock, never the
+#                      injectable ``now``, so a backfill run cannot claim an earlier time
+# A value is usable at a cutoff only if event_at AND first_available_at are <= cutoff.
+# Rows with this key are insert-only in the repository (first write wins).
+TIMING_KEY = "timing"
+USDT_USD_ASSUMPTION = (
+    "USDT is treated as exactly 1 USD: no USDT/USD cross rate is applied, so the "
+    "premium also contains any USDT depeg"
+)
+# Upbit KRW-BTC trades continuously; a last trade older than this is a stale source.
+KIMCHI_MAX_SPOT_SKEW_SECONDS = 120
+# A source timestamp this far past our receive time is a clock fault, not a value.
+SOURCE_FUTURE_TOLERANCE_SECONDS = 5
+# open.er-api publishes one rate set per day. FX trading is closed from Friday
+# 22:00 UTC to Sunday 22:00 UTC, so the rate legitimately carries Friday's value
+# over the weekend and its age limit is longer then.
+KIMCHI_FX_MAX_AGE_SECONDS = 36 * 3600
+KIMCHI_FX_WEEKEND_MAX_AGE_SECONDS = 84 * 3600
+# Perpetual funding periods Binance uses; a gap between prints must match one.
+FUNDING_ALLOWED_PERIODS_SECONDS = (3600, 2 * 3600, 4 * 3600, 8 * 3600)
+FUNDING_PERIOD_TOLERANCE_SECONDS = 60
+
 
 def _finite_decimal(value: Any) -> Decimal | None:
     """Parse a provider number exactly; NaN/Inf/bool/unparseable are None."""
@@ -270,7 +298,36 @@ def _positive_decimal(value: Any) -> Decimal | None:
     return parsed if parsed is not None and parsed > 0 else None
 
 
-async def _upbit_btc_krw_price(http: httpx.AsyncClient) -> tuple[Decimal, Any]:
+def _epoch_to_utc(value: Any, *, unit: str) -> dt.datetime:
+    """Strict int epoch (seconds or milliseconds) to an aware UTC datetime."""
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{unit} timestamp unreadable")
+    return dt.datetime.fromtimestamp(value / (1000 if unit == "ms" else 1), tz=dt.UTC)
+
+
+def _iso(value: dt.datetime) -> str:
+    return value.astimezone(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def fx_market_closed(at: dt.datetime) -> bool:
+    """FX trading is closed from Friday 22:00 UTC to Sunday 22:00 UTC."""
+    at = at.astimezone(dt.UTC)
+    weekday = at.weekday()  # Monday == 0
+    return (
+        (weekday == 4 and at.hour >= 22)
+        or weekday == 5
+        or (weekday == 6 and at.hour < 22)
+    )
+
+
+def funding_period_seconds(gap_seconds: float) -> int | None:
+    for period in FUNDING_ALLOWED_PERIODS_SECONDS:
+        if abs(gap_seconds - period) <= FUNDING_PERIOD_TOLERANCE_SECONDS:
+            return period
+    return None
+
+
+async def _upbit_btc_krw_price(http: httpx.AsyncClient) -> tuple[Decimal, dt.datetime]:
     response = await http.get(UPBIT_TICKER_URL, params={"markets": "KRW-BTC"})
     response.raise_for_status()
     rows = response.json()
@@ -282,7 +339,7 @@ async def _upbit_btc_krw_price(http: httpx.AsyncClient) -> tuple[Decimal, Any]:
     price = _positive_decimal(row.get("trade_price"))
     if price is None:
         raise ValueError("upbit trade_price unreadable")
-    return price, row.get("trade_timestamp")
+    return price, _epoch_to_utc(row.get("trade_timestamp"), unit="ms")
 
 
 async def _binance_btc_usdt_price(http: httpx.AsyncClient) -> Decimal:
@@ -297,15 +354,17 @@ async def _binance_btc_usdt_price(http: httpx.AsyncClient) -> Decimal:
     return price
 
 
-async def _open_er_usd_krw_rate(http: httpx.AsyncClient) -> Decimal:
+async def _open_er_usd_krw_rate(http: httpx.AsyncClient) -> tuple[Decimal, dt.datetime]:
     response = await http.get(OPEN_ER_API_USD_URL)
     response.raise_for_status()
     payload = response.json()
-    rates = payload.get("rates") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError("usd/krw rate unreadable")
+    rates = payload.get("rates")
     rate = _positive_decimal(rates.get("KRW") if isinstance(rates, dict) else None)
     if rate is None:
         raise ValueError("usd/krw rate unreadable")
-    return rate
+    return rate, _epoch_to_utc(payload.get("time_last_update_unix"), unit="s")
 
 
 async def fetch_upbit_binance_kimchi_premium(
@@ -315,16 +374,20 @@ async def fetch_upbit_binance_kimchi_premium(
 ) -> CryptoInsightProviderResult:
     """BTC kimchi premium: Upbit KRW vs Binance USDT converted at open.er-api USD/KRW.
 
-    Fail-closed: all three legs must be readable. A missing or unreadable leg yields
-    no metric and a warning, so the regime gate sees unknown, never zero.
+    Fail-closed: all three legs must be readable and their source times consistent
+    (see the timing contract above). A missing, unreadable or stale leg yields no
+    metric and a warning, so the regime gate sees unknown, never zero.
+
+    ``now`` only feeds freshness; first_available_at is the real wall clock taken
+    after the legs return, and snapshot_at is the event time, so a late run cannot
+    place a value in the past.
     """
-    observed_at = (now or _utc_now()).astimezone(dt.UTC).replace(microsecond=0)
     close_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
     try:
-        upbit_krw, upbit_trade_ts = await _upbit_btc_krw_price(http)
+        upbit_krw, upbit_at = await _upbit_btc_krw_price(http)
         binance_usdt = await _binance_btc_usdt_price(http)
-        usd_krw = await _open_er_usd_krw_rate(http)
+        usd_krw, fx_at = await _open_er_usd_krw_rate(http)
     except Exception as exc:  # noqa: BLE001
         return CryptoInsightProviderResult(
             warnings=(f"{KIMCHI_PREMIUM_PROVIDER}: {exc}",)
@@ -332,10 +395,45 @@ async def fetch_upbit_binance_kimchi_premium(
     finally:
         if close_client:
             await http.aclose()
+    received_at = _utc_now()
+    # Binance's price endpoint carries no timestamp: the request time is the only
+    # honest upper bound, so that leg's effective time is our receive time.
+    effective = {"upbit_krw": upbit_at, "binance_usdt": received_at, "usd_krw": fx_at}
+    future = dt.timedelta(seconds=SOURCE_FUTURE_TOLERANCE_SECONDS)
+    for name, at in effective.items():
+        if at > received_at + future:
+            return CryptoInsightProviderResult(
+                warnings=(
+                    f"{KIMCHI_PREMIUM_PROVIDER}: {name} source time is in the future",
+                )
+            )
+    spot_skew = abs((received_at - upbit_at).total_seconds())
+    if spot_skew > KIMCHI_MAX_SPOT_SKEW_SECONDS:
+        return CryptoInsightProviderResult(
+            warnings=(
+                f"{KIMCHI_PREMIUM_PROVIDER}: stale upbit trade "
+                f"({int(spot_skew)}s old, limit {KIMCHI_MAX_SPOT_SKEW_SECONDS}s)",
+            )
+        )
+    fx_age = max(0.0, (received_at - fx_at).total_seconds())
+    fx_closed = fx_market_closed(received_at)
+    fx_limit = (
+        KIMCHI_FX_WEEKEND_MAX_AGE_SECONDS if fx_closed else KIMCHI_FX_MAX_AGE_SECONDS
+    )
+    if fx_age > fx_limit:
+        return CryptoInsightProviderResult(
+            warnings=(
+                f"{KIMCHI_PREMIUM_PROVIDER}: stale usd/krw rate "
+                f"({int(fx_age)}s old, limit {fx_limit}s)",
+            )
+        )
+    event_at = max(effective.values())
+    max_skew = (max(effective.values()) - min(effective.values())).total_seconds()
     global_krw = binance_usdt * usd_krw
     premium_pct = ((upbit_krw - global_krw) / global_krw * Decimal(100)).quantize(
         _KIMCHI_QUANTUM
     )
+    freshness_base = (now or received_at).astimezone(dt.UTC)
     return CryptoInsightProviderResult(
         metrics=(
             CryptoInsightMetric(
@@ -346,20 +444,48 @@ async def fetch_upbit_binance_kimchi_premium(
                 unit="%",
                 label=None,
                 source_url=UPBIT_TICKER_URL,
-                observed_at=observed_at,
-                freshness_seconds=0,
+                observed_at=event_at.replace(microsecond=0),
+                freshness_seconds=max(
+                    0, int((freshness_base - event_at).total_seconds())
+                ),
                 raw_payload={
                     "upbit_krw": str(upbit_krw),
-                    "upbit_trade_timestamp_ms": upbit_trade_ts,
+                    "upbit_trade_timestamp_ms": int(upbit_at.timestamp() * 1000),
                     "binance_usdt": str(binance_usdt),
                     "usd_krw": str(usd_krw),
                     "global_krw": str(global_krw),
-                    "observed_at": observed_at.isoformat(),
+                    "observed_at": _iso(event_at),
                     "sources": [
                         UPBIT_TICKER_URL,
                         BINANCE_SPOT_PRICE_URL,
                         OPEN_ER_API_USD_URL,
                     ],
+                    "inputs": {
+                        "upbit_krw": {
+                            "source_at": _iso(upbit_at),
+                            "source_time_basis": "exchange_trade_timestamp",
+                        },
+                        "binance_usdt": {
+                            "source_at": None,
+                            "source_time_basis": "none_provided_request_time_used",
+                        },
+                        "usd_krw": {
+                            "source_at": _iso(fx_at),
+                            "source_time_basis": "provider_time_last_update_unix",
+                            "source": OPEN_ER_API_USD_URL,
+                            "market_closed_at_receipt": fx_closed,
+                        },
+                    },
+                    TIMING_KEY: {
+                        "event_at": _iso(event_at),
+                        "source_at": _iso(max(upbit_at, fx_at)),
+                        "first_available_at": _iso(received_at),
+                        "max_skew_seconds": int(max_skew),
+                        "spot_skew_seconds": int(spot_skew),
+                        "fx_age_seconds": int(fx_age),
+                        "fx_weekend_carry": fx_closed,
+                        "usdt_usd_assumption": USDT_USD_ASSUMPTION,
+                    },
                 },
             ),
         )
@@ -382,11 +508,16 @@ async def fetch_binance_settlement_funding_prints(
 ) -> CryptoInsightProviderResult:
     """The last FUNDING_PRINT_COUNT settlement prints, one row per settlement.
 
-    snapshot_at is the settlement time, so re-running the job upserts the same
-    rows. All-or-nothing: fewer, more, duplicate or malformed prints yield no
-    metric and a warning, because a 3-print average over 2 prints is a wrong value.
+    snapshot_at is the settlement time, so re-running the job hits the same rows
+    (which the repository then keeps as first written). All-or-nothing: fewer, more,
+    duplicate, malformed or non-consecutive prints yield no metric and a warning,
+    because a 3-print average over 2 prints, or over a changed settlement period,
+    is a wrong value. A rate of exactly 0 is a real print (value_state "zero");
+    a missing rate is no row at all.
+
+    first_available_at is the real wall clock at receipt (not ``now``), so prints
+    fetched late are not usable at a cutoff before they were received.
     """
-    observed_at = (now or _utc_now()).astimezone(dt.UTC).replace(microsecond=0)
     close_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
     try:
@@ -411,7 +542,7 @@ async def fetch_binance_settlement_funding_prints(
                 raise ValueError("funding fundingTime unreadable")
             rate = _finite_decimal(row.get("fundingRate"))
             if rate is None:
-                raise ValueError("funding fundingRate unreadable")
+                raise ValueError("funding fundingRate missing or unreadable")
             prints.append((settle_ms, rate, row))
         if len(prints) != FUNDING_PRINT_COUNT:
             raise ValueError(
@@ -419,6 +550,16 @@ async def fetch_binance_settlement_funding_prints(
             )
         if len({settle_ms for settle_ms, _, _ in prints}) != FUNDING_PRINT_COUNT:
             raise ValueError("duplicate funding settlement times")
+        prints.sort(key=lambda item: item[0])
+        periods = {
+            funding_period_seconds((later[0] - earlier[0]) / 1000)
+            for earlier, later in zip(prints, prints[1:], strict=False)
+        }
+        if len(periods) != 1 or None in periods:
+            raise ValueError(
+                "funding prints are not consecutive on one settlement period"
+            )
+        period_seconds = next(iter(periods))
     except Exception as exc:  # noqa: BLE001
         return CryptoInsightProviderResult(
             warnings=(f"{FUNDING_SETTLEMENT_PROVIDER}:{symbol}: {exc}",)
@@ -426,8 +567,10 @@ async def fetch_binance_settlement_funding_prints(
     finally:
         if close_client:
             await http.aclose()
+    received_at = _utc_now()
+    freshness_base = (now or received_at).astimezone(dt.UTC)
     metrics: list[CryptoInsightMetric] = []
-    for settle_ms, rate, row in sorted(prints, key=lambda item: item[0]):
+    for settle_ms, rate, row in prints:
         settled_at = dt.datetime.fromtimestamp(settle_ms / 1000, tz=dt.UTC)
         metrics.append(
             CryptoInsightMetric(
@@ -440,7 +583,7 @@ async def fetch_binance_settlement_funding_prints(
                 source_url=BINANCE_FUNDING_HISTORY_URL,
                 observed_at=settled_at,
                 freshness_seconds=max(
-                    0, int((observed_at - settled_at).total_seconds())
+                    0, int((freshness_base - settled_at).total_seconds())
                 ),
                 raw_payload={
                     "symbol": symbol,
@@ -448,7 +591,15 @@ async def fetch_binance_settlement_funding_prints(
                     "fundingRate": str(rate),
                     "markPrice": row.get("markPrice"),
                     "rateType": row.get("rateType"),
-                    "observed_at": observed_at.isoformat(),
+                    "observed_at": _iso(received_at),
+                    "value_state": "zero" if rate == 0 else "nonzero",
+                    "settlement_period_seconds": period_seconds,
+                    TIMING_KEY: {
+                        "event_at": _iso(settled_at),
+                        # fundingRate history carries no publication time.
+                        "source_at": None,
+                        "first_available_at": _iso(received_at),
+                    },
                 },
             )
         )

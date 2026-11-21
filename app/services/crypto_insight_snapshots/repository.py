@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
 from typing import Any
@@ -11,6 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.crypto_insight_snapshot import CryptoInsightSnapshot
+from app.services.crypto_insight_snapshots.availability import usable_at_cutoff
+from app.services.external.crypto_insights import TIMING_KEY
+
+logger = logging.getLogger(__name__)
 
 SENSITIVE_KEY_FRAGMENTS = ("key", "secret", "token", "password", "authorization")
 _MAX_RAW_ITEMS = 64
@@ -111,6 +116,12 @@ def _matches_identity(values: dict[str, Any]) -> sa.ColumnElement[bool]:
     )
 
 
+def _is_append_only(values: dict[str, Any]) -> bool:
+    """Gate-input rows (raw_payload carries a timing record) are insert-only."""
+    raw = values.get("raw_payload")
+    return isinstance(raw, dict) and isinstance(raw.get(TIMING_KEY), dict)
+
+
 class CryptoInsightSnapshotsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -128,6 +139,21 @@ class CryptoInsightSnapshotsRepository:
             ).scalar_one_or_none()
             if existing is None:
                 self._session.add(CryptoInsightSnapshot(**values))
+            elif _is_append_only(values) or _is_append_only(
+                {"raw_payload": existing.raw_payload}
+            ):
+                # First write wins: first_available_at and the value a past cutoff
+                # saw must not change. A differing re-observation is left out and
+                # logged, never merged.
+                if existing.value != values["value"]:
+                    logger.warning(
+                        "crypto insight %s/%s/%s@%s: later value ignored (append-only)",
+                        values["metric"],
+                        values["provider"],
+                        values["symbol"],
+                        values["snapshot_at"].isoformat(),
+                    )
+                continue
             else:
                 for key in (
                     "value",
@@ -193,6 +219,36 @@ class CryptoInsightSnapshotsRepository:
             latest.append(row)
             seen[key] = current + 1
         return latest
+
+    async def list_usable_at(
+        self,
+        cutoff: dt.datetime,
+        *,
+        metric: str,
+        provider: str,
+        symbol: str | None = None,
+        limit: int = 50,
+    ) -> list[CryptoInsightSnapshot]:
+        """Newest-event-first rows of one gate input that were usable at ``cutoff``.
+
+        Usable means event time and first-available time are both <= cutoff
+        (``availability.usable_at_cutoff``). Rows without a timing record are not
+        returned.
+        """
+        stmt = select(CryptoInsightSnapshot).where(
+            CryptoInsightSnapshot.metric == metric.strip().lower(),
+            CryptoInsightSnapshot.provider == provider.strip().lower(),
+            CryptoInsightSnapshot.snapshot_at <= cutoff,
+        )
+        if symbol is None:
+            stmt = stmt.where(CryptoInsightSnapshot.symbol.is_(None))
+        else:
+            stmt = stmt.where(CryptoInsightSnapshot.symbol == symbol.strip().upper())
+        stmt = stmt.order_by(
+            CryptoInsightSnapshot.snapshot_at.desc(), CryptoInsightSnapshot.id.desc()
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [r for r in rows if usable_at_cutoff(r.raw_payload, cutoff)][:limit]
 
     async def get_latest(
         self,

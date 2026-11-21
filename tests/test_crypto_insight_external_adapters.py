@@ -4,6 +4,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from app.services.external import crypto_insights
 from app.services.external.crypto_insights import (
     CryptoInsightProviderResult,
     fetch_alternative_me_fear_greed,
@@ -164,7 +165,15 @@ async def test_optional_poc_adapters_are_non_fatal_without_credentials():
 
 # ---- T3 regime-gate inputs (hk 5889): kimchi premium + settlement funding prints ----
 
-_NOW = dt.datetime(2026, 11, 21, 1, 0, tzinfo=dt.UTC)
+_NOW = dt.datetime(2026, 11, 18, 1, 0, tzinfo=dt.UTC)  # a Wednesday
+_UPBIT_MS = int(_NOW.timestamp() * 1000) - 5_000  # last trade 5s before receipt
+_FX_UNIX = int(_NOW.timestamp()) - 3600  # rate published an hour ago
+
+
+@pytest.fixture(autouse=True)
+def _wall_clock(monkeypatch):
+    """first_available_at is the wall clock; pin it for the T3 adapters."""
+    monkeypatch.setattr(crypto_insights, "_utc_now", lambda: _NOW)
 
 
 def _kimchi_handler(
@@ -196,9 +205,15 @@ def _kimchi_handler(
 
 async def test_kimchi_premium_is_upbit_over_binance_at_usd_krw():
     handler = _kimchi_handler(
-        upbit=[{"market": "KRW-BTC", "trade_price": 80000000, "trade_timestamp": 1}],
+        upbit=[
+            {"market": "KRW-BTC", "trade_price": 80000000, "trade_timestamp": _UPBIT_MS}
+        ],
         binance={"symbol": "BTCUSDT", "price": "60000"},
-        fx={"result": "success", "rates": {"KRW": 1300}},
+        fx={
+            "result": "success",
+            "time_last_update_unix": _FX_UNIX,
+            "rates": {"KRW": 1300},
+        },
     )
     async with _client(handler) as client:
         result = await fetch_upbit_binance_kimchi_premium(client, now=_NOW)
@@ -214,14 +229,21 @@ async def test_kimchi_premium_is_upbit_over_binance_at_usd_krw():
     assert metric.value == Decimal("2.5641")
     assert metric.observed_at == _NOW
     assert metric.freshness_seconds == 0
+    assert metric.raw_payload["timing"]["first_available_at"] == _NOW.isoformat()
     assert metric.raw_payload["usd_krw"] == "1300"
 
 
 async def test_kimchi_premium_missing_fx_is_unknown_not_zero():
     handler = _kimchi_handler(
-        upbit=[{"market": "KRW-BTC", "trade_price": 80000000}],
+        upbit=[
+            {
+                "market": "KRW-BTC",
+                "trade_price": 80000000,
+                "trade_timestamp": _UPBIT_MS,
+            }
+        ],
         binance={"symbol": "BTCUSDT", "price": "60000"},
-        fx={"result": "success", "rates": {}},
+        fx={"result": "success", "time_last_update_unix": _FX_UNIX, "rates": {}},
     )
     async with _client(handler) as client:
         result = await fetch_upbit_binance_kimchi_premium(client, now=_NOW)
@@ -235,7 +257,7 @@ async def test_kimchi_premium_one_unreadable_leg_writes_nothing():
     handler = _kimchi_handler(
         upbit=None,
         binance={"symbol": "BTCUSDT", "price": "60000"},
-        fx={"rates": {"KRW": 1300}},
+        fx={"time_last_update_unix": _FX_UNIX, "rates": {"KRW": 1300}},
     )
     async with _client(handler) as client:
         result = await fetch_upbit_binance_kimchi_premium(client, now=_NOW)
@@ -249,17 +271,25 @@ async def test_kimchi_premium_one_unreadable_leg_writes_nothing():
     "upbit_body",
     [
         [],  # empty ticker
-        [{"market": "KRW-ETH", "trade_price": 1}],  # wrong market
-        [{"market": "KRW-BTC", "trade_price": "nan"}],  # non-finite
-        [{"market": "KRW-BTC", "trade_price": 0}],  # non-positive
-        [{"market": "KRW-BTC", "trade_price": True}],  # bool is not a price
+        [
+            {"market": "KRW-ETH", "trade_price": 1, "trade_timestamp": _UPBIT_MS}
+        ],  # wrong market
+        [
+            {"market": "KRW-BTC", "trade_price": "nan", "trade_timestamp": _UPBIT_MS}
+        ],  # non-finite
+        [
+            {"market": "KRW-BTC", "trade_price": 0, "trade_timestamp": _UPBIT_MS}
+        ],  # non-positive
+        [
+            {"market": "KRW-BTC", "trade_price": True, "trade_timestamp": _UPBIT_MS}
+        ],  # bool is not a price
     ],
 )
 async def test_kimchi_premium_rejects_malformed_upbit_ticker(upbit_body):
     handler = _kimchi_handler(
         upbit=upbit_body,
         binance={"symbol": "BTCUSDT", "price": "60000"},
-        fx={"rates": {"KRW": 1300}},
+        fx={"time_last_update_unix": _FX_UNIX, "rates": {"KRW": 1300}},
     )
     async with _client(handler) as client:
         result = await fetch_upbit_binance_kimchi_premium(client, now=_NOW)
@@ -315,7 +345,10 @@ async def test_binance_settlement_prints_one_row_per_settlement_time():
         "shorts pay longs",
     ]
     assert all(m.provider == "binance_settlement" for m in result.metrics)
-    assert all(m.raw_payload["observed_at"] == _NOW.isoformat() for m in result.metrics)
+    assert all(
+        m.raw_payload["timing"]["first_available_at"] == _NOW.isoformat()
+        for m in result.metrics
+    )
 
 
 @pytest.mark.parametrize(
