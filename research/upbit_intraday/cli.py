@@ -66,6 +66,29 @@ def _cmd_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_case_day(args: argparse.Namespace) -> int:
+    from . import run
+
+    root = Path(args.root)
+    fetch = with_retries(make_urllib_fetch(), attempts=6, base_delay=2.0)
+    case_root = root / "case_day"
+    fetch_mod.collect(
+        fetch,
+        case_root,
+        run.CASE_START,
+        run.CASE_END_EXCLUSIVE,
+        workers=args.workers,
+        pacer=fetch_mod.Pacer(args.interval),
+        dataset="upbit-intraday-v1-case-day",
+    )
+    out = run.case_day(case_root, Path(args.selection))
+    (root / "case_day_results.json").write_text(
+        json.dumps(out, sort_keys=True, indent=1) + "\n"
+    )
+    print(json.dumps(out["configs"], sort_keys=True, indent=1))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -86,6 +109,14 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--selection", required=True)
     t.add_argument("--allow-additional-look", action="store_true")
     t.set_defaults(func=_cmd_test)
+    c = sub.add_parser(
+        "case-day", help="frozen rules over the retrospective day (illustration)"
+    )
+    c.add_argument("--root", required=True)
+    c.add_argument("--selection", required=True)
+    c.add_argument("--workers", type=int, default=4)
+    c.add_argument("--interval", type=float, default=0.12)
+    c.set_defaults(func=_cmd_case_day)
     args = parser.parse_args(argv)
     return args.func(args)
 

@@ -156,3 +156,102 @@ def test_warning_filter_variant_excludes_flagged_markets(root_a: Path):
     assert not ctx.active[i] and not ctx.eligible[i].any()
     sset = R.make_signal_set(ctx, R.Config("A_breakout", 16, 3.0))
     assert i not in set(sset.mi.tolist()) and i not in set(sset.b_mi.tolist())
+
+
+def test_report_tables_render_from_results(root_a: Path, tmp_path: Path):
+    from research.upbit_intraday import report
+
+    out = RUN.develop(root_a)
+    sel = tmp_path / "selection.json"
+    sel.write_text(json.dumps(out["selection"]))
+    guard = root_a / "test_look.done"
+    if guard.exists():
+        guard.unlink()
+    results = RUN.test_look(root_a, sel)
+    text = "\n".join(
+        [
+            report.verdict_table(results),
+            report.grid_table(out["records"], "dev"),
+            report.grid_table(results["grid_test_records"], "test"),
+            report.horizon_table(results),
+            report.bucket_table(results),
+            report.sensitivity_table(results),
+            report.listing_table(results),
+            report.counts_table(results),
+        ]
+    )
+    assert "A 신규 추세 돌파" in text and text.count("\n") > 20
+    assert "nan" not in text.lower().replace("fan", "")
+
+
+def test_case_day_lists_frozen_signals_on_the_retrospective_day(tmp_path: Path):
+    start, end = RUN.CASE_START, RUN.CASE_END_EXCLUSIVE
+    n = int((end - start).total_seconds() // 900)
+    (tmp_path / "candles15").mkdir()
+    entries = {}
+    rng = np.random.default_rng(5)
+    for name in ["KRW-AAA", "KRW-BBB", "KRW-CCC", "KRW-DDD", "KRW-EEE", "KRW-BTC"]:
+        rows = []
+        for i in range(n):
+            when = (start + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            price = 100.0
+            q = 40e6
+            if name == "KRW-AAA" and i == 150:  # a breakout bar on the case day
+                price, q = 108.0, 400e6
+            rows.append(
+                F.Row(
+                    when,
+                    "100.0",
+                    f"{max(price, 100) * 1.001:.4f}",
+                    "99.9",
+                    f"{price:.4f}",
+                    "1.0",
+                    f"{q * rng.uniform(0.95, 1.05):.2f}",
+                )
+            )
+        blob = F.rows_to_gzip_csv(rows)
+        (tmp_path / "candles15" / f"{name}.csv.gz").write_bytes(blob)
+        entries[name] = {
+            "market": name,
+            "file": f"candles15/{name}.csv.gz",
+            "sha256": hashlib.sha256(blob).hexdigest(),
+            "rows": n,
+            "first_time_utc": rows[0].time_utc,
+            "last_time_utc": rows[-1].time_utc,
+            "pages": 1,
+            "page_body_sha256": ["0" * 64],
+        }
+    market_all = b"[]"
+    (tmp_path / "market_all.json").write_bytes(market_all)
+    manifest = {
+        "manifest_format": F.MANIFEST_FORMAT,
+        "window": {
+            "start_utc": F.iso_z(start),
+            "end_exclusive_utc": F.iso_z(end),
+            "bar_seconds": 900,
+        },
+        "market_list": {
+            "file": "market_all.json",
+            "sha256": hashlib.sha256(market_all).hexdigest(),
+        },
+        "markets": entries,
+        "failures": {},
+    }
+    (tmp_path / "manifest.json").write_bytes(F.canonical_json(manifest))
+    sel = {
+        "selected": {
+            "A_breakout": {"family": "A_breakout", "n": 16, "x": 3.0},
+            "B_held_rebound": None,
+            "C_downside": None,
+        }
+    }
+    sel_path = tmp_path / "sel.json"
+    sel_path.write_text(json.dumps(sel))
+    out = RUN.case_day(tmp_path, sel_path)
+    assert out["configs"]["A_breakout"]["signals_from_2026-11-21_09:00_kst"] == 1
+    sig = out["signals"][0]
+    assert (
+        sig["market"] == "KRW-AAA"
+        and sig["family"] == "A_breakout"
+        and sig["net_4"] is not None
+    )

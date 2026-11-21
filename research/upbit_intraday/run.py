@@ -209,3 +209,63 @@ def test_look(
     (root / "results.json").write_bytes(_json(results))
     guard.write_text(datetime.now(UTC).isoformat() + "\n")
     return results
+
+
+CASE_START = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+CASE_END_EXCLUSIVE = datetime(2026, 11, 21, 17, 0, tzinfo=UTC)  # 2026-11-22 02:00 KST
+CASE_FROM_KST = datetime(2026, 11, 21, 0, 0, tzinfo=UTC)  # 2026-11-21 09:00 KST
+
+
+def case_day(case_root: Path, selection_path: Path) -> dict[str, Any]:
+    """Run the frozen selected configurations over the retrospective's own day.
+
+    Illustration only, outside the sealed test: the day was picked by hand. The
+    data directory is a separate fetch (all KRW markets, 2026-11-20 00:00Z to
+    2026-11-22 02:00 KST); entry and exit prices come from the same rules.
+    """
+    selection = json.loads(selection_path.read_text())
+    panel, _ = D.load_panel(
+        case_root,
+        start_epoch=R.epoch(CASE_START),
+        end_exclusive_epoch=R.epoch(CASE_END_EXCLUSIVE),
+    )
+    ctx = R.build_context(panel)
+    out: dict[str, Any] = {"configs": {}, "signals": []}
+    for family in R.FAMILIES:
+        sel = selection["selected"][family]
+        if sel is None:
+            continue
+        cfg = _config(sel)
+        raw = ctx.raw(cfg.direction, cfg.n, cfg.x)
+        count = 0
+        for i, market in enumerate(panel.markets):
+            if not ctx.active[i] or not R.in_partition(market, family):
+                continue
+            for s in R.apply_cooldown(np.flatnonzero(raw[i])).tolist():
+                entry = panel.entry_time_epoch(s)
+                if entry < R.epoch(CASE_FROM_KST):
+                    continue
+                count += 1
+                row: dict[str, Any] = {
+                    "family": family,
+                    "market": market,
+                    "bar_close_kst": (
+                        datetime.fromtimestamp(entry, UTC) + KST
+                    ).strftime("%m-%d %H:%M"),
+                    "entry_missing": bool(
+                        s + 1 >= panel.n or np.isnan(panel.o[i, s + 1])
+                    ),
+                    "bucket": R.BUCKET_NAMES[int(ctx.bucket[i, s])]
+                    if ctx.bucket[i, s] >= 0
+                    else None,
+                }
+                for h in R.HORIZONS:
+                    v = ctx.net(h, 0, cfg.direction, R.PRIMARY_SCENARIO)[i, s]
+                    row[f"net_{h}"] = None if not np.isfinite(v) else float(v)
+                out["signals"].append(row)
+        out["configs"][family] = {
+            "config": cfg.id,
+            "signals_from_2026-11-21_09:00_kst": count,
+        }
+    out["signals"].sort(key=lambda r: (r["bar_close_kst"], r["market"]))
+    return out
