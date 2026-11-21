@@ -230,6 +230,21 @@
       ],
       "k": 0,
       "test_looks": []
+    },
+    {
+      "id": "HK-6035",
+      "title": "Upbit KRW 15분 봉 장중 신호 세 계열 사전등록과 과거 재생 (신규 추세 돌파, 보유 코인 반등, 하방 이탈)",
+      "tracker": "hk 6035",
+      "markets": [
+        "crypto"
+      ],
+      "status": "sealed",
+      "registered_at": "2026-11-22",
+      "manifest": "research/experiments/manifests/hk-6035-upbit-intraday-signals.json",
+      "manifest_sha256": "3f647fe981a29f5c1db58cc94a19dcaa876d1815d0da22ccbf0d0caa1d5022dc",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

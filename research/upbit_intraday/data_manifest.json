@@ -1,0 +1,2424 @@
+{
+ "coverage_notes": [
+  "Markets come from the market list at fetch time; a market delisted before that is absent (Upbit serves no candles for it): survivor-only.",
+  "A slot without trades has no candle and no row; gaps are not filled.",
+  "market_warning/caution flags in market_all.json are the state at fetch time, not point in time."
+ ],
+ "full_manifest_sha256": "cf0af80fe270af3a27aeca4cc711b2c30e4ca159bda67e68d8140f4c436553ae",
+ "manifest_format": "upbit-intraday-candles-slim/v1",
+ "market_list": {
+  "fetched_at": "2026-11-21T17:06:22Z",
+  "file": "market_all.json",
+  "krw_market_count": 300,
+  "sha256": "fad059005547e8ec402f9b2588ad76a03cfa3f0a9e041ade87b66b6f53fcc488",
+  "url": "https://api.upbit.com/v1/market/all?isDetails=true"
+ },
+ "markets": {
+  "KRW-0G": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "722f4c8db71dfb4da171028ecdae834dfd981eeb9c7ca83b58a74393b95041bc",
+   "pages": 35,
+   "rows": 6837,
+   "sha256": "4064ccdf78f83675b3ecfc92727eda76d0330e5cb0f8cf24d3a17fd0736d7ca7"
+  },
+  "KRW-1INCH": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c12afc69ae244c16de80a3e4b6225383d3eaee5d8274b5fb3a4e25ad5895aef4",
+   "pages": 26,
+   "rows": 5062,
+   "sha256": "9306f571ae6cd0e08722852ce5f0832358beea8983e0544a98e7dcc545881b63"
+  },
+  "KRW-2Z": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "deed78d785d037b7a96c52e7c5cbb6b9c445188ac2fc6ba083ee32587b26448a",
+   "pages": 35,
+   "rows": 6860,
+   "sha256": "a86fefa09d86e9623677cce3382e1c3fa5463d2777b6ce631cdedbed7bcd221a"
+  },
+  "KRW-A": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e79a10c3f8107e385590ffea6c863399a8028a9158c29f8b2bfae322b7f47c35",
+   "pages": 33,
+   "rows": 6465,
+   "sha256": "701df33026e539596a8987a7a676dfc96bc7d5c44145b2d07d43d8313316f37a"
+  },
+  "KRW-AAVE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2f6b7e6baf3db92d48f440249fbbbbed51e5d963b268904cec3b0424ec4a8bc2",
+   "pages": 36,
+   "rows": 7024,
+   "sha256": "37cf6e205080091e8f147cb420507147b004708f205003f16ca06b64f9b8c0f4"
+  },
+  "KRW-ADA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6a86ea50c55c49ce84ce9891a73006bb419ffbb059899cd5e9b87f21227de6a6",
+   "pages": 36,
+   "rows": 7063,
+   "sha256": "05822d4e3c238256ada37ea002860338d7c1dd780bac20988f3ae4051df915ae"
+  },
+  "KRW-AERO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "37fead52ed378af064cb7c8235a437b9694f75224544720d2a33e2cdeb948926",
+   "pages": 32,
+   "rows": 6309,
+   "sha256": "55be03682fda3e41d5b959e5e02a67e55208105ac3efeee3b784d787335ea240"
+  },
+  "KRW-AGLD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "879bdbeca7346c0393e0712f7ad86d121a4aae7b210550629a8b8854fa1486cc",
+   "pages": 29,
+   "rows": 5702,
+   "sha256": "d74d4d54c17758b2f8750616e931672fb077fa36ea54c7cd1e6ac5d10cba399d"
+  },
+  "KRW-AHT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "180ed01e218808705a11ff1c761f65fcd63c455afd34a95fafbc0080c186f7c1",
+   "pages": 24,
+   "rows": 4626,
+   "sha256": "8588a87ce5ec4e0439300870aa6f1aa6ac98d6d7ee880f9c4e84c41a7ed4bb4b"
+  },
+  "KRW-AI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "addd7a578fc112068ec3851f1a80d5fbb161c459950819e3ff04b02850534929",
+   "pages": 32,
+   "rows": 6209,
+   "sha256": "ac2ca260e7dd82cf9257a9e651c7bb71624c3c66f6bbeb7dfabb376253e4b92e"
+  },
+  "KRW-AKT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "aeb8f7f0622d38896a8eed994f02f9c6b02eb51bc8ed8c2ec251acb0c0a06e08",
+   "pages": 35,
+   "rows": 6875,
+   "sha256": "c057c4ad2ee76e3d04d72210c2735209aeaf0f8b1f286ce009d74c7589450d0a"
+  },
+  "KRW-ALGO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "60be195afc70f48f33c8ab12333c6ed6286a24ade4578d3299aa843639a4dc4c",
+   "pages": 35,
+   "rows": 6818,
+   "sha256": "f687b48ea9558035dab0606ab0ab571ea9968837ecca660638196f8f22b9b7c7"
+  },
+  "KRW-ALT": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6a740e5399c4fc4a9be5b73a77e80f69728297bc22fc3262a2b9ff6824137233",
+   "pages": 29,
+   "rows": 5799,
+   "sha256": "683a3e01e0fa402d7e13b5fd5fc155b2e177b63e759c22ada72e12c608ccc6dd"
+  },
+  "KRW-ANIME": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dabe5e0fe28d236d415526d036414dee255cd9bf6d3fecbd5a391a439fda59e0",
+   "pages": 32,
+   "rows": 6270,
+   "sha256": "1f7488c43272387a6bdca1f8eb3766a6d51a44e822b996aefd14f70199f65be5"
+  },
+  "KRW-ANKR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "78f81c286aa8f8ee0f52fdac7bb0567269e1dfcf74be3565ea4c841c351a5ba3",
+   "pages": 28,
+   "rows": 5401,
+   "sha256": "06160dcc495718f8b064bb1e9b150d35e71860d28604fce6558e3566be467250"
+  },
+  "KRW-API3": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "503c4d3b52dfe0a42ba32dc51010e0beb7c064baeae661083f4a955d93100f88",
+   "pages": 27,
+   "rows": 5393,
+   "sha256": "10a5fff2249a26dbfae8d876967bb6c65b0c7c950eb461395ed7fe749ba64331"
+  },
+  "KRW-APT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "62e28c5b2a68be6c913d54d0b8ac281c7fa3b670eb9d8426cae776b29515da63",
+   "pages": 36,
+   "rows": 7029,
+   "sha256": "c6888b5e87d1bdfcce82c7bb39d229a0ba1fadd1415a6541fc50a904cd86df1d"
+  },
+  "KRW-ARB": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "66a0f380cd26e52176043036def9fd3b9aa3b633b90493e5ffc037b0b29f45ec",
+   "pages": 36,
+   "rows": 7034,
+   "sha256": "b753a79f3679d24af24c84ac672ae024cc9bf604e60e38caf17e47ef03f8e8b2"
+  },
+  "KRW-ARDR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "8fd9bc647fc85fea3330db95e524c2aef2317410770f4238580624537fac3cb5",
+   "pages": 30,
+   "rows": 5925,
+   "sha256": "ddcd230c1968e7d17ae8bdb9e129c3f753b3a7b986ceea8b63f973b41944b8f5"
+  },
+  "KRW-ARK": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "edc0326470e0458b5b22f043808418f62bc7941e7668cb42c6a27ac1aceed358",
+   "pages": 34,
+   "rows": 6775,
+   "sha256": "f00137551a57bc5ca2df143556aa57e5245af24af6aabe51fc38dd0bb97526bd"
+  },
+  "KRW-ARKM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4d160089f9f11226b1d95d032016c772d8b6cbce45be1429dbdde32b8dd33564",
+   "pages": 25,
+   "rows": 4856,
+   "sha256": "c9ee7720206560cf5ac7639ccdb7d4d0013c01ea0b3421144f697220f745a005"
+  },
+  "KRW-ARX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "939bc064181c1586f65d3ecbeab1608e4f1cf251bc1abfc1912ea6644f414e0f",
+   "pages": 34,
+   "rows": 6799,
+   "sha256": "a3e94cdc57a5174f7fcd7e29eb5fa50519ca60af6b47f7fe368cdacde615f7b0"
+  },
+  "KRW-ASTR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b3a9d08a744442ab8ed225076adf56d4228567b9a3925583947ca9224a404030",
+   "pages": 28,
+   "rows": 5577,
+   "sha256": "64e221517d7c5819caf0016787e9f8fa8e6cdd578836ffb2bfcfcc6d3c5558bc"
+  },
+  "KRW-ATH": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "926949c981dd7c4c877d25e0ad3ed96722d0792b0ac2c2c5dcc5a3a7c04ddf03",
+   "pages": 35,
+   "rows": 6827,
+   "sha256": "9765ea1dab2de6907bc40d8c52fd579ca84a38c6676c63f71e07754a5bc08b00"
+  },
+  "KRW-ATOM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "443ed700144929e88f755f74ca0d7cbd08766c7149d685bdfbc3f6c0998328c4",
+   "pages": 35,
+   "rows": 6954,
+   "sha256": "7a91aceb43785410d3cd13576f166ca777c5fccbe5b182689ede44483acfc1b2"
+  },
+  "KRW-AUCTION": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "e72eb3a85ae90ae6bb5f8690be0ccd5b03c837a09872c455f21ecd2ecbdf4687",
+   "pages": 30,
+   "rows": 5864,
+   "sha256": "702f780b81dae4d9d4aeda5f65e9510880b4d0fa189303c0744ebf0501bd1998"
+  },
+  "KRW-AVAX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "24b3b214bfc1b4001b4e0d1d07def401ab2f9b6b4c562cbb6c1576736a28f869",
+   "pages": 36,
+   "rows": 7047,
+   "sha256": "66ba24777817788d2041f2e09f79e4d7426ffddb14358391a0b5dda99ccc0b6f"
+  },
+  "KRW-AVNT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "21ad79fe7c5052e5bb7577113edc61f080afad83d472228e4f84dd7c9e8a1d19",
+   "pages": 33,
+   "rows": 6442,
+   "sha256": "c7cb3cb5b93f6ee58bb1eada7f3075d0d680ad59df321febd993d948acee9772"
+  },
+  "KRW-AWE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "614a62bdad0377166f49722c43c7aa18eb43add6f82bcbdeb1ea70c8f3ee0039",
+   "pages": 33,
+   "rows": 6535,
+   "sha256": "d8c4d9edf85a024e594525bfd89ac18210db9e3aecd046cd8c61889532193cdb"
+  },
+  "KRW-AXIS": {
+   "first_time_utc": "2026-10-21T13:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4e6cb473ab093833f11499ef75cde85aca650ed9857a4fd124a6351d1d838f6b",
+   "pages": 15,
+   "rows": 2866,
+   "sha256": "761eb1ac7647bc54f5560d1ceb84f3c5ab3ea090b7fc421a706cf620c5d16406"
+  },
+  "KRW-AXL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "119eec4c54d040c84cb7ccc3d8b53b39f0931c61c8b5855beffc387e9bede743",
+   "pages": 32,
+   "rows": 6269,
+   "sha256": "014ed0b180ff00c9d361700c490bc06447c9a3154d0e537c07385c75199d9654"
+  },
+  "KRW-AXS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4aa231faf9eab316a790a6080fcf51f5cbffccfa81ad1d8bb6959d361aa7f857",
+   "pages": 35,
+   "rows": 6987,
+   "sha256": "426f8d118b9fd287996b961bfbd73f7972a82765c64a37477f6e65e21e8b53a8"
+  },
+  "KRW-AZTEC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3e6522a519d6a505b38063f38854c536335059cd06317c9bd256bbcff0ce0fba",
+   "pages": 29,
+   "rows": 5673,
+   "sha256": "6181cbb221ea44cf65aa74c33c2796dd7dd4f39d4cb388b2eb782079faa95019"
+  },
+  "KRW-B3": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9b55746e10e1d3c1a763f12a8d74e09c96e2da71d7a0f17a7ff3128c3ba3f091",
+   "pages": 35,
+   "rows": 6904,
+   "sha256": "a7498606bb0ffc666597254e8adb0252f8fccd5368c61b53b25ec0c572cfc74a"
+  },
+  "KRW-BABY": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "926264f83b1675bb9eb6cf6141824b08cc72b397f9fe4f05c7c22dd841c71f54",
+   "pages": 29,
+   "rows": 5771,
+   "sha256": "af32a0d0a774d6c35e961bf09ac58224a46571ae1713a2691f26446a93e491c9"
+  },
+  "KRW-BARD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c86b50fbaf2d6d12ed57ed21563279358383117cd0d4b89c32fe9f301adddc21",
+   "pages": 32,
+   "rows": 6367,
+   "sha256": "2602d336747864d54bc208115ebfac076b606fbe3dee2cdb6e57a4998d05bd04"
+  },
+  "KRW-BAT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ade81591d01134c60137735b986ac6dae511244877a7602af4711bdd98b12ddd",
+   "pages": 32,
+   "rows": 6232,
+   "sha256": "4226ca04981a24f5b1cce28b601ef508b1289708f297ecfc67c5acad13bf83ee"
+  },
+  "KRW-BCH": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4eaea14d2bce2a828372e4a1e00e82da0a8fdb8636ee10eff8c3b9c9bb6ec92a",
+   "pages": 36,
+   "rows": 7056,
+   "sha256": "ed7334e1ec09aa89388236ba52800fd5965afd5aee7b91fd1bddb0be2582c749"
+  },
+  "KRW-BEAM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "21a93f3b647d242db170586924b2af52e57502a8c76de24a6b313e369de565d4",
+   "pages": 34,
+   "rows": 6779,
+   "sha256": "f2713c837c8f688bc3c45a12f0913883f4812ba16bf69c2ea4a55f5e4341fa6b"
+  },
+  "KRW-BERA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e69b63e3e8efe93d7251f7a4240fd37c50c60c73e9f73af3f4b7ac74a66b232a",
+   "pages": 35,
+   "rows": 6897,
+   "sha256": "80b482ca403625f5226ff01a06d426dd48efeef56980ea89ffa69a68b649087e"
+  },
+  "KRW-BFC": {
+   "first_time_utc": "2026-09-10T04:45:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "032d86c7e3e8cad2ae0b46006344bbfcc02f0c6e3f92196622edadae99cd275a",
+   "pages": 33,
+   "rows": 6495,
+   "sha256": "332973b40a99820fd679ba60779695c7aa03fb68645fa4a5c580811b5c941302"
+  },
+  "KRW-BIGTIME": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dc52fc6ac4bb18a1ebc6d4e140d73b017561df36462d4579a20428c5b2ac874c",
+   "pages": 33,
+   "rows": 6466,
+   "sha256": "b042aa546e649ae718ef5c7596fc58588102443dba7a76329e519758d9ce9650"
+  },
+  "KRW-BIO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a42f961149d7d14525ea158be2fbdb286c492723978e96478fc2b60c5c67620b",
+   "pages": 29,
+   "rows": 5656,
+   "sha256": "daa70127ac2bcfc3007e69d6c059c41efe813dfa5a00674d5a613662bfa6d90c"
+  },
+  "KRW-BIRB": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "798c450521349d35d2b90b90a88b0c96f2cfb4526d91b750af72da962182b83b",
+   "pages": 35,
+   "rows": 6822,
+   "sha256": "88edff20c3181a1ecba8b9b218574d74c26ea5302f5debbd750b0763fa82112e"
+  },
+  "KRW-BLEND": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "15ef65857e2491d64bd1fcd9c2af3f7aad279798f5e79d80791525c3577f2885",
+   "pages": 32,
+   "rows": 6232,
+   "sha256": "09502c04bb570ed8078239b45774e3b2eaf1e6169c2103874cdbc2f84b6fa131"
+  },
+  "KRW-BLUR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0383c19086c9eea78bf7546a219536ac05ec62a8e094c51e86c99f860def8852",
+   "pages": 34,
+   "rows": 6765,
+   "sha256": "f0e3c847fa25e6079aeaf0e04a5d7ef8a570d241e0e93e00c3c0d827c4bfb734"
+  },
+  "KRW-BMT": {
+   "first_time_utc": "2026-10-24T03:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f3d9293ef9ccc4ef45fc59780d285e64c18b9e9226ff1993b711c2bd7bf34cab",
+   "pages": 14,
+   "rows": 2619,
+   "sha256": "41cf27201580237efd21b4612e8c531c99cc10368330ea4bd8fec60059565072"
+  },
+  "KRW-BORA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3d03d14a3cdbb6069b7c6cc4eeddd73c74ac9531ad2f2daf2d50ea68134fc809",
+   "pages": 31,
+   "rows": 6111,
+   "sha256": "7305372fada09b594da831c5fc4d8da38c5362dec42047cd7a7737fc1eb8c4fa"
+  },
+  "KRW-BOUNTY": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "779a429cf46781b3b07c4bce964563eb8261b0e603686036edcaf75e55eaf2db",
+   "pages": 24,
+   "rows": 4723,
+   "sha256": "531fc1b771fc81aa48c840ccbad47a1171f3fd2cdb7abdb0146876d17f300f43"
+  },
+  "KRW-BREV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d2bf40ec492a2a433aaab35745851737158ae5a1cc57d24a89bd75fe3ec8b2ff",
+   "pages": 28,
+   "rows": 5555,
+   "sha256": "6bbd166d45578ad2aed22c4e3a2ca13df30b907520995480d922fd30f9f4bc2c"
+  },
+  "KRW-BSB": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1a1bea96974dc55c82b28d1ca9f9e80bccfd96bedd25e3a2bf3a72f914bb1669",
+   "pages": 27,
+   "rows": 5233,
+   "sha256": "ea0cdb352bfc54c8f0287e7bb6fee1f442b45765198cecf74559629a47770e4d"
+  },
+  "KRW-BSV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ada43cdb935f80f7399b5261fad44c4aa6b0fd23ecdcffdad110cfe9dc829335",
+   "pages": 32,
+   "rows": 6359,
+   "sha256": "ecf7c45195bd0037930c0822758b239eae9f3fc8a47c884be1b08800f49d5cd2"
+  },
+  "KRW-BTC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3b270539d5c30a0b35138e53d3ed4fd7019b6b637aed1cbdec03891b9e27a9bd",
+   "pages": 36,
+   "rows": 7065,
+   "sha256": "43bcc19d56096677ec151b1fad5ee79fa8bcf32546f5738211fc542cd65f2724"
+  },
+  "KRW-BTT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "fdf949beea33628f4504c28948359d991b57f254533fb863d6af515eb1939312",
+   "pages": 34,
+   "rows": 6708,
+   "sha256": "8eec0d64d30d415554a388d35c4add53c710961d4829c0d11ff722cd5cec9e63"
+  },
+  "KRW-CAP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ca01e86c949e67e371c61e35395e3622c6f08f8865d9f3b91df2ba644b12592c",
+   "pages": 36,
+   "rows": 7038,
+   "sha256": "640de3245b6d684d76cb2fb289030ef240ea5d10f3a6e5e5f10d259c1ee4818b"
+  },
+  "KRW-CARDS": {
+   "first_time_utc": "2026-11-05T07:30:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "694be59fdaf3efcdeea4d6fa61b4b756b1fb7b9003123f4ae919afb060b16897",
+   "pages": 7,
+   "rows": 1393,
+   "sha256": "37ddc306d9f6cf601c9a99454a77b52ef30243e818366c8389a0c370ddd1ef4e"
+  },
+  "KRW-CARV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8c8ce46386cf7127896c3eec2ffc3203f950cfe053fc2cf69216e8be189ba4fe",
+   "pages": 32,
+   "rows": 6363,
+   "sha256": "6870a059ed8b909a72a04471200d770c6f6b438120846d24b52a0549a6c48544"
+  },
+  "KRW-CASHCAT": {
+   "first_time_utc": "2026-09-28T08:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c55cc746b6b9aa0f857e64295d74048f130f023a27c3562ada9927b61ea367ae",
+   "pages": 25,
+   "rows": 4978,
+   "sha256": "8ff0a9c81f932ddc059bce2c2b6f065971a6a51656e33cfd6412c4a35105b584"
+  },
+  "KRW-CBK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e8b7565865791ef8138f52ca8d397bdc24fb8cfda594b60e9f9b59609195ea0f",
+   "pages": 26,
+   "rows": 5197,
+   "sha256": "4061101f1bfe90e45eac73ce2cd05ca060a5b3a9231132bba921debf4b08b730"
+  },
+  "KRW-CC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f36d5b6137abf6f00e4c9948db90285f4a9ff98d59df525b95047cd3c1441363",
+   "pages": 35,
+   "rows": 6817,
+   "sha256": "d9e459869ddf046fecbc809dd00cc6405f8ec619f75f6f961778d75149384366"
+  },
+  "KRW-CELO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e743ea24a1c422a4ae84f0c7aac131e4accaac43f108f67c30825725f4e7b827",
+   "pages": 30,
+   "rows": 5886,
+   "sha256": "a1fc6ffa54670258e315c3d900c6d0c041719b2c42c1b5a1b6ca50044ad24ef5"
+  },
+  "KRW-CFG": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "15f69b9d903cd55b3b280f5a1af76fa866f2938c2d0d699b3922465716de904b",
+   "pages": 34,
+   "rows": 6637,
+   "sha256": "7aec7a933d576f307add87b7dbb6c62581ddc720ab4935b8849a664a87552604"
+  },
+  "KRW-CFX": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "2b25cfbe94a472088a8770cf0676c4ac2bf7ade358b2139bb030dba8feb7a085",
+   "pages": 23,
+   "rows": 4589,
+   "sha256": "cbafd5fd3001ee70ecc9aeaa9041a5e98f506bf249588bc1daaebe12c6add455"
+  },
+  "KRW-CHIP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d9b24a11f37dafefa7190fcd53f28add707bb70f91d2cb2f43295f3d0d3c548f",
+   "pages": 35,
+   "rows": 6986,
+   "sha256": "2e96b1a48cb78c4e74bb0d72b38cdddd9571124b7cfa37d8665b1e1f732219f6"
+  },
+  "KRW-CHZ": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7d23a5928647b70ae702aa3eda36543b3485ed339ad079e985cfaf85f83e5b27",
+   "pages": 33,
+   "rows": 6523,
+   "sha256": "5b89542bd1ee173d7405be2319a48f72195911c94785f25d7173d28a7b5f8bfb"
+  },
+  "KRW-CKB": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "78ebf91771c514766e27f7180b57d157f201a79da6966969b2b30a53e89318de",
+   "pages": 29,
+   "rows": 5651,
+   "sha256": "250224454005e25b88bb675e8ab23d98e1e876e48b16b153e85a1614832eda0b"
+  },
+  "KRW-COMP": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "df121d73e3d268e58eb3adbbc5a49527c1c35105d98682eca3a2ee7a1bda180b",
+   "pages": 25,
+   "rows": 4990,
+   "sha256": "9c834498bfdefa3c54f071ea88ed63f50439908447b0641885467794b2cc0f47"
+  },
+  "KRW-COW": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T13:45:00",
+   "page_hashes_sha256": "7cb4cd616873277590a82a06234e45ad81cb1eed3209b7fbc7e6b9ac161119db",
+   "pages": 23,
+   "rows": 4453,
+   "sha256": "10606a0723850375436f350a5efb8440a9ebc94534eebe1e143128b90e2d433f"
+  },
+  "KRW-CP": {
+   "first_time_utc": "2026-09-08T05:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "251b8366b65c2aa94c21983d2fcf8dda0127f082e64131f60a2c6577b7178f41",
+   "pages": 34,
+   "rows": 6683,
+   "sha256": "f70d5dfe4e69dd617d87d2b8e0035d7e925bcbcecc17cb3743a41c96f6f1515a"
+  },
+  "KRW-CPOOL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e059fb9947b4452797cbfa4e41223dfbbab941213f9d22be51c72ae4cce0b9aa",
+   "pages": 34,
+   "rows": 6726,
+   "sha256": "77688691175ae1bb7f6a039af803acf9ee75e2f9d2bbea366e8e39f70111bcb5"
+  },
+  "KRW-CRO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4bff85e6df5729f3b1230ba9f9b8cd181f848755c273fc21cbeec1d27437fb04",
+   "pages": 33,
+   "rows": 6562,
+   "sha256": "bb273d192543890c3497efc5bbddb2da94a50916bc24fbc75170a2b9437ec626"
+  },
+  "KRW-CRV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "71b70d298232e42f16216c91e4bf0e20b6f0a7e5206cd030b6a36ff40c1986e1",
+   "pages": 29,
+   "rows": 5663,
+   "sha256": "6a82afc3f54f9ec5bdbe5000a36d6519485cd4a0a9b61f018521d913f7ae615b"
+  },
+  "KRW-CT": {
+   "first_time_utc": "2026-10-19T09:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "629a021ec26216f9126768a6542d25320a3ca78a6e57c9aa92544c725f86936c",
+   "pages": 16,
+   "rows": 3062,
+   "sha256": "556d3d8e40cba3a4b1905bcf916f1a923297b168de849d5e8a02300b4c754c9e"
+  },
+  "KRW-CTC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "4224c550213e28dfd30afaa22878b9766a1d4ce267dada1593d0da4076955246",
+   "pages": 33,
+   "rows": 6430,
+   "sha256": "3581b72260ed19c35e22f4eb48308b781f929613882ee81568162d4656e7d5ec"
+  },
+  "KRW-CVC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6e0511cf8b243cfa6bd99d071d3fb81eebd04f2090aebc5eab39a2d6559669f9",
+   "pages": 33,
+   "rows": 6433,
+   "sha256": "10ee8e737a278cdddfb557eda8f3bcfe7c022aaa76d65d43cacec0ee953cc7e4"
+  },
+  "KRW-CYBER": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3aabb7285087ee28607242d7cade92f29600b7d68b05e5ed61197058e5c3a7aa",
+   "pages": 31,
+   "rows": 6189,
+   "sha256": "3597ff87447f781a9758448b40da6f3bc6826c1ce9c8559e6e80978ccb35bead"
+  },
+  "KRW-DATA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "04223eafd7d0097a57cda68ce822c481b2a5714ce0b5e79efc4498a922cb73b2",
+   "pages": 36,
+   "rows": 7009,
+   "sha256": "652cf37f1b90d288cf93e5fd933ab044074d764aeb00f039c3fb99dddc89657e"
+  },
+  "KRW-DEEP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "542e8414bf8cbed789f4909fc7e445679849128ce19219228f5000439bfcc822",
+   "pages": 31,
+   "rows": 6018,
+   "sha256": "186590c2dff42bccd9505182c76166bfd0b8315699416516a422aefcd1b8243a"
+  },
+  "KRW-DKA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bf8d78800d4d0a6882dd2d5517c5cb0a0dce3dfbb1ad4240f853bbd7d6bb009e",
+   "pages": 30,
+   "rows": 5916,
+   "sha256": "18b84fdb518b4ea41364416a7996a058e55777ab91e707c4660722d779829fa7"
+  },
+  "KRW-DOGE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1bf20e223094c5b74558e6592adf148c6a5818c87c02cfc29476a9eb21006330",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "4da1fafde64f54e3d0557ec8c251e901a9d85d53ba5ba77ab8db4142ec6137a4"
+  },
+  "KRW-DOOD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0e81b3e98908ea9c552e096eafbd0e915ca720077b273269e05b94847937de07",
+   "pages": 34,
+   "rows": 6604,
+   "sha256": "9d445d278edf4f1ce9c43be454cc3869a9e6d73a9911003c1889cba2211fa5e4"
+  },
+  "KRW-DOS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d913b8c2ea727a7fa5f9ffaae3ab7470a3dd0cf265407f4ecbf302dea156f286",
+   "pages": 35,
+   "rows": 6961,
+   "sha256": "9a3206b061e0288e577b968f4b1dd63ccb13263fa155d73232291448db817022"
+  },
+  "KRW-DOT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "275fa901b890822d5551ff83a2b3e05729cc787c01dd777009b3a017eab9035b",
+   "pages": 35,
+   "rows": 6888,
+   "sha256": "d9432cca035b664b99c7c08a445294c13e7c1bf81955be55dd0969faf637e78b"
+  },
+  "KRW-DRV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "290f627842a8f66b0674efb570997f908345a1fa1589a27bb9187ccbdca7c9aa",
+   "pages": 35,
+   "rows": 6803,
+   "sha256": "b46bb3a5e2e72b121cc5a84de9b6fb8a64f514f0528a85554a89d95451495542"
+  },
+  "KRW-EDGE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bfa5d08996909de06e6560a8710a85e8d323c0ca05f799040948c821962fe7d7",
+   "pages": 33,
+   "rows": 6455,
+   "sha256": "3a22624507518dc623fbf863535678c283c904248b3c336f13a3f915492d9023"
+  },
+  "KRW-EGLD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9a9baad2a3dd4cb20b356809fb65d32a48c917da5bd38f602db2640e4fc2c44b",
+   "pages": 33,
+   "rows": 6562,
+   "sha256": "c074e6de4e58516390ba060a23ab66e639fb0ab3db1fc1648be641d614168ec4"
+  },
+  "KRW-ELF": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "11fed74021b8923035c7d1209ea1ca78a9c005bd2b21a1f8aaa9085174058004",
+   "pages": 28,
+   "rows": 5542,
+   "sha256": "4be29baea4e59f7f54768f525204c1952c252fbcfdb26d46070794d65bafad10"
+  },
+  "KRW-ELSA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cdadcf4cf8e0ccecd0a98e9be65f8a0acd20074bdfa97358a6aa7cd5d4da6dfd",
+   "pages": 33,
+   "rows": 6599,
+   "sha256": "5981b2bb4f014e174149a84e9cb5f939b22efd810acde3042d41e3de8b6f4bf1"
+  },
+  "KRW-ENA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "167fbdfc9511f3717432565098e9c358868ef6297a51a49c4736360508aae762",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "9d8d3594beda5b66ce80f2e6f008ab8b7b592a2ef28adba6a4b7ff0b4f3f2e59"
+  },
+  "KRW-ENS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e7c314532bf06806e55e4610f13021f0b92294bead4122ae449c0c789ae459e3",
+   "pages": 35,
+   "rows": 6992,
+   "sha256": "325663b41108c19652f96bc46deb343e5eadf02589f73ddca9e4a37161ef1092"
+  },
+  "KRW-ENSO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "fbfae084fa846681180999e8b72df6bbd9a8ba3996bb677dbd7c4784f1de98f3",
+   "pages": 35,
+   "rows": 6877,
+   "sha256": "4afef694aedd51d0417103f3df334570eddb00c36f9370fc81c6a11fbeffc470"
+  },
+  "KRW-ERA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f20abb8f8f25d48427f2495c25bf218927aa0ae89558de0704c1c66ae85eae08",
+   "pages": 35,
+   "rows": 6915,
+   "sha256": "e9cbba869c5232e5d4b960cffbbfe241f5c287ae80b337356c794e2e60023fd7"
+  },
+  "KRW-ESP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "02959fb5e66724f542c9a5e1abc941a3b1b2d1c43c4a0c3c0e5e64a70f68cef5",
+   "pages": 29,
+   "rows": 5627,
+   "sha256": "100459b14bf7857f5be411f8b7239bd634ce96d6ed83db28916ef8421ceab414"
+  },
+  "KRW-ETC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "226cacfa5b872f48e16c0d419207fd5e0f2656fc27527364bf6266980ecb2dca",
+   "pages": 36,
+   "rows": 7035,
+   "sha256": "534da8a5fa5d2dba17717693c5879d0ed0697ed74a58d29f7a6cc6e86ba0a858"
+  },
+  "KRW-ETH": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "19249bca9a06641b369a23b9ca176180c054014316388aa1be439388152a1aa4",
+   "pages": 36,
+   "rows": 7066,
+   "sha256": "fa59a18a8772d26927cc040922168622415b7e24499d4d1104203bbb6dd4b5a2"
+  },
+  "KRW-ETHFI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "662fc7f120a22a9d98326a4fdf25be53d09de85d9160731527aa23a16f2186f8",
+   "pages": 34,
+   "rows": 6612,
+   "sha256": "a679da16e6512c05bbb75fb7514b363f3285840a348d3096bfcc5cc90ea80b0f"
+  },
+  "KRW-EUL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b6b233ce165a17e502d4aab1525389ab1771a0d9177a2ca2c07da4036d84ef7d",
+   "pages": 32,
+   "rows": 6237,
+   "sha256": "a8917c9dbaacc79b58e3111f70e15580f33765529621b954f36b89a9dda63f2e"
+  },
+  "KRW-EURC": {
+   "first_time_utc": "2026-09-07T16:30:00",
+   "last_time_utc": "2026-11-20T13:30:00",
+   "page_hashes_sha256": "639971f1e8cfa8d7007fffbb6330de35bf774f1d04ffe10def80f21ce1c9d95f",
+   "pages": 12,
+   "rows": 2328,
+   "sha256": "d933a337a935f01d5fd8cb33812bae91931dac79ca1f8776f14be486cad74ab3"
+  },
+  "KRW-F": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "071c68bc6cd45a87cae0479192b7a8eeef9468f4179552f5df76d4c32ceb6c75",
+   "pages": 33,
+   "rows": 6439,
+   "sha256": "b77724642e8d1fd1e3b1cd3c7f1be96bbbba49ee426267887ec20846ba7061e8"
+  },
+  "KRW-FCT2": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "117f9b5d77f820dd050d90674d6f3661386cb07953767a3a6429e238a710aab5",
+   "pages": 25,
+   "rows": 4804,
+   "sha256": "1555efc5713cb736102ba11bd96575aaeeb52c84795ae5ee57b1c67aaf6ec6e8"
+  },
+  "KRW-FF": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2061629b7919b5b6115c8094faa1f10b9925d3fcdfffe07c8007bbd63ff41479",
+   "pages": 31,
+   "rows": 6117,
+   "sha256": "a124703aad4b76187630aeaa02d29ae77d589dfe7f421f87b29c90918b55d9af"
+  },
+  "KRW-FIL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "37475f2887aeb7856feda9736d7e85c0f1d38237b463b78ad6351a9fb701918e",
+   "pages": 36,
+   "rows": 7003,
+   "sha256": "a29adc0facb0965585c1a712c48ab27273193378c0547e3a4319194e811ed696"
+  },
+  "KRW-FLOCK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b4f15da7283a1d57f9b1cfdd43ce657c49f38b2ad14d4adf6a19496074d81ce9",
+   "pages": 35,
+   "rows": 6909,
+   "sha256": "4550ea860677ce931a534a2fcd5eea29c57283bc28e5361d14a5e7fa94024bcb"
+  },
+  "KRW-FLUID": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a38e4768641c5a3f8016607c1ae9b5bdbcab8fc9afae6a6d5ee5237df18e255a",
+   "pages": 28,
+   "rows": 5517,
+   "sha256": "60b9b19020893ed85127d1841c07ca2092daa7013a4bfd3b1a833ed2adb47dc7"
+  },
+  "KRW-FOLD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3255eea3ba7644523611db10bf236571acba17624bc0ae26fbcfa2253b3ca380",
+   "pages": 35,
+   "rows": 6953,
+   "sha256": "67552312b61f8c2c70c15c138eda0d61e38d585d049c5110f6682f8eb4cba668"
+  },
+  "KRW-G": {
+   "first_time_utc": "2026-09-07T15:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6239d73a246ba7fd4b0195edac80e1f0652081c7b1d5ed73549b77c11b3367fc",
+   "pages": 35,
+   "rows": 6915,
+   "sha256": "c28a0c8a18ca52cd4c1e3cfa026b9e7fdc5f78781a442b6354ba633fbfc5286f"
+  },
+  "KRW-GAME2": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "504fa22f2f2e720c29c4842530fe209864cd04cea8e451258efbf3d5f90ca8ee",
+   "pages": 26,
+   "rows": 5137,
+   "sha256": "0552e8ba5a9aead8d4eec899537c40a2170e59ab51ada54add9f6097dce36512"
+  },
+  "KRW-GAS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "85732264e5e9f738a8b6156df9df0727106c6f8fcc9bb5546258d5c16aed1e17",
+   "pages": 34,
+   "rows": 6749,
+   "sha256": "74abed5e6eac398b118c03383f7e4fe9c4b29022b572e906e2731b0f7c2ecbde"
+  },
+  "KRW-GEOD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9d9327649a89e1dda4be58804dc785e81aae77f0d3af686c49da0a5b1637a13b",
+   "pages": 31,
+   "rows": 6001,
+   "sha256": "577c979a3699bb98742bcd43418dcb3cde38997bda1437e8ab7235f81f75e633"
+  },
+  "KRW-GLM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0d8cc65b519363759db0c0e8944d96390f2ab9c9ed559be68b716c6f567a3c52",
+   "pages": 27,
+   "rows": 5251,
+   "sha256": "5fadd50488907abc46f654a04f4805ea3e20bcb63ac643a2fc60524e8c7f7682"
+  },
+  "KRW-GMT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f8c19c90a8329ae9a69427f4b8874506e291fe69f1a93c94d53ca30ce116b9f6",
+   "pages": 32,
+   "rows": 6360,
+   "sha256": "f4501404d67f354bc13307e632ea85c56b4a155b9823da24322ad607706f8094"
+  },
+  "KRW-GRT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b6a6bc08f7461efc6ea70322b12fddc2bcef1d1e48de1d2c39d7734da6bb0d42",
+   "pages": 31,
+   "rows": 6181,
+   "sha256": "6e7f3fb2e6ae711a6b358f24e270eba1d3bb9040f16eb46fb5a70dcb01ba8782"
+  },
+  "KRW-GRVT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a265b469f57845a6fea422e80d358d2cf5dd3b3b62c31c3278acfc0fed680cf5",
+   "pages": 33,
+   "rows": 6587,
+   "sha256": "7521b7b13e1d6f83395e1e56660927980d17a4f915017d381ce6f077b6561f46"
+  },
+  "KRW-GTC": {
+   "first_time_utc": "2026-10-12T10:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "43aa382778de8e2280c07c187d513c6f4dadf9d3250998e4f9ca5e6b1ba55cc2",
+   "pages": 19,
+   "rows": 3694,
+   "sha256": "edac8f190fa794865bfef33e3dded61750ccc570e56f2e3c9bdfc1c7f83fc94d"
+  },
+  "KRW-HBAR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "088fc36a147ffe75500fc460e69e61be1c7133b71774ccdb7e9e9ac6d7ae0d6e",
+   "pages": 36,
+   "rows": 7052,
+   "sha256": "9975d5abb48916d36f277ea13d2caf6d328c2502d39ee2805bcb1e326474f381"
+  },
+  "KRW-HIVE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1336116a01479dc745339d839b4330b0ffe6d0cc4396089896f469036b5a643d",
+   "pages": 30,
+   "rows": 5846,
+   "sha256": "a41af4a31256e43edd0b31f67c83b676a9497d5ae2dcbb4f78edee4f4e9f6f6e"
+  },
+  "KRW-HOLO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6736b190e82e5d186720740b4c88080ca0a7fb5e4aac2ef397bc5b52edc10d9f",
+   "pages": 32,
+   "rows": 6235,
+   "sha256": "906e38835121e21e1ffa1fc3532ac16545426620c858192b94a18848a947246f"
+  },
+  "KRW-HOME": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8d49f0548ccd943a8efaed82e0790398bc7d21feab01d0281bc7f966221a27ae",
+   "pages": 33,
+   "rows": 6407,
+   "sha256": "f15f531bbbaa34e61909c9884f953fe80ca89ff2d1dd0e8d799e924314c053af"
+  },
+  "KRW-HP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:15:00",
+   "page_hashes_sha256": "937d65adccc3e5c7f23753f4451c792c20dc2e6ea487e08ae2b3832632a2fc91",
+   "pages": 26,
+   "rows": 5057,
+   "sha256": "f1385c8ed0966173da582e9d2a764464b4e6274fb490aab3ff4a0294ab0aa04f"
+  },
+  "KRW-HUNT": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cb42664db8cf47d95da68ee67cf40d042c89499e9de2db59590fae6cbd3f30fb",
+   "pages": 23,
+   "rows": 4569,
+   "sha256": "44f48ea0e51fb0e89adc649af900c0bbb320b57cff742701f79f826eceeec059"
+  },
+  "KRW-HYPE": {
+   "first_time_utc": "2026-11-10T06:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "61f329b181359f111b301ea885bf490743b85846ece37b5493cb3371c264ff91",
+   "pages": 5,
+   "rows": 989,
+   "sha256": "43aed24065a93568c4b3aa0a42ece20da975ec0a889448de9e28400b63e452ae"
+  },
+  "KRW-HYPER": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1926bb77e116dd9894e939f4d152959e520cd84f4b249aa6148187ea563cd3d2",
+   "pages": 32,
+   "rows": 6329,
+   "sha256": "51ca83cb7bb510ba7c2beca165bb67a706497bf4b34ec459a4e6e519252fb140"
+  },
+  "KRW-ICP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8f69f8141d5ab17239987d95f6c8499f7596a6411a7bb790c2e9e0c71eb6c419",
+   "pages": 30,
+   "rows": 5894,
+   "sha256": "20bb04961eb8c9f0838b0aabf469e439d8699b96ab13b116693afe34614c45a0"
+  },
+  "KRW-ID": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f9de9ae3c8b8fa9be9afbc85ae831bf1897c9a6b072e82996aa3198f7ecf9bdc",
+   "pages": 33,
+   "rows": 6548,
+   "sha256": "def696d2f4a20cf3cd92a00ec69b8f6636bcc64d4848b776826a17d14f0d4c40"
+  },
+  "KRW-IMX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f251c65e9ceeb75b652bbda18d8755d2954db4101fb8b3dcff5f2d68637d8c32",
+   "pages": 29,
+   "rows": 5637,
+   "sha256": "a579dceb35bc1976b2f0bc22277e1259768d4246edd9521f1cb70e9f287f874b"
+  },
+  "KRW-IN": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6ad78f56aed7f7a6db09df14f439f9784ed082a49adc88c64e0f2171164fea2e",
+   "pages": 34,
+   "rows": 6740,
+   "sha256": "2c471ff5999b55738fa71bf1864b647543da49514897008397c1a6f5f4b9e48a"
+  },
+  "KRW-INJ": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6be4cc5367c9244f5d1f9567266581ff09aa340133cf33e1155a1459b62c1b47",
+   "pages": 34,
+   "rows": 6778,
+   "sha256": "faae6e54a5fe1e7a50018dcb8f882fbef83eba1dcec38aece9892dc4be4bc733"
+  },
+  "KRW-IO": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "13b63e4c6130db7f1b71457403a76da8d1b11758f9d5e7c6e0b08b2913c9cc8d",
+   "pages": 23,
+   "rows": 4582,
+   "sha256": "bb97d17fd96ebf7786aef32d0b290cbb6a39bdf01fcd4a44cdf33709082e9202"
+  },
+  "KRW-IOST": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "913e760ee6bfd8cec7987a075c40066beab0e075d24630326749d2c12f389aa4",
+   "pages": 35,
+   "rows": 6825,
+   "sha256": "cdd2eaf48d4c5570744b625a0e83235fe14d3ce50466db1d1eebec8e3f4467ab"
+  },
+  "KRW-IOTA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1a74b5631ff7680cef732b9087822eced0063fcfc195d07366d8070a3d4aad4c",
+   "pages": 34,
+   "rows": 6727,
+   "sha256": "5ebdaab487c5a9adc219d862bb501ff2640a09ff09b971733c5cf4c14bc781f7"
+  },
+  "KRW-IQ": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a91ef67343267a71d7f138a536fda334b7c61c0f33d3058019b07cdb91f86e95",
+   "pages": 29,
+   "rows": 5701,
+   "sha256": "2c22a4dc864be007695500a3a7df00982553060e1b00cb7cfb98b013da7201f2"
+  },
+  "KRW-IRYS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1d2708e50b2261140182f60447c2e8f167b27de3d3508608397c49217c94b4c2",
+   "pages": 33,
+   "rows": 6585,
+   "sha256": "d2a621fd7368060b9552c3eaa5c65f4819ae800acfaf089f8875928226e37983"
+  },
+  "KRW-JPYC": {
+   "first_time_utc": "2026-09-17T09:00:00",
+   "last_time_utc": "2026-11-20T14:00:00",
+   "page_hashes_sha256": "60cb1b403f6bb342c0b5f5274c28a15d38d750cd3f67b6fc5720bbee41cad5b9",
+   "pages": 24,
+   "rows": 4655,
+   "sha256": "cd54eb3174b83685a743079b966e4e9ff6fc8ca166d335641ab14d1f88bea160"
+  },
+  "KRW-JST": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "37dbaf7a6161ee2e3d66776dfdd9fd78ae1c28137375e78e525231b300091409",
+   "pages": 26,
+   "rows": 5151,
+   "sha256": "b8ffd1de3a178292092905f41ec7442b85d15762e09ea524bdc148fda5a20143"
+  },
+  "KRW-JTO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a4846e9294edfe8926f5798960d777ea7caa4ac2bd30be00fb0e8f5c364d2cb3",
+   "pages": 35,
+   "rows": 6964,
+   "sha256": "94dcbc25195d28708d99732718e43c93dd9ae0028d5ffd306261ae5a5f362816"
+  },
+  "KRW-JUP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "82b6126f60fb0c16cf341a584f3e66e95cd003041925266367a637aaf00dc82c",
+   "pages": 34,
+   "rows": 6783,
+   "sha256": "9edeb1a8f5820fd59b4ffb127eeb0ec0f3cbf23f3a3a99e8ffc74e9e1b1548ed"
+  },
+  "KRW-KAIA": {
+   "first_time_utc": "2026-10-09T09:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1a4e3a61994832878a7f1f73d45645061c441a477cc18a5d2923b8a87cf1d825",
+   "pages": 20,
+   "rows": 3907,
+   "sha256": "977528413ce5a3bd3021b9b78c3b7cc397fec1f192350e976ec1926a4fa0c8e5"
+  },
+  "KRW-KAITO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "42471d61ebd6950e7c4e50334eacb7d195a2868454aad3194520bb86a1652e11",
+   "pages": 34,
+   "rows": 6601,
+   "sha256": "2a8c9fb25ad197258aa9470d5880c8e3ef40b260c08c74d6055f90ae80c78546"
+  },
+  "KRW-KAT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7c62d2391b0faf4621d88ab9d942aed470410339e6453c63107b833f8fe1afa2",
+   "pages": 34,
+   "rows": 6747,
+   "sha256": "b6e3f89664659f7cb99dc50e976c7f57d29f71dcf5719e77aef7afe7c4e0912e"
+  },
+  "KRW-KAVA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cf64d88a4ffba4aefbeb0004f7a43553635a243f7f9112fa9b67e959af85ee48",
+   "pages": 28,
+   "rows": 5560,
+   "sha256": "a13b6d0486fec7a2a52524a7992612b835342a72840903dcabfb4f37291b8859"
+  },
+  "KRW-KERNEL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3444f7a9e755b7419e6c447aadec3e9f21b01bd7a91fea6524b2158bc703fd7b",
+   "pages": 28,
+   "rows": 5464,
+   "sha256": "d6cc13b5321db2ef8ea16c16c0e067f2995f7f4bd2089412dcce96c26973ae5c"
+  },
+  "KRW-KITE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bcc9fdc1a8586ab57834fce244d25822998b8566da3503686654bae3fedabfe3",
+   "pages": 33,
+   "rows": 6583,
+   "sha256": "6b5deed409220fcb115bf2774f5a3965075dd07e5d827989620523f356e768da"
+  },
+  "KRW-KMNO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:00:00",
+   "page_hashes_sha256": "073bf5fdf9f9c85a33c912ec32e86e483abf94de17e460da386dac4c57bee930",
+   "pages": 28,
+   "rows": 5431,
+   "sha256": "74fa86edca5b9d214900e2ec04b40a38948ccb2e83ee8841299a78d0c43ebfb1"
+  },
+  "KRW-KNC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "434c0cea441ff510bde3ba01aa47c496971edc739ba0a1a8227f22c6507d35dc",
+   "pages": 24,
+   "rows": 4657,
+   "sha256": "ad12b3708fd71c2f63f8888fdbba270796b58bd9e00ee4a0d217408edd2ad565"
+  },
+  "KRW-LA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0f63ee89f42a1cc9de90d7d64422dac483acb57b59ec8943fda8ee4adfd66789",
+   "pages": 36,
+   "rows": 7018,
+   "sha256": "5f2712a427166a21a97bdc666914ec755d324864a61f91a875d07d7d799c14e4"
+  },
+  "KRW-LAYER": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ff83b9552f25a433d13350d8486a62d6cb1b1a7ce6a1a9b419449fb82aa3ee90",
+   "pages": 33,
+   "rows": 6503,
+   "sha256": "578a032b2f5c0637dbc005579cdb6931cde3a17a69715c58e7c8021e2f4dc965"
+  },
+  "KRW-LINEA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "021e8db15ce872e6eea84bbe8e6cd31e928f0a82f1f743a7da2d866e1962bc49",
+   "pages": 29,
+   "rows": 5775,
+   "sha256": "3604939d21c2557a6ba25b4fe92291acc7db8ffcea09665d6598e3247b9eeef3"
+  },
+  "KRW-LINK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9e22b83b50ceab4b9138ef6b39109941ed5121623d20a00a6bd20b7d887fad07",
+   "pages": 36,
+   "rows": 7061,
+   "sha256": "e601aa3339ecfa3e11bef81787752f7d4c3b500b9c8d8e8f4985c08e0c7997d3"
+  },
+  "KRW-LIT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3f0f99fcce90339670812b8254e7eebaf9a3a04ad8521ff9fc8670157884abdc",
+   "pages": 35,
+   "rows": 6988,
+   "sha256": "ce571c15b60401e6d3026306f57d41a078d2a86718dd2e63e5459386b223b21b"
+  },
+  "KRW-LPT": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a286e73b953b95eb4c0cd076bbce5b62f820a0545ad9b55fde9e9f1df4769378",
+   "pages": 28,
+   "rows": 5567,
+   "sha256": "38b9dc77b563a30e3353f49b02e93875d15f8a3ab8f05c4c3af9aef1a8dede52"
+  },
+  "KRW-LSK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8296084943075383d3be61efae43bbf5c85cad2ab6fc071f7423dda2f0da2e95",
+   "pages": 35,
+   "rows": 6969,
+   "sha256": "77aa51084b339ff72ea55a84443ee9c0a37e5d152f258c144a6460d30b54546a"
+  },
+  "KRW-MANA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ff0e3405da67d294f81d4752bdaa3495754ae00878c7c1e4e60f1f6c2e20143c",
+   "pages": 31,
+   "rows": 6026,
+   "sha256": "5efe3c7b7cd9a350eb592917e4be9efad60a3bd0ea37c3ec20272f66c9c37102"
+  },
+  "KRW-MANTRA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3afe15798fb850666e4faa3e103f93e01a7a1318823fe947bdd882051e943304",
+   "pages": 33,
+   "rows": 6540,
+   "sha256": "bc16b2ae1766f65400218069ae30be86616c4ffc9767c4c6dc4cc9ebfb54c015"
+  },
+  "KRW-MASK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6a0d2cbb66b1b3ec622a19c976587a9a060411cf01249226aa616df12f22ef50",
+   "pages": 28,
+   "rows": 5562,
+   "sha256": "1212c14564149df60c70877d897968bddc56b31270e9c186a805796d6a4c9ea9"
+  },
+  "KRW-MBL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "5cf78451c713fccfb46f8c8a7db059d99e7e6d495f4f1c41c8e5717d5a6c935a",
+   "pages": 29,
+   "rows": 5790,
+   "sha256": "22695b20a052687cb1211cc20e912b61ca6086536fbdcc0a81d8fda454e0908d"
+  },
+  "KRW-ME": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6ec271dbea5141331e24c484cb6a134077cb1e111c98c68ce83f7ec3e6274b73",
+   "pages": 34,
+   "rows": 6642,
+   "sha256": "dc75bfd4c7b4ef289cdb1137062d7e2df3be8d6415e066057566b7ed4cb7e3ed"
+  },
+  "KRW-MED": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "fa9bd4879e872ca09a777ae57a02fed4438772c991ff72c25e88fc624da8d05a",
+   "pages": 27,
+   "rows": 5383,
+   "sha256": "cd2483c4f15acd40eb8514774fa7a823a0c91d9bc71e936b426a93e7d4a7627d"
+  },
+  "KRW-MEGA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e153378f749b1ef229a0542dc815645f981886e31cc9f35c1d545a6386be3dca",
+   "pages": 35,
+   "rows": 6915,
+   "sha256": "671924bce725b28825842b00d26c8ccbdeab4f9512d2dacd334c4843d1dcf03c"
+  },
+  "KRW-MET2": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bc9091ff82225045baba40082ec3a4dd294b5f46090e212875e1a26ad89c50db",
+   "pages": 31,
+   "rows": 6130,
+   "sha256": "4030c4c69feaf10faa87d3abcaa1ead28358e20bacca3cfb667c63c1a061d314"
+  },
+  "KRW-META": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d0f2f61583eeddf521980b37494af9632fdcf8ad1f63469bfc827e0756cfbc9e",
+   "pages": 21,
+   "rows": 4075,
+   "sha256": "a4f2348ef005f85dd903a3b4b1ae47d550f5761e167f96bc4ff21ea8cda7387e"
+  },
+  "KRW-META2": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0336b16fc5932c33e581449888ad7e7c370151e7d134bdb8b911efe11939b5c3",
+   "pages": 34,
+   "rows": 6611,
+   "sha256": "abf56e52c4e6da99f6911d74a6205897a73033ea831527b34407aa7ffe30cd6e"
+  },
+  "KRW-MEW": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a17fda7ab12b30fbb7e8cc9d61b35fbcbf7b08631921276c9125c8d2caa8ad73",
+   "pages": 32,
+   "rows": 6397,
+   "sha256": "1843ecca0a0682dd094e1dc8a14f1064861459d82320777c2e33113f8440ae19"
+  },
+  "KRW-MINA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "cb39a584dfa97043d2ba0bab7ee91b929c08e8014ef97c4b6f088aedad0f4350",
+   "pages": 34,
+   "rows": 6704,
+   "sha256": "eb226e53b9cb5b25346a2f8c6ee71b17b4f936d7dad06f7230bf73e43f59bed0"
+  },
+  "KRW-MIRA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "11e2d225451a5abfc88a1786f28ca1902baf90a2a6b7a3eedc6adca13c653e6f",
+   "pages": 34,
+   "rows": 6740,
+   "sha256": "8fce6a0bd418e898741ecdc534d3ef1ee9d394b4c8fa0c9de3605f74b94add34"
+  },
+  "KRW-MLK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "43c5e32271c7451cb5409c083840e38f9183efa6f235daf922e5879e72625851",
+   "pages": 32,
+   "rows": 6346,
+   "sha256": "abbf0d62ab10c3b5b719d4b8a8a521bf15bf34f5276ca4d350c2956a717ec11b"
+  },
+  "KRW-MMT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6aa4117e6bf1e84ac57e66775bd38e2c540ef07bc97d4b30da9f7a54429c5104",
+   "pages": 32,
+   "rows": 6301,
+   "sha256": "3deef8d4517cfb9233567f3fd5cd90534a834379471d3a6d04b1c99bec78cb8a"
+  },
+  "KRW-MNT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8ef7af92dd4588220dc8f52414905653dcb71b62aa2a3e846e8f6aeaab1ddaf2",
+   "pages": 26,
+   "rows": 5140,
+   "sha256": "97fceab1b517fa87338974adf8d8f41cc0eb25d3102f25cade1d44a5abfae250"
+  },
+  "KRW-MOC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "87b9e24dfa741e3206d9c1cd01c1f18f14e63cffc8d465ba3075583e0c4884a6",
+   "pages": 25,
+   "rows": 4938,
+   "sha256": "06fcecdb5552232fa0a74cb5afd66c792838adb9d52d403cb1a3008618c567db"
+  },
+  "KRW-MOCA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e4e98df8c6e69b7222307f002d4214ed956aa61f6733293072ce6a254a2e6088",
+   "pages": 28,
+   "rows": 5462,
+   "sha256": "327c99d5c220ad9246b0aac7b03056b108bd299db1a8e7c8ebb6d2285f09fe31"
+  },
+  "KRW-MON": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "699896256428337d927be315685d355b9d91ec37e77b1046a0a9a592785503c9",
+   "pages": 34,
+   "rows": 6731,
+   "sha256": "6e84e50c2e56cd231ae934bf7cbce19627f8df58b09244417dbe2322158a5544"
+  },
+  "KRW-MOODENG": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0ff943c32ea2c67d790ffaee4541805a5f94fa185beba126b73eb947c8a8acd4",
+   "pages": 31,
+   "rows": 6088,
+   "sha256": "ed1e54ecbfd52fe9bfdd6f0544f41739b6bb2b156e50b1cad2bbad5f37466c72"
+  },
+  "KRW-MORPHO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a021afb0fd6cbfad383c2e982bce7baf4f0758ceb6462c5843d33a22f131d957",
+   "pages": 32,
+   "rows": 6250,
+   "sha256": "8a72f52ed58e2b8753faeee788248aa0a218cc8a1b04442fb184e65c997ae95c"
+  },
+  "KRW-MOVE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dc78af2dea8d6ea4678a1eb05c8c30df514e38101bea49afa3283d1a4eb0e16c",
+   "pages": 35,
+   "rows": 6805,
+   "sha256": "8f7a57e848bdcfaa1d52280ad7b433025fb5d1616d48c67feae514dde640fcbe"
+  },
+  "KRW-MPLX": {
+   "first_time_utc": "2026-10-20T09:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "acaf551efde20443eefeca50ed8a928b38ff139a3e6620f47da13f1cb502eea1",
+   "pages": 15,
+   "rows": 2957,
+   "sha256": "fc3b898b0f309e60b8468ebeaac1462cd7d449367829ea5244a7224ed9a736e4"
+  },
+  "KRW-MTL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "38cf0b747470342afb206e8ad3faefefa398e99f0de9d6c8797c99ff4de4d76a",
+   "pages": 30,
+   "rows": 5910,
+   "sha256": "3d98a10c2520d51637a0e235aa130ee2589f1d51d9fd39d535c0afa58af90725"
+  },
+  "KRW-MVL": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ae026cac695880c2b7808d7ee7ac3310a636d3c5f77472f1a4397f5ca4327dd3",
+   "pages": 22,
+   "rows": 4330,
+   "sha256": "2f9e587828bda722b2a4e53c10c6e2117810d77d80c55ad6d97cc792bb4ccd8e"
+  },
+  "KRW-NCT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7198b040de17789e9be778b6a0862120e428b5a76a8a9baf945c5ec0c44afcc1",
+   "pages": 31,
+   "rows": 6143,
+   "sha256": "cba2567e84781caac831bc76ffd05c49f27c573f287614d6b1537332214313a6"
+  },
+  "KRW-NEAR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "30dfa26726b46911eb5b63696085a969f19b625d0d014b9225455a8bbb243997",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "d458225ff1ab2ff5bbb930c8a9524b7a5c70956403c3d98d931d0f1e783d18a1"
+  },
+  "KRW-NEO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f2740262ee6111e69b57b20cc93a14a5f45606e1a49461bbe26bfaaec44eb6f5",
+   "pages": 32,
+   "rows": 6395,
+   "sha256": "174c07cede60415a2a42c773665e7cf5ba3b6b3c25366a0ff881d79563ba51c0"
+  },
+  "KRW-NEWT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e973aa7acc50b762c6f61cd78c9049c59b303cd74c43c4d5adafe6751a4e6fc7",
+   "pages": 28,
+   "rows": 5515,
+   "sha256": "33bd71677bb9395cd746473cbaac44945a8301d9a2145f80e052dda6fd239a99"
+  },
+  "KRW-NIL": {
+   "first_time_utc": "2026-10-27T07:45:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dcbd96f7b229ccfec15a67ce6bf55769ae1ff25ff49a4b8cb04c9961795b8252",
+   "pages": 12,
+   "rows": 2248,
+   "sha256": "5e0526d5629dc789429e2e2d1c4b9490296836824c84c4c46ec05f892a81c216"
+  },
+  "KRW-NMR": {
+   "first_time_utc": "2026-10-06T11:45:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a15c88a8f957cf4edb3bfc0611fe8a0bcd42aedb50343f8187b0b177f6b3865c",
+   "pages": 20,
+   "rows": 3933,
+   "sha256": "c948688ebcaf1e0db4b8f8f832240dd31978cf036c08e39e19be8a9394bfa06f"
+  },
+  "KRW-NXPC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ef54a02efb252e1715da1d39ca64b868b1e1f8c4c00e3a4e67ce27111d63592c",
+   "pages": 31,
+   "rows": 6187,
+   "sha256": "577820f9d25989d8b30e43b28fad734d69ee3dd7035c88e5e4a795a98b8de6ee"
+  },
+  "KRW-O": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "89bcda803ad6c44c4f3f400f0ba12b03a26e655f81b8a3997828b2ebec34641c",
+   "pages": 30,
+   "rows": 5920,
+   "sha256": "f0d0160da33b50ab1964fb4c2c76e373c2546aca4d17fa252b74dec47ef8b187"
+  },
+  "KRW-ONDO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "5fdcf79789678dff7412341e78fbff68bb459065602ec665bf7abecec2e67e86",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "0e38a408e50a7ea8c1ea046329af01d1bfb94f327dc6705d2f60c777ad4337d0"
+  },
+  "KRW-ONG": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0a31d68e12ec8eabd16aaf65c8301f7cff08a8b328e80026056837ad476b8ed3",
+   "pages": 33,
+   "rows": 6593,
+   "sha256": "13520c3f7b4ef53d88e327421a84abc37ffa0be508f6200463ebadd202c99cc5"
+  },
+  "KRW-ONT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "216a6803ff5de2b8e3b1dd16c3c4e0eb2937a2c2cfd0476baffd1c1d1b9c02c5",
+   "pages": 31,
+   "rows": 6187,
+   "sha256": "77484c762ad067bd4947920ebf5b6281a593864ac2230541ac044a5e9979e657"
+  },
+  "KRW-OP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "fb1430635112e6c76dd50e49377955ddb2ade719d716c8a18359460ecc7ae0a6",
+   "pages": 31,
+   "rows": 6115,
+   "sha256": "8f7bf0cee6ed1fac84110ee849fbee5d426e7b907804c0e3ad128c2029ed6a9f"
+  },
+  "KRW-OPEN": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "099d52b75c5b12ce9eb1b53f03198e351bd1bb74ded3f7f866a2abc6d11293c1",
+   "pages": 33,
+   "rows": 6436,
+   "sha256": "41b755bbdba5ad72cfed884e449e8ad6c1c6f3ccf2855e06c7d1d875e5769385"
+  },
+  "KRW-OPG": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "178ba045c36fbad7ba27e3fdbb9145426266737e187793155213a9de652b87b5",
+   "pages": 28,
+   "rows": 5478,
+   "sha256": "66848188c4650fabb9d7d1187933c2adb6aca7091a0b2b64b7a8db0f6c8ea604"
+  },
+  "KRW-ORBS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8471f9c851a8b7dca244ac54fa95b4690571818dc7a9fc8e75e44faae0111eef",
+   "pages": 27,
+   "rows": 5320,
+   "sha256": "8ceea74108234e07f5e264ea0cf2a9a58bfae2bc8c12f91e193d0690f15d6862"
+  },
+  "KRW-ORCA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c23bc665e16daf61a0625028fe62f4e7fb39006e613d9cd01bca14aaf559f56b",
+   "pages": 34,
+   "rows": 6667,
+   "sha256": "6db4c06507cd23218e6d70320bf110d0ce949c6990bf3a33ebc087f96db9b10d"
+  },
+  "KRW-ORDER": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "56bba70553e82a8b0c9872150357d756fac4667815c914bfd8b82443a077ecb4",
+   "pages": 31,
+   "rows": 6095,
+   "sha256": "5e53f023acde27310f8f51ad4a5a9152872b3ac4235aedebcc5f667ddee7a629"
+  },
+  "KRW-PENDLE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "231a34075ebe70300a2e586d3ebe0f32a70a2fd7c173eb78d95fe80b564a2974",
+   "pages": 32,
+   "rows": 6232,
+   "sha256": "2400538d801060b63f1bd4d896e282dbe470e6f95178af9cdc0957b49d57c7b7"
+  },
+  "KRW-PENGU": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2d97699aae26f94e4e2e0abae67f5bf353ed10f83318d56f566f64d4e41f3374",
+   "pages": 35,
+   "rows": 7000,
+   "sha256": "05acf435405ecaed8f1f6ba5b86dd2e9d8cd77dcaa4e315f69b81e31a54a9755"
+  },
+  "KRW-PEPE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0bed7ddd3fed2642e892d5693b28e2f79ce11ca6b31ff1f8eec1fd9b0346fb0e",
+   "pages": 36,
+   "rows": 7033,
+   "sha256": "755a76c76afd7d70ef8070db04405589d093eb98912a81cf770895fc9e641851"
+  },
+  "KRW-PIEVERSE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "5c0e0d175e8edecee2d936ebad45924e2ebd59ecc972872b6a6cce733cad81f0",
+   "pages": 33,
+   "rows": 6555,
+   "sha256": "f105b5a78e4e7ea9a6606ac001614b75c85731718d61a261231d7abdc40ed523"
+  },
+  "KRW-PLUME": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c08cdc521eb7f3b4f83dc4cf709d2a493837f916edc927c54ad9fa8f7b20c4a1",
+   "pages": 34,
+   "rows": 6683,
+   "sha256": "f2673f35b9b8b612e09bda14a1a3d73dfcf71f628abe968789078dec773caa3c"
+  },
+  "KRW-POD": {
+   "first_time_utc": "2026-10-02T07:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "45d60bb22a6530ed9fa406b59aca8911c2ecd4077e5f8b34d38924d865146982",
+   "pages": 24,
+   "rows": 4657,
+   "sha256": "495aea5eab61200f15ff36c3d23b7a196e033f41b1727bca0825a32261f81ec9"
+  },
+  "KRW-POKT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "63176be5b33cc0dd839cd07563fafcd80619556f1e50b2c4cf08b8835ef84b04",
+   "pages": 32,
+   "rows": 6375,
+   "sha256": "6526ac136d78d49540910809f28c8b11a622f0247149939d725a73702de3a45c"
+  },
+  "KRW-POL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2c9cb2ddc7656aaa87af4219bb2be7a84379e28f4886227d6a601815598703f7",
+   "pages": 35,
+   "rows": 6850,
+   "sha256": "6b514e664ea8aa41365d6704ba93239f82ae5c9e74cc59305059bf59e78d702d"
+  },
+  "KRW-POLYX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1533e8068f1f41c6cfcfc5944d7a586bd2e4a12205ceff50d47faf62899dd9eb",
+   "pages": 32,
+   "rows": 6359,
+   "sha256": "c5617a3f25d1b8517c88a9d7ffebd79af336e7e2905d828ce31ae6918305cdc3"
+  },
+  "KRW-PONS": {
+   "first_time_utc": "2026-10-08T05:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8a17ee3610af334fb9e1e30051641c509af73fc7198dca71968dd0cb659a2abd",
+   "pages": 21,
+   "rows": 4082,
+   "sha256": "a69de7b10ee09b571e1b1c086c03cdb68c0d4fcb4d400895fd1357fa11f098c0"
+  },
+  "KRW-POWR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cab25372d1320b0949b8827b618353da44dcdb78529a1f09a93abf37fb29313c",
+   "pages": 32,
+   "rows": 6296,
+   "sha256": "557294c72dceaf968263f92337d35a356f135a05dacfa2f19b6e8aadc24a004e"
+  },
+  "KRW-PRL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "395c7428a581bed0623fe37d47f19a12c4efa16acc0ab5ad54375a1d7cd0c5fc",
+   "pages": 33,
+   "rows": 6516,
+   "sha256": "c1791b56ca51a64acf267b8ffea42945f9914d77e4c3d01014c90f694bdb35ce"
+  },
+  "KRW-PROM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "97df053858ddac8e988a30b69b19cfbd4ad4ed570839e30f982e3e4941cbe477",
+   "pages": 34,
+   "rows": 6784,
+   "sha256": "913db540a360c22514a476a110e5695295494d86ae016155377a42af89bcb484"
+  },
+  "KRW-PROS": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d61c0d87164da8f675857270543b79706ac0fb8bdf419a0ae5cd38071f2bea6d",
+   "pages": 31,
+   "rows": 6099,
+   "sha256": "0882a130ca26448287644c7716a36fd0062dc8a372f5931a404cf015b5370ff4"
+  },
+  "KRW-PROVE": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cac72adb7b22a87b87b8a9ba3b784eb6f748bf9a39fe43dc93887a635cdf4d72",
+   "pages": 27,
+   "rows": 5327,
+   "sha256": "ad480dcfdda22a384ab78889b3251f3f1afe30acb874ad3507088f45b4c18e1c"
+  },
+  "KRW-PUFFER": {
+   "first_time_utc": "2026-10-15T05:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "75effa248150c3a6eca88a9498feeafccfd9d7c3808610c77427ae2a404b2b6d",
+   "pages": 17,
+   "rows": 3389,
+   "sha256": "be726fe5e2d21dad69fce86825e309fcd8fd9cbd5049ddaaee124afccc97e762"
+  },
+  "KRW-PUMP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b5c300d8be63f8ba7a53a11dff32b36b097d84eef300416be517e24130713f64",
+   "pages": 35,
+   "rows": 6988,
+   "sha256": "32d87da6716ff654f3f650023aacfc9145b9283be12f0e79c14439ffcf9e1373"
+  },
+  "KRW-PUNDIX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "a0a5fba99d97bb072ead1b88cbefcd022770e0bb67d26b2889aa28ddc71045f1",
+   "pages": 28,
+   "rows": 5537,
+   "sha256": "c0e4ad3011326ebfa8dff46bd5b074d3d2e9337ed64a8e0619357d9f2b65a28c"
+  },
+  "KRW-PYTH": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3c93925c0f42b1d6c2ae311908a42cdeec70db16c5634ecb657e2717ad1cfdee",
+   "pages": 35,
+   "rows": 6918,
+   "sha256": "31a6608a47bb917897484cbe745573f22c87d02646696517bf9b92ba3419e440"
+  },
+  "KRW-PYUSD": {
+   "first_time_utc": "2026-09-17T03:00:00",
+   "last_time_utc": "2026-11-20T12:45:00",
+   "page_hashes_sha256": "eea772d3de754e08003e0b2657fd88a361d1a31e32a8fc1fa41b149dc212407f",
+   "pages": 10,
+   "rows": 1997,
+   "sha256": "e14532b4b863c5749690d74d4f17bd48af4a2515ba2ef46a072eeeee92f1da1b"
+  },
+  "KRW-QKC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9f6ac1e0db8407c9cb1d136e786dfe3c31a767e08d6cebaf956bbccada97b0a0",
+   "pages": 31,
+   "rows": 6034,
+   "sha256": "d151eb8b439213a6b899e97a8a15a7f91be400c10ba4551febcf81a1c7e36d25"
+  },
+  "KRW-QTUM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "77e920f79209150fa4f56b405a2f80844abd1a2dbe12079298db0194c8627d50",
+   "pages": 31,
+   "rows": 6105,
+   "sha256": "685da2ee82a196bead83e50e7a568a6df24373494a8c6110913593ce9773874a"
+  },
+  "KRW-QUID": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "4ba0189f5d75f614f4db3c02cebe1e616e58ad0bbd9e2e2cf1fec80247ee1e92",
+   "pages": 35,
+   "rows": 6920,
+   "sha256": "27b70b6598819f5d974924be8575390f8c3c695b17a5c8eb82fba10680167f47"
+  },
+  "KRW-RAY": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "545844e19ea5975ef498f50128d09a0fcccdc7f49dc8cbdfa4f4d82bcf27c528",
+   "pages": 34,
+   "rows": 6661,
+   "sha256": "d489cacfd80b5e810ca680ea0e2fd58dee5adfc0a3507701ca10fe47d1e712c1"
+  },
+  "KRW-RE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e2ced6b7d4036914998a037a147a1cdd8c01be94881771dabb377735780eccc6",
+   "pages": 35,
+   "rows": 6860,
+   "sha256": "1aebe9a7c513a751d3cd29b65c6a45e54d17ae9ea6cb8cb17ddd0c6cd00d0dac"
+  },
+  "KRW-RED": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a44df795f2852a7731de0392538daef1c560abf075e1ac97c496db8d27f15ccf",
+   "pages": 31,
+   "rows": 6101,
+   "sha256": "66b419f9f8f41c07187c8fea31fef65e16cf72389c2672b90e851d32553879f4"
+  },
+  "KRW-RENDER": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c984e00007743a93b5d3be22447236e37d881c0ab960e18b73f36eea4fc8ef3a",
+   "pages": 34,
+   "rows": 6755,
+   "sha256": "3b839a4ce5b90555e48c8f77153d1e2bbff4ea59d5ab716e8b6f5a1fed3903be"
+  },
+  "KRW-RLUSD": {
+   "first_time_utc": "2026-09-07T15:30:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "d79307ac0a2ca301c040e7b32b30c087b7b0a831d7c577929fe71a167464ff35",
+   "pages": 13,
+   "rows": 2414,
+   "sha256": "74ecee4f2838e00627a0fa41bc485788f6c4d62fb8b195c1d95a8898a8e3ad87"
+  },
+  "KRW-RSR": {
+   "first_time_utc": "2026-10-12T05:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "78e4c358444c9640a62848f0ec188ba7d159b9a64d1bba8c32496b75b970bf0d",
+   "pages": 18,
+   "rows": 3522,
+   "sha256": "c681f62537e2a925690dc3973d533a70cd0cd97fe8fb2388340b93806895e9ca"
+  },
+  "KRW-SAFE": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "51d7102794a947acd6ef04acc997e283803a70cc7370b947fb3d502bfdb13de5",
+   "pages": 28,
+   "rows": 5538,
+   "sha256": "2b27bcdcc36fc3f13601e52d4605caa4c8409a3e9eaf9827985505a94b1c49b0"
+  },
+  "KRW-SAHARA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "104a27988f12bbe1ea958983ef53b7a2c647f52239b7e752bc78018628659467",
+   "pages": 35,
+   "rows": 6959,
+   "sha256": "52fad58490fa6ed00d1301bdc58c4efb19df601d36d6234167106108ecc09642"
+  },
+  "KRW-SANC": {
+   "first_time_utc": "2026-11-13T04:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a1c5a63cf1a4c8c01622c88df5eff3b223dae1822bb36b667b973c7549b5ada2",
+   "pages": 4,
+   "rows": 715,
+   "sha256": "5dad9a4fd8dd0a14d92d846d526df307d3eb1c661b58552f3917f78eee139e7d"
+  },
+  "KRW-SAND": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c266419991541b1d42b2eb05739197fc6ee63f155c5273a2a053d4960cfdfef3",
+   "pages": 36,
+   "rows": 7018,
+   "sha256": "ddcb5ecf1d84d8e0d2f9021ae9eaefc98f26e75b8a4e6190f888dffb0e21a19d"
+  },
+  "KRW-SC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "11840c0c51deb3444309b5d88f1bc5ce6ac522fea581d43e132a399b3ae22b56",
+   "pages": 33,
+   "rows": 6509,
+   "sha256": "06f018d4329e870cd1c192142a27a96ee2ac59688cab530954a78ddeb887ad47"
+  },
+  "KRW-SEI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "acef600ae37de9de29ef7d05f37eafe22bdcbe0bdaaccf209e2518cfc1a3172f",
+   "pages": 36,
+   "rows": 7020,
+   "sha256": "a3182b25b19d07fe3bc5f88f038c5838f986e99d65e765c8a23e0f23e372feb7"
+  },
+  "KRW-SENT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "089a0c68f806a2e383bf0e67424129533bae1b56e30081bb96b68fa14ca07fa9",
+   "pages": 29,
+   "rows": 5682,
+   "sha256": "00b12629baeea8adc7830b7140154602a99393c74dc02c64358b91f1741a546a"
+  },
+  "KRW-SHIB": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1b373a5411ff2675c4449580bfba678c3eacab50d205512b0669cb6d850a7107",
+   "pages": 36,
+   "rows": 7063,
+   "sha256": "805005dcf193f3a2f7fe21486441abbc1f72493f223a47a711594c10b3477b72"
+  },
+  "KRW-SIGN": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "c6a7238b20e9c2857c315b448cc16ad03b0faec23f313c3c8d93d74fe095a708",
+   "pages": 30,
+   "rows": 5938,
+   "sha256": "b561dec2bff0ebd5500591a3e7e5a517e40c853137ea5d41c3c3dc8f645dc940"
+  },
+  "KRW-SKR": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7debde542bb1b6cb5decbd24570819f08529c68b05a419884973a7fde51e577a",
+   "pages": 31,
+   "rows": 6022,
+   "sha256": "d27651397f7c58d4518c28c8694d63647b793cf5a8a92572b4c582240371fabd"
+  },
+  "KRW-SKY": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e23b484c2a933b38a1d12dc37f4f482524d0c2051b53a7ddccca39b6670d109d",
+   "pages": 28,
+   "rows": 5476,
+   "sha256": "e01cacd8089a6f38897415d560e2fc01e66c2868f518952d684eb38d978c56c7"
+  },
+  "KRW-SLX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e00be451676fa1dd734f00af90f67d0c0c9ddfd580acb742a81d529332739c41",
+   "pages": 36,
+   "rows": 7039,
+   "sha256": "9e364e2bbc907dbd4cb2e0e3a6336d0ceb9c5a149f54efb32e4cade81ee16205"
+  },
+  "KRW-SNT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2ec0ae061b2164d313d1ba4ac02f4a79047d31c47b69f6aae458622a8c0f6e6d",
+   "pages": 29,
+   "rows": 5635,
+   "sha256": "beabe0fa8bfd7ac1ef0b7801b9c8c45717f0adf984264b04bfb6eec6b6862861"
+  },
+  "KRW-SOL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bdd437c7f6da4c360b934d66507283bc4a3d5984c7705e7766e5f4dd2aa3c543",
+   "pages": 36,
+   "rows": 7065,
+   "sha256": "d577f8279e5bec90f9e8f97b9ad46e4ba94ed6aa34637f1b80ecd1ca2db8188d"
+  },
+  "KRW-SOMI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "8fe3c16232352af7f5945206b094e943e84c1ec945f2ba8139e8fa6985f76584",
+   "pages": 25,
+   "rows": 4928,
+   "sha256": "2eaab7fcd9532b2c615da9ddb62f2b4b35b51268cb7cde4fb9267cb0dcc87956"
+  },
+  "KRW-SONIC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "254942bd9c52ffe3daab25d0886f95a4ae2fb68555c8ae785276f1b4d1204bb8",
+   "pages": 32,
+   "rows": 6365,
+   "sha256": "4e2c4c535dd39461706ba3147874f5c6dd89ee65778e48f44d65c899c1373d1e"
+  },
+  "KRW-SOON": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "13144468fadc63c434cbaeb5858bbfe1bebad6059ffec34255cfd48c82462bd9",
+   "pages": 34,
+   "rows": 6722,
+   "sha256": "fe9b54778e3f7e4d3e850afd26006de3fb4329ec78396a64aa848a0d8da06a93"
+  },
+  "KRW-SPK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d603debc141be9e0a774cf5e82237bec7890d9a062e7345bcb57f8dabc4fe8bb",
+   "pages": 29,
+   "rows": 5786,
+   "sha256": "587e3d5b6e73e1640c217a4a58c1679b39795cb23f565b57bad94b913dbb0bf0"
+  },
+  "KRW-SPX": {
+   "first_time_utc": "2026-09-07T15:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d8b2b53cc4f0e02012cd9449f1a29672d0cb9a4e9ba0c951674aaf4c18973517",
+   "pages": 27,
+   "rows": 5226,
+   "sha256": "ec59963131b13b5c90e0444c5d98065519c3ea012ccc1db719fc6117a89d5be1"
+  },
+  "KRW-STEEM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e80ad8fe73d830bbd5bf07887bd189ae0c106fd1387bf4ed34c32c8072d421f7",
+   "pages": 32,
+   "rows": 6352,
+   "sha256": "6cbfd30eedfaaf7544c4e1c111c4ebdd2014659fa32040eb08915b2a82febf8e"
+  },
+  "KRW-STRAX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dcc5062708e42c1c29617b2ff3a594b1fd0127860cf37c964fde9f886051564f",
+   "pages": 31,
+   "rows": 6190,
+   "sha256": "4cb872d6806a085e31649613d6f5c6f703e35bb336a813a53c20e0c0414f75c8"
+  },
+  "KRW-STX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6d682e2e42b3e7556ddbc5b49d0613a43b9bbc57bf6eef5788d0b3c1bb5332ce",
+   "pages": 36,
+   "rows": 7056,
+   "sha256": "00c65681e9cb0c90a0569bb2fa5721ed056229bfc6ac0dc4c00f49550acf96b4"
+  },
+  "KRW-SUI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c532e4c9b9c7f21bac4b9a2832601e19f73519da5a10863dde085653274dcc0f",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "ff26458b2a4e522de3934e573f946d2690e2584e0292054685b8f25e28e74d93"
+  },
+  "KRW-SUN": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "d396db6fe912ebd0a4329943341c8afada3d87f17fc7dbfc3187016127548af8",
+   "pages": 21,
+   "rows": 4055,
+   "sha256": "dae2ca9c7048e5bbf1a658632a5e18c805583062ad9362fa653ee7f0e0df8f9f"
+  },
+  "KRW-SUPER": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "d53ca9eb51a11dec9b6019ef07ef98791ca2817ad20180b5017285ff4f791860",
+   "pages": 25,
+   "rows": 4946,
+   "sha256": "65ba5d35b7db63841bc0001f51aa0e671493f31228357f543dfbc8e2cc313aac"
+  },
+  "KRW-SYRUP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2fac07a2487cee3f910cc925431306a6657c81c695c324f992f619c0f2ec30f7",
+   "pages": 31,
+   "rows": 6054,
+   "sha256": "a08dd1054620061cba058c5429a0f5ca8d813b156c3db5c49e3a821e82371caf"
+  },
+  "KRW-T": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0241563abb3eaeee491637d34809ee1a34fe0b092f8696559eef32564523ac4c",
+   "pages": 33,
+   "rows": 6566,
+   "sha256": "9ad69c2d8b30426914c9b7761a8a135c7210608cc65d5be4a376ab750696e3d3"
+  },
+  "KRW-TAIKO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "5589b2b4b25a7872f7d538e0143b60a6645e202c0cf55eca05072e6d7209617e",
+   "pages": 29,
+   "rows": 5704,
+   "sha256": "083c0bfa1ebb713c840f53d45686c6c71c417bf55d8a8cb5cc57b5d59b1544b8"
+  },
+  "KRW-TAO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "f8d77e208a6de3616390db479f0bbaffd302f753f4562c6e41df3fbb40164666",
+   "pages": 35,
+   "rows": 6927,
+   "sha256": "447b2c1ee4b2c883d195d645ac8f33478f2a2bfcee8249d608ad9f50e109c56c"
+  },
+  "KRW-TFUEL": {
+   "first_time_utc": "2026-09-07T15:30:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "61bc177718b0845b19ad02fc65763846bcdf9a6b59f75572bdac99af8af41d6d",
+   "pages": 29,
+   "rows": 5627,
+   "sha256": "f4077d83267544de38fcea0fb0c136d2351b46e0ccbcf3b7b563c9586924ea71"
+  },
+  "KRW-THETA": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "266fac8e9bed320e82e60f7a370b10ca5b57995a1872a3445ee9557786c4aff2",
+   "pages": 27,
+   "rows": 5352,
+   "sha256": "ef6c0893169284f4c3908b85c2f869ec9857aa6d1eb33a0856c812221277b48a"
+  },
+  "KRW-TIA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7fcf1c0295ed08bebcb2f35ceb94b01c0141572eb7179bacf12d26ea979dfc0c",
+   "pages": 33,
+   "rows": 6535,
+   "sha256": "046ba7b376f99e9a7c71b3ffd1022e41a251c59b045af159453bd8f1f6f977a7"
+  },
+  "KRW-TOKAMAK": {
+   "first_time_utc": "2026-09-07T16:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "b1d392a201e2f17a1f59a4e908759f9a4a645c99a2188be84d2aed81b5b2375b",
+   "pages": 29,
+   "rows": 5677,
+   "sha256": "944dd338a1923397cc080b8b08b8dd1626c17cf47d78f113943e510209e66896"
+  },
+  "KRW-TOSHI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "6e169b3878328f9c5c5f4d5d94fb822f36c531a48e81ca2c5ef9382a3cdc6428",
+   "pages": 31,
+   "rows": 6115,
+   "sha256": "a4aadd93622f3fff9f884a167d4082d81c8b03c81ee80e38af7445adf00f9dcb"
+  },
+  "KRW-TRAC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e8796a25f222804d0778e39ebf3b03d37db6261287cb508e70f93fbaf7d3f60c",
+   "pages": 32,
+   "rows": 6342,
+   "sha256": "22243276f0260843c1f0625f7f989112e9f2fd6cbd425e80e7b53db9689e7962"
+  },
+  "KRW-TREE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "343572a6bead39dd4b7cfdd11cf555dff849c3a1c11a316d94ad5730a5f678c4",
+   "pages": 35,
+   "rows": 6842,
+   "sha256": "0ed53f9d33afb25138bff557470350ad87cb437499d0dab7a983c2312d70fecc"
+  },
+  "KRW-TRUMP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "631e509f21d8722f3226ceb73adf62d42ff09ee6e32d4c520a242b7e9b369d0a",
+   "pages": 36,
+   "rows": 7061,
+   "sha256": "f39665ebc49702a5a5257ae805631a1ef5a50f5480520eb87b7b496212dbb309"
+  },
+  "KRW-TRUST": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "12122376f86b2e4672e44888083e9bc2e24dd0337785c71991673a3c099b4b92",
+   "pages": 33,
+   "rows": 6473,
+   "sha256": "4372e3c524355e0e5294803b9bbdd43abb7031c383bb5693c17130b3a6b344df"
+  },
+  "KRW-TRX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2b3fc15ea08d935afb2fbbfbc6f8f207bca422ab9adfbf528e0647dbc4ba9acc",
+   "pages": 36,
+   "rows": 7060,
+   "sha256": "35f5dc1652a29beffeda1767d63ddd852d97360c3ce60eee14c0f737da71eb08"
+  },
+  "KRW-UNI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bc8cc4871a4d209b4dcfc5765ee952e61d995e27a3a74446765c79382bb5061e",
+   "pages": 36,
+   "rows": 7062,
+   "sha256": "67b488b2ca64db1fce8350c1b8f6979ec8880d0c54a51e5e340ec2d05600f3d4"
+  },
+  "KRW-UP2": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d038c54d7eb1083467bca51275ea33b51e5f920b8a5acd77d6b0a80c1448fbf9",
+   "pages": 35,
+   "rows": 6941,
+   "sha256": "23c4d4bc2a18718d2832fb821724ed3a1b9846781435104edccf94d763b08360"
+  },
+  "KRW-USD1": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0164a3e668071eb727365194705d19ec068131ae2d7e29b4e9c063b2e6e20a4b",
+   "pages": 25,
+   "rows": 4999,
+   "sha256": "12425a6db1f66d17240ed34cdec2ddf6e36c13d81b0e29634a2edde12894a047"
+  },
+  "KRW-USDC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "1b886583e7c1b7437a28c2db2be9c391004d99eeeb8157077f52efaad76e30d2",
+   "pages": 34,
+   "rows": 6742,
+   "sha256": "19d447f7608daa4da4405860b5f96f4ffca4c94e79185c492d9df34ecb3bbbdd"
+  },
+  "KRW-USDE": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T13:00:00",
+   "page_hashes_sha256": "2484a5e5a7b3941e7c16bb543bdba0622bc78325ce5baf4beeb0731ee93c3349",
+   "pages": 9,
+   "rows": 1721,
+   "sha256": "a85420cbd29fd7439c2c1852340c5145be4a5a621629c1e133ba8a67e05c3456"
+  },
+  "KRW-USDG": {
+   "first_time_utc": "2026-09-07T22:00:00",
+   "last_time_utc": "2026-11-20T13:15:00",
+   "page_hashes_sha256": "b2cb9a8439b9f2cbe8e1c2143a25a08a0637f859443a05296daf4f893b3e3749",
+   "pages": 7,
+   "rows": 1373,
+   "sha256": "c491c4619be2663d8fb389039df1f4dc7387f18673dcdfcdab3b0c2dda21fb35"
+  },
+  "KRW-USDS": {
+   "first_time_utc": "2026-09-07T16:30:00",
+   "last_time_utc": "2026-11-20T13:00:00",
+   "page_hashes_sha256": "405ed0243c6a4c0f4fe3586343729cb07aad160c38ea4b5601b85d701cec4645",
+   "pages": 8,
+   "rows": 1426,
+   "sha256": "e80b06debe37de5bc190a3b2fc07f8e7889fe43b8ab434c9eca1525b608b56ec"
+  },
+  "KRW-USDT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "c0c2fee55b7f353d0b082055a1f813325a593cc5d25eb07ef8d54dfe9656cda9",
+   "pages": 36,
+   "rows": 7066,
+   "sha256": "a643b0df1821489b29a1cf468ef15b586f48543ae0a31008967985afbe6c7438"
+  },
+  "KRW-VANA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0b8e0f2f0a39fbd6d6f385ca7e82abffa4c228d3e55c27b449103e85dbf48977",
+   "pages": 31,
+   "rows": 6055,
+   "sha256": "bf132dad9545b3fd762762d36a7ef22dbd533624b89a117a141a08d9a99ae85c"
+  },
+  "KRW-VET": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "d77b17611dc7169da0bff65515a6f43c1eae83fc5adb6f202c4aab456de79e73",
+   "pages": 34,
+   "rows": 6601,
+   "sha256": "48feb6dd216177b93ebe74348f371bf6dfd125a904f26027c3c32ad4e6e6859d"
+  },
+  "KRW-VIRTUAL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "6fbb0fb2b9485455781ffe72571ef4d8deb1528ca12d65c4b79e2fad764d0faa",
+   "pages": 36,
+   "rows": 7022,
+   "sha256": "4e7a1591db103f256469cfc23ecce55c98cfee181b696e1be2b471144d57ceab"
+  },
+  "KRW-VTHO": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "c80f0c54fad6b4838b6383dba6677dd2058f1aae48ad4e317a7a4d309dd48dde",
+   "pages": 33,
+   "rows": 6471,
+   "sha256": "160c6edc333b240497088c6f6430f2a0776f8164bc0011a126f8785fefe03bef"
+  },
+  "KRW-VVV": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ede47f5fa27a15adfa53a4223cab4e4af1e9615ff8b4bdef8ffab02e84f79b1a",
+   "pages": 34,
+   "rows": 6793,
+   "sha256": "f764d35ad5102bae839fda4b31a5d74b22652c0968c4f0abc737b4db6d24fb95"
+  },
+  "KRW-W": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "e20f3d8dd2971c9ef948eb0638af2d03df9493ebf15fe447f29ff425f2287496",
+   "pages": 33,
+   "rows": 6583,
+   "sha256": "28bb7c81fd471a71c88cfdf132c4c74eaee9883dafb8429cad0c6f4c5696cd6f"
+  },
+  "KRW-WAL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "da5a5943ce929f288f357981495fb4c2b7f55d2bc814e7cd1923b3748d9b7267",
+   "pages": 32,
+   "rows": 6397,
+   "sha256": "f36649eda29158592d384f25762ca5ef03ded7f86823af164f70bb9b3562c03d"
+  },
+  "KRW-WAVES": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "ed92faeaa72ed190aaf9b951e816bbfab9b2530e7db8e8f4e3f9e6bc95e9e368",
+   "pages": 34,
+   "rows": 6743,
+   "sha256": "0a9a892bb34045fce70cf0ab37d217c31c30828a635727ed8b4a99905cf55d26"
+  },
+  "KRW-WAXP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "2c0e6f7f21a033b7b2f65e3d49c6661544141f949f6d66c0cde87ec9f1593353",
+   "pages": 30,
+   "rows": 5876,
+   "sha256": "1507fb277043920a483f0f5d8793f0ccad172e8834cb42510eb81fc89a05b3b7"
+  },
+  "KRW-WCT": {
+   "first_time_utc": "2026-09-07T15:15:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "565bc726e102679fe6b1bc6a80a618f66c10adf66310bee4318839082ffa87dc",
+   "pages": 30,
+   "rows": 5965,
+   "sha256": "3fab68b81f63d984385b0494e7747bc11d57b2e9ee55acd89cfbec949aec1515"
+  },
+  "KRW-WET": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a9453f7bc6282420b4fb0f6bf686dbc77a15425b1c53ade9b2543c4816242911",
+   "pages": 31,
+   "rows": 6144,
+   "sha256": "531a3286de5a9bef4d0888fabb666ff1c36bae9b4f656f5616fc5ea7ead1738d"
+  },
+  "KRW-WIF": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "df6cfb97b1c2eb7e79b672d82feb1e214ab8b0b781eb466d09329a0cdbcfd0ce",
+   "pages": 19,
+   "rows": 3602,
+   "sha256": "98acb48f19a7ce14bb1b065a353a31fe4f9cede3456d7eab0c13115b6521de70"
+  },
+  "KRW-WLD": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7455871d0696881496132370964a2332b49c503b7aef58cd75a1421450f72989",
+   "pages": 36,
+   "rows": 7065,
+   "sha256": "e4c19fba93dfbcfddaacea2366422c0ba28ac1f679af2fbcbfd0e0fde996ac5a"
+  },
+  "KRW-WLFI": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "8ee8c7ed0caef07f4def4413c325b809a655033187991425f26a8db09f7e0c7e",
+   "pages": 33,
+   "rows": 6550,
+   "sha256": "f7268f790ea89ff006cf1befe6266a5157e8f31122e2c37e51a98fe2f809a976"
+  },
+  "KRW-XAUT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "fbb39308e667aa150034e7e0ff79991355d63f59eaed8a680a327d234ea4324b",
+   "pages": 31,
+   "rows": 6044,
+   "sha256": "c49ee9395a057a776fd7f7ab8d882a09d753c375d0fa44a587d0fde0d2b8f3d3"
+  },
+  "KRW-XCN": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "9dc8ecf4190dd5146b9f7b6ae2f2c31591870eaed27cc9822f228a7a40fd70b7",
+   "pages": 29,
+   "rows": 5727,
+   "sha256": "54ae1b1e9328cdfc58e08c425c6dcfc3cbb1b7413e7f93e38b57f05692168e6c"
+  },
+  "KRW-XEC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "dff98f0bb2bd0af9fd905e26dbf133c71a4be63ec501582d3d658b72d24949c6",
+   "pages": 34,
+   "rows": 6633,
+   "sha256": "3d63b1e4d010356d1528163285634c3c368d104969249acc6854e5206a4e2da9"
+  },
+  "KRW-XLM": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "3e14c9f3495327634532396d883e3bc9a88f5c1a4841ecb1add348e980bcdd1a",
+   "pages": 36,
+   "rows": 7064,
+   "sha256": "62801cc1fcb222c5eb19e39c470f8ddb9886a1c23e8d7197d3a997fd32e7de81"
+  },
+  "KRW-XPL": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "8a02d5abdf6c057fd4d1ddc77b67907d8a0810c17a24b3da5407a20faeab8631",
+   "pages": 36,
+   "rows": 7021,
+   "sha256": "e12147b55da20229cc06a916688ffd99a603461fb668c64b77b2d49a71f5bfdf"
+  },
+  "KRW-XRP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9fd8ccfe68fc5f8c4b9582829a98b662ae316087deebd2b85df33b38a14ced9b",
+   "pages": 36,
+   "rows": 7066,
+   "sha256": "e6fc87a5275f4c4c10bb872ac1ebdc463377272ec85704d03396437451eba728"
+  },
+  "KRW-XTZ": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "29251d8caadc6d6575eea1848e484341ad012335f85869487dfc0911c71810c2",
+   "pages": 31,
+   "rows": 6054,
+   "sha256": "9cf2ebb9641952a9ea81bd29ef5b77ff3d0def8b9a73e1a0d40536d010026656"
+  },
+  "KRW-YGG": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "9252549736282fbe071d71863f4276b823e8889fd9bd5fd54f5fd2211aef6570",
+   "pages": 24,
+   "rows": 4637,
+   "sha256": "b87619c71b23cd98961d5d1e50f66120a0348f75d297169fb15efcac872dc906"
+  },
+  "KRW-ZAMA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "bd6c37bd8d522d50d8e32e3bc98bf03da26b874252c9f5552d60d15ca2ee5558",
+   "pages": 33,
+   "rows": 6489,
+   "sha256": "236b81a8369276b85af8ebfd506de8b461b5177f3da5476dc1517a2dbd93e2b3"
+  },
+  "KRW-ZBT": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "0f3aa12d65611109e6adf594ef2b400f9acb42fa0db5fa1353037c20e1fefa60",
+   "pages": 34,
+   "rows": 6607,
+   "sha256": "189b34d886a5ff58b050d15529c9b5597dd0f3b34de622e46003eb2fbcf48dc8"
+  },
+  "KRW-ZETA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "a5b1227fec4baf1c95ae38a50d345d1fe9420f2dfff9d9270089eb7ab9473c89",
+   "pages": 31,
+   "rows": 6117,
+   "sha256": "1793bf1a4b4a798e113be0dd4ea15775b02faafa35ae6def2734f9fa86022ab7"
+  },
+  "KRW-ZK": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "541b1cc3999e1e82796a1e770ee7fffbf0bcc3c62eff684c37405da12bb1e224",
+   "pages": 33,
+   "rows": 6504,
+   "sha256": "538af41f5b28f4bbbf9217309e6e79c72db61a950cf8a802349f2fa91398fa8c"
+  },
+  "KRW-ZKC": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "7b753faecd68905e3a45c25ce9dc7f9c9f4080bf1e25c56dbdd052848799705a",
+   "pages": 34,
+   "rows": 6706,
+   "sha256": "1a3e5337b290ef7edbb3eb1d1a443b20d7d5225f10b3e36b56b698648b376d65"
+  },
+  "KRW-ZKP": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "cbf12006dd820e25760110eb61aa9dbc61ceb43a4c5a3670b7af2c56711657c5",
+   "pages": 33,
+   "rows": 6404,
+   "sha256": "55bbdc65afda43616194ecd82cc456c0fef48e811c2b0f327ac92da77f204b24"
+  },
+  "KRW-ZORA": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "aa6d3f7ff1e079cb80c31fa82e03883479a6cfc7c02b7c9dc7a63678549a9af4",
+   "pages": 32,
+   "rows": 6205,
+   "sha256": "c9c5cfb196bce9cd7ff6aecaff5a8cc1b9d1d2378e10b28ca722506ebc3ead36"
+  },
+  "KRW-ZRO": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:45:00",
+   "page_hashes_sha256": "15581dba354776c066244a02a3b9b58452cf354ad3026dbb205b95d95c63405c",
+   "pages": 36,
+   "rows": 7019,
+   "sha256": "580bb5f8dc5e3b469533bd1ec5f7e2ebf0c10eac10f875e196ba941c2710ba09"
+  },
+  "KRW-ZRX": {
+   "first_time_utc": "2026-09-07T15:00:00",
+   "last_time_utc": "2026-11-20T14:30:00",
+   "page_hashes_sha256": "148b751fae6e8099aa04dfe1e697ab6fb0eae1a974bbf4d948052e7f18cf57de",
+   "pages": 26,
+   "rows": 5173,
+   "sha256": "a060c17241c775b2fb56ccdb112ed3aeccbe03831106a19dc336d6cb902e4d1d"
+  }
+ },
+ "note": "Raw candle files stay outside git. The full manifest (with the sha256 of every response page) is in the artifact directory; this file keeps file hashes and row counts.",
+ "window": {
+  "bar_seconds": 900,
+  "end_exclusive_utc": "2026-11-20T15:00:00Z",
+  "start_utc": "2026-09-07T15:00:00Z"
+ }
+}
