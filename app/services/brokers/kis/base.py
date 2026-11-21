@@ -33,6 +33,7 @@ from app.services.brokers.kis.vts_distributed_gate import (
     get_vts_distributed_gate,
 )
 from app.services.brokers.token_issuance import (
+    GatewaydTokenProvider,
     cache_only_refusal,
     ensure_gatewayd_token,
     is_cache_only_token_issuance,
@@ -494,6 +495,19 @@ class BaseKISClient:
     def _token_provider_label(self) -> str:
         """Provider label for cache_only refusals. Subclasses that own a mock
         token namespace without ``_is_mock_client`` override this."""
+        if getattr(self, "_is_futures_mock_client", False):
+            return "kis-futures-mock"
+        return "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
+
+    def _gatewayd_token_provider(self) -> GatewaydTokenProvider | None:
+        """gatewayd provider label, or ``None`` when this client self-issues.
+
+        The futures-mock token namespace has no gatewayd provider (hk 6022):
+        asking gatewayd to ensure one could only write a different namespace,
+        so the futures mock client falls through to the self-issue path below.
+        """
+        if getattr(self, "_is_futures_mock_client", False):
+            return None
         return "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
 
     async def _ensure_token(self) -> None:
@@ -515,20 +529,21 @@ class BaseKISClient:
             raise cache_only_refusal(self._token_provider_label())
 
         if is_gatewayd_token_issuance(self._settings):
-            provider = (
-                "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
-            )
+            provider = self._gatewayd_token_provider()
+            if provider is not None:
 
-            async def ensure_from_gatewayd() -> None:
-                await ensure_gatewayd_token(provider, settings_obj=self._settings)
+                async def ensure_from_gatewayd() -> None:
+                    await ensure_gatewayd_token(provider, settings_obj=self._settings)
 
-            self._settings.kis_access_token = (
-                await self._token_manager.ensure_token_from_gateway(
-                    ensure_from_gatewayd
+                self._settings.kis_access_token = (
+                    await self._token_manager.ensure_token_from_gateway(
+                        ensure_from_gatewayd
+                    )
                 )
-            )
-            logging.info("KIS access token ensured by gatewayd and applied from Redis")
-            return
+                logging.info(
+                    "KIS access token ensured by gatewayd and applied from Redis"
+                )
+                return
 
         async def token_fetcher() -> tuple[str, int]:
             access_token, expires_in = await self._fetch_token()

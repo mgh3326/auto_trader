@@ -16,7 +16,11 @@ from app.services.brokers.token_issuance import (
     cache_only_refusal,
     is_cache_only_token_issuance,
 )
-from app.services.brokers.token_keys import kis_live_token_keys, kis_mock_token_keys
+from app.services.brokers.token_keys import (
+    kis_futures_mock_token_keys,
+    kis_live_token_keys,
+    kis_mock_token_keys,
+)
 
 GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
 GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS = 0.05
@@ -459,6 +463,26 @@ def _get_kis_mock_token_manager(token_keys: tuple[str, str]) -> RedisTokenManage
 def get_kis_mock_token_manager(*, base_url: str, app_key: str) -> RedisTokenManager:
     """Return the process-shared VTS manager for a normalized host/appkey pair."""
     token_keys = _kis_mock_token_manager_keys(base_url=base_url, app_key=app_key)
+    return _get_kis_mock_token_manager(token_keys)
+
+
+def _kis_futures_mock_token_manager_keys(
+    *, base_url: str, app_key: str
+) -> tuple[str, str]:
+    """Build futures-mock token keys — a namespace disjoint from ``kis_mock:``."""
+    host = urlsplit(base_url.rstrip("/")).netloc.lower()
+    if not host:
+        raise ValueError("KIS futures mock base URL must include a host")
+    return kis_futures_mock_token_keys(netloc=host, app_key=app_key)
+
+
+def get_kis_futures_mock_token_manager(
+    *, base_url: str, app_key: str
+) -> RedisTokenManager:
+    """Return the process-shared futures-mock manager for one credential scope."""
+    token_keys = _kis_futures_mock_token_manager_keys(
+        base_url=base_url, app_key=app_key
+    )
     return _get_kis_mock_token_manager(token_keys)
 
 

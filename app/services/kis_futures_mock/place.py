@@ -28,6 +28,9 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.timezone import KST
+from app.services.brokers.kis.futures_mock_credentials import (
+    FuturesMockCredentialsMissing,
+)
 from app.services.brokers.kis.futures_orders import FuturesPreDispatchError
 
 from . import constants as C  # noqa: N812
@@ -97,7 +100,7 @@ def default_deps() -> FuturesPlaceDeps:
         from app.services.brokers.kis.client import KISClient
         from app.services.brokers.kis.futures_orders import FuturesOrders
 
-        return FuturesOrders(KISClient(is_mock=True))
+        return FuturesOrders(KISClient(is_mock=True, futures_mock=True))
 
     return FuturesPlaceDeps(
         now=lambda: datetime.now(KST),
@@ -144,6 +147,15 @@ def _refused(
 def _refusal(base: dict[str, Any], refusal: Refusal) -> dict[str, Any]:
     return _refused(
         base, refusal.code, detail=refusal.detail, human=refusal.requires_human_card
+    )
+
+
+def _credentials_refusal(
+    base: dict[str, Any], exc: FuturesMockCredentialsMissing
+) -> dict[str, Any]:
+    """선물 전용 앱키·시크릿 누락 — env 이름만 보고하고 네트워크 0건."""
+    return _refused(
+        base, "futures_mock_credentials_missing", detail=",".join(exc.missing)
     )
 
 
@@ -252,7 +264,10 @@ async def place_futures_mock_order(
     deps = deps or default_deps()
     if confirm and os.environ.get(C.ENABLED_ENV) != "true":
         return _refused(base, "env_gate_disabled")
-    order_client = deps.new_order_client() if confirm else None
+    try:
+        order_client = deps.new_order_client() if confirm else None
+    except FuturesMockCredentialsMissing as exc:
+        return _credentials_refusal(base, exc)
     try:
         return await _place_flow(
             base, request, order, product, confirm, order_client, deps
@@ -298,6 +313,8 @@ async def _place_flow(
 
     try:
         view = deps.open_read_view()
+    except FuturesMockCredentialsMissing as exc:
+        return _credentials_refusal(base, exc)
     except Exception as exc:  # noqa: BLE001 - 읽기 게이트(KIS_FUTURES_READ_ENABLED) 등
         return _refused(base, "read_gate_disabled", detail=type(exc).__name__)
     try:
@@ -651,7 +668,10 @@ async def cancel_futures_mock_order(
     if confirm and os.environ.get(C.ENABLED_ENV) != "true":
         return _refused(base, "env_gate_disabled")
     deps = deps or default_deps()
-    order_client = deps.new_order_client()
+    try:
+        order_client = deps.new_order_client() if confirm else None
+    except FuturesMockCredentialsMissing as exc:
+        return _credentials_refusal(base, exc)
     try:
         if confirm:
             identity = identity_error(order_client, deps.account_no())
