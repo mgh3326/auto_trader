@@ -45,10 +45,23 @@ def test_u1_krw_active_market_passes_all_rules() -> None:
         ("KRW-BTCUP", {}, "excluded_leveraged_token"),
         ("KRW-ETH", {"warning": "CAUTION"}, "market_warning_caution"),
         ("KRW-ETH", {"warning": " caution "}, "market_warning_caution"),
+        ("KRW-ETH", {"warning": ""}, "market_warning_unknown"),
+        ("KRW-ETH", {"warning": "   "}, "market_warning_unknown"),
+        ("KRW-ETH", {"warning": "UNKNOWN"}, "market_warning_unknown"),
+        ("KRW-ETH", {"warning": "WARNING"}, "market_warning_unknown"),
+        ("KRW-ETH", {"warning": None}, "market_warning_unknown"),
     ],
 )
 def test_first_failing_rule_wins(name, kwargs, reason) -> None:
     assert judge(market(name, **kwargs)).reason_code == reason
+
+
+def test_only_none_warning_is_eligible_and_case_is_normalised() -> None:
+    assert judge(market(warning="NONE")).eligible
+    assert judge(market(warning=" none ")).eligible
+    for bad in ("", "UNKNOWN", "null", "CAUTIONS", None, 0):
+        e = judge(market(warning=bad))  # type: ignore[arg-type]
+        assert (e.eligible, e.reason_code) == (False, "market_warning_unknown")
 
 
 def test_paxg_is_kept_like_the_research_function() -> None:
@@ -201,6 +214,70 @@ def test_candidate_set_golden() -> None:
         hashlib.sha256(GOLDEN["canonical_json"].encode()).hexdigest()
         == GOLDEN["sha256"]
     )
+
+
+def _hash_of(volumes: dict[str, str]) -> tuple[str, dict[str, object]]:
+    inputs = {
+        m: market(m, bar_set=bars(count=90, quote_volume=qv))
+        for m, qv in volumes.items()
+    }
+    result = u.daily_eligibility(volumes, inputs, asof=ASOF)
+    h = u.u0_sha256(volumes)
+    return (
+        u.candidate_set_sha256(result, asof=ASOF, u0_hash=h),
+        u.candidate_set_payload(result, asof=ASOF, u0_hash=h)["markets"],  # type: ignore[return-value]
+    )
+
+
+def test_hash_seals_the_30_day_sum_rank_and_tie_break_key() -> None:
+    base_h, base = _hash_of({"KRW-A": "10000000000", "KRW-B": "11000000000"})
+    assert base["KRW-B"]["liquidity_rank"] == 1  # type: ignore[index]
+    assert base["KRW-A"]["liquidity_rank"] == 2  # type: ignore[index]
+    assert base["KRW-A"]["turnover30_sum_krw"] == "300000000000"  # type: ignore[index]
+    assert base["KRW-A"]["tie_break_key"] == "KRW-A"  # type: ignore[index]
+
+    # only the sum changes (median stays the same): hash must change
+    rows = list(bars(count=90, quote_volume="10000000000"))
+    rows[0] = DailyBar(rows[0].day, rows[0].close, Decimal("10000000001"), True)
+    bumped = market("KRW-A", bar_set=tuple(rows))
+    assert u.judge_market(bumped, asof=ASOF).turnover30_median_krw == Decimal(
+        "10000000000"
+    )
+    inputs = {
+        "KRW-A": bumped,
+        "KRW-B": market("KRW-B", bar_set=bars(count=90, quote_volume="11000000000")),
+    }
+    result = u.daily_eligibility(["KRW-A", "KRW-B"], inputs, asof=ASOF)
+    h = u.u0_sha256(["KRW-A", "KRW-B"])
+    assert u.candidate_set_sha256(result, asof=ASOF, u0_hash=h) != base_h
+
+    # the sum flips the rank: A overtakes B, so the hash and the ranks differ
+    flipped_h, flipped = _hash_of({"KRW-A": "12000000000", "KRW-B": "11000000000"})
+    assert flipped["KRW-A"]["liquidity_rank"] == 1  # type: ignore[index]
+    assert flipped_h != base_h
+
+
+def test_equal_sums_are_ranked_by_market_code_and_ineligible_has_no_rank() -> None:
+    _, tied = _hash_of({"KRW-B": "10000000000", "KRW-A": "10000000000"})
+    assert tied["KRW-A"]["liquidity_rank"] == 1  # type: ignore[index]
+    assert tied["KRW-B"]["liquidity_rank"] == 2  # type: ignore[index]
+    result = u.daily_eligibility(
+        ["KRW-ETH", "KRW-X"],
+        {"KRW-ETH": market(), "KRW-X": market("KRW-X", warning="CAUTION")},
+        asof=ASOF,
+    )
+    markets = u.candidate_set_payload(result, asof=ASOF, u0_hash="h")["markets"]
+    assert markets["KRW-X"]["liquidity_rank"] is None  # type: ignore[index]
+    assert markets["KRW-X"]["turnover30_sum_krw"] is None  # type: ignore[index]
+
+
+def test_u0_ordered_hash_pins_the_cut_order() -> None:
+    a = u.u0_ordered_sha256(["KRW-A", "KRW-B"])
+    assert a != u.u0_ordered_sha256(["KRW-B", "KRW-A"])
+    assert u.u0_sha256(["KRW-A", "KRW-B"]) == u.u0_sha256(["KRW-B", "KRW-A"])
+    assert a == hashlib.sha256(b'["KRW-A","KRW-B"]').hexdigest()
+    with pytest.raises(ValueError, match="duplicate"):
+        u.u0_ordered_sha256(["KRW-A", "KRW-A"])
 
 
 def test_candidate_set_hash_changes_with_any_field() -> None:

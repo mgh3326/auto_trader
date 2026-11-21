@@ -93,3 +93,70 @@ def test_late_issue_boundary_is_sixty_minutes() -> None:
     )
     with pytest.raises(ValueError):
         sel.is_late_issue(candle_closed_at=datetime(2026, 11, 22), issued_at=closed)
+
+
+def held_decisions(*, held, signals, eligibility, open_positions=1):
+    return {
+        d.market: d
+        for d in sel.select_entries(
+            signals=signals,
+            eligibility=eligibility,
+            held_markets=held,
+            banned_markets=(),
+            open_positions=open_positions,
+        )
+    }
+
+
+def test_held_market_missing_from_signals_and_eligibility_is_not_dropped() -> None:
+    out = held_decisions(held=["KRW-GONE"], signals={}, eligibility={})
+    d = out["KRW-GONE"]
+    assert (d.held, d.selected, d.reason_code, d.eligibility_reason) == (
+        True, False, "held_not_eligible", "no_market_data",
+    )  # fmt: skip
+
+
+def test_held_market_that_is_delisted_or_warned_keeps_an_explicit_state() -> None:
+    def ineligible(market: str, reason: str) -> Eligibility:
+        return Eligibility(market, False, reason, None, None, None)
+
+    out = held_decisions(
+        held=["KRW-DEL", "KRW-WARN", "KRW-UNK", "KRW-OK"],
+        signals={"KRW-OK": sig(True)},
+        eligibility={
+            "KRW-DEL": ineligible("KRW-DEL", "inactive"),
+            "KRW-WARN": ineligible("KRW-WARN", "market_warning_caution"),
+            "KRW-UNK": ineligible("KRW-UNK", "market_warning_unknown"),
+            "KRW-OK": elig("KRW-OK"),
+        },
+    )
+    assert {m: (d.held, d.reason_code, d.eligibility_reason) for m, d in out.items()} == {
+        "KRW-DEL": (True, "held_not_eligible", "inactive"),
+        "KRW-WARN": (True, "held_not_eligible", "market_warning_caution"),
+        "KRW-UNK": (True, "held_not_eligible", "market_warning_unknown"),
+        "KRW-OK": (True, "already_held", "ok"),
+    }  # fmt: skip
+    assert not any(d.selected for d in out.values())
+
+
+def test_held_market_without_signal_is_still_marked_held() -> None:
+    out = held_decisions(
+        held=["KRW-A"],
+        signals={"KRW-A": sig(False)},
+        eligibility={"KRW-A": elig("KRW-A")},
+    )
+    assert (out["KRW-A"].held, out["KRW-A"].reason_code) == (True, "no_signal")
+
+
+def test_not_held_ineligible_market_stays_not_eligible_and_not_held() -> None:
+    out = held_decisions(
+        held=[],
+        signals={"KRW-X": sig(True)},
+        eligibility={"KRW-X": elig("KRW-X", ok=False)},
+    )
+    d = out["KRW-X"]
+    assert (d.held, d.reason_code, d.eligibility_reason) == (
+        False,
+        "not_eligible",
+        "inactive",
+    )
