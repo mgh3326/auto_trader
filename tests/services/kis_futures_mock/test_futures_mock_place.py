@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -475,11 +474,6 @@ def test_read_gate_off_is_a_refusal_not_a_crash():
     def boom():
         raise RuntimeError("KIS_FUTURES_READ_ENABLED이 true가 아닙니다")
 
-    h.deps = (
-        FuturesPlaceDeps(**{**h.deps.__dict__, "open_read_view": boom})
-        if hasattr(h.deps, "__dict__")
-        else h.deps
-    )
     r = run(
         place_futures_mock_order(
             PlaceRequest("A05612", "buy", Decimal("400.00"), 1, strategy="s"),
@@ -731,7 +725,3 @@ def test_cancel_pre_dispatch_error_releases_the_reservation():
     r = cancel(h)
     assert r["error_code"] == "pre_dispatch_error" and r["reservation_released"] is True
     assert h.recorder.rows == []
-
-
-def test_unused_helpers_stay_importable():
-    assert Any is not None
