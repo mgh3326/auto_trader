@@ -40,4 +40,4 @@ def open_futures_view(*, is_mock: bool = True) -> Any:
         raise RuntimeError("KIS_FUTURES_READ_ENABLED이 true가 아닙니다")
     from app.services.brokers.kis.client import KISClient
 
-    return read_only_view(KISClient(is_mock=is_mock))
+    return read_only_view(KISClient(is_mock=is_mock, futures_mock=is_mock))

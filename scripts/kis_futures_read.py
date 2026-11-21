@@ -106,7 +106,12 @@ def main() -> int:
             preview(account, args.symbol, args.side, args.price or "", args.order_type)
         )
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"오류": type(exc).__name__}, ensure_ascii=False))
+        detail: dict[str, Any] = {"오류": type(exc).__name__}
+        missing = getattr(exc, "missing", None)
+        if missing:
+            # env 이름만 보고한다 (값은 절대 출력하지 않는다).
+            detail["missing_env"] = list(missing)
+        print(json.dumps(detail, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

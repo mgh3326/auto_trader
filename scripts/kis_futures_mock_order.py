@@ -3,7 +3,9 @@
 미리보기가 기본이다. ``--confirm`` 을 줘야 모의 주문 **한 건**이 나간다.
 수량(1계약)·명목 상한·손실 한도·가드 폭은 인자로 바꿀 수 없다(잠금 상수).
 MCP 도구도 스케줄러도 없다. 환경 게이트: ``KIS_FUTURES_MOCK_ENABLED=true``(전송),
-``KIS_FUTURES_READ_ENABLED=true``(마스터·잔고 읽기), ``KIS_FUTURES_MOCK_ACCOUNT_NO``.
+``KIS_FUTURES_READ_ENABLED=true``(마스터·잔고 읽기), ``KIS_FUTURES_MOCK_ACCOUNT_NO``,
+선물옵션 계좌 전용 ``KIS_FUTURES_MOCK_APP_KEY``·``KIS_FUTURES_MOCK_APP_SECRET``
+(주식 모의 키로 대체하지 않는다 — 누락은 ``futures_mock_credentials_missing``).
 
 사용 예 (런북 docs/runbooks/kis-futures-mock-order.md):
     uv run python -m scripts.kis_futures_mock_order place --symbol A05612 \

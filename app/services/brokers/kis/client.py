@@ -16,9 +16,15 @@ from app.core.config import settings
 from app.services.brokers.credential_firewall import (
     assert_broker_credentials_allowed,
 )
+from app.services.brokers.kis.futures_mock_credentials import (
+    require_futures_mock_credentials,
+)
 from app.services.brokers.kis.pre_send import PreSendHook
 from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
-from app.services.redis_token_manager import get_kis_mock_token_manager
+from app.services.redis_token_manager import (
+    get_kis_futures_mock_token_manager,
+    get_kis_mock_token_manager,
+)
 
 from .account import AccountClient, extract_domestic_cash_summary_from_integrated_margin
 from .base import BaseKISClient
@@ -50,10 +56,17 @@ __all__ = [
 
 
 class _KISSettingsView:
-    """Expose live or KIS mock credentials without cross-account fallback."""
+    """Expose live, stock-mock, or futures-mock credentials — never a fallback.
 
-    def __init__(self, *, is_mock: bool) -> None:
+    The futures-mock branch (hk 6022) reads only the ``kis_futures_mock_*``
+    settings: the futures/options mock account has its own app key/secret and
+    its own token namespace, and it must never resolve the stock mock or live
+    pair.
+    """
+
+    def __init__(self, *, is_mock: bool, futures_mock: bool = False) -> None:
         self._is_mock = is_mock
+        self._is_futures_mock = futures_mock
 
     def __getattr__(self, name: str) -> Any:
         return getattr(settings, name)
@@ -61,22 +74,32 @@ class _KISSettingsView:
     @property
     def account_scope(self) -> str:
         """Account binding marker read by the shared account-number parser."""
+        if self._is_futures_mock:
+            return "kis_futures_mock"
         return "kis_mock" if self._is_mock else "kis_live"
 
     @property
     def kis_app_key(self) -> str:
+        if self._is_futures_mock:
+            return str(settings.kis_futures_mock_app_key or "")
         if self._is_mock:
             return str(settings.kis_mock_app_key or "")
         return settings.kis_app_key
 
     @property
     def kis_app_secret(self) -> str:
+        if self._is_futures_mock:
+            return str(settings.kis_futures_mock_app_secret or "")
         if self._is_mock:
             return str(settings.kis_mock_app_secret or "")
         return settings.kis_app_secret
 
     @property
     def kis_account_no(self) -> str | None:
+        if self._is_futures_mock:
+            # The futures account arrives per-call from KIS_FUTURES_MOCK_ACCOUNT_NO;
+            # there is no settings-level futures account and no stock fallback.
+            return None
         if self._is_mock:
             return settings.kis_mock_account_no
         return settings.kis_account_no
@@ -89,13 +112,17 @@ class _KISSettingsView:
 
     @property
     def kis_access_token(self) -> str | None:
+        if self._is_futures_mock:
+            return settings.kis_futures_mock_access_token
         if self._is_mock:
             return settings.kis_mock_access_token
         return settings.kis_access_token
 
     @kis_access_token.setter
     def kis_access_token(self, value: str | None) -> None:
-        if self._is_mock:
+        if self._is_futures_mock:
+            settings.kis_futures_mock_access_token = value
+        elif self._is_mock:
             settings.kis_mock_access_token = value
         else:
             settings.kis_access_token = value
@@ -115,17 +142,32 @@ class KISClient(BaseKISClient):
     are inherited from BaseKISClient.
     """
 
-    def __init__(self, *, is_mock: bool = False) -> None:
+    def __init__(self, *, is_mock: bool = False, futures_mock: bool = False) -> None:
         # #1257: refused before any credential view is built.
         assert_broker_credentials_allowed("KIS client")
+        if futures_mock and not is_mock:
+            raise ValueError("futures_mock client must also be a mock client")
+        if futures_mock:
+            # Refuse before any credential view, token manager, or I/O when the
+            # futures-only keys are absent — the refusal names env keys only.
+            require_futures_mock_credentials(settings)
         self._is_mock_client = is_mock
-        self._settings_view = _KISSettingsView(is_mock=is_mock)
+        self._is_futures_mock_client = futures_mock
+        self._settings_view = _KISSettingsView(
+            is_mock=is_mock, futures_mock=futures_mock
+        )
         super().__init__()
         if is_mock:
-            self._token_manager = get_kis_mock_token_manager(
-                base_url=self._settings.kis_base_url,
-                app_key=self._settings.kis_app_key,
-            )
+            if futures_mock:
+                self._token_manager = get_kis_futures_mock_token_manager(
+                    base_url=self._settings.kis_base_url,
+                    app_key=self._settings.kis_app_key,
+                )
+            else:
+                self._token_manager = get_kis_mock_token_manager(
+                    base_url=self._settings.kis_base_url,
+                    app_key=self._settings.kis_app_key,
+                )
         parent: KISClientProtocol = cast(KISClientProtocol, cast(object, self))
         self._market_data: MarketDataClient = MarketDataClient(parent)
         self._account: AccountClient = AccountClient(parent)

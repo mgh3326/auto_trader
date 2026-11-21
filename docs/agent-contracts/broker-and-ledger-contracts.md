@@ -717,6 +717,7 @@ allowlist change exists because `get_holdings` is already live-kr core.
 
 - **표면**: `app/services/kis_futures_mock/`(`constants`·`session_calendar`·`rules`(순수)·`attribution`·`ledger_service`·`place`) + 전송기 `app/services/brokers/kis/futures_orders.py`(`KISClient` 를 감싼다 — `KISClient` 에 `futures_*` 메서드를 더하지 않으므로 T1 읽기 view 의 허용 목록·메서드 집합 대조 테스트가 그대로다) + 수동 CLI `scripts/kis_futures_mock_order.py`(`place`/`cancel`, 미리보기 기본, `--confirm` 이 한 건을 보낸다, 수량·상한 인자 없음). `futures_orders`/`FuturesOrders` 를 부르는 곳은 이 레인뿐이다(`tests/services/kis_futures_mock/test_futures_mock_boundary.py`).
 - **게이트**: `KIS_FUTURES_MOCK_ENABLED` 정확히 `"true"`(기본 off) AND 호출별 `--confirm`. 읽기(마스터·잔고)는 T1 의 `KIS_FUTURES_READ_ENABLED` 와 `KIS_FUTURES_MOCK_ACCOUNT_NO`(선물옵션 계좌 8자리, 상품코드 `03` 고정)를 쓴다. 호스트는 정확히 `https://openapivts.koreainvestment.com:29443`·모의 클라이언트·8자리 숫자 계좌일 때만 진행하고, 어긋나면 예약 전에 거부한다. TR 은 모의 주간 `VTTO1101U`(주문)·`VTTO1103U`(취소)뿐이다.
+- 🔴 **자격증명·토큰 네임스페이스 (hk 6022)**: 이 경로의 KIS 클라이언트(`KISClient(is_mock=True, futures_mock=True)`)는 선물옵션 계좌 전용 `KIS_FUTURES_MOCK_APP_KEY`·`KIS_FUTURES_MOCK_APP_SECRET` 만 읽고 토큰은 `kis_futures_mock:<host>:<appkey fp16>` 네임스페이스에만 쓴다(`get_kis_futures_mock_token_manager`). 주식 모의(`KIS_MOCK_*`·`kis_mock:*`)·실계좌 자격증명으로 대체하지 않고, 주식 모의 경로는 선물 키·네임스페이스를 건드리지 않는다. 키가 하나라도 없으면 네트워크·토큰 조회 전에 `futures_mock_credentials_missing` 으로 거부하고 env 이름만 보고한다. gatewayd 발급 provider 목록에 선물 모의는 없어서 이 네임스페이스는 self-issue 다(`BROKER_TOKEN_ISSUANCE_MODE=gatewayd` 여도 gatewayd 를 부르지 않는다). `cache_only` 는 여전히 발급 없이 캐시 미스 거부다.
 - 🔴 **잠금 상수**(`constants.LOCKED_LIMITS`, env·CLI·인자로 바꿀 수 없다): 1계약·동시 1포지션·계약 명목 50,000,000 KRW(`가격 × 50,000 × 수량`)·일일 손실 한도 1,000,000 KRW·방향 인식 가드 `g=0.02`·지정가만·야간 없음·옵션 없음·자동 롤오버 없음. `assert_limits_locked` 가 파이프라인 시작 시 독립 리터럴과 대조하고, DB CHECK 가 1계약·명목·지정가·닫힌 상품을 반복한다(올리려면 새 운영자 결정 + 상수 + 마이그레이션). 기존 `kis_mock` 상한과 기존 손실매도 가드는 바뀌지 않았다.
 - **닫힌 상품 집합**: 미니 KOSPI200 선물 하나(`MF200`, 승수 50,000, 호가 0.02pt, 틱 가치 1,000원 — [KRX 상품명세](https://open.krx.co.kr/contents/OPN/01/01040204/OPN01040204.jsp) 2026-11-21 확인). 네트워크 전에 단축코드 형식(`A05` + 연도 끝자리 + 월 2자리)으로 거르고, 그 뒤 종목마스터(`fo_idx_code_mts.mst`, T1 `futures_master`)의 행(상품종류 `B`, 이름 `미니F YYYYMM`, 기초자산 `KOSPI200`)으로 확정한다 — 결제월은 연도 문자 규칙을 추측하지 않고 마스터 이름에서만 얻는다. DB 심볼은 `MF200.YYMM`(`app/core/symbol.py` 의 `to_futures_contract_symbol`/`parse_futures_contract_symbol`).
 - **송신 순서**(확정 경로): 잠금 상수 → 형태·닫힌 상품 → env 게이트 → 호스트·계좌 → **귀속 확정**(strategy 필수, placeholder 금지 — 정의는 `kis_mock_attribution` 하나) → 마스터로 계약 확정 → **귀속 신호 행 커밋**(`review.kis_futures_mock_signal_ledger`, 실패하면 전송 없음) → 세션·포지션·일일 손실·명목·가드 판정(`rules.decide`) → **`order_send_intents` 예약 커밋**(자기 scope `kis_futures_mock`, 같은 키는 UNIQUE 위반 → 전송 없음) → 전송 직전 세션 재확인 → POST **한 번**(`retry_request_errors=False`·`max_retries_override=0`). 거부는 전부 전송 0건이고, 예약은 **송신하지 않았음이 증명된 경우에만** 풀린다(`FuturesPreDispatchError`: env·호스트·계좌·토큰·서킷·분산 게이트·pre-send 신선도). 그 밖의 모든 예외는 `uncertain` 이고 예약을 유지하며 다시 보내지 않는다.
@@ -1215,6 +1216,10 @@ retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_s
 전에도 확인한다. 이 표면에는 MCP 도구·스케줄러·주문 전송이 없다. KIS 기존 인증·
 속도 제한을 쓰며 모의 요청은 공식 VTS 호스트에만 보낸다. 계좌번호는 별도로 지정한
 선물 계좌 8자리이며 상품코드는 `03`이다. 주식 계좌를 자동 대체하지 않는다.
+모의 읽기(hk 6022)는 선물옵션 계좌 전용 `KIS_FUTURES_MOCK_APP_KEY`·
+`KIS_FUTURES_MOCK_APP_SECRET`과 `kis_futures_mock:<host>:<fp16>` 토큰 네임스페이스만
+쓰고, 주식 모의 자격증명·토큰 네임스페이스로 대체하지 않는다. 키가 없으면
+클라이언트 생성 시 env 이름만 담은 `FuturesMockCredentialsMissing` 으로 거부한다.
 
 잔고는 `CTFO6118R`/`VTFO6118R`의 `output1` 포지션과 `output2` 합계를 읽고
 연속조회가 끝나지 않으면 결과를 거부한다. 총자산은 `CTRP6550R`/`VTRP6550R`,
@@ -1227,7 +1232,8 @@ retro/v1 `retro_scoreboard` 읽기(hk 3817): `app/services/account_value/retro_s
 지수 선물옵션 마스터는 [공식 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/stocks_info/domestic_index_future_code.py)의
 `fo_idx_code_mts.mst.zip`을 TLS 검증과 redirect 거부로 읽는다.
 
-운영자 수동 확인: 모의 KIS 자격증명과 별도의 `KIS_FUTURES_MOCK_ACCOUNT_NO`를
+운영자 수동 확인: 선물옵션 계좌 전용 `KIS_FUTURES_MOCK_APP_KEY`·
+`KIS_FUTURES_MOCK_APP_SECRET`과 별도의 `KIS_FUTURES_MOCK_ACCOUNT_NO`를
 설정하고 `KIS_FUTURES_READ_ENABLED=true`로 `uv run python -m scripts.kis_futures_read`를
 실행한다. `--symbol`, `--side`, `--price`, `--order-type`은 선택적인 주문가능
 조회 입력이며 `--symbol` 지정 시 `--price`가 필수다. 주문을 만들지 않는다. 출력은 계좌를 마스킹하고 금액·수량을 정확한
