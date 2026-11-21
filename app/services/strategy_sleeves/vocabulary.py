@@ -134,6 +134,39 @@ CANARY_RULES: dict[str, CanaryRule] = {
             metric="reference only; pre-registered by the operator per sleeve version",
             horizon="reference only; pre-registered by the operator per sleeve version",
         ),
+        # hk 5852 (T9a): the two signal families of the Upbit KRW shadow
+        # experiment. Each family has two arms (gate on/off), and each arm is its
+        # own shadow sleeve, so the family id is the only thing the sleeve records.
+        # Kept distinct from the hk 4885 live trend id (a different universe and
+        # signal instrumentation). Metric and horizon are reference text only; the
+        # binding values are the operator's per sleeve version (runbook
+        # docs/runbooks/upbit-krw-shadow-sleeves.md).
+        CanaryRule(
+            rule_id="at5852.upbit_krw_trend_shadow",
+            design_section="docs/design/5852-upbit-krw-shadow-strategy.md §4.1",
+            title="Upbit KRW trend shadow arm: R60 > 0, long only",
+            markets=frozenset({"crypto"}),
+            metric=(
+                "reference only; episode net return per intended entry notional "
+                "against cash"
+            ),
+            horizon=(
+                "reference only; 60-day entry window, 91 days in total (design §8.2)"
+            ),
+        ),
+        CanaryRule(
+            rule_id="at5852.upbit_krw_pullback_shadow",
+            design_section="docs/design/5852-upbit-krw-shadow-strategy.md §4.2",
+            title="Upbit KRW pullback shadow arm: R60 > 0, RSI14 <= 40",
+            markets=frozenset({"crypto"}),
+            metric=(
+                "reference only; episode net return per intended entry notional "
+                "against cash"
+            ),
+            horizon=(
+                "reference only; 60-day entry window, 91 days in total (design §8.2)"
+            ),
+        ),
     )
 }
 

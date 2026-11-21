@@ -134,6 +134,7 @@ tests/scripts/test_pi_shiftgate_deploy.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
 tests/scripts/test_shiftgate_services_at.py
+tests/scripts/test_upbit_krw_shadow_runbook.py
 tests/services/account_value/test_cli.py
 tests/services/account_value/test_confirm_flows_account.py
 tests/services/account_value/test_returns.py
@@ -297,6 +298,7 @@ tests/services/strategy_sleeves/test_cli.py
 tests/services/strategy_sleeves/test_dispatch_gate_db.py
 tests/services/strategy_sleeves/test_intent_orders.py
 tests/services/strategy_sleeves/test_report.py
+tests/services/strategy_sleeves/test_upbit_krw_shadow_rules.py
 tests/services/test_account_routing.py
 tests/services/test_alpaca_paper_final_review.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py

@@ -43,6 +43,12 @@ Rules (from the canary design, `docs/research/rob-1465-trade-retrospective.md` �
 | `rob1458.parking_idle_cash` | §4.4 | `equity_kr`, `equity_us` |
 | `rob1458.crypto_sell_expiry` | §4.5 | `crypto` |
 | `rob1458.crypto_b3` | §4.6 | `crypto` |
+| `at5852.upbit_krw_trend_shadow` | hk 5852 §4.1 (`docs/design/5852-upbit-krw-shadow-strategy.md`) | `crypto` |
+| `at5852.upbit_krw_pullback_shadow` | hk 5852 §4.2 (same design) | `crypto` |
+
+The two `at5852.*` rows are the shadow arms of the Upbit KRW experiment (hk 5852).
+Their sleeves and mandates are created by the procedure in
+`docs/runbooks/upbit-krw-shadow-sleeves.md`; that runbook is the only place they are set up.
 
 ## What changes for orders
 
