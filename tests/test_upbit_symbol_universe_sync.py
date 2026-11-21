@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +11,8 @@ from app.models.upbit_symbol_universe import UpbitSymbolUniverse
 from app.services import upbit_symbol_universe_service
 from app.tasks import upbit_symbol_universe_tasks
 from scripts import sync_upbit_symbol_universe
+
+_OBSERVED_AT = datetime(2026, 11, 22, 6, 15, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -23,7 +26,10 @@ async def test_build_snapshot_skips_invalid_rows(monkeypatch):
                     "market": "KRW-BTC",
                     "korean_name": "비트코인",
                     "english_name": "Bitcoin",
-                    "market_warning": "NONE",
+                    "market_event": {
+                        "warning": False,
+                        "caution": {"PRICE_FLUCTUATIONS": False},
+                    },
                 },
                 {
                     "market": "INVALID",
@@ -44,7 +50,10 @@ async def test_build_snapshot_skips_invalid_rows(monkeypatch):
                     "market": "KRW-XRP",
                     "korean_name": "리플",
                     "english_name": "Ripple",
-                    "market_warning": "CAUTION",
+                    "market_event": {
+                        "warning": True,
+                        "caution": {"PRICE_FLUCTUATIONS": False},
+                    },
                 },
             ]
         ),
@@ -57,7 +66,15 @@ async def test_build_snapshot_skips_invalid_rows(monkeypatch):
     assert set(snapshot) == {"KRW-BTC", "KRW-XRP"}
     assert snapshot["KRW-BTC"].quote_currency == "KRW"
     assert snapshot["KRW-BTC"].base_currency == "BTC"
-    assert snapshot["KRW-XRP"].market_warning == "CAUTION"
+    assert snapshot["KRW-BTC"].market_event == {
+        "warning": False,
+        "caution": {"PRICE_FLUCTUATIONS": False},
+    }
+    assert snapshot["KRW-XRP"].market_event == {
+        "warning": True,
+        "caution": {"PRICE_FLUCTUATIONS": False},
+    }
+    assert snapshot["KRW-XRP"].market_event_observed_at is not None
 
 
 @pytest.mark.asyncio
@@ -111,7 +128,8 @@ async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
             base_currency="BTC",
             korean_name="비트코인",
             english_name="Bitcoin",
-            market_warning="NONE",
+            market_event={"warning": False, "caution": {"PRICE_FLUCTUATIONS": False}},
+            market_event_observed_at=_OBSERVED_AT,
         ),
         "KRW-ETH": upbit_symbol_universe_service._UniverseRow(
             market="KRW-ETH",
@@ -119,7 +137,8 @@ async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
             base_currency="ETH",
             korean_name="이더리움",
             english_name="Ethereum",
-            market_warning="CAUTION",
+            market_event={"warning": True, "caution": {"PRICE_FLUCTUATIONS": False}},
+            market_event_observed_at=_OBSERVED_AT,
         ),
     }
     monkeypatch.setattr(
@@ -170,6 +189,15 @@ async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
     assert db.rows["KRW-BTC"].korean_name == "비트코인"
     assert db.rows["KRW-BTC"].is_active is True
     assert db.rows["KRW-OLD"].is_active is False
+    # hk 6026: the stored market_event + observation time drive reader state,
+    # and ``market_warning`` is only the 유의 projection of ``market_event.warning``.
+    assert db.rows["KRW-BTC"].market_event == {
+        "warning": False,
+        "caution": {"PRICE_FLUCTUATIONS": False},
+    }
+    assert db.rows["KRW-BTC"].market_event_observed_at == _OBSERVED_AT
+    assert db.rows["KRW-BTC"].market_warning == "NONE"
+    assert db.rows["KRW-ETH"].market_warning == "CAUTION"
 
 
 @pytest.mark.asyncio
@@ -373,35 +401,40 @@ async def test_get_upbit_warning_markets_supports_legacy_fiat_alias(monkeypatch)
     impl.assert_awaited_once_with(db, "KRW")
 
 
-def test_normalize_market_warning_preserves_provenance():
-    normalize = upbit_symbol_universe_service._normalize_market_warning
-    # Explicit Upbit statements pass through, case/whitespace normalised.
-    assert normalize("NONE") == "NONE"
-    assert normalize(" none ") == "NONE"
-    assert normalize("CAUTION") == "CAUTION"
-    assert normalize(" caution ") == "CAUTION"
-    # Anything that is not an explicit statement is unknown — never NONE.
-    assert normalize(None) == "UNKNOWN"
-    assert normalize("") == "UNKNOWN"
-    assert normalize("   ") == "UNKNOWN"
-    assert normalize(0) == "UNKNOWN"
-    assert normalize(False) == "UNKNOWN"
-    # Unexpected upstream tokens are preserved verbatim (upper-cased) so
-    # readers fail closed on them instead of reading them as NONE.
-    assert normalize("NOTICE") == "NOTICE"
+def test_legacy_market_warning_projection_never_fabricates_none():
+    legacy = upbit_symbol_universe_service._legacy_market_warning
+    clean = {"warning": False, "caution": {"PRICE_FLUCTUATIONS": False}}
+    warned = {"warning": True, "caution": {"PRICE_FLUCTUATIONS": False}}
+    assert legacy(clean) == "NONE"
+    assert legacy(warned) == "CAUTION"
+    # 주의(caution) never lived in the legacy 유의 column.
+    assert legacy({"warning": False, "caution": {"PRICE_FLUCTUATIONS": True}}) == "NONE"
+    # Absent or unreadable statements are unknown — never NONE.
+    assert legacy(None) == "UNKNOWN"
+    assert legacy({}) == "UNKNOWN"
+    assert legacy({"warning": "false", "caution": {}}) == "UNKNOWN"
+    assert legacy({"warning": False}) == "UNKNOWN"
+    assert legacy({"warning": False, "caution": {"PRICE_FLUCTUATIONS": 1}}) == "UNKNOWN"
 
 
 @pytest.mark.asyncio
-async def test_build_snapshot_preserves_warning_provenance_from_fixture(monkeypatch):
-    """Real-shape ``/v1/market/all?isDetails=true`` rows keep their provenance.
+async def test_build_snapshot_parses_market_event_fixture(monkeypatch):
+    """Real-shape ``market_event`` rows fold into the closed state vocabulary.
 
-    Rows come from ``tests/fixtures/upbit_market_all_isdetails.json``: present
-    NONE/CAUTION stay explicit, absent/null/empty/blank become UNKNOWN.
+    ``tests/fixtures/upbit_market_all_isdetails_market_event.json`` carries a
+    warning market, multiple caution types (including a type our code does not
+    know), clean markets, an absent ``market_event`` and unreadable shapes.
     """
     import json
     from pathlib import Path
 
-    fixture = Path(__file__).parent / "fixtures" / "upbit_market_all_isdetails.json"
+    from app.services.upbit_market_event import classify_market_event
+
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "upbit_market_all_isdetails_market_event.json"
+    )
     rows = json.loads(fixture.read_text(encoding="utf-8"))
     assert isinstance(rows, list) and len(rows) == 8
 
@@ -414,15 +447,77 @@ async def test_build_snapshot_preserves_warning_provenance_from_fixture(monkeypa
     snapshot = (
         await upbit_symbol_universe_service.build_upbit_symbol_universe_snapshot()
     )
+    observed_at = snapshot["KRW-BTC"].market_event_observed_at
+    assert observed_at is not None
 
-    assert snapshot["KRW-BTC"].market_warning == "NONE"
-    assert snapshot["KRW-ETH"].market_warning == "CAUTION"
-    assert snapshot["KRW-TRX"].market_warning == "CAUTION"
-    assert snapshot["KRW-XRP"].market_warning == "UNKNOWN"
-    assert snapshot["KRW-DOGE"].market_warning == "UNKNOWN"
-    assert snapshot["KRW-SOL"].market_warning == "UNKNOWN"
-    assert snapshot["KRW-ADA"].market_warning == "UNKNOWN"
-    assert snapshot["KRW-USDT"].market_warning == "NOTICE"
+    def state(market: str) -> str:
+        row = snapshot[market]
+        return classify_market_event(
+            market=market,
+            market_event=row.market_event,
+            observed_at=row.market_event_observed_at,
+            now=observed_at,
+        ).state
+
+    assert state("KRW-BTC") == "none"
+    assert state("KRW-WAVES") == "warning"
+    assert state("KRW-KAVA") == "caution:GLOBAL_PRICE_DIFFERENCES,PRICE_FLUCTUATIONS"
+    # Upbit may add caution types; the names are kept as sent.
+    assert state("KRW-XRP") == "caution:DEPOSIT_AMOUNT_SOARING,UPSTREAM_NEW_TYPE"
+    # Absent / unusable statements are unknown, never none.
+    assert state("KRW-DOGE") == "unknown"
+    assert state("KRW-SOL") == "unknown"
+    assert state("KRW-ADA") == "unknown"
+    assert state("KRW-TRX") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_ignores_removed_market_warning_field(monkeypatch):
+    """A cached pre-removal response says nothing we may trust.
+
+    ``tests/fixtures/upbit_market_all_isdetails.json`` is the retired shape
+    (``market_warning`` only). Upbit removed that field on 2024-11-20, so such
+    rows must read ``unknown`` — never ``NONE``.
+    """
+    import json
+    from pathlib import Path
+
+    fixture = Path(__file__).parent / "fixtures" / "upbit_market_all_isdetails.json"
+    rows = json.loads(fixture.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_fetch_upbit_market_all",
+        AsyncMock(return_value=rows),
+    )
+
+    snapshot = (
+        await upbit_symbol_universe_service.build_upbit_symbol_universe_snapshot()
+    )
+
+    # The fixture's only usable statement is BTC's explicit market_event; every
+    # other row carries at most the retired ``market_warning`` field.
+    assert snapshot["KRW-ETH"].market_event is None
+    assert (
+        upbit_symbol_universe_service._legacy_market_warning(
+            snapshot["KRW-ETH"].market_event
+        )
+        == "UNKNOWN"
+    )
+    assert (
+        upbit_symbol_universe_service._legacy_market_warning(
+            snapshot["KRW-TRX"].market_event
+        )
+        == "UNKNOWN"
+    )
+    assert snapshot["KRW-BTC"].market_event is not None
+    assert snapshot["KRW-BTC"].market_event["warning"] is False
+    assert (
+        upbit_symbol_universe_service._legacy_market_warning(
+            snapshot["KRW-BTC"].market_event
+        )
+        == "NONE"
+    )
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -13,6 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import AsyncSessionLocal
 from app.models.upbit_symbol_universe import UpbitSymbolUniverse
 from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
+from app.services.upbit_market_event import (
+    STATE_STALE,
+    STATE_UNKNOWN,
+    STATE_WARNING,
+    MarketEventState,
+    load_market_event_states,
+    parse_market_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +32,10 @@ _UPBIT_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_upbit_symbol_universe
 #: are explicit Upbit statements. ``UNKNOWN`` means the source did not say:
 #: the ``market_warning`` key was absent, null, or blank at sync time. Never
 #: store ``NONE`` for an absent source — readers treat ``NONE`` as "no warning".
+#: hk 6026: this column is now only a legacy projection of
+#: ``market_event.warning`` (유의); new readers use the closed state from
+#: ``app.services.upbit_market_event``.
 UNKNOWN_MARKET_WARNING = "UNKNOWN"
-KNOWN_MARKET_WARNINGS = frozenset({"NONE", "CAUTION"})
 
 
 class UpbitSymbolUniverseLookupError(ValueError):
@@ -54,19 +65,25 @@ class _UniverseRow:
     base_currency: str
     korean_name: str
     english_name: str
-    market_warning: str
+    market_event: dict[str, Any] | None
+    market_event_observed_at: datetime
 
 
 def _normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
 
 
-def _normalize_market_warning(value: object) -> str:
-    """Keep explicit Upbit statements; absent/null/blank becomes ``UNKNOWN``."""
-    if not isinstance(value, str):
+def _legacy_market_warning(market_event: dict[str, Any] | None) -> str:
+    """Legacy ``market_warning`` projection: 유의 only (hk 6026).
+
+    Old Upbit ``market_warning`` meant 유의 종목 여부, which ``market_event.warning``
+    now carries; 주의(caution) never lived in that column. ``UNKNOWN`` when
+    Upbit did not state the field.
+    """
+    parsed = parse_market_event(market_event)
+    if parsed is None:
         return UNKNOWN_MARKET_WARNING
-    warning = value.strip().upper()
-    return warning or UNKNOWN_MARKET_WARNING
+    return "CAUTION" if parsed["warning"] else "NONE"
 
 
 def _split_market(market: str) -> tuple[str, str] | None:
@@ -93,9 +110,11 @@ async def _fetch_upbit_market_all() -> list[dict[str, Any]]:
 
 async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
     rows = await _fetch_upbit_market_all()
+    observed_at = datetime.now(UTC)
 
     snapshot: dict[str, _UniverseRow] = {}
     skipped = 0
+    unreadable_market_events = 0
     for item in rows:
         market = _normalize_symbol(item.get("market", ""))
         split = _split_market(market)
@@ -110,13 +129,20 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
             skipped += 1
             continue
 
+        # Upbit replaced ``market_warning`` with ``market_event`` (2024-11-20);
+        # the old key is gone from the response, so only the new one is read.
+        market_event = parse_market_event(item.get("market_event"))
+        if market_event is None:
+            unreadable_market_events += 1
+
         snapshot[market] = _UniverseRow(
             market=market,
             quote_currency=quote_currency,
             base_currency=base_currency,
             korean_name=korean_name,
             english_name=english_name,
-            market_warning=_normalize_market_warning(item.get("market_warning")),
+            market_event=market_event,
+            market_event_observed_at=observed_at,
         )
 
     if not snapshot:
@@ -126,6 +152,12 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
 
     if skipped > 0:
         logger.warning("Upbit symbol universe parse skipped invalid rows=%d", skipped)
+    if unreadable_market_events > 0:
+        logger.warning(
+            "Upbit market_event unreadable for %d of %d markets (stored as unknown)",
+            unreadable_market_events,
+            len(snapshot),
+        )
 
     return snapshot
 
@@ -151,7 +183,9 @@ async def _apply_snapshot(
                     base_currency=row.base_currency,
                     korean_name=row.korean_name,
                     english_name=row.english_name,
-                    market_warning=row.market_warning,
+                    market_warning=_legacy_market_warning(row.market_event),
+                    market_event=row.market_event,
+                    market_event_observed_at=row.market_event_observed_at,
                     is_active=True,
                 )
             )
@@ -171,8 +205,15 @@ async def _apply_snapshot(
         if existing.english_name != row.english_name:
             existing.english_name = row.english_name
             changed = True
-        if existing.market_warning != row.market_warning:
-            existing.market_warning = row.market_warning
+        legacy_warning = _legacy_market_warning(row.market_event)
+        if existing.market_warning != legacy_warning:
+            existing.market_warning = legacy_warning
+            changed = True
+        if existing.market_event != row.market_event:
+            existing.market_event = row.market_event
+            changed = True
+        if existing.market_event_observed_at != row.market_event_observed_at:
+            existing.market_event_observed_at = row.market_event_observed_at
             changed = True
         if not existing.is_active:
             existing.is_active = True
@@ -538,65 +579,50 @@ async def _get_active_upbit_markets_impl(
     return markets
 
 
+async def _load_upbit_market_event_states(
+    db: AsyncSession,
+    quote_currency: str | None,
+    now: datetime | None = None,
+) -> dict[str, MarketEventState]:
+    states = await load_market_event_states(db, quote_currency=quote_currency, now=now)
+    if not states and not await has_any_rows(db, UpbitSymbolUniverse.market):
+        raise UpbitSymbolUniverseEmptyError(
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
+        )
+    return states
+
+
 async def _get_upbit_warning_markets_impl(
     db: AsyncSession,
     quote_currency: str | None,
 ) -> set[str]:
-    normalized_quote_currency = str(quote_currency or "").strip().upper()
-    stmt = select(UpbitSymbolUniverse.market).where(
-        UpbitSymbolUniverse.is_active.is_(True),
-        UpbitSymbolUniverse.market_warning == "CAUTION",
-    )
-    if normalized_quote_currency:
-        stmt = stmt.where(
-            UpbitSymbolUniverse.quote_currency == normalized_quote_currency
-        )
-    result = await db.execute(stmt)
-    warning_markets = {
-        str(symbol).strip().upper()
-        for symbol in result.scalars().all()
-        if str(symbol).strip()
-    }
+    """Active markets Upbit currently designates 유의 (hk 6026).
 
-    if not warning_markets and not await has_any_rows(db, UpbitSymbolUniverse.market):
-        raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
-        )
-    return warning_markets
+    A legacy projection of the closed state: only ``warning`` qualifies.
+    주의(caution) markets are not in this set — readers show them with their
+    types instead of excluding them.
+    """
+    states = await _load_upbit_market_event_states(db, quote_currency)
+    return {market for market, state in states.items() if state.state == STATE_WARNING}
 
 
 async def _get_upbit_unknown_warning_markets_impl(
     db: AsyncSession,
     quote_currency: str | None,
 ) -> set[str]:
-    """Active markets whose warning provenance is missing (hk 5945).
+    """Active markets whose alert state cannot be trusted (hk 5945 / hk 6026).
 
-    Matches any stored value outside the explicit Upbit vocabulary — today
-    ``UNKNOWN`` (absent/null/blank at sync), and any future upstream token
-    verbatim. Readers that treat ``NONE`` as safe must treat this set as
-    not-safe (fail closed).
+    Matches ``unknown`` (Upbit did not state ``market_event``) and ``stale``
+    (the last observation is older than
+    :data:`app.services.upbit_market_event.MARKET_EVENT_STALE_AFTER`). Readers
+    that treat a market as safe must treat this set as not-safe (fail closed).
     """
-    normalized_quote_currency = str(quote_currency or "").strip().upper()
-    stmt = select(UpbitSymbolUniverse.market).where(
-        UpbitSymbolUniverse.is_active.is_(True),
-        UpbitSymbolUniverse.market_warning.notin_(sorted(KNOWN_MARKET_WARNINGS)),
-    )
-    if normalized_quote_currency:
-        stmt = stmt.where(
-            UpbitSymbolUniverse.quote_currency == normalized_quote_currency
-        )
-    result = await db.execute(stmt)
-    unknown_markets = {
-        str(symbol).strip().upper()
-        for symbol in result.scalars().all()
-        if str(symbol).strip()
+    states = await _load_upbit_market_event_states(db, quote_currency)
+    return {
+        market
+        for market, state in states.items()
+        if state.state in {STATE_UNKNOWN, STATE_STALE}
     }
-
-    if not unknown_markets and not await has_any_rows(db, UpbitSymbolUniverse.market):
-        raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
-        )
-    return unknown_markets
 
 
 async def get_active_upbit_markets(
@@ -651,6 +677,28 @@ async def get_active_upbit_base_currencies(
         return await _load(session)
 
 
+async def get_upbit_market_event_states(
+    db: AsyncSession | None = None,
+    quote_currency: str | None = None,
+    fiat: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, MarketEventState]:
+    """One closed alert state per active market (hk 6026).
+
+    ``now`` exists for freshness tests; production callers pass nothing.
+    """
+    effective_quote_currency = quote_currency if quote_currency is not None else fiat
+    if db is not None:
+        return await _load_upbit_market_event_states(db, effective_quote_currency, now)
+
+    async with _internal_session() as session:
+        return await _load_upbit_market_event_states(
+            session,
+            effective_quote_currency,
+            now,
+        )
+
+
 async def get_upbit_warning_markets(
     db: AsyncSession | None = None,
     quote_currency: str | None = None,
@@ -699,6 +747,7 @@ __all__ = [
     "get_upbit_korean_name_by_market",
     "get_upbit_market_display_names",
     "get_upbit_market_by_coin",
+    "get_upbit_market_event_states",
     "get_upbit_unknown_warning_markets",
     "get_upbit_warning_markets",
     "get_upbit_symbol_by_name",

@@ -407,7 +407,11 @@ class UpbitHomeReader:
             active_markets = await get_active_upbit_markets(
                 self._db, quote_currency="KRW"
             )
-            caution_markets = await get_upbit_warning_markets(
+            # hk 6026: ``get_upbit_warning_markets`` is the 유의(warning) state;
+            # 주의(caution) markets stay visible with their types and are not
+            # hidden here. ``get_upbit_unknown_warning_markets`` adds unknown
+            # and stale observations, which are not tradable either.
+            warning_markets = await get_upbit_warning_markets(
                 self._db, quote_currency="KRW"
             )
             # hk 5945: provenance-unknown warnings are not tradable either —
@@ -422,7 +426,7 @@ class UpbitHomeReader:
                 market_code = f"KRW-{c.get('currency')}"
                 if (
                     market_code in active_markets
-                    and market_code not in caution_markets
+                    and market_code not in warning_markets
                     and market_code not in unknown_warning_markets
                 ):
                     tradable_rows.append(c)

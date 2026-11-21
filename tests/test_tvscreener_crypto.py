@@ -13,6 +13,7 @@ from app.mcp_server.tooling.analysis_screen_core import (
 from app.services.tvscreener_service import (
     TvScreenerError,
 )
+from tests._mcp_tooling_support import DeclaredMarketEventStates
 
 
 class _Condition:
@@ -199,12 +200,8 @@ async def test_screen_crypto_via_tvscreener_uses_upbit_value_traded_contract(
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
-            new=AsyncMock(return_value=set()),
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
-            new=AsyncMock(return_value=set()),
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_event_states",
+            new=AsyncMock(return_value=DeclaredMarketEventStates()),
         ),
         patch.object(
             __import__(
@@ -304,12 +301,8 @@ async def test_screen_crypto_via_tvscreener_prefers_value_traded_over_usd_volume
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
-            new=AsyncMock(return_value=set()),
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
-            new=AsyncMock(return_value=set()),
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_event_states",
+            new=AsyncMock(return_value=DeclaredMarketEventStates()),
         ),
         patch.object(
             __import__(
@@ -381,12 +374,8 @@ async def test_screen_crypto_via_tvscreener_sorts_by_market_cap_field(
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
-            new=AsyncMock(return_value=set()),
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
-            new=AsyncMock(return_value=set()),
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_event_states",
+            new=AsyncMock(return_value=DeclaredMarketEventStates()),
         ),
         patch.object(
             __import__(

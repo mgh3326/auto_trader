@@ -290,6 +290,8 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
         "rsi": _to_optional_float(item.get("rsi")),
         "rsi_bucket": rsi_bucket,
         "market_warning": item.get("market_warning"),
+        "market_event_state": item.get("market_event_state"),
+        "caution_types": list(item.get("caution_types") or []),
         "market_cap_rank": _to_int(item.get("market_cap_rank")),
         "market": market,
     }
@@ -729,6 +731,8 @@ def _score_and_allocate(
                     "change_rate": item.get("change_rate"),
                     "trade_amount_24h": item.get("trade_amount_24h"),
                     "market_warning": item.get("market_warning"),
+                    "market_event_state": item.get("market_event_state"),
+                    "caution_types": list(item.get("caution_types") or []),
                     "market_cap": item.get("market_cap"),
                     "market_cap_rank": item.get("market_cap_rank"),
                     "volume_24h": item.get("volume_24h"),

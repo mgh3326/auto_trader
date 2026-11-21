@@ -118,8 +118,27 @@ async def test_catalysts_aggregates_three_blocks(monkeypatch):
         return SimpleNamespace(
             meta=SimpleNamespace(state="fresh", fetchedAt=None),
             entries={
-                "KRW-XRP": SimpleNamespace(warning="CAUTION", event={"k": 1}),
-                "KRW-BTC": SimpleNamespace(warning="NONE", event=None),
+                "KRW-XRP": SimpleNamespace(
+                    state="warning",
+                    warning="CAUTION",
+                    caution_types=[],
+                    observed_at=None,
+                    event={"k": 1},
+                ),
+                "KRW-KAVA": SimpleNamespace(
+                    state="caution:PRICE_FLUCTUATIONS",
+                    warning="NONE",
+                    caution_types=["PRICE_FLUCTUATIONS"],
+                    observed_at=None,
+                    event=None,
+                ),
+                "KRW-BTC": SimpleNamespace(
+                    state="none",
+                    warning="NONE",
+                    caution_types=[],
+                    observed_at=None,
+                    event=None,
+                ),
             },
         )
 
@@ -132,8 +151,11 @@ async def test_catalysts_aggregates_three_blocks(monkeypatch):
     # tokenomist PoC → honest "disabled"
     assert cat["token_unlocks"]["state"] == "disabled"
     assert cat["upbit_notices"]["state"] == "fresh"
-    # only CAUTION surfaces (NONE filtered out)
-    assert set(cat["market_warnings"]["entries"]) == {"KRW-XRP"}
+    # 유의(warning) and 주의(caution) surface; ``none`` is noise.
+    assert set(cat["market_warnings"]["entries"]) == {"KRW-XRP", "KRW-KAVA"}
+    assert cat["market_warnings"]["entries"]["KRW-KAVA"]["caution_types"] == [
+        "PRICE_FLUCTUATIONS"
+    ]
 
 
 @pytest.mark.asyncio

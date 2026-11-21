@@ -64,6 +64,13 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
+from app.services.upbit_market_event import (
+    STATE_NONE,
+    STATE_STALE,
+    STATE_UNKNOWN,
+    STATE_WARNING,
+    MarketEventState,
+)
 
 
 class DummyMCP:
@@ -347,24 +354,64 @@ def mock_upbit_coins() -> list[dict[str, Any]]:
     ]
 
 
+_ALERT_STATE_UNSET = object()
+
+
+def market_event_state(
+    state: str,
+    *,
+    caution_types: tuple[str, ...] = (),
+    market: str = "",
+) -> MarketEventState:
+    """Build a ``MarketEventState`` for screener tests (hk 6026)."""
+    if state == STATE_WARNING:
+        warning: bool | None = True
+    elif state in {STATE_UNKNOWN, STATE_STALE}:
+        warning = None
+    else:
+        warning = False
+    return MarketEventState(
+        market=market,
+        state=state,
+        warning=warning,
+        caution_types=tuple(caution_types),
+        observed_at=None,
+        reason="test",
+    )
+
+
+class DeclaredMarketEventStates(dict):
+    """``get_upbit_market_event_states`` double for screener tests.
+
+    The screener treats a market that is *missing* from the real state map as
+    ``unknown`` (fail closed). A fixture whose intent is "no alerts" must not
+    enumerate every symbol the screener may emit, so this mapping answers
+    ``none`` for undeclared keys. Tests that need an ``unknown``/``stale``/
+    ``warning``/``caution`` market declare it explicitly.
+    """
+
+    def get(self, key, default=None):
+        found = dict.get(self, key, _ALERT_STATE_UNSET)
+        if found is _ALERT_STATE_UNSET:
+            return market_event_state(STATE_NONE)
+        return found
+
+
+def market_event_states_mock(
+    states: dict[str, MarketEventState] | None = None,
+):
+    """Async double for the screener's single market-alert state lookup."""
+    declared = DeclaredMarketEventStates(states or {})
+
+    async def _mock(db=None, *, quote_currency=None, fiat=None, now=None):
+        _ = (quote_currency, fiat, db, now)
+        return declared
+
+    return _mock
+
+
 @pytest.fixture
 def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_get_upbit_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
-    async def mock_get_upbit_unknown_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
     async def mock_market_cap_cache_get():
         return {
             "data": {},
@@ -382,13 +429,8 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(
         screening_crypto,
-        "get_upbit_warning_markets",
-        mock_get_upbit_warning_markets,
-    )
-    monkeypatch.setattr(
-        screening_crypto,
-        "get_upbit_unknown_warning_markets",
-        mock_get_upbit_unknown_warning_markets,
+        "get_upbit_market_event_states",
+        market_event_states_mock(),
     )
     monkeypatch.setattr(
         screening_crypto._CRYPTO_MARKET_CAP_CACHE,

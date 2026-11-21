@@ -21,9 +21,12 @@ from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
 from app.services import naver_finance
+from app.services.upbit_market_event import STATE_WARNING
 from tests._mcp_tooling_support import (
+    DeclaredMarketEventStates,
     _patch_runtime_attr,
     build_tools,
+    market_event_state,
 )
 
 ToolFunc = Callable[..., Awaitable[Any]]
@@ -670,15 +673,13 @@ class TestScreenStocksCrypto:
                 {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            assert quote_currency == "KRW"
-            return {"KRW-ETH"}
-
-        async def mock_unknown_warning_markets(
+        async def mock_market_event_states(
             db=None, *, quote_currency: str
-        ) -> set[str]:
+        ) -> dict[str, Any]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates(
+                {"KRW-ETH": market_event_state(STATE_WARNING)}
+            )
 
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
@@ -728,13 +729,8 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "get_upbit_unknown_warning_markets",
-            mock_unknown_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1694,15 +1690,11 @@ class TestScreenStocksFundamentalsExpansion:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            assert quote_currency == "KRW"
-            return set()
-
-        async def mock_unknown_warning_markets(
+        async def mock_market_event_states(
             db=None, *, quote_currency: str
-        ) -> set[str]:
+        ) -> dict[str, Any]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
@@ -1730,13 +1722,8 @@ class TestScreenStocksFundamentalsExpansion:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "get_upbit_unknown_warning_markets",
-            mock_unknown_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,
@@ -1793,15 +1780,11 @@ class TestScreenStocksFundamentalsExpansion:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
-            assert quote_currency == "KRW"
-            return set()
-
-        async def mock_unknown_warning_markets(
+        async def mock_market_event_states(
             db=None, *, quote_currency: str
-        ) -> set[str]:
+        ) -> dict[str, Any]:
             assert quote_currency == "KRW"
-            return set()
+            return DeclaredMarketEventStates()
 
         async def mock_market_cap_cache_get() -> dict[str, Any]:
             return {
@@ -1834,13 +1817,8 @@ class TestScreenStocksFundamentalsExpansion:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "get_upbit_warning_markets",
-            mock_warning_markets,
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "get_upbit_unknown_warning_markets",
-            mock_unknown_warning_markets,
+            "get_upbit_market_event_states",
+            mock_market_event_states,
         )
         monkeypatch.setattr(
             screening_crypto._CRYPTO_MARKET_CAP_CACHE,

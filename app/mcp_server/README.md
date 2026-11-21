@@ -1741,8 +1741,8 @@ Market-specific behavior:
   - `trade_amount_24h` maps to TradingView `CryptoField.VALUE_TRADED` and keeps the public KRW traded-value contract
   - `volume_24h` keeps the legacy Upbit 24h volume meaning (`acc_trade_volume_24h`); `VOLUME_24H_IN_USD` is never used as a public replacement for either `trade_amount_24h` or `volume_24h`
   - Result symbols are normalized back to Upbit format such as `KRW-BTC`
-  - Successful tvscreener responses still restore legacy public crypto fields including `rsi_bucket`, `market_cap_rank`, `market_warning`, `volume_ratio`, `candle_type`, `plus_di`, and `minus_di`
-  - Warning/crash metadata (`filtered_by_warning`, `filtered_by_crash`) and CoinGecko cache metadata are preserved on the tvscreener success path
+  - Successful tvscreener responses still restore legacy public crypto fields including `rsi_bucket`, `market_cap_rank`, `volume_ratio`, `candle_type`, `plus_di`, and `minus_di`; alert fields (`market_warning`, `market_event_state`, `caution_types`) come from our stored Upbit `market_event` state, not from tvscreener
+  - Alert filter metadata (`filtered_by_warning`, `filtered_by_unknown_warning`, `filtered_by_stale_warning`, `filtered_by_crash`) and CoinGecko cache metadata are preserved on the tvscreener success path. hk 6026: 유의(`warning`), `unknown` (Upbit said nothing) and `stale` (observation older than 36h) markets are excluded and counted; 주의(`caution:<types>`) markets stay in results with their `caution_types`. If the alert-state lookup fails, interactive screening skips the filter and says so in `warnings`; a snapshot build fails instead of persisting `market_warning=false` for unreadable state
   - Stop-loss cooldown filter: symbols in an 8-day stop-loss cooldown window (after a stop-loss sell) are excluded from results; count available in `meta.filtered_by_stop_loss_cooldown`
   - `sort_by="volume"` is not supported for crypto and returns an error
   - Crypto response payload does not include `volume`; use `trade_amount_24h`

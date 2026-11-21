@@ -5,7 +5,8 @@ the tool — partial results survive with per-block state):
   * token_unlocks  — Tokenomist unlock/vesting (PoC stub today → state "disabled",
                      honest: it emits no data without an enabled adapter).
   * upbit_notices  — NEW keyless Upbit notices feed (listings / 유의 / 점검).
-  * market_warnings — existing Upbit market-warning read model (CAUTION designations).
+  * market_warnings — stored Upbit ``market_event`` alerts (유의 + 주의 types,
+                     hk 6026 closed state per market).
 
 symbol (e.g. "XRP", "KRW-XRP") scopes warnings + notices; None = market-wide.
 """
@@ -21,6 +22,10 @@ from app.mcp_server.tooling.fundamentals_sources_coingecko import (
 from app.services.external.crypto_insights import (
     fetch_tokenomist_unlocks_poc,
     tokenomist_api_key_from_env,
+)
+from app.services.upbit_market_event import (
+    CAUTION_STATE_PREFIX,
+    STATE_WARNING,
 )
 from app.services.upbit_public_read_model.market_warnings import get_market_warnings
 from app.services.upbit_public_read_model.notices import fetch_upbit_notices
@@ -61,11 +66,20 @@ async def _market_warnings_block(*, markets: list[str] | None) -> dict[str, Any]
             "entries": {},
             "errorReason": str(exc),
         }
-    # Only CAUTION is a catalyst; NONE is noise.
+    # 유의(warning) and 주의(caution) are both catalysts; ``none`` is noise and
+    # ``unknown``/``stale`` have no alert to show (their entry state is reported).
     entries = {
-        market: {"warning": entry.warning, "event": entry.event}
+        market: {
+            "state": entry.state,
+            "warning": entry.warning,
+            "caution_types": list(entry.caution_types),
+            "observed_at": (
+                entry.observed_at.isoformat() if entry.observed_at else None
+            ),
+            "event": entry.event,
+        }
         for market, entry in block.entries.items()
-        if entry.warning == "CAUTION"
+        if entry.state == STATE_WARNING or entry.state.startswith(CAUTION_STATE_PREFIX)
     }
     return {
         "state": block.meta.state,
