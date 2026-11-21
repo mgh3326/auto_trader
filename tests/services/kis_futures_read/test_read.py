@@ -174,12 +174,22 @@ def test_view_guards_and_lazy_import():
     forbidden = re.compile(r"\b[A-Z0-9]*110[13]U\b")
     for path in paths:
         assert not forbidden.search(path.read_text())
-    tree = ast.parse(paths[0].read_text())
-    assert not any(
-        isinstance(n, ast.ImportFrom)
-        and (n.module or "").startswith("app.services.brokers.kis")
-        for n in tree.body
-    )
+    for path in paths:
+        tree = ast.parse(path.read_text())
+        assert not any(
+            (
+                isinstance(n, ast.ImportFrom)
+                and (n.module or "").startswith("app.services.brokers.kis")
+            )
+            or (
+                isinstance(n, ast.Import)
+                and any(
+                    alias.name.startswith("app.services.brokers.kis")
+                    for alias in n.names
+                )
+            )
+            for n in tree.body
+        )
     assert view.ALLOWED_METHODS == {
         "futures_balance",
         "futures_deposit",
