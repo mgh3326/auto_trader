@@ -361,6 +361,7 @@ tests/test_build_financial_fundamentals_cli.py
 tests/test_catalyst_query_service.py
 tests/test_cio_quality_gate_e2e.py
 tests/test_crypto_filter_catalog.py
+tests/test_crypto_gate_input_timing.py
 tests/test_crypto_insight_external_adapters.py
 tests/test_crypto_pending_order_alert_tasks.py
 tests/test_crypto_voting_integration.py
