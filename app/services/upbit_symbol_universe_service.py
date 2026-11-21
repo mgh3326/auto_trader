@@ -564,6 +564,7 @@ async def _get_upbit_warning_markets_impl(
         )
     return warning_markets
 
+
 async def _get_upbit_unknown_warning_markets_impl(
     db: AsyncSession,
     quote_currency: str | None,
@@ -665,6 +666,7 @@ async def get_upbit_warning_markets(
             effective_quote_currency,
         )
 
+
 async def get_upbit_unknown_warning_markets(
     db: AsyncSession | None = None,
     quote_currency: str | None = None,
@@ -672,7 +674,9 @@ async def get_upbit_unknown_warning_markets(
 ) -> set[str]:
     effective_quote_currency = quote_currency if quote_currency is not None else fiat
     if db is not None:
-        return await _get_upbit_unknown_warning_markets_impl(db, effective_quote_currency)
+        return await _get_upbit_unknown_warning_markets_impl(
+            db, effective_quote_currency
+        )
 
     async with _internal_session() as session:
         return await _get_upbit_unknown_warning_markets_impl(

@@ -69,6 +69,7 @@ async def test_market_warning_detail_tier_uses_cache(fake_redis, monkeypatch):
     assert second.entries["KRW-BTC"].event == {"warning": True}
     assert calls == 1
 
+
 @pytest.mark.asyncio
 async def test_market_warnings_preserve_explicit_values(fake_redis):
     async def detail_fetcher():
@@ -86,6 +87,7 @@ async def test_market_warnings_preserve_explicit_values(fake_redis):
 @pytest.mark.asyncio
 async def test_market_warnings_never_fabricate_none(fake_redis):
     """Absent/blank/unrecognized stored warnings surface as UNKNOWN (hk 5945)."""
+
     async def detail_fetcher():
         raise AssertionError("must not call HTTP")
 

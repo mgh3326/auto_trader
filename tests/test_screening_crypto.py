@@ -166,7 +166,9 @@ class TestCryptoUnknownWarningFailClosed:
         from app.mcp_server.tooling.screening import crypto
 
         async def fake_names(markets, db):
-            return {code: {"korean_name": code, "english_name": code} for code in markets}
+            return {
+                code: {"korean_name": code, "english_name": code} for code in markets
+            }
 
         async def fake_warning_markets(quote_currency, db):
             return set()
@@ -175,9 +177,7 @@ class TestCryptoUnknownWarningFailClosed:
             return unknown
 
         async def fake_tickers(markets):
-            return [
-                {"market": code, "acc_trade_volume_24h": 1234} for code in markets
-            ]
+            return [{"market": code, "acc_trade_volume_24h": 1234} for code in markets]
 
         async def fake_coingecko():
             return {

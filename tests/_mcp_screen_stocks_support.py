@@ -674,7 +674,9 @@ class TestScreenStocksCrypto:
             assert quote_currency == "KRW"
             return {"KRW-ETH"}
 
-        async def mock_unknown_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
@@ -1696,7 +1698,9 @@ class TestScreenStocksFundamentalsExpansion:
             assert quote_currency == "KRW"
             return set()
 
-        async def mock_unknown_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
@@ -1793,7 +1797,9 @@ class TestScreenStocksFundamentalsExpansion:
             assert quote_currency == "KRW"
             return set()
 
-        async def mock_unknown_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        async def mock_unknown_warning_markets(
+            db=None, *, quote_currency: str
+        ) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 

@@ -372,6 +372,7 @@ async def test_get_upbit_warning_markets_supports_legacy_fiat_alias(monkeypatch)
     assert result == {"KRW-BTC"}
     impl.assert_awaited_once_with(db, "KRW")
 
+
 def test_normalize_market_warning_preserves_provenance():
     normalize = upbit_symbol_universe_service._normalize_market_warning
     # Explicit Upbit statements pass through, case/whitespace normalised.
@@ -425,7 +426,9 @@ async def test_build_snapshot_preserves_warning_provenance_from_fixture(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_get_upbit_unknown_warning_markets_supports_legacy_fiat_alias(monkeypatch):
+async def test_get_upbit_unknown_warning_markets_supports_legacy_fiat_alias(
+    monkeypatch,
+):
     db = object()
     impl = AsyncMock(return_value={"KRW-XRP"})
     monkeypatch.setattr(

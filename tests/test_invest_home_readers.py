@@ -497,6 +497,7 @@ async def test_upbit_reader_hides_unknown_warning_holdings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """hk 5945: provenance-unknown warnings are not tradable — hidden, not valued."""
+
     async def _coins() -> list[dict[str, Any]]:
         return [
             {"currency": "KRW", "balance": "90000", "locked": "0"},
