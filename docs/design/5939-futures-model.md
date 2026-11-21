@@ -97,8 +97,10 @@ hk 5939 설계 문서다. **문서만 바뀐다** — 실행 코드·마이그�
 |---|---|---|
 | `max_order_qty` | **1 계약** | 운영자 확정(Q3) |
 | `max_open_positions` | **1 포지션** | 운영자 확정(Q3) |
-| `max_contract_notional_krw` | `운영자 확정 필요` | T3 전 채워야 함 |
-| `daily_loss_limit_krw` | `운영자 확정 필요` | T3 전 채워야 함 |
+| `max_contract_notional_krw` | **50,000,000 KRW** (`price × 50,000 × qty`) | 운영자 확정(`decision-request/2026-11-21/at-futures-t3-values`) |
+| `daily_loss_limit_krw` | **1,000,000 KRW** | 운영자 확정(같은 결정) |
+| `guard_fraction` (§6의 `g`) | **0.02** | 운영자 확정(같은 결정) |
+| 상품 | **미니 KOSPI200 선물만** (승수 50,000, 호가 0.02pt, 틱 가치 1,000원) | 운영자 확정(Q1, 닫힌 집합). 사양 근거: [KRX 미니 KOSPI200 선물 상품명세](https://open.krx.co.kr/contents/OPN/01/01040204/OPN01040204.jsp) — 2026-11-21 직접 확인(결제월 매월 6개, 최종거래일 = 결제월 둘째 목요일, 공휴일이면 앞당김) |
 | `limit_only` | `True` | 시장가 금지 |
 | `night_session` | `False` | Q7 |
 | `options` | `False` | Q8 |
@@ -109,7 +111,7 @@ hk 5939 설계 문서다. **문서만 바뀐다** — 실행 코드·마이그�
 ## 9. 열린 항목 · 명시 금지
 
 **열린 항목**(이 문서가 정하지 않거나 운영자 확정이 필요한 것):
-1. `max_contract_notional_krw`, `daily_loss_limit_krw`, 손실 가드 `g` — 운영자 값(T3 전 확정).
+1. ~~`max_contract_notional_krw`, `daily_loss_limit_krw`, 손실 가드 `g`~~ — 확정됨(§8, hk 5946). 모의 단계 값이며 실계좌는 새 결정이 필요하다.
 2. KIS 모의 주간 주문 TR(`VTTO1101U`/`VTTO1103U`)의 응답 형식·필드 — T1/T3이 샘플 코드 원문으로 재확인(조사 §10).
 3. 파생 달력의 저장 형식(테이블 vs 데이터 파일)과 공지 갱신 절차.
 4. `kis_futures_mock` 계열 테이블의 마이그레이션·writer 서비스명은 T3이 정한다 — 이 문서는 모델만 고정한다.
@@ -124,7 +126,7 @@ hk 5939 설계 문서다. **문서만 바뀐다** — 실행 코드·마이그�
 
 ## 10. 승인 요약 (T3 전 운영자 확인)
 
-- [ ] `max_contract_notional_krw` 값
-- [ ] `daily_loss_limit_krw` 값
-- [ ] 손실 가드 `g` 값
-- [ ] 닫힌 상품 집합(KOSPI200 / 미니 KOSPI200 선물) 확인
+- [x] `max_contract_notional_krw` = 50,000,000 KRW (hk 5946)
+- [x] `daily_loss_limit_krw` = 1,000,000 KRW (hk 5946)
+- [x] 손실 가드 `g` = 0.02 (hk 5946)
+- [x] 닫힌 상품 집합 = 미니 KOSPI200 선물만 (일반 KOSPI200 선물은 이 단계에서 제외)
