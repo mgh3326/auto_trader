@@ -82,7 +82,19 @@ leg로 기록하고 모든 선행 leg의 terminal 증거 뒤에만 proven fill�
 잔량만 새 client_order_id로 한 번 전송한다. 설계 세션 ESC 답 591964에 따라
 정확히 일치하는 HTTP 200 주문 증거는 결속과 체결 기록을 복구하며, 같은 실행에서
 해당 에피소드의 새 주문은 보내지 않는다. echo 불일치·빈 응답·예외·타임아웃·5xx는
-sending/uncertain 상태와 예약을 유지한다. Binance demo의 규칙은 기존과 같다.
+sending/uncertain 상태와 예약을 유지한다.
+`decision/2026-11-21/at-binance-demo-not-found`에 따라 `binance_spot_demo`에도 같은
+종결 규칙을 둔다(Binance futures demo·Alpaca·live는 불변): 동일 client_order_id의
+`GET /api/v3/order`가 HTTP 400 본문의 `code == -2013`(메시지 문구가 아니라 파싱한 코드,
+`BinanceDemoOrderNotFound`)을 돌려주고 **그리고** 그 심볼의 `myTrades`(leg 창 시작 이후,
+limit 1000)가 완전하게 읽혔으며 다른 원장 주문에 귀속되지 않은 같은 방향 체결이 없을 때만
+recorder(`confirm_binance_spot_absence`)가 주문 결속·체결 증거 없는 sending/uncertain leg를
+`rejected`(0 fill, `broker_confirmed_absent`, `no_order_proven`)로 종결한다. 창 시작은
+진입 leg는 `exit_due_at − horizon`(결정 시각), 청산 leg는 진입의 `exit_due_at`이다.
+`limit` 개수만큼 반환된 읽기(잘림 가능)·판독 불가 행·체결 발견·빈 본문·다른 코드·5xx·
+타임아웃·예외는 상태와 예약을 유지하고 원래 오류가 `unresolved`로 보고된다. 진입이
+종결되면 청산할 포지션이 없고, 청산 leg가 종결되면 close-due는 기존 인덱스 규칙대로 증명된
+잔량만 새 client_order_id로 한 번 보낸다(같은 ID 재전송 없음). `--dry-run`은 보고만 하고 쓰지 않는다.
 US due 에피소드의 일반 오류는 `episode_status=unresolved`와 예외 클래스만
 보고하고 다른 청산은 계속한다. CLI는 nonzero이며 durable 상태/재시도 권한을
 만들지 않는다. 계좌/세션 게이트는 루프 밖에서 유지하고 프로세스 취소는 전파한다.

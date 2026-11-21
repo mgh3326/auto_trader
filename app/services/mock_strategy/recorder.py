@@ -58,9 +58,11 @@ class OrderIntent:
             raise ValueError("exit_due_at must be timezone aware")
 
 
-def record_alpaca_absence(row: MockStrategyOrder) -> bool:
+def _record_absence(
+    row: MockStrategyOrder, venue: str, extra_meta: dict | None = None
+) -> bool:
     if (
-        row.venue != "alpaca_paper"
+        row.venue != venue
         or row.status not in {"sending", "uncertain"}
         or row.broker_order_id is not None
         or row.opened_at is not None
@@ -80,8 +82,20 @@ def record_alpaca_absence(row: MockStrategyOrder) -> bool:
         "broker_terminal": True,
         "no_order_proven": True,
         "broker_status": "broker_confirmed_absent",
+        **(extra_meta or {}),
     }
     return True
+
+
+def record_alpaca_absence(row: MockStrategyOrder) -> bool:
+    return _record_absence(row, "alpaca_paper")
+
+
+def record_binance_spot_absence(row: MockStrategyOrder) -> bool:
+    """Same zero-fill closure for Binance spot demo (-2013 + empty myTrades)."""
+    # no_order_sent also lets a prior-revision close-due skip this leg after a
+    # rollback instead of re-looking it up (-2013) and aborting the episode.
+    return _record_absence(row, "binance_spot_demo", {"no_order_sent": True})
 
 
 class MockStrategyRecorder:
@@ -244,6 +258,31 @@ class MockStrategyRecorder:
                 )
             ).one()
             if record_alpaca_absence(row):
+                await session.flush()
+            session.expunge(row)
+            return row
+
+    async def confirm_binance_spot_absence(
+        self, client_order_id: str, *, account_ref: str
+    ) -> MockStrategyOrder:
+        """Record Binance spot demo absence only while its send is unresolved.
+
+        The caller must already hold the -2013 lookup and the complete empty
+        myTrades read; this only closes a never-bound, never-filled leg.
+        """
+        async with self._sessions() as session, session.begin():
+            row = (
+                await session.scalars(
+                    select(MockStrategyOrder)
+                    .where(
+                        MockStrategyOrder.client_order_id == client_order_id,
+                        MockStrategyOrder.venue == "binance_spot_demo",
+                        MockStrategyOrder.account_ref == account_ref,
+                    )
+                    .with_for_update()
+                )
+            ).one()
+            if record_binance_spot_absence(row):
                 await session.flush()
             session.expunge(row)
             return row

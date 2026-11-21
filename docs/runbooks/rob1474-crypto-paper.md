@@ -140,6 +140,21 @@ proven residual. Step/min-notional dust stays open as `dust_remaining`, with
 fees/funding/FX, and is not a net-return claim. An unavailable/rejected close
 does not mark the entry closed. Review blocked/uncertain entries manually using
 the exact broker order/client ID; never reset their status to planned.
+
+**Binance spot demo "order does not exist" (hk 5910, `decision/2026-11-21/at-binance-demo-not-found`).**
+Only for `binance_spot_demo`: when `close-due` looks an unbound `sending`/`uncertain`
+entry or close leg up by its client order ID and Binance answers HTTP 400 with body
+`code: -2013` (the code is parsed from the body, never the message text), `close-due` also reads
+`GET /api/v3/myTrades` for that symbol from the leg's window start (entry: decision time =
+`exit_due_at` minus horizon; close leg: the entry's `exit_due_at`; limit 1000). If that read is
+complete (fewer than 1000 rows, all rows well-formed) and shows no same-side trade that is not
+already attributed to another ledger order, the recorder closes the leg as `rejected` with zero
+fill (`broker_confirmed_absent`, `no_order_proven`). The report row is `entry_rejected_absent`
+(`would_reject_absent` under `--dry-run`, which writes nothing). The closed row also carries `no_order_sent=true` so a rollback to an older `close-due` skips it instead of re-looking it up. Order IDs excluded as "belongs to another ledger order" are limited to the same symbol (Binance IDs repeat across symbols), and every `myTrades` row must have a valid `orderId` and the response must be a JSON array. A rejected entry has no position
+to close; a rejected close leg is skipped and the proven residual goes out once under a new
+indexed client order ID. Everything else keeps the state and reservation and reports the
+episode as `unresolved`: empty body, any other code, HTTP 5xx, timeout, exception, a truncated
+or malformed `myTrades`, or any trade found. Futures demo, Alpaca and live venues are unchanged.
 | Invariant | Input | Transition | Enforcement location | Dependency | Observable result |
 |---|---|---|---|---|---|
 | Only planned futures shorts can be prepared | Fixed daily batch | Inspect each planned entry only | ROB-1474 runner | Frozen signal and batch identity | Other venues and symbols untouched |
