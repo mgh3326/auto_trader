@@ -195,7 +195,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v75 (hk 5651): review.mandate_basket_authority / review.mandate_cap_mutex (two ORM
 # tables via create_all) and the three guard triggers incl. the automatic-fence
 # profile guard, loaded from the production migration 20261120_hk5651_mandate_fence.
-SCHEMA_BOOTSTRAP_VERSION = 76
+# v77 (hk 5946): review.kis_futures_mock_order_ledger / kis_futures_mock_signal_ledger
+# are new ORM tables (create_all builds them with their CHECK/UNIQUE; no mirrored
+# ALTER needed). Production migration: 20261121_hk5946_futures_mock.
+SCHEMA_BOOTSTRAP_VERSION = 77
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

@@ -43,3 +43,51 @@ def to_upbit_symbol(symbol: str) -> str:
     if not normalized or "-" in normalized:
         return normalized
     return f"KRW-{normalized}"
+
+
+# --- 파생(선물) 계약 심볼 (hk 5946, docs/design/5939-futures-model.md §7) ---------
+# DB 정본은 ``<상품 짧은 코드>.<YYMM>`` (예: MF200.2612). 주식의 거래소 접미 `.`
+# 과 의미가 다르다. KIS 단축종목코드(``SHTN_PDNO``)와의 대응은 연도 문자 규칙을
+# 추측하지 않고 종목마스터 행(이름의 결제월)으로만 정하므로, 이 헬퍼는 계약 심볼의
+# 형식만 만들고 읽는다.
+_FUTURES_PRODUCT_SHORT_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def to_futures_contract_symbol(product_short: str, contract_month: str) -> str:
+    """상품 짧은 코드와 결제월(``YYYY-MM``)을 DB 계약 심볼로 변환.
+
+    예: ("MF200", "2026-12") -> "MF200.2612"
+    """
+    if (
+        not 2 <= len(product_short) <= 8
+        or not set(product_short) <= _FUTURES_PRODUCT_SHORT_CHARS
+        or not product_short[0].isalpha()
+    ):
+        raise ValueError("상품 짧은 코드 형식이 올바르지 않습니다")
+    year, sep, month = contract_month.partition("-")
+    if (
+        sep != "-"
+        or len(year) != 4
+        or len(month) != 2
+        or not (
+            year.isascii() and year.isdigit() and month.isascii() and month.isdigit()
+        )
+        or not 1 <= int(month) <= 12
+    ):
+        raise ValueError("결제월 형식이 올바르지 않습니다 (YYYY-MM)")
+    return f"{product_short}.{year[2:]}{month}"
+
+
+def parse_futures_contract_symbol(symbol: str) -> tuple[str, str]:
+    """``to_futures_contract_symbol`` 의 역변환: (상품 짧은 코드, ``YYYY-MM``)."""
+    product_short, sep, tail = symbol.partition(".")
+    if sep != "." or len(tail) != 4 or not (tail.isascii() and tail.isdigit()):
+        raise ValueError("파생 계약 심볼 형식이 올바르지 않습니다")
+    month = tail[2:]
+    if not 1 <= int(month) <= 12:
+        raise ValueError("파생 계약 심볼 형식이 올바르지 않습니다")
+    contract_month = f"20{tail[:2]}-{month}"
+    # 정본 형식 재구성으로 상품 코드 검증을 한 곳에 둔다.
+    if to_futures_contract_symbol(product_short, contract_month) != symbol:
+        raise ValueError("파생 계약 심볼 형식이 올바르지 않습니다")
+    return product_short, contract_month
