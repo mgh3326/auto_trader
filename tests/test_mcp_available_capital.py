@@ -225,7 +225,7 @@ async def test_get_available_capital_handles_missing_manual_cash(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_available_capital_marks_stale_manual_cash(monkeypatch):
-    """Test that manual cash older than 3 days gets stale_warning=True."""
+    """Manual cash older than 3 days keeps stale_warning=True — and still counts (hk 6017)."""
     from app.mcp_server.tooling import portfolio_cash
 
     async def mock_get_cash_balance_impl(account=None, **_kwargs):
@@ -258,6 +258,8 @@ async def test_get_available_capital_marks_stale_manual_cash(monkeypatch):
     result = await get_available_capital_impl()
 
     assert result["manual_cash"]["stale_warning"] is True
+    assert result["manual_cash"]["included_in_total"] is True
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(1000000.0)
 
 
 @pytest.mark.asyncio
@@ -393,8 +395,8 @@ async def test_get_available_capital_does_not_add_toss_balance_to_all_account_to
 
 
 @pytest.mark.asyncio
-async def test_get_available_capital_excludes_stale_manual_cash_from_total(monkeypatch):
-    """Stale manual cash is excluded from total_orderable_krw and reported separately (ROB-467)."""
+async def test_get_available_capital_keeps_stale_manual_cash_in_total(monkeypatch):
+    """Stale-but-valid manual cash stays visible AND in the total (hk 6017)."""
     from app.mcp_server.tooling import portfolio_cash
 
     async def mock_get_cash_balance_impl(account=None, **_kwargs):
@@ -432,13 +434,13 @@ async def test_get_available_capital_excludes_stale_manual_cash_from_total(monke
 
     result = await get_available_capital_impl()
 
-    # Stale manual cash stays visible for transparency...
+    # Stale manual cash stays visible and keeps its warning flag...
     assert result["manual_cash"]["amount"] == 10000000
     assert result["manual_cash"]["stale_warning"] is True
-    # ...but is flagged as excluded and removed from the orderable total.
-    assert result["manual_cash"]["included_in_total"] is False
-    assert result["summary"]["total_orderable_krw"] == pytest.approx(1000000.0)
-    assert result["summary"]["manual_cash_excluded_krw"] == pytest.approx(10000000.0)
+    # ...but hk 6017: age alone no longer excludes it from the orderable total.
+    assert result["manual_cash"]["included_in_total"] is True
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(11000000.0)
+    assert result["summary"]["manual_cash_excluded_krw"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
@@ -741,7 +743,9 @@ async def test_deployment_cap_advisory_does_not_double_count_parking(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_stale_manual_cash_zeroes_the_parking_term_and_says_so(monkeypatch):
+async def test_stale_manual_cash_still_feeds_the_parking_term_with_a_warning_source(
+    monkeypatch,
+):
     _patch_capital_sources(
         monkeypatch,
         manual_cash={
@@ -756,11 +760,15 @@ async def test_stale_manual_cash_zeroes_the_parking_term_and_says_so(monkeypatch
     result = await get_available_capital_impl()
     advisory = result["summary"]["deployment_cap_advisory"]
 
+    # hk 6017: a stale-but-valid amount is measured, not zeroed — the warning
+    # travels in the source label, and the cap is no longer a lower bound.
     assert result["manual_cash"]["stale_warning"] is True
-    assert advisory["parking_balance_krw"] == "0"
-    assert advisory["parking_balance_source"] == "stale_treated_as_zero"
-    assert advisory["cap_is_lower_bound"] is True
-    assert advisory["cap_krw"] == "4500000"
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(17_800_000.0)
+    assert advisory["parking_balance_krw"] == "7800000"
+    assert advisory["parking_balance_source"] == "operator_value_stale_warning"
+    assert advisory["cap_is_lower_bound"] is False
+    assert advisory["denominator_krw"] == "17800000"
+    assert advisory["cap_krw"] == "8010000"
 
 
 @pytest.mark.asyncio

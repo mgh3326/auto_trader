@@ -64,16 +64,17 @@ describe("ManualCashSettingsContent", () => {
     expect(screen.getByTestId("manual-cash-updated-at")).not.toHaveTextContent("—");
     expect(screen.getByTestId("manual-cash-source")).toHaveTextContent("운영자 확인");
     expect(screen.getByTestId("manual-cash-fresh")).toHaveTextContent("72시간");
-    expect(screen.getByTestId("manual-cash-fresh")).toHaveTextContent("deployment_cap 파킹 항이 0");
+    expect(screen.getByTestId("manual-cash-fresh")).toHaveTextContent("계속 반영됩니다");
   });
 
-  it("warns loudly when stale — matching the server rule (excluded, parking term 0)", () => {
+  it("warns when stale — the stored value still counts (hk 6017)", () => {
     renderContent(data(view({ stale: true })));
     const banner = screen.getByTestId("manual-cash-stale");
     expect(banner).toHaveAttribute("role", "alert");
-    expect(banner).toHaveTextContent("0으로 반영 중");
-    expect(banner).toHaveTextContent("stale_treated_as_zero");
+    expect(banner).toHaveTextContent("그대로 반영 중");
+    expect(banner).toHaveTextContent("operator_value_stale_warning");
     expect(banner).toHaveTextContent("total_orderable_krw");
+    expect(banner).not.toHaveTextContent("0으로 반영");
   });
 
   it("does not prefill amounts when nothing is stored", () => {

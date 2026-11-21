@@ -377,7 +377,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-11-02.1"
-    assert policy_content_hash() == "ccce663f1c09"
+    assert policy_content_hash() == "4c0f1bdcfa06"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1864,7 +1864,8 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert cap_conditions["coefficient_pct"] == 45
     assert cap_conditions["retroactive_violation"] is False
     assert cap_conditions["blocks_proposal"] is False
-    assert cap_conditions["parking_balance_missing_or_stale_value"] == 0
+    assert cap_conditions["parking_balance_missing_or_unreadable_value"] == 0
+    assert cap_conditions["parking_balance_stale_value"] == "stored_face_value"
     del current_dump["decision_rules"]["buy.deployment_cap"]
 
     normalized_current_dump = deepcopy(current_dump)
@@ -4096,7 +4097,9 @@ def test_s177_loss_cut_leaves_the_existing_execution_keys_untouched():
         ("retroactive_violation", True),
         ("blocks_proposal", True),
         ("unwind_existing_deployment", "ALLOWED"),
-        ("parking_balance_missing_or_stale_value", 7800000),
+        ("parking_balance_missing_or_unreadable_value", 7800000),
+        ("parking_balance_stale_value", 0),
+        ("parking_balance_missing_or_stale_value", 0),
         ("parking_balance_estimation", "ALLOWED"),
         ("parking_balance_source", "cash_yields"),
         ("cash_yields_is_rate_table_not_balance_source", False),

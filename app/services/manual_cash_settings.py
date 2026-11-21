@@ -46,9 +46,11 @@ MANUAL_CASH_NAME_MAX_LEN = 40
 # "More than 50%" — a change of exactly half does not need confirmation.
 MANUAL_CASH_JUMP_CONFIRM_RATIO = Decimal("0.5")
 
-# The stale rule consumed by get_available_capital_impl: strictly older than
-# this ⇒ stale_warning=true ⇒ excluded from total_orderable_krw and the
-# deployment-cap parking term becomes 0 (``stale_treated_as_zero``).
+# The stale rule consumed by get_available_capital_impl and the settings
+# screen: strictly older than this ⇒ stale_warning=true. hk 6017 (operator
+# 2026-11-21): staleness is a freshness warning only — a valid stored amount
+# stays in total_orderable_krw and the deployment-cap parking term regardless
+# of age; only an invalid/unreadable amount is excluded.
 MANUAL_CASH_STALE_AFTER = timedelta(days=3)
 
 SOURCE_OPERATOR_CONFIRMED = "operator_confirmed"
