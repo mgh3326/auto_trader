@@ -16,16 +16,20 @@ from app.services.external.crypto_insights import (
     coinglass_api_key_from_env,
     fetch_alternative_me_fear_greed,
     fetch_binance_funding_rates,
+    fetch_binance_settlement_funding_prints,
     fetch_coingecko_global,
     fetch_coinglass_open_interest_poc,
     fetch_defillama_reference,
     fetch_tokenomist_unlocks_poc,
     fetch_tradingview_crypto_breadth_reference,
+    fetch_upbit_binance_kimchi_premium,
     tokenomist_api_key_from_env,
 )
 
 DEFAULT_PROVIDERS = ("alternative_me", "coingecko", "binance")
 POC_PROVIDERS = ("defillama", "coinglass", "tokenomist", "tradingview")
+# T3 regime-gate inputs (hk 5889). Opt-in by name only: the default job set is unchanged.
+GATE_INPUT_PROVIDERS = ("upbit_binance", "binance_settlement")
 ProviderFetcher = Callable[[], Awaitable[CryptoInsightProviderResult]]
 
 
@@ -64,6 +68,10 @@ def _provider_fetcher(
     if provider_norm == "binance":
         funding_symbols = tuple(symbols or ("BTCUSDT", "ETHUSDT"))
         return lambda: fetch_binance_funding_rates(funding_symbols, now=now)
+    if provider_norm == "upbit_binance":
+        return lambda: fetch_upbit_binance_kimchi_premium(now=now)
+    if provider_norm == "binance_settlement":
+        return lambda: fetch_binance_settlement_funding_prints(now=now)
     if provider_norm == "defillama":
         return lambda: fetch_defillama_reference(now=now)
     if provider_norm == "coinglass":
