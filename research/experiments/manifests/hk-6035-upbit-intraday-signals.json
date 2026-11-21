@@ -1,0 +1,130 @@
+{
+  "calendar": {
+    "crypto": "24/7"
+  },
+  "candidate_policies": [
+    {
+      "description": "신규 추세 돌파: 보유 집합 밖 마켓, 종가 > 직전 N봉 고가 최댓값, 거래대금 >= X x 직전 16슬롯 중앙값, >= 20,000,000 KRW, 쿨다운 16봉. N in {16,32}, X in {3,5}.",
+      "id": "A_breakout"
+    },
+    {
+      "description": "보유 코인 반등: A 와 같은 형태를 고정 보유 집합 {BTC, ETH, XRP, SOL, LINK} 로 제한.",
+      "id": "B_held_rebound"
+    },
+    {
+      "description": "하방 이탈: 종가 < 직전 N봉 저가 최솟값, 같은 거래량·하한·쿨다운. 결과는 매도 뒤 재매수 이득.",
+      "id": "C_downside"
+    },
+    {
+      "description": "대조 B: 같은 시각, 같은 거래대금 구간의 다른 마켓 무작위 최대 10개(그 설정 조건 미충족).",
+      "id": "control_B"
+    },
+    {
+      "description": "대조 A: 같은 마켓, 같은 구간·같은 KST 시, 원 조건 신호에서 +-16봉 밖의 무작위 슬롯 최대 10개.",
+      "id": "control_A"
+    }
+  ],
+  "costs_fills": {
+    "cost_table": "PREREG.md section 4: 수수료 0.05%/편도 + 슬리피지 0.20%/0.10%/0.05%(L1/L2/L3) 편도. 민감도: 수수료만(0.10% 왕복), 슬리피지 2배.",
+    "fill_models": [
+      "진입은 신호 다음 봉 시가에 전량, 청산은 h 번째 봉 종가에 전량 체결한다고 가정(큐·부분 체결 모형 없음, 낙관 쪽 가정이며 비용 가정이 이를 일부 흡수).",
+      "진입 봉(다음 봉)이 없으면 신호는 entry_missing 으로 세고 결과에서 뺀다(0 으로 채우지 않음)."
+    ]
+  },
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  },
+  "features": [
+    {
+      "available_at": "신호 봉 종가 시각 t(봉 시작 + 15분) 이하. 신호 이후 값은 쓰이지 않는다(미래 값 변경 단위 시험).",
+      "name": "마감된 15분 봉 OHLC·거래대금(신호 봉과 직전 N·M 슬롯)",
+      "source": "Upbit GET /v1/candles/minutes/15 (공개, 키 없음)"
+    },
+    {
+      "available_at": "신호 봉 종가 시각 이하(신호 봉 포함 96슬롯)",
+      "name": "신호 시점 직전 24시간(96슬롯) 거래대금 합 -> 비용·대조 구간",
+      "source": "같은 15분 봉"
+    }
+  ],
+  "hashes": {
+    "code_commit": "6b043b7ae882e8da8dd6ecdd65090b3d1c2695c3",
+    "code_evaluate_sha256": "aa795cfbed44223b549b6d556740a7d178fa431969f3e5310c8b1870544007b3",
+    "code_rules_sha256": "fbac66aad94a758d863962bcef26bc2e7b6f15afd8b2d5e95868d9806fbe03a3",
+    "cost_table": "research/upbit_intraday/PREREG.md section 4 (round trip 0.50%/0.30%/0.20% by 24h quote-volume bucket; sha256 = preregistration_sha256)",
+    "dataset_full_manifest_sha256": "cf0af80fe270af3a27aeca4cc711b2c30e4ca159bda67e68d8140f4c436553ae",
+    "dataset_manifest": "research/upbit_intraday/data_manifest.json (full artifact manifest.json hashed below)",
+    "dataset_manifest_file_sha256": "cdf54b16117108e0ff14a5521a5e49e59aefddb69cd1e309e5c739f1ae8f7541",
+    "evaluation_contract": "research/upbit_intraday/PREREG.md section 5-7",
+    "policy": "none: no trading_policy.yaml key is read or written",
+    "preregistration_sha256": "41e41f1637ce41f70ac40761b3242d31ac359a0bd469e5a815b47e27b959a029",
+    "preregistration_text": "research/upbit_intraday/PREREG.md"
+  },
+  "hypothesis_id": "HK-6035",
+  "labels": [
+    {
+      "definition": "진입 = 신호 다음 봉 시가, 청산 = 진입 봉부터 센 h 번째 봉 종가(h = 4, 16, 96 봉), 청산 봉에 체결이 없으면 직전 체결 종가. 계열 A·B 는 매수 수익률, C 는 매도 뒤 재매수 이득(-수익률). 왕복 비용은 24시간 거래대금 구간별 0.50%/0.30%/0.20%.",
+      "horizon_sessions": 1,
+      "name": "net_return_after_roundtrip_cost"
+    }
+  ],
+  "manifest_format": "experiment-manifest/v1",
+  "markets": [
+    "crypto"
+  ],
+  "metrics": {
+    "alpha": "0.05",
+    "delta_min": "0",
+    "family": [
+      "HK-6035: 세 계열 각각의 판정(Bonferroni 3). 12개 설정 값은 탐색용이며 판정에 쓰지 않는다."
+    ],
+    "primary": "시험 구간, 선택된 설정, 4시간 지평, 기본 비용에서 대조 B 대비 평균 초과 수익(신호 쌍 단위). SUPPORTED = 신호 30개·10거래일 이상이고, 초과(B)의 클러스터 부트스트랩 하한(98.33% 양측 구간 아래 끝)이 0 초과이고, 초과(A) 평균이 0 초과이고, 비용 차감 평균 수익이 0 초과.",
+    "secondary": [
+      "1시간·24시간 지평, 적중률, MAE, 거래대금 구간별, 수수료만·슬리피지 2배, 한 봉 늦은 경보, 경고·주의 플래그 마켓 제외(시점 정합 아님), 12개 설정 전체 시험 값(탐색용), 최악·최선 5건"
+    ]
+  },
+  "question": "마감된 15분 봉만 쓰는 고정 규칙 세 계열이, 다른 날짜(개발 2026-09-11~10-12 선택, 시험 2026-10-17~11-20)에서 왕복 비용 차감 뒤 같은 시각 다른 마켓·같은 마켓 다른 시각의 무작위 진입보다 나은가?",
+  "seeds": [
+    6035
+  ],
+  "splits": {
+    "folds": [
+      {
+        "train": [
+          "2026-09-08",
+          "2026-09-10"
+        ],
+        "validate": [
+          "2026-09-11",
+          "2026-10-11"
+        ]
+      }
+    ],
+    "gap_sessions": 5,
+    "purge_sessions": 1,
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "scheme": "고정 날짜 분할(진입 시각 KST): 개발 2026-09-11~2026-10-12 배타에서 계열별 설정 선택, 5일 간격, 시험 2026-10-17~2026-11-20 포함에서 선택된 설정 한 번 평가. 학습할 모형이 없고 룩백 창만 선행 구간(2026-09-08~09-10)에서 쓴다.",
+    "test": {
+      "exposure_audit": "Upbit 15분 봉은 이 연구의 수집 이전에 어떤 실험·리포트·튜닝에서도 읽히지 않았다(레포에 Upbit 15분 봉 로더가 없고 AT MCP get_ohlcv 는 쓰지 않는다). 사례 당일(2026-11-21~22)은 수집 창과 시험 구간 밖이다. 데이터는 이 manifest 등록 전에 내려받았으나 결과(수익률·초과·판정)는 어떤 형태로도 계산하지 않았다.",
+      "kind": "sealed_period",
+      "period": [
+        "2026-10-17",
+        "2026-11-20"
+      ],
+      "seal_rule": "시험 구간 평가는 한 번만 연다(test_look.done 가드). 열기 전에 registry look 을 추가하고 k 를 올린다. 실패 뒤 같은 가설로 다시 열지 않는다. 사례 당일 재현은 시험 밖 예시이며 증거가 아니다."
+    }
+  },
+  "status": "sealed",
+  "stopping_rules": [
+    "시험 구간은 한 번만 연다. 간격·시험 경계와 규칙은 열람 뒤 바꾸지 않는다.",
+    "계열의 개발 구간 설정이 n_b>=30 을 못 채우면 그 계열은 INSUFFICIENT_SAMPLE 로 끝내고 시험 값을 판정에 쓰지 않는다.",
+    "어떤 계열도 SUPPORTED 가 아니면 hk 6036(라이브 websocket shadow 기록기)은 신호 효과 검증이 아니라 사건·미발화 후보 기록 범위로만 정한다."
+  ],
+  "title": "Upbit KRW 15분 봉 장중 신호 세 계열(신규 추세 돌파·보유 코인 반등·하방 이탈) 사전등록과 과거 재생",
+  "tuning_budget": {
+    "max_configurations": 12,
+    "notes": "M=16, 거래대금 하한 20,000,000 KRW, 쿨다운 16봉, 지평, 비용표, 구간 경계는 격자 밖 고정값이다.",
+    "search": "계열당 4개 격자(N in {16,32} x X in {3,5}) 전체를 개발 구간에서 평가하고 계열별로 선택 규칙 하나(대조 B 대비 초과 최대, n_b>=30)로 한 설정을 고른다."
+  },
+  "version": 1
+}

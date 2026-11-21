@@ -71,6 +71,9 @@ tests/research/test_kr_backfill_cursor_overlap.py
 tests/research/test_screener_bakeoff_parity.py
 tests/research/trade_retro/test_audit_sensitivity.py
 tests/research/trade_retro/test_markouts.py
+tests/research/upbit_intraday/test_fetch_data.py
+tests/research/upbit_intraday/test_rules.py
+tests/research/upbit_intraday/test_run.py
 tests/research/us_stage_b/test_cli.py
 tests/research/us_stage_b/test_verdict.py
 tests/research/us_universe/test_us_universe_pit.py

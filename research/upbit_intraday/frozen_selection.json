@@ -1,0 +1,29 @@
+{
+ "code_sha256": {
+  "evaluate.py": "aa795cfbed44223b549b6d556740a7d178fa431969f3e5310c8b1870544007b3",
+  "rules.py": "fbac66aad94a758d863962bcef26bc2e7b6f15afd8b2d5e95868d9806fbe03a3"
+ },
+ "dataset_manifest_sha256": "cf0af80fe270af3a27aeca4cc711b2c30e4ca159bda67e68d8140f4c436553ae",
+ "format": "upbit-intraday-selection/v1",
+ "rule": "largest develop-half mean excess over control B at 4h, base cost, n_b >= 30; ties larger N then larger X",
+ "selected": {
+  "A_breakout": {
+   "config": "A_breakout:N16_X3",
+   "family": "A_breakout",
+   "n": 16,
+   "x": 3.0
+  },
+  "B_held_rebound": {
+   "config": "B_held_rebound:N32_X5",
+   "family": "B_held_rebound",
+   "n": 32,
+   "x": 5.0
+  },
+  "C_downside": {
+   "config": "C_downside:N32_X5",
+   "family": "C_downside",
+   "n": 32,
+   "x": 5.0
+  }
+ }
+}
