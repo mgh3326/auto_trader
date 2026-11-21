@@ -10,7 +10,7 @@
   ],
   "hashes": {
     "preregistration_text": "docs/design/5750-kr-daily-plan-v0.md",
-    "preregistration_sha256": "2ffd6e66b7caa10df0bd35d0a4ba8d70daf9ac489c6c19ac709af2c6fd4ebaa7",
+    "preregistration_sha256": "28bfad30dfa4c8cc0e28aaddbcf0e26255bf4bc574cc263665e9de541257e370",
     "dataset_manifest": {
       "pending": "봉인 전 후보 집합 정의(원천 프리셋·상한·합집합 규칙, candidate_set_sha256), 입력 번들 표준 직렬화(daily-plan-bundle/v1, 설계 §7.1)와 번들 보존 규칙, 데이터 출처, 달력 버전, 가격 결손·정지 의심·기업행위 조정 처리 규칙을 고정한다."
     },
@@ -25,7 +25,7 @@
       "pending": "봉인 시 정책 round_trip_cost_bps.kr 의 버전과 해시를 기록한다."
     },
     "control_spec": {
-      "pending": "대조 순위 c_rank 의 지표 목록·부호·출처·단위, E_t(full eligible) 위 단일 계산(P_t 재정규화 없음), 지표별 점수식 score_i=(n_worse+(n_tied-1)/2)/(n_obs-1)과 지표 최소 관측 n_obs>=30, 유효 지표 3개 미만이면 c_rank 결측, 동일 가중 평균, 경계 동점 분할, c_rank 결측 후보는 C와 P_t 양쪽에서 제외하는 대칭 규칙을 봉인 시 해시로 고정한다(설계 §4.2). 이후 튜닝 없음."
+      "pending": "대조 순위 c_rank 의 지표 목록·부호·출처·단위, E_t(full eligible) 위 단일 계산(P_t 재정규화 없음), 지표별 점수식 score_i=(n_worse+(n_tied-1)/2)/(n_obs-1), 지표 최소 관측 수(권고 30, 설계 Q19에서 운영자 확인), 동일 가중 평균(결측 지표는 평균에서 빼고 개수를 기록하며 유효 지표가 0개일 때만 c_rank 결측), 경계 동점 분할, c_rank 결측 후보는 C와 P_t 양쪽에서 제외하는 대칭 규칙을 봉인 시 해시로 고정한다(설계 §4.2). 이후 튜닝 없음."
     },
     "grade_spec": {
       "pending": "등급 축(value, quality)·세 단계 매핑(+1/0/-1)·1:1 합성과 경계 동점 처리(N=10 경계의 동점 구간 후보 전부에 남은 몫을 같은 가중으로 분할, 임의 순서 규칙 없음)를 봉인 시 해시로 고정한다."
@@ -51,7 +51,7 @@
   "labels": [
     {
       "name": "net_return_open_to_close_5",
-      "definition": "계획 세션 D 의 정규장 시가에서 D 포함 5번째 정규장 종가까지의 순수익률. 두 팔을 같은 시가 진입 가정에 놓는 순위 비교용 라벨이며 실제 주문 가능성이나 체결 편향 상쇄의 증거가 아니다. 정책 round_trip_cost_bps.kr 을 양팔에 같게 차감하므로 S-C 차이에서 상수는 상쇄된다. 후보 단위 결측은 닫힌 어휘(no_open_price, untradable_d, no_close_d4, corporate_action_unadjustable, delisted)로 평균에서 빼고 0 으로 채우지 않는다. 팔의 유효 후보가 5개 미만이면 세션은 UNVERIFIED 이다.",
+      "definition": "계획 세션 D 의 정규장 시가에서 D 포함 5번째 정규장 종가까지의 순수익률. 두 팔을 같은 시가 진입 가정에 놓는 순위 비교용 라벨이며 실제 주문 가능성이나 체결 편향 상쇄의 증거가 아니다. 정책 round_trip_cost_bps.kr 을 양팔에 같게 차감하므로 S-C 차이에서 상수는 상쇄된다. 후보 단위 결측은 닫힌 어휘(no_open_price, untradable_d, no_close_d4, corporate_action_unadjustable, delisted)로 평균에서 빼고 0 으로 채우지 않는다. 팔의 유효 후보가 5개(ceil(N/2), 권고값, 설계 Q19) 미만이면 세션은 UNVERIFIED 이다.",
       "horizon_sessions": 5
     },
     {
@@ -85,7 +85,7 @@
     },
     {
       "id": "C",
-      "description": "E_t(full eligible, 세션이 보기 전 번들에 고정)에서 계산해 저장한 c_rank 를 P_t 안에서 내림차순으로 고른 상위 10. 동일 가중 퍼센타일 평균, 결측 지표는 평균에서 뺄 뿐 0/중립으로 채우지 않으며 유효 지표 3개 미만이면 c_rank 결측으로 C 와 P_t 에서 제외한다. 서버가 E_t 위의 C 상위 10(C_full_topN)과 P_t 위의 C 상위 10(C_pool_topN)의 일치 여부를 세션마다 기록한다."
+      "description": "E_t(full eligible, 세션이 보기 전 번들에 고정)에서 계산해 저장한 c_rank 를 P_t 안에서 내림차순으로 고른 상위 10. 동일 가중 퍼센타일 평균, 결측 지표는 평균에서 뺄 뿐 0/중립으로 채우지 않으며 유효 지표가 0개일 때만 c_rank 결측으로 C 와 P_t 에서 제외한다. 서버가 E_t 위의 C 상위 10(C_full_topN)과 P_t 위의 C 상위 10(C_pool_topN)의 일치 여부를 세션마다 기록한다."
     },
     {
       "id": "E",
@@ -125,7 +125,7 @@
   },
   "stopping_rules": [
     "20 계획 세션 + 마지막 평가 5세션 고정. 전 행의 평가 시한 이후 한 번 검토. 기간 연장 없음.",
-    "판정 순서는 품질 -> 표본 -> 효과이다(설계 §4.3.4, #5762). (1) 품질: 판정 불가·무효 세션(풀 구성·가격·비용 불가, P_t < 10, C_full_topN 과 C_pool_topN 불일치, 한 팔 유효 후보 5 미만, session_void)이 계획 세션의 10% 를 넘으면 UNVERIFIED 로 끝난다. (2) 표본: 성숙 세션 15 미만이면 INSUFFICIENT_SAMPLE. (3) 효과: 성숙 세션 15 이상에서 주 지표가 delta_min(0.0025) 이상이면 SUPPORTED, 미만이면 NOT_SUPPORTED. 앞 단계에서 끝나면 뒤 단계를 읽지 않는다.",
+    "판정 순서는 품질 -> 표본 -> 효과이다(설계 §4.3.4, #5762). (1) 품질: 판정 불가·무효 세션(풀 구성·가격·비용 불가, P_t < 10, C_full_topN 과 C_pool_topN 불일치, 한 팔 유효 후보 5 미만(권고, 설계 Q19), session_void)이 계획 세션의 10% 를 넘으면 UNVERIFIED 로 끝난다. (2) 표본: 성숙 세션 15 미만이면 INSUFFICIENT_SAMPLE. (3) 효과: 성숙 세션 15 이상에서 주 지표가 delta_min(0.0025) 이상이면 SUPPORTED, 미만이면 NOT_SUPPORTED. 앞 단계에서 끝나면 뒤 단계를 읽지 않는다.",
     "UNVERIFIED 와 INSUFFICIENT_SAMPLE 은 점수 단계를 unproven 으로 동결하고 새 에포크로만 재시도한다. NOT_SUPPORTED 이면 점수 단계를 제거하고 세션은 논지·무효 조건·처분 사유만 쓴다.",
     "주문·제안·감시·위임장 등록이 계획 경로에서 만들어지거나 ROB-501 위반이 생기면 v0를 중단한다. 규칙 행(위험 매도·물타기 금지)을 세션이 바꾼 것이 확인되면 수리 전 재개하지 않는다. 중간에는 비교 지표를 읽거나 규칙을 바꾸지 않는다."
   ],
