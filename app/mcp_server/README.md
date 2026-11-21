@@ -2067,13 +2067,18 @@ Behavior:
 - Aggregates orderable cash across all broker accounts (Upbit, KIS domestic, KIS overseas)
 - Converts USD orderable amounts to KRW equivalents using current exchange rate
 - Includes manual cash (Toss/non-API cash) when `include_manual=True`
-- Marks manual cash as stale when older than 3 days
+- Manual cash older than 3 days is flagged `stale_warning=true` — a freshness
+  warning only (hk 6017): the stored amount still counts in the total and in
+  the deployment-cap parking term, labelled
+  `parking_balance_source="operator_value_stale_warning"`. Only an invalid
+  stored amount is excluded (`invalid_amount=true`, reported in `errors`).
 - With `account_mode="kis_mock"`, manual cash is not read or aggregated; the
   result is derived only from the KIS mock cash response.
 
 Response shape:
 - `accounts`: per-account cash entries with `krw_equivalent` added for USD accounts
-- `manual_cash`: manual cash details with `amount`, `updated_at`, and `stale_warning`
+- `manual_cash`: manual cash details with `amount`, `updated_at`,
+  `stale_warning`, `included_in_total`, and `invalid_amount` when invalid
 - `summary.total_orderable_krw`: total orderable amount in KRW across all sources
 - `summary.exchange_rate_usd_krw`: USD to KRW exchange rate used for conversion
 - `summary.as_of`: ISO timestamp of when the data was retrieved

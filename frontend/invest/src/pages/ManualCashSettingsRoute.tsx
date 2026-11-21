@@ -85,17 +85,17 @@ function StaleStatus({ view }: { view: ManualCashView }) {
   }
   if (view.stale) {
     return (
-      <div className="manual-cash-banner manual-cash-banner--danger" role="alert" data-testid="manual-cash-stale">
-        <strong>stale — 현재 0으로 반영 중.</strong> 마지막 저장({formatTime(view.updated_at)})이 {hours}시간을
-        넘었습니다. 가용자금 합계(<code>total_orderable_krw</code>)에서 제외되고 deployment_cap 파킹 항은 0입니다
-        (<code>stale_treated_as_zero</code>). 잔고를 확인해 다시 저장하면 즉시 반영됩니다.
+      <div className="manual-cash-banner" role="alert" data-testid="manual-cash-stale">
+        <strong>stale — 마지막 저장값이 그대로 반영 중입니다.</strong> 마지막 저장({formatTime(view.updated_at)})이 {hours}시간을
+        넘었습니다. 가용자금 합계(<code>total_orderable_krw</code>)와 deployment_cap 파킹 항에 이 값이 계속 계산됩니다
+        (<code>operator_value_stale_warning</code>). 실제 잔고를 확인해 필요하면 다시 저장하세요.
       </div>
     );
   }
   return (
     <div className="manual-cash-banner" role="status" data-testid="manual-cash-fresh">
-      <strong>반영 중.</strong> {formatTime(view.stale_at)}이 지나면 stale이 됩니다 — 저장 후 {hours}시간(3일)이 지나면
-      가용자금 합계에서 빠지고 deployment_cap 파킹 항이 0이 됩니다.
+      <strong>반영 중.</strong> {formatTime(view.stale_at)}이 지나면 stale 표시가 붙습니다 — 저장 후 {hours}시간(3일)이 지나도
+      저장값은 가용자금 합계와 deployment_cap 파킹 항에 계속 반영됩니다.
       {view.amount === 0 ? " (현재 값이 0원이라 파킹 항은 이미 0입니다.)" : null}
     </div>
   );
