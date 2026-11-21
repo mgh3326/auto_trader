@@ -45,13 +45,15 @@
 2. **실행 불가 사유**(닫힌 어휘): 행이 "그 행동을 지금 할 수 없는" 이유.
 3. **버전 계보**: 하루에 몇 번, 무엇 때문에 어떤 행이 바뀌었는지.
 
-그 밖에 마감 채점 결과(§5)는 행동 행에 대응하는 저장소가 없어 같은 묶음에 둔다. 새 테이블 넷(제안, 이 PR에는 마이그레이션 없음):
+그 밖에 마감 채점 결과(§5)는 행동 행에 대응하는 저장소가 없어 같은 묶음에 둔다. 새 테이블 여섯(제안, 이 PR에는 마이그레이션 없음; 번들 §7.1·연결 사실 §8.1이 위 넷에 더해진다):
 
 ```
 review.daily_plan_heads      (market, session_date) 당 1행. 불변 정체성 + mode='plan_only'
 review.daily_plan_versions   head 당 N행. 종류·트리거·입력 번들 해시·세션 비용. append-only
 review.daily_plan_rows       version 당 N행. 행동·사유·점수 등급·가리키는 id들·매수 어휘 열. append-only
 review.daily_plan_outcomes   row 당 채점 사실(지평별). append-only
+review.daily_plan_input_bundles  버전 입력 번들 본문+해시(§7.1). append-only
+review.daily_plan_row_links  채택 행의 forecast·판단 연결 사실(§8.1). append-only
 ```
 
 위험 매도·점수·대조 순위는 열이지 새 층이 아니다. 3795의 관용구를 따른다: 행 UPDATE·DELETE·TRUNCATE는 모든 역할에 거부, `at_app`에는 객체별 조건부 GRANT(하드룰 18), downgrade는 행이 있으면 거부(`docs/design/3795-mandate.md` §3.4와 같은 형태, `[추정]` 세부는 T1).
@@ -266,8 +268,8 @@ S∩C 겹침률, 팔별 평균·분위·승률, E 대비, 판단 집합 `J_t` �
 
 | # | 기준 | 측정 |
 |---|---|---|
-| P1 | 매일 보유 전체에 행이 있다 | 계획 세션마다, premarket 시점 KIS·Toss KR 보유 심볼(계좌별)에 대해 버전 1에 행이 있는 비율 = 100%. **20/20세션** |
-| P2 | 후보마다 채택·탈락 사유가 있다 | 같은 세션의 후보 집합 전체(`candidate_set_sha256`)에 `disposition`+닫힌 `reason_code`가 있는 비율 = 100%. **20/20세션** |
+| P1 | 매일 보유 전체에 행이 있다 | 계획 세션마다, premarket 번들에 고정된 브로커 보유 스냅샷(§1.6)의 (`account_ref`, `symbol`) 전부에 대해 버전 1에 보유 행이 있는 비율 = 100%이고 범위 안 모든 계좌의 `read_status=ok`. 계좌 하나라도 `ok`가 아니면 그 세션은 `UNMEASURABLE`(통과도 100%도 아님, 실패 계좌 목록 보고, S4 계수에 듦). 원장 단독·브로커 단독·불일치 개수를 함께 보고. **20/20세션** |
+| P2 | 후보마다 채택·탈락 사유가 있다 | 같은 세션의 후보 집합 전체(`candidate_set_sha256`)의 후보 키(심볼)마다 `disposition`+닫힌 `reason_code`가 하나 있는 비율 = 100%(계좌별 행동 행은 센 대상이 아니다). 채택 행은 `forecast_link_state=confirmed`(§8.1)여야 센다. **20/20세션** |
 | P3 | 마감 채점이 사람 없이 끝난다 | 다음 계획 세션의 premarket 시작 전까지 그 세션의 모든 행에 대한 마감 outcomes(§1.3 `close`)가 사람 개입 없이 써진다. 사람 개입 = 수동 도구 호출·DB 수정. **20/20세션** |
 | P4 | 세션 1회 비용이 기록된다 | 모든 premarket 버전에 `session_cost`{wall_seconds, input_tokens, output_tokens, tool_calls}가 있다: 20/20. **문턱은 두지 않는다**(비용이 얼마인지 `[모름]`이므로 기록이 목적. 5세션 뒤 문턱 필요 여부를 운영자가 정한다, Q9) |
 | P5 | 장전에 있다 | 버전 1이 08:30 KST 전에 커밋됨. **20/20세션**. 08:30은 기존 사전등록 H-admit의 결정 시각을 따른 값이다(`research/experiments/manifests/h-admit.json`의 "decided 08:30 KST of t+1"). NXT 프리마켓(08:00)·정규장(09:00) 대비 적절한지는 Q12 |
@@ -311,18 +313,57 @@ S∩C 겹침률, 팔별 평균·분위·승률, E 대비, 판단 집합 `J_t` �
 
 ## 7. 입력과 출처
 
-모든 입력은 `available_at`(관측·공개 시각)을 함께 저장하고, `available_at ≤ plan asof`인 것만 번들에 넣는다. **모르는 값은 0이 아니다** — 행에 `unknown`과 닫힌 사유로 남고 §2.1·§3·실행 불가 사유로 이어진다.
+모든 입력은 시각 네 가지(`event_at`·`first_observed_at`·`bundle_stored_at`·`bundle_closed_at`, §7.1)와 원천 버전을 함께 저장하고, `event_at ≤ asof`이면서 `first_observed_at ≤ bundle_closed_at`인 것만 번들에 넣는다. 번들은 불변이고 해시로 고정된다(§7.1). **모르는 값은 0이 아니다** — 행에 `unknown`과 닫힌 사유로 남고 §2.1·§3·실행 불가 사유로 이어진다.
 
 | 입력 | 출처 | 비고 |
 |---|---|---|
 | 후보 | (a) 스크리너 스냅샷 프리셋 — `screen_stocks_snapshot`(DB-only, `app/mcp_server/tooling/screener_snapshot_tool.py`) 읽는 `invest_screener_snapshots`(`app/models/invest_screener_snapshot.py:22`) · (b) 필요 시 `screen_stocks` · (c) 후보 관측 로그 `screener_pick_log`(`app/models/screener_pick_log.py:120`) | 일 1회 스냅샷 빌드 복구는 hk 5752, 이력은 최근 5거래일만 보관(`hk:doc decision/2026-11-20/at-direction-daily-plan-nonprice-go` Q1). 후보 기록 로그는 마지막 행이 10-30이고 최근 20일 0행이다(hk 5622, 같은 consult §1) — 기록 재개 전에는 `candidate_call_id`가 null이고 행에 사유(`candidate_log_unavailable`)를 남긴다. 스냅샷이 빈 날은 **후보 0건이 아니라 head의 `gap_reason=candidate_source_unavailable`**이다(P2 판정에서 해당 세션은 "후보 집합 없음"으로 구분) |
-| 보유 | 원장 FIFO(`load_held_lots`, `app/services/mechanical_loss_cut/positions.py:122`, `basis=inference`) + 브로커 보유와의 대조(`get_holdings(include_ledger_lots=True)`의 `ledger_state`, `app/services/execution_ledger/kis_lots.py:754,1031`) | 대조 불일치·`unknown`은 `position_unknown`. 외부(KIS 앱 등)에서 낸 미체결은 DB로 보이지 않는다(`external_orders_verifiable=false`)는 caveat를 행에 상수로 싣는다. 번들 생성은 DB만 읽고 브로커 호출을 하지 않는다. 브로커 대조는 장전 세션의 기존 `get_holdings` 호출 결과를 `holdings_check ∈ {matched, mismatch, unchecked}`로 기록한다 |
+| 보유 | 원장 FIFO(`load_held_lots`, `app/services/mechanical_loss_cut/positions.py:122`, `basis=inference`) + 브로커 보유와의 대조(`get_holdings(include_ledger_lots=True)`의 `ledger_state`, `app/services/execution_ledger/kis_lots.py:754,1031`) | 대조 불일치·`unknown`은 `position_unknown`. 외부(KIS 앱 등)에서 낸 미체결은 DB로 보이지 않는다(`external_orders_verifiable=false`)는 caveat를 행에 상수로 싣는다. 번들 생성은 DB만 읽고 브로커 호출을 하지 않는다. 브로커 대조는 장전 세션의 기존 `get_holdings` 호출 결과를 계좌별 `read_status`와 (`account_ref`, `symbol`)별 대조 분류(`matched`·`broker_only`·`quantity_mismatch`·`ledger_only`·`account_read_failed`, §1.6)로 기록한다. 분모는 이 브로커 스냅샷이다 |
 | 미체결 주문 | `load_open_sell_quantities`(`app/services/mechanical_loss_cut/positions.py:233`), 보호 수량 `load_protected_quantities`(`app/services/mechanical_loss_cut/positions.py:311`), KIS `open_buy_evidence`/`open_sell_evidence`(`app/services/execution_ledger/kis_lots.py`) | 읽기 실패는 `open_order_unknown`/`protected_quantity_unknown`(0이 아님) |
 | 현금 | `get_available_capital_impl`(`app/mcp_server/tooling/portfolio_cash.py:416`) | KIS 현금과 Toss 계좌 식별이 성과표의 남은 미측정 둘이다(`hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §1). 모르면 `cash_unknown` |
 | 계좌 귀속 | `derive_account_ref`(`app/services/mandate/account_ref.py:19`) 규칙의 계좌 참조, Toss는 명시 `broker_account_id` 검증 | 못 정하면 `account_attribution_unknown`. 행에 계좌번호 원문은 저장하지 않는다 |
 | 지표 | `analyze_stock_batch(quick=True)` 경로(`app/mcp_server/tooling/analysis_quick.py:734`), 지지·저항(`app/mcp_server/tooling/market_data_indicators.py:928`), 정지 의심(`app/services/halt_detection.py:233`) | 가격은 마지막 **마감** 일봉이며 라이브 시세가 아니다(quick의 `current_price`가 `stale`/`db_only_projection`으로 스탬프되는 계약) |
 | 사건과 공개 시각 | `market_events`(`release_time_utc`, `app/models/market_events.py:81`), 투자자 수급(`investor_flow_snapshots`, 확정값은 18:10 KST 잡), 밸류에이션(`market_valuation_snapshots`, `computed_at`), 뉴스 관련성 파이프라인 | 사건의 `release_time`이 plan asof 이후이면 번들에 넣지 않는다. `computed_at`·`collected_at`이 실제 관측 시각으로 학습에 쓸 수 있는지는 `[모름]`(`hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §5) — 그래서 대조군 입력은 `available_at`을 행에 함께 기록한다 |
 | 정책 | `get_trading_policy`/`config/trading_policy.yaml`(version, content_hash) | 모든 버전이 `policy_version`·`policy_content_hash`를 싣는다 |
+
+### 7.1 불변 입력 번들 (H3)
+
+해시가 재현을 보장하려면 입력이 불변으로 다시 읽히고 관측 시점이 검증돼야 한다. 시장 이벤트의 발표 시각과 생성 시각(`app/models/market_events.py:81,103`), 밸류에이션의 `computed_at`·`created_at`(`app/models/market_valuation_snapshot.py:64,67`), 수급의 `collected_at`(`app/models/investor_flow_snapshot.py:113`)은 같은 뜻이 아니다. 세 모델 모두 `updated_at`이 있어 행이 나중에 갱신될 수 있다.
+
+**(1) 정체성.** 입력 번들은 `bundle_id`(UUID)와 `bundle_sha256`(아래 표준 직렬화 바이트의 SHA-256)을 가진다. 버전은 `input_bundle_id`와 `input_bundle_sha256`을 **둘 다** 저장한다. 번들 본문은 새 테이블 `review.daily_plan_input_bundles`(append-only: UPDATE·DELETE·TRUNCATE 거부, `at_app`에 SELECT·INSERT 조건부 GRANT, 하드룰 18)에 저장하고, 서버가 쓰기 때 본문을 다시 직렬화해 해시를 재계산해 일치하지 않으면 거부한다. 같은 (head, `bundle_sha256`)의 재쓰기는 기존 `bundle_id`를 돌려준다.
+
+**(2) 표준 직렬화 `daily-plan-bundle/v1`.** UTF-8 JSON, 키 정렬, 공백 없음, `schema_version` 포함. 금액·가격·수량은 지수 없는 정확한 십진 문자열(후행 0 제거, `-0` 금지)이고 float는 `TypeError`다. 시각은 UTC RFC 3339 마이크로초 6자리 `Z`다. 행 배열은 (`row_kind`, `market`, `symbol`, `account_ref`) 순으로 정렬한다. 모르는 값은 키를 빼는 것이 아니라 `{"unavailable": "<닫힌 사유>"}` 객체로 명시한다. 같은 입력이 같은 바이트를 낸다는 골든 테스트와, `known_zero`(`{"known": "0"}`)와 `unavailable`이 다른 바이트를 낸다는 테스트를 T1에 둔다.
+
+**(3) 입력마다 시각 네 가지를 따로 저장한다.**
+
+| 필드 | 뜻 | 예 |
+|---|---|---|
+| `event_at` | 값이 가리키는 시장·발표 시각 | 시장 이벤트 `release_time_utc`, 일봉 세션 마감, 밸류에이션·수급의 `snapshot_date` 기준일 |
+| `first_observed_at` | AT가 그 **값**을 처음 본(저장한) 시각 | 갱신되지 않은 행의 `created_at` |
+| `bundle_stored_at` | 번들이 저장된 시각 | 서버 시계 |
+| `bundle_closed_at` | 번들 마감 시각(= `asof`, 계획 cutoff 이전) | 버전 1은 D 08:30 KST 이전 |
+
+- 원천과 버전 식별자도 입력마다 남긴다: `source_name`, `source_schema_version`, `revision_id`(원천 행 id + 값 해시).
+- 🔴 **`created_at`은 값의 최초 관측 시각의 증거가 아니다.** 행이 upsert로 갱신되면 현재 값은 `updated_at` 이후에 관측된 값일 수 있다. `updated_at`이 `created_at`보다 늦거나(갱신 이력) 값의 이력이 없으면 그 값의 `first_observed_at`은 **증명되지 않았고**, 번들에서 `{"unavailable": "observed_time_unproven"}`이다. 갱신된 적 없는 행만 `created_at`을 `first_observed_at`으로 쓴다(허용 오차는 T2가 정한다). `collected_at`·`computed_at`이 실제 관측 시각인지는 `[모름]`이므로(`hk:doc consult/2026-11-20/at-direction-daily-plan-fable52` §5) 수집기 코드로 확인되기 전에는 `first_observed_at`의 근거로 쓰지 않는다.
+- **포함 규칙**: 입력은 `event_at ≤ asof` **그리고** `first_observed_at ≤ bundle_closed_at`일 때만 번들에 들어간다. 공개 시각만 맞고 사후에 보강·정정된 행(`first_observed_at > bundle_closed_at`)은 그 번들에 넣지 않는다. 시점 증명이 없으면 `unknown`이다. cutoff 이후 도착한 자료는 그것을 처음 관측한 시점의 **새 번들**(이벤트·세션 버전)부터만 쓴다. 이미 저장된 번들은 고치지 않는다.
+- **번들이 함께 고정하는 것**: 후보 집합과 키(원천 순위·`gate_features` 값 포함), 지표 값과 마스크(결측·`unavailable` 사유), `c_rank` 공식과 `control_spec` 해시, `E_t`·`P_t`와 `c_rank` 값, 브로커 보유 스냅샷(§1.6), 계획·가격·보호 수량·미체결 증거와 규칙 버전·정책 `version`/`content_hash`, 그리고 #5762의 `prior_decision`(cooldown·중복 판정 입력). 원천(`invest_screener_snapshots`는 최근 5거래일만 보관, hk 5752)이 지워져도 시험에 쓴 값은 번들에서 재현된다.
+- **보존**: 번들은 에포크 전체와 마지막 평가 5세션, 그리고 보고서가 동결(`report_sha256`)될 때까지, 그 뒤에도 최소 180일 보존한다(권고값, 운영자 확인 Q18). 삭제는 운영자 결정 행으로만 한다.
+- **08:30의 의미**: 08:30 KST는 계획 cutoff이며 "NXT 개장 전"이 아니다. NXT 프리마켓은 08:00에 열리므로 그 시각에 NXT 호가·체결이 이미 있을 수 있다. 번들 입력은 D−1 완결 일봉과 그 이전에 관측된 값뿐이고 D 일중 값은 쓰지 않는다. 대상 시장 세션(`session_date`, `calendar=XKRX`)·`cutoff_at`·`asof_at`(실제 번들 마감)을 head·번들에 저장한다.
+
+### 7.2 `known_zero`와 `unavailable`: 위험 평가기의 skip 경로
+
+`evaluate_lot`(`app/services/mechanical_loss_cut/rules.py:577`)의 모든 skip(`SKIP_REASONS`)은 입력을 알았는지로 나뉜다. 번들 필드는 이 구분을 값으로 가진다. "0으로 확인됨"과 "읽지 못함"은 다른 값이다.
+
+| 분류 | `SKIP_REASONS` | 행 상태 |
+|---|---|---|
+| `not_applicable` | `parking_instrument` | `rule_status=not_applicable` |
+| `unavailable` (입력을 몰라서 끝남) | `no_exit_plan` · `position_unreadable` · `price_missing`(봉 부족 포함) · `price_stale` · `halted_suspect` · `open_sell_unknown` · `protected_unknown` | `hold`+`rule_status=unknown`+같은 사유 |
+| `evaluated` (알고 평가해 자르지 않음) | `not_underwater` · `above_planned_stop` · `floor_not_reached` · `rising` · `not_n_day_low` · `trailing_drop_not_reached` · `covered_by_open_sell` · `below_one_unit` · `already_cut_this_run` · `cooldown` | `rule_status=evaluated` |
+
+입력 수량의 구분: 미체결 매도 수량(`open_sell_quantity`)과 보호 수량(`protected_quantity`)은 읽기에 성공해 합이 0이면 `{"known": "0"}`, 읽기에 실패했거나 판독 불가·음수이면 `{"unavailable": "open_sell_unknown"|"protected_unknown"}`다(평가기는 `None`·음수를 각각 `open_sell_unknown`·`protected_unknown`으로 처리한다, `app/services/mechanical_loss_cut/rules.py:660-663`). `unavailable`을 0으로 직렬화하는 경로는 없다.
+
+- 🔴 **unknown은 실행 가능한 행으로 표시되지 않는다.** 필수 입력(포지션·가격·미체결 매도·보호 수량·평단)이 `unavailable`인 행의 `trim`·`add`·`risk_sell`은 `not_executable_reason`이 비어 있을 수 없다. 서버 검증기는 이 위반을 거부한다.
+- T1/T2 테스트: 필수 입력을 하나씩 `unavailable`로 바꾸는 표 구동 테스트에서 `risk_sell`이 나오지 않고 `trim`·`add`에 실행 불가 사유가 붙는다. 18개 skip 사유 전부가 위 표 세 분류 중 정확히 하나에 속한다(`SKIP_REASONS`와의 집합 일치 테스트, 새 사유가 추가되면 분류가 없어 실패한다).
 
 ## 8. 연결
 
@@ -332,6 +373,52 @@ S∩C 겹침률, 팔별 평균·분위·승률, E 대비, 판단 집합 `J_t` �
 - **기각 매수 행은 #2501의 형식을 따라 5624 모집단을 채운다.** 채택된 `new`/`add` 행마다(하루 `max_adopt` 개, 기본 10, Q2) 세션이 기존 `forecast_save`(필수 인자 `probability`·`review_date` 포함)를 `decision_bucket='deferred_no_action'`, `declined_limit_price`, `declined_quantity` 또는 `declined_notional`, 선택 `declined_quote_price`+`declined_quote_asof`·`declined_account_mode`와 함께 호출한다. 이 호출이 `decision_kind='declined'` 판단 행(BUY rung 0 + `limit` 참조가)을 쓰므로(`app/services/decision_evidence.py:169`, 5624 짝 모집단 `docs/design/5624-entry-ab-mock.md` §2) 계획 행은 그 판단·예측을 **가리키기만** 한다(행이 판단을 복제하지 않는다). 🔴 단, `forecast_save` 응답에는 `decision_id`가 없다: 응답은 `{success, action, data(예측 행), warnings}`뿐이고(`app/mcp_server/tooling/forecast_tools.py:154-161`) `_record_declined_evidence`는 `DecisionEvidenceService.record`가 돌려준 `decision_id`를 버린다(`app/mcp_server/tooling/forecast_tools.py:189-234`, `app/services/decision_evidence.py:246-277`). 판단 행은 `forecast_ids=(forecast_id,)`를 가지므로(`app/mcp_server/tooling/forecast_tools.py:179`) 계획 행은 응답의 `forecast_id`를 저장하고 `decision_id`는 `decision_evidence.forecast_ids`로 **해석**한다(T1이 해석 읽기를 포함하거나 `forecast_save` 응답에 `decision_id`를 더하는 작은 변경을 함께 한다, Q15). 🔴 주문이 아니다: 판단 행은 `decision_order_links`를 만들지 않고 retro는 계획 필드만 채우며 주문·체결로 세지 않는다(`docs/agent-contracts/market-data-and-screener-contracts.md` hk 5719 절). 기록 이전은 소급하지 않는다. KR만이므로 5624의 US 다리는 이 문서가 채우지 않는다.
 - **retro/v1·Factortrail이 계획 버전을 읽는 법(후속 T6)**: 호환 확장으로 읽기 전용 operation `retro_daily_plan`을 더한다(`contracts/retro/v1/openapi.yaml`, 기존 `retro_decisions`의 모양을 따른다 — `app/services/retro_v1/retro_decisions.py:1317`, 라우트 `app/routers/retro_v1.py:25,37`). 규칙: reader 자기 `REPEATABLE READ READ ONLY` 트랜잭션(8초), 모르는 값은 null+닫힌 사유(0으로 만들지 않음), 불투명 해시 ref, 계좌번호·원문 payload 비노출, 금액은 decimal 문자열, 호환 확장 → 소비자 커밋 → `consumers.lock` 핀 갱신의 순서(`docs/runbooks/retro-consumer-pin.md`, `contracts/retro/v1/consumers.lock`). 행의 `decision_id`는 `retro_decisions`의 `decision_ref`로 이어진다. 계획 읽기는 v0 시작의 선행 조건이 아니다.
 - **하드룰 점검**: 스케줄러 등록 없음(하드룰 6 — 일일 트리거는 v0에서 기존 라이브 슬롯의 세션이 MCP 도구를 호출, Dagu 등록은 별도 운영자 승인, Q6). 게이트 완화 없음(새 `DAILY_PLAN_ENABLED` 기본 false, 하드룰 4 정신). 레저 직접 쓰기 없음(하드룰 5, `execution_ledger_in_effect()` AND). 새 MCP 도구는 레인 allowlist 계약 테스트와 live 프롬프트 핀 테스트를 통과해야 한다(하드룰 17: `config/mcp_lane_allowlists/`, `tests/mcp_server/test_lane_allowlist_contract.py`, `tests/mcp_server/test_profile_tool_snapshot.py`). 새 테이블은 객체별 `at_app` GRANT(하드룰 18).
+
+### 8.1 계획 버전과 `forecast_save`: 두 번 쓰기의 실패 계약 (H2)
+
+사실(코드): `forecast_save`는 자기 세션에서 예측 행과 기각 판단 행(`declined_*`가 있을 때)을 한 번에 커밋한다(`app/mcp_server/tooling/forecast_tools.py:98-153`). 그 둘은 원자적이지만 **계획 버전과는 원자적이지 않다** — 계획 저장소와 `forecast_save`는 서로 다른 트랜잭션이다. 그래서 타임아웃·재실행에서 "예측은 만들었는데 계획 행이 못 가리킴"이나 중복이 생길 수 있다. 응답에 `decision_id`가 없고(§8), 이미 있는 예측에 `declined_*`를 다시 주면 `declined_not_created`로 롤백된다(`app/mcp_server/tooling/forecast_tools.py:125-139`). 판단 행의 `decision_id`는 호출마다 새 `uuid4()`이고 `forecast_ids`에 유일 제약이 없다(`app/services/decision_evidence.py:259`). 따라서 `forecast_id` 역조회만으로는 해결되지 않고, 아래 준비·확정 계약이 필요하다. 이 계약은 T1이 구현한다.
+
+**(1) 채택 단위 멱등 키.** 채택된 행마다 `adoption_key = sha256(canonical(head_id, row_key, input_bundle_sha256, source='forecast_save'))`를 만든다. 내용(확률·`review_date`·`declined_*`·계좌)은 키에 넣지 않고 별도 `adoption_content_sha256`로 저장한다. 키와 내용을 분리하는 이유는 같은 키에 다른 내용이 오는 것을 **충돌로 감지**하기 위해서다.
+- `forecast_id = uuid5(PLAN_NAMESPACE, adoption_key)`로 결정적으로 만들어 `forecast_save(forecast_id=...)`에 넘긴다(인자가 이미 있다, `app/mcp_server/tooling/forecast_tools.py:53`, `app/services/trade_journal/forecast_service.py:765`). `correlation_id = adoption_key`도 함께 넘겨 계획 행 없이 남은 고아 예측도 키로 찾을 수 있게 한다.
+- 같은 키 + 같은 내용: 기존 결과를 그대로 돌려준다(재시도). 같은 키 + 다른 내용: `adoption_conflict`로 거부하고 아무것도 쓰지 않는다. DB는 (`adoption_key`) 유일이고 서비스가 내용 해시를 비교한다.
+
+**(2) 직렬화.** 한 head의 쓰기는 head 키의 advisory lock 아래 한 트랜잭션으로 직렬화하고, 버전 순번 (`head_id`, `seq`)은 유일하다. 쓰기 요청은 `expected_prev_seq`를 싣고 어긋나면 `stale_version`으로 거부한다(덮어쓰지 않는다). 버전 쓰기 자체도 클라이언트 `idempotency_key`를 가지며 같은 키의 재시도는 같은 버전 id를 돌려준다.
+
+**(3) 준비 → 호출 → 확정.** 한 트랜잭션으로 묶을 수 없으므로 outbox 상태를 둔다.
+
+| 단계 | 하는 일 | 상태 |
+|---|---|---|
+| 준비(P) | 버전 쓰기 트랜잭션이 채택 행을 `forecast_link_state=pending`, 미리 계산한 `forecast_id`·`adoption_key`·`adoption_content_sha256`과 함께 커밋한다 | `pending` |
+| 호출(F) | 세션이 `forecast_save(forecast_id=…, correlation_id=adoption_key, declined_*)`를 호출한다. **재시도 전에 읽는다**: 그 `forecast_id`가 이미 있으면 다시 쓰지 않고 확정 단계로 간다(없을 때만 호출) | — |
+| 확정(C) | 확정 읽기가 존재하는 예측·판단 행을 (4)의 검증으로 대조하고 결과를 연결 사실으로 **추가**한다 | `confirmed` \| `link_missing` \| `link_ambiguous` \| `link_mismatch` |
+
+- 계획 행은 불변이므로 확정 결과는 append-only 연결 사실 행(`daily_plan_row_links`, 제안)이다. 행의 현재 연결 상태는 가장 늦은 연결 사실이다. 같은 연결 사실의 재쓰기는 멱등이다.
+- 한 버전은 채택 행이 전부 `confirmed`일 때만 `link_complete`다. 하나라도 `pending`·`link_*`이면 버전 머리에 `link_incomplete`와 미해결 행 목록이 남고, 보고서·P2·점수 비교는 `link_incomplete` 버전의 채택을 **완성본과 구별**해 센다(0으로 세지도 완료로 세지도 않는다). 미해결 `pending`이 다음 premarket 전까지 남으면 `link_missing`으로 확정 기록하고 P2 실패 사유로 센다.
+- `forecast_save`가 `declined_not_created`를 돌려주면 이는 "이미 만들어짐" 신호이므로 실패가 아니라 확정(C)으로 간다. 예측을 `declined_*` 없이 다시 호출해 기존 예측을 덮어쓰는 복구는 허용하지 않는다(확률이 바뀐다).
+
+**(4) 기존 예측·판단 검증.** 확정 읽기는 `forecast_id`로 예측 행을 읽고 `decision_evidence.forecast_ids`에 그 id를 가진 `decision_kind='declined'` 판단 행을 센다.
+
+| 읽기 결과 | 판정 |
+|---|---|
+| 예측 0 | `pending`(아직 호출 전이거나 실패). 재시도 가능 |
+| 예측 1, 판단 0 | `link_missing`: 판단 없이 만들어진 예측이다. 자동 복구 쓰기 없음, 운영자가 따로 정리하고 새 `adoption_key`(새 번들·행)로만 다시 한다 |
+| 예측 1, 판단 1, 속성 일치 | `confirmed`, `decision_id` 저장 |
+| 예측 1, 판단 ≥ 2 | `link_ambiguous`: 하나로 정하지 않고 보고한다 |
+| 예측 1, 판단 1, 속성 불일치 | `link_mismatch` |
+
+속성 일치는 시장(`instrument_type`)·정규화 심볼·`side=buy`·`decision_bucket=deferred_no_action`·`declined_limit_price`·수량/금액(정확한 십진 비교)·`declined_account_mode`와 `would_be_account_ref`의 매핑·`correlation_id = adoption_key`다. 확정 읽기는 예측·판단 행을 **읽기만 하고** 어떤 쪽에도 쓰지 않는다. 승인되지 않은 수동 수리나 단순 조회가 쓰기를 흉내 내지 않는다 — 수리된 상태는 확정 읽기를 다시 통과해야 `confirmed`가 된다.
+
+**(5) 테스트(T1).** 같은 키 재시도가 같은 결과·같은 `forecast_id`, 같은 키+다른 내용 충돌, 동시 두 쓰기의 직렬화(둘 다 성공하거나 하나가 `stale_version`), 호출 직전·직후 프로세스 중단 후 재시도가 중복 예측을 만들지 않음, `declined_not_created`가 확정으로 이어짐, 판단 0/1/여러 개·속성 불일치 각각의 판정, `link_incomplete` 버전이 완성본으로 세어지지 않음.
+
+### 8.2 계획 경로는 제안·주문·감시·위임장을 만들 수 없다 (H2)
+
+v0는 `mode='plan_only'`다. 이 불변식을 allowlist 하나가 아니라 세 겹으로 검증한다.
+
+1. **서비스 경계(정적)**: `app/services/daily_plan/`의 import 폐쇄에는 주문·제안·감시·위임장 writer·브로커 모듈이 없다(`app/services/order_proposals/`, `app/services/mandate/store.py` 등의 쓰기 표면, `investment_watch_*`, 브로커 클라이언트). `tests/services/mandate/test_static_boundary.py`와 같은 정적 테스트(직접 import·전이 폐쇄·쓰기 호출 문자열)를 둔다. `watch`는 분류일 뿐이며 가정 매도(`trim`·`risk_sell`)는 `execution_state='plan_only'`만 갖는다(CHECK 상수, 주문·제안 id를 가리키는 FK·열이 없다).
+2. **DB 쓰기 권한**: 계획 쓰기는 전용 역할 `at_daily_plan_writer`(plan 테이블에만 INSERT, 번들·증거 읽기 테이블에 SELECT)로 `SET LOCAL ROLE`을 건 트랜잭션 안에서만 돈다. 그 역할은 `order_proposals`·`order_proposal_rungs`·감시·`mandate_*`에 쓰기 권한이 없다. 역할이 없는 개발 DB를 위해 GRANT는 조건부로 쓰되(하드룰 18), CI의 run-owned 테스트 DB에서는 테스트가 역할을 만들고 위 테이블에 INSERT를 시도해 `permission denied`가 나는지, plan 테이블 INSERT는 되는지 확인한다(권한 테스트가 조용히 skip되면 실패). 이 방식이 운영 역할 구조(#789)와 맞는지는 Q17에서 확인한다.
+3. **부작용 0 회귀(동작)**: 계획 서비스·MCP 도구의 모든 쓰기 경로를 실행한 뒤 `order_proposals`·`order_proposal_rungs`·`order_send_intents`·감시·`mandate_*`·브로커 호출 스파이의 행 수·호출 수가 0 증가임을 DB 테스트(CI)가 확인한다. 중단 조건 S1(§5.2)은 이 테스트의 운영 측 거울이다.
+
+`forecast_save`는 기존 도구이고 계획 경로가 아니라 세션이 직접 부른다. 이 도구가 쓰는 것은 예측·기각 판단 행뿐이며(`decision_order_links`를 만들지 않는다) 계획 서비스는 그 행을 읽기만 한다.
 
 ## 9. 구현 티켓과 열린 질문
 
