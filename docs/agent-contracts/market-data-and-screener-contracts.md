@@ -22,6 +22,7 @@
 - US 상장 PIT 유니버스 — 상폐 포함 (ROB-1431)
 - PIT 데이터 플레인 — universe·일봉·기업행위 일별 파티션 (ROB-1443)
 - KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
+- Upbit KRW 15분 봉 장중 신호 사전등록·과거 재생 (hk 6035)
 
 ## 기준 원문 계약
 
@@ -583,6 +584,14 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - 🔴 **종료 지급액은 가정이다**: `delist_resolution.v1` 감사(ROB-1437)는 심볼·상폐일·사건 유형만 확인했고 지급액은 미검증이다. 베이스는 마지막 종가 청산이고, 리포트의 지급액 민감도 표(`payout_exposure.py`)가 그 가정에 걸린 금액을 보인다.
 - U5 KR 어댑터는 D3 엔진을 감싸 자체 순위만 쓰고 거래량이 없어서, `simulator.py` 가 같은 계약 타입·체결 모델로 후보 목록과 `VolumeShare` 를 돌린다.
 - **런북**: `research/kr_boosting/README.md`. 스케줄 없음(수동 `validate`/`diagnostic`/`report`).
+
+### Upbit KRW 15분 봉 장중 신호 사전등록·과거 재생 (hk 6035)
+
+`research/upbit_intraday/` — 신규 추세 돌파·보유 코인 반등·하방 이탈 세 계열을 마감된 15분 봉만으로 동결 규칙에 따라 재생한다. 연구 전용: `app`·DB·브로커·자격증명·스케줄러·websocket·주문 import 가 없다(정적 시험). 공개 Upbit GET 은 `/v1/market/all`·`/v1/candles/minutes/15` 두 경로만 허용 목록에 있고 URL 을 소켓 전에 검사한다. 원 봉 파일은 해시와 함께 git 밖에 두고 레포에는 `data_manifest.json`·집계만 둔다.
+
+- 🔴 `rules.py`·`evaluate.py` 는 registry 매니페스트(`HK-6035`)가 sha256 으로 핀한다. 바꾸면 새 매니페스트 버전이며 `test` 명령이 `frozen code changed` 로 거부한다. 시험 구간은 한 번만 열린다(`test_look.done`); 다시 열려면 registry look 을 먼저 추가한다.
+- 🔴 봉 없는 슬롯(무거래)은 NaN 이며 채우지 않는다. 진입 봉이 없는 신호는 결과에서 빼고 건수를 센다. 생존 편향(상장폐지 마켓 없음)·경고 이력 부재는 보고서가 방향과 함께 밝힌다.
+- 2026-11-22 결과: 세 계열 `NOT_SUPPORTED`(`docs/research/6035-upbit-intraday-signals.md`). 후속 hk 6036(라이브 shadow 기록기)은 신호 효과 가정 없이 발화·미발화·체결 가능 가격의 전향 기록 범위다. 이 연구는 어떤 주문·알림·정책도 바꾸지 않는다.
 
 ### Upbit KRW shadow 순수 규칙 라이브러리 (hk 5888, 5852 설계 §9 T1)
 

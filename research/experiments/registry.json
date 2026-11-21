@@ -243,8 +243,16 @@
       "manifest": "research/experiments/manifests/hk-6035-upbit-intraday-signals.json",
       "manifest_sha256": "3f647fe981a29f5c1db58cc94a19dcaa876d1815d0da22ccbf0d0caa1d5022dc",
       "previous_manifest_sha256": [],
-      "k": 0,
-      "test_looks": []
+      "k": 1,
+      "test_looks": [
+        {
+          "seq": 1,
+          "at": "2026-11-22",
+          "manifest_sha256": "3f647fe981a29f5c1db58cc94a19dcaa876d1815d0da22ccbf0d0caa1d5022dc",
+          "report": "research/experiments/reports/hk-6035-upbit-intraday-signals.md",
+          "report_sha256": "19a37d0c1ec8fde4ab4b76b43364bba9e7808012242a5efb3def948af0b33908"
+        }
+      ]
     }
   ]
 }
