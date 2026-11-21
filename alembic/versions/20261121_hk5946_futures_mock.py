@@ -17,6 +17,7 @@ CHECK 이름은 ORM 의 ``ck_<table>_`` 규칙과 같은 철자를 ``op.f`` 로 
 않는다. Downgrade 는 행이 있으면 거부한다(원장 손실 방지).
 """
 
+# expand-contract: contract-step 5946
 from __future__ import annotations
 
 from collections.abc import Sequence

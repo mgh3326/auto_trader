@@ -199,6 +199,12 @@ tests/services/investment_stages/test_hermes_news_citation_ingest.py
 tests/services/investment_stages/test_market_session.py
 tests/services/investment_stages/test_stage_repository.py
 tests/services/investment_stages/test_symbol_report_composition_wiring.py
+tests/services/kis_futures_mock/test_futures_mock_adapter.py
+tests/services/kis_futures_mock/test_futures_mock_boundary.py
+tests/services/kis_futures_mock/test_futures_mock_ledger_db.py
+tests/services/kis_futures_mock/test_futures_mock_place.py
+tests/services/kis_futures_mock/test_futures_mock_rules.py
+tests/services/kis_futures_mock/test_futures_mock_schema_static.py
 tests/services/kis_futures_read/test_kis_futures_read.py
 tests/services/kis_mock_runner/test_migration.py
 tests/services/kis_mock_runner/test_singleton.py
