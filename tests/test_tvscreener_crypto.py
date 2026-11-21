@@ -202,6 +202,10 @@ async def test_screen_crypto_via_tvscreener_uses_upbit_value_traded_contract(
             "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
+        patch(
+            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
         patch.object(
             __import__(
                 "app.mcp_server.tooling.screening.crypto",
@@ -303,6 +307,10 @@ async def test_screen_crypto_via_tvscreener_prefers_value_traded_over_usd_volume
             "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
+        patch(
+            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
         patch.object(
             __import__(
                 "app.mcp_server.tooling.screening.crypto",
@@ -374,6 +382,10 @@ async def test_screen_crypto_via_tvscreener_sorts_by_market_cap_field(
         ),
         patch(
             "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
+        patch(
+            "app.mcp_server.tooling.screening.crypto.get_upbit_unknown_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
         patch.object(

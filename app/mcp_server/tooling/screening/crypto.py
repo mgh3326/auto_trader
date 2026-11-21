@@ -37,6 +37,7 @@ from app.services.tvscreener_service import (
 )
 from app.services.upbit_symbol_universe_service import (
     get_upbit_market_display_names,
+    get_upbit_unknown_warning_markets,
     get_upbit_warning_markets,
 )
 from app.utils.symbol_mapping import (
@@ -281,6 +282,21 @@ async def _normalize_crypto_results(
                 "market warning details unavailable; warning filter skipped "
                 f"({type(exc).__name__}: {exc})"
             )
+
+        # hk 5945: provenance-unknown warnings fail closed — a market whose
+        # source did not say NONE is not shown as safe in interactive screening.
+        # Snapshot builds keep every provider row, so they skip this lookup.
+        unknown_warning_markets: set[str] = set()
+        if not pure_market_snapshot:
+            try:
+                unknown_warning_markets = await get_upbit_unknown_warning_markets(
+                    quote_currency="KRW", db=_db
+                )
+            except Exception as exc:
+                warnings.append(
+                    "market warning provenance unavailable; unknown-warning filter skipped "
+                    f"({type(exc).__name__}: {exc})"
+                )
     finally:
         await _db.close()
 
@@ -380,6 +396,7 @@ async def _normalize_crypto_results(
     # Apply warning + crash filters for interactive screening; snapshot builds keep
     # every provider row and only carry warning metadata forward.
     filtered_by_warning = 0
+    filtered_by_unknown_warning = 0
     filtered_by_crash = 0
     candidates: list[dict[str, Any]] = []
     for raw_item in raw_results:
@@ -387,6 +404,9 @@ async def _normalize_crypto_results(
         is_warning_market = market_code in warning_markets
         if is_warning_market and not pure_market_snapshot:
             filtered_by_warning += 1
+            continue
+        if market_code in unknown_warning_markets and not pure_market_snapshot:
+            filtered_by_unknown_warning += 1
             continue
 
         coin_change_24h = raw_item.get("signed_change_rate")
@@ -493,6 +513,12 @@ async def _normalize_crypto_results(
             with contextlib.suppress(asyncio.CancelledError):
                 await coingecko_fetch_task
 
+    if filtered_by_unknown_warning and not pure_market_snapshot:
+        warnings.append(
+            f"Upbit 유의종목 여부 미확인 {filtered_by_unknown_warning}종목 제외 "
+            "(market_warning 출처 없음 — fail-closed)"
+        )
+
     return await finalize_crypto_screen(
         candidates=candidates,
         filters_applied=filters_applied,
@@ -505,6 +531,7 @@ async def _normalize_crypto_results(
         total_markets=len(raw_results),
         top_by_volume=len(raw_results),
         filtered_by_warning=filtered_by_warning,
+        filtered_by_unknown_warning=filtered_by_unknown_warning,
         filtered_by_crash=filtered_by_crash,
         filtered_by_stop_loss_cooldown=filtered_by_cooldown,
         source="tvscreener",
