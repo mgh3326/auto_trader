@@ -150,7 +150,7 @@ entry or close leg up by its client order ID and Binance answers HTTP 400 with b
 complete (fewer than 1000 rows, all rows well-formed) and shows no same-side trade that is not
 already attributed to another ledger order, the recorder closes the leg as `rejected` with zero
 fill (`broker_confirmed_absent`, `no_order_proven`). The report row is `entry_rejected_absent`
-(`would_reject_absent` under `--dry-run`, which writes nothing). A rejected entry has no position
+(`would_reject_absent` under `--dry-run`, which writes nothing). The closed row also carries `no_order_sent=true` so a rollback to an older `close-due` skips it instead of re-looking it up. Order IDs excluded as "belongs to another ledger order" are limited to the same symbol (Binance IDs repeat across symbols), and every `myTrades` row must have a valid `orderId` and the response must be a JSON array. A rejected entry has no position
 to close; a rejected close leg is skipped and the proven residual goes out once under a new
 indexed client order ID. Everything else keeps the state and reservation and reports the
 episode as `unresolved`: empty body, any other code, HTTP 5xx, timeout, exception, a truncated

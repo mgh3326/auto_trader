@@ -350,12 +350,22 @@ class BinanceCryptoDemo:
             return False
         buyer = order.side in {"buy", "cover"}
         for trade in trades:
+            order_id = trade.get("orderId")
             if (
                 trade.get("symbol") != order.symbol
                 or not isinstance(trade.get("isBuyer"), bool)
-                or "orderId" not in trade
+                or isinstance(order_id, bool)
+                or not (
+                    isinstance(order_id, int)
+                    or (
+                        isinstance(order_id, str)
+                        and order_id.isascii()
+                        and order_id.isdigit()
+                    )
+                )
             ):
                 raise ValueError("demo trade row malformed")
+        for trade in trades:
             if str(trade["orderId"]) in other_order_ids:
                 continue
             if trade["isBuyer"] is buyer:

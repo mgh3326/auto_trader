@@ -334,6 +334,7 @@ def test_pure_transition_is_per_venue_and_closes_with_zero_fill():
     assert target.status == "rejected"
     assert target.meta["filled_qty"] == "0"
     assert target.meta["broker_status"] == "broker_confirmed_absent"
+    assert target.meta["no_order_sent"] is True
     assert record_binance_spot_absence(target) is False
     assert record_alpaca_absence(row(venue="alpaca_paper", status="sending")) is True
 
@@ -394,6 +395,12 @@ async def test_confirm_absence_trade_rules():
     assert (await verdict(full))[0] is False  # possibly truncated
     with pytest.raises(ValueError):
         await verdict([{"symbol": "BTCUSDT", "orderId": 1}])
+    # Every row needs a valid orderId, whatever its side or attribution.
+    for bad in (None, True, "", "4x", 1.5):
+        with pytest.raises(ValueError):
+            await verdict([trade(bad, buyer=False)])
+        with pytest.raises(ValueError):
+            await verdict([trade(bad)], others=frozenset({"None"}))
     with pytest.raises(ValueError):
         await verdict([trade(1, symbol="ETHUSDT")])
 
@@ -437,3 +444,47 @@ async def test_not_found_requires_the_code_not_the_message(spot, httpx_mock):
     )
     with pytest.raises(httpx.HTTPStatusError):
         await spot.get_order_status(symbol="XRPUSDT", client_order_id="r1474c-x")
+
+
+@pytest.mark.asyncio
+async def test_other_order_exclusion_is_limited_to_the_target_symbol():
+    """Binance order IDs repeat across symbols: ETH's 42 must not hide BTC's 42."""
+    recorder = Recorder()
+    broker = Broker(recorder)
+    (lost,) = await open_book(recorder, broker)
+    entry = recorder.rows[lost]
+    for symbol, cid in (("ETHUSDT", "eth-row"), (entry.symbol, "same-symbol-row")):
+        recorder.rows[cid] = SimpleNamespace(
+            venue=entry.venue,
+            account_ref=entry.account_ref,
+            client_order_id=cid,
+            symbol=symbol,
+            side="sell",
+            episode_id="other",
+            status="filled",
+            broker_order_id="42",
+        )
+    seen = {}
+
+    async def confirm(order, *, window_start, other_order_ids):
+        seen["ids"] = other_order_ids
+        return False
+
+    broker.confirm_absence = confirm
+    await close_due(**args(recorder, broker))
+    assert seen["ids"] == frozenset({"42"})  # same-symbol row only
+    del recorder.rows["same-symbol-row"]
+    await close_due(**args(recorder, broker))
+    assert seen["ids"] == frozenset()  # ETH's 42 alone is never excluded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, "", None, {"code": 1}])
+async def test_symbol_trades_require_a_json_array(spot, httpx_mock, body):
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-api\.binance\.com/api/v3/myTrades\?.*$"),
+        json=body,
+    )
+    with pytest.raises(ValueError):
+        await spot.get_symbol_trades_since(symbol="BTCUSDT", start_time_ms=1000)

@@ -58,7 +58,9 @@ class OrderIntent:
             raise ValueError("exit_due_at must be timezone aware")
 
 
-def _record_absence(row: MockStrategyOrder, venue: str) -> bool:
+def _record_absence(
+    row: MockStrategyOrder, venue: str, extra_meta: dict | None = None
+) -> bool:
     if (
         row.venue != venue
         or row.status not in {"sending", "uncertain"}
@@ -80,6 +82,7 @@ def _record_absence(row: MockStrategyOrder, venue: str) -> bool:
         "broker_terminal": True,
         "no_order_proven": True,
         "broker_status": "broker_confirmed_absent",
+        **(extra_meta or {}),
     }
     return True
 
@@ -90,7 +93,9 @@ def record_alpaca_absence(row: MockStrategyOrder) -> bool:
 
 def record_binance_spot_absence(row: MockStrategyOrder) -> bool:
     """Same zero-fill closure for Binance spot demo (-2013 + empty myTrades)."""
-    return _record_absence(row, "binance_spot_demo")
+    # no_order_sent also lets a prior-revision close-due skip this leg after a
+    # rollback instead of re-looking it up (-2013) and aborting the episode.
+    return _record_absence(row, "binance_spot_demo", {"no_order_sent": True})
 
 
 class MockStrategyRecorder:

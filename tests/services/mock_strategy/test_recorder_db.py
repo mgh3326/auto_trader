@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, NoResultFound
 
 from app.core.db import AsyncSessionLocal
 from app.services.mock_strategy.recorder import MockStrategyRecorder
@@ -151,16 +151,16 @@ async def test_binance_spot_absence_closes_unbound_leg_with_zero_fill(
         )
     )
     assert await recorder.claim(futures)
-    untouched = await recorder.confirm_binance_spot_absence(
-        futures, account_ref="fixture"
-    )
-    assert untouched.status == "sending"
+    with pytest.raises(NoResultFound):  # venue filter: no spot row for this id
+        await recorder.confirm_binance_spot_absence(futures, account_ref="fixture")
+    assert (await recorder.get(futures)).status == "sending"
     await recorder.update(spot, status="uncertain")
     closed = await recorder.confirm_binance_spot_absence(spot, account_ref="fixture")
     assert closed.status == "rejected"
     assert closed.meta["broker_status"] == "broker_confirmed_absent"
     assert closed.meta["filled_qty"] == "0"
     assert closed.meta["no_order_proven"] is True
+    assert closed.meta["no_order_sent"] is True  # prior-revision readers skip it
     stored = await recorder.get(spot)
     assert stored.status == "rejected" and stored.broker_order_id is None
     assert not await recorder.claim(spot)  # the id stays fenced; no resend

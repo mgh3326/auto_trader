@@ -269,7 +269,10 @@ class BinanceSpotDemoExecutionClient:
         signed = _sign_request_params(params=params, api_secret=self._api_secret)
         response = await self._client.get("/api/v3/myTrades", params=signed)
         response.raise_for_status()
-        return [_redact(row) for row in response.json()]
+        body = response.json()
+        if not isinstance(body, list):
+            raise ValueError("myTrades response is not a JSON array")
+        return [_redact(row) for row in body]
 
     # ------------------------------------------------------------------
     # Internal helpers

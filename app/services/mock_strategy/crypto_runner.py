@@ -158,7 +158,9 @@ async def _confirmed_absent(
     others = frozenset(
         str(r.broker_order_id)
         for r in all_rows
-        if r.broker_order_id is not None and r.client_order_id != row.client_order_id
+        if r.broker_order_id is not None
+        and r.client_order_id != row.client_order_id
+        and r.symbol == row.symbol  # Binance order IDs are per-symbol sequences
     )
     if not await broker.confirm_absence(
         row, window_start=window_start, other_order_ids=others
