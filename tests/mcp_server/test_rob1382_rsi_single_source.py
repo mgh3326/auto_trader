@@ -348,7 +348,11 @@ async def test_ohlcv_end_date_skips_canonical(monkeypatch):
 
     canonical_mock.assert_not_awaited()
     assert ohlcv["rsi_source"] == "yahoo"
-    assert ohlcv["bars_used"] == len(provider_frame)
+    # hk 6030: the provider window is cut at end_date, and ``count`` fills
+    # backwards from that cutoff; bars_used reflects the rows actually used.
+    assert len(ohlcv["rows"]) == 25
+    assert ohlcv["bars_used"] == len(ohlcv["rows"])
+    assert max(row["date"] for row in ohlcv["rows"]) == "2024-06-20"
 
 
 @pytest.mark.asyncio

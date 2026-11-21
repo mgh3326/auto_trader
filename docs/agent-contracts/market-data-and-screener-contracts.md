@@ -13,6 +13,7 @@
 - Negative-class(기각 코호트) 기록 — decision_bucket (ROB-1283)
 - 정지 종목 오염 차단 — halted_suspect (ROB-1236)
 - analyze quick fast projection (ROB-1311)
+- get_ohlcv end_date 컷오프 (hk 6030)
 - KR 1분봉 이벤트 수집기 — Toss → research.kr_candles_1m_toss (#1086)
 - KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
@@ -334,6 +335,17 @@ earnings는 전부 quick allowlist에서 제거됐다. 라이브 가격/세션 p
 null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `missing`으로 남기며
 외부 provider로 우회하지 않는다.
 
+
+### get_ohlcv end_date 컷오프 (hk 6030)
+
+`get_ohlcv`의 `end_date`는 모든 시장·period·데이터 경로(캐논컬 DB, OHLCV Redis 캐시 hit/miss, provider fetch)에서
+**포함 상한**이다. 날짜만(`YYYY-MM-DD`) 주면 그 시장 로컬 달력일 전체를 포함하고(크립토·KR=`Asia/Seoul`,
+US=`America/New_York`), 시각이 있으면 그 로컬 시각에서 자른다. 일/주/월 봉은 봉의 날짜 라벨로, 분/시간 봉은
+타임스탬프로 비교하므로 컷오프 당일 봉은 반환되고 그 뒤 날짜의 봉은 절대 반환되지 않는다. `count`는 컷오프에서
+뒤로 채우며, 데이터가 모자라면 더 적게 반환하고 이후 봉으로 메우지 않는다. `include_indicators=true`의 지표는
+컷오프 이전 봉만으로 계산한다. 캐시 경로(`app/services/{upbit,yahoo}_ohlcv_cache.py`)는 `end_date`를 읽기 상한으로
+받아 컷오프에서 끝나는 창을 서빙하고, 캐시의 신선도 커서(`last_closed_date`/`last_closed_bucket`)는 실제 최신
+마감 봉에 남긴다. `end_date`가 없으면 기존 최신 창 동작은 바뀌지 않는다.
 
 ### KRX 애프터마켓 세션×거래소 적격 (#925)
 

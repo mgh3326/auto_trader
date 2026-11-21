@@ -388,8 +388,16 @@ async def backfill_loop(
     is_sufficient_fn: Callable[[int, date | None, bool, int, date], bool],
     log_prefix: str,
     meta_date_field: str = "last_closed_date",
+    meta_target_date: date | None = None,
 ) -> None:
-    """Two-stage backfill: Stage A fills newest closed candles, Stage B fills depth."""
+    """Two-stage backfill: Stage A fills newest closed candles, Stage B fills depth.
+
+    ``meta_target_date`` is the real latest closed bucket.  It differs from
+    ``target_closed_date`` only for a historical ``end_date`` request, whose
+    cutoff is the read upper bound and must not be recorded as the cache's
+    freshness cursor.
+    """
+    meta_date = meta_target_date or target_closed_date
     meta = await redis_client.hgetall(meta_key)
     oldest_confirmed = _normalize_bool(meta.get("oldest_confirmed"))
 
@@ -463,7 +471,7 @@ async def backfill_loop(
                 redis_client,
                 dates_key,
                 meta_key,
-                target_closed_date,
+                meta_date,
                 oldest_confirmed,
                 meta_date_field=meta_date_field,
             )
@@ -548,7 +556,7 @@ async def backfill_loop(
         redis_client,
         dates_key,
         meta_key,
-        target_closed_date,
+        meta_date,
         oldest_confirmed,
         meta_date_field=meta_date_field,
     )
@@ -577,12 +585,23 @@ async def get_closed_candles_flow(
     sleep_fn: Callable,
     log_prefix: str,
     meta_date_field: str = "last_closed_date",
+    meta_target_date: date | None = None,
+    allow_backfill: bool = True,
 ) -> pd.DataFrame | None:
     """Closed-candle cache read-through orchestration.
 
     Checks cache → acquires lock → backfills → returns result.
     Service-specific behavior is injected via callbacks.
+
+    ``target_closed_date`` is the inclusive upper bound of the window being
+    served.  A historical ``end_date`` request passes its cutoff here so the
+    cache serves ``count`` buckets ending at the cutoff; ``meta_target_date``
+    keeps the recorded freshness cursor at the real latest closed bucket and
+    ``allow_backfill=False`` makes an insufficient historical window a miss so
+    the caller fetches it directly (writing deep history would be evicted by
+    the retention limit and could loop).
     """
+    meta_date = meta_target_date or target_closed_date
     trimmed = await _enforce_retention_limit(
         redis_client, dates_key, rows_key, max_days
     )
@@ -612,7 +631,7 @@ async def get_closed_candles_flow(
             redis_client,
             dates_key,
             meta_key,
-            target_closed_date,
+            meta_date,
             oldest_confirmed,
             meta_date_field=meta_date_field,
         )
@@ -634,6 +653,18 @@ async def get_closed_candles_flow(
         len(cached),
         requested_count,
     )
+
+    if not allow_backfill:
+        logger.info(
+            "%s historical_miss symbol=%s period=%s cached=%d requested=%d target=%s",
+            log_prefix,
+            safe_log_value(symbol),
+            safe_log_value(period),
+            len(cached),
+            requested_count,
+            target_closed_date.isoformat(),
+        )
+        return None
 
     lock_token = await acquire_lock_with_retry(
         redis_client, lock_key, lock_ttl, acquire_lock_fn, sleep_fn
@@ -669,6 +700,7 @@ async def get_closed_candles_flow(
             is_sufficient_fn=is_sufficient_fn,
             log_prefix=log_prefix,
             meta_date_field=meta_date_field,
+            meta_target_date=meta_target_date,
         )
     finally:
         await release_lock_fn(redis_client, lock_key, lock_token)
