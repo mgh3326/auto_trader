@@ -272,3 +272,42 @@ def test_real_client_delegates_only_to_futures_reader():
             and n.func.attr in {"balance", "deposit", "orderable", "master"}
             for n in calls
         )
+
+
+def test_factory_wraps_client_before_exposing_it():
+    tree = ast.parse((ROOT / "app/services/kis_futures_read/view.py").read_text())
+    factory = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "open_futures_view"
+    )
+    constructors = [
+        node
+        for node in ast.walk(factory)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "KISClient"
+    ]
+    assert len(constructors) == 1
+    returns = [node for node in ast.walk(factory) if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    wrapped = returns[0].value
+    assert (
+        isinstance(wrapped, ast.Call)
+        and isinstance(wrapped.func, ast.Name)
+        and wrapped.func.id == "read_only_view"
+    )
+    assert wrapped.args == constructors
+
+
+def test_orderable_rejects_unreadable_price_before_network(monkeypatch):
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    for price in ("NaN", "0", "-1", "bad"):
+        parent = Parent([])
+        with pytest.raises(ValueError):
+            run(
+                backend.FuturesRead(parent).orderable(
+                    "12345678", "101W09", "02", price, "01"
+                )
+            )
+        assert parent.calls == []
