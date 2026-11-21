@@ -14,9 +14,7 @@ from app.services.upbit_krw_strategy.types import DailyBar
 
 from .support import ASOF, LAST, bars, market
 
-GOLDEN = json.loads(
-    (Path(__file__).parent / "golden" / "candidate_set.json").read_text()
-)
+GOLDEN = json.loads((Path(__file__).parent / "golden_candidate_set.json").read_text())
 
 
 def judge(item):
