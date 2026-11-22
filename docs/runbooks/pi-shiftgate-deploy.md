@@ -212,7 +212,7 @@ main push → Test(전체 스위트) → deploy.yml 이 ghcr.io/mgh3326/auto_tra
 gh workflow run promote-deploy.yml --ref main -f promote_sha="<40자 SHA>" -f approval_ref="<hk 결정 문서 키>"
 ```
 
-승인은 **범위 보류만** 면제한다. CI·main 조상·이미지 확인은 다시 한다. `approval_ref` 는 요약에 기록되지만 Actions 가 hk 에서 검증하지는 못한다(워크플로를 dispatch 할 수 있는 사람이 신뢰 경계다). hk 쪽 자동 재승격(답이 A 면 dispatch)은 후속 작업이다. 마이그레이션은 이 경로가 적용하지 않는다 — `deploy.sh` 에 마이그레이션 단계가 없다. 새 스키마를 기대하는 이미지가 설치되기 전에 운영자가 pi 의 기존 절차(백업·`alembic upgrade`)로 **먼저** 적용한 뒤 승인 승격을 한다.
+승인은 **범위 보류만** 면제한다. CI·main 조상·이미지 확인은 다시 한다. `approval_ref` 가 있는 실행은 GitHub Environment `at-deploy-approval` 에 묶인 `promote-approved` 잡에서만 돈다 — 그 Environment 에 **required reviewers(사람)를 설정해야** 승인이 GitHub 에서 강제된다(1회성 설정, 설계 세션/운영자가 저장소 설정에서 만든다. 만들지 않으면 보호 없는 Environment 가 자동 생성되므로 승인 승격을 쓰기 전에 반드시 확인한다). 스크립트는 이 잡 밖의 `approval_ref` 를 거부한다. 리뷰어 대기 중인 실행은 같은 concurrency 그룹을 잡고 있으므로 승인하거나 거절해 끝낸다. `approval_ref` 문자열 자체는 요약에 기록될 뿐 Actions 가 hk 에서 검증하지는 못한다. 이미 배포 중 커밋의 조상인 SHA 를 승인 승격하면 실패로 끝난다(승인이 적용되지 않았다는 뜻). hk 쪽 자동 재승격(답이 A 면 dispatch)은 후속 작업이다. 마이그레이션은 이 경로가 적용하지 않는다 — `deploy.sh` 에 마이그레이션 단계가 없다. 새 스키마를 기대하는 이미지가 설치되기 전에 운영자가 pi 의 기존 절차(백업·`alembic upgrade`)로 **먼저** 적용한 뒤 승인 승격을 한다.
 
 **첫 승격(부트스트랩)** — `deploy` 태그가 아직 없으므로 승격은 보류된다. 지금 pi 에 배포된 SHA(`deployed-digest` 의 이미지 SHA)를 위 명령으로 승인 승격하면 태그가 그 digest 를 가리키고 follow.sh 는 아무것도 하지 않는다(같은 digest).
 

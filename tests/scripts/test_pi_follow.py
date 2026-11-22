@@ -63,7 +63,7 @@ if [[ "$rc" == 0 && ! -e "$d/deploy_skips_marker" ]]; then
   value="$(cat "$d/marker_value" 2>/dev/null || cut -f1 "$d/tag.deploy")"
   printf '%s\n' "$value" >"$AT_RUN_DIR/deployed-digest"
 fi
-echo "fake deploy output"
+cat "$d/deploy_out" 2>/dev/null || echo "fake deploy output"
 exit "$rc"
 """
 
@@ -326,6 +326,29 @@ def test_a_failed_install_is_held_and_not_retried_on_the_next_tick(host: dict) -
     assert hold_line(host)[0] == REF_B and hold_line(host)[2] == "0"
     host["fake"].joinpath("calls").write_text("")
     assert follow(host).returncode == 0 and calls(host) == []
+
+
+def test_a_rate_limited_gate_inside_deploy_sh_is_retried_later_not_held_forever(
+    host: dict,
+) -> None:
+    (host["fake"] / "deploy_rc").write_text("78")
+    (host["fake"] / "deploy_out").write_text(
+        "deploy gate: test (3.13, 1): unverified (GitHub evidence unavailable (HTTP 403))"
+    )
+    result = follow(host)
+    assert result.returncode == 78
+    digest, created, retry_at, reason = hold_line(host)
+    assert digest == REF_B and int(retry_at) > int(
+        created
+    )  # retry-after, not permanent
+    assert (host["run"] / "deployed-digest").read_text().strip() == REF_A
+    # a real refusal from deploy.sh's gate stays permanent
+    (host["run"] / "follow-hold").unlink()
+    (host["fake"] / "deploy_out").write_text(
+        "deploy gate: test (3.13, 1): not successful"
+    )
+    assert follow(host).returncode == 78
+    assert hold_line(host)[2] == "0"
 
 
 def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:

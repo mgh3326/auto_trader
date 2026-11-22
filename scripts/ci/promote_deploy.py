@@ -505,6 +505,14 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
             file=sys.stderr,
         )
         return EXIT_REFUSED
+    if approval_ref and not args.approval_gated:
+        # A free-form string is not an approval. The waiver runs only in the job bound to the
+        # GitHub Environment whose required reviewers are the human approval.
+        print(
+            "promote: an approval reference is accepted only from the environment-gated job",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
     try:
         pinned = verify_candidate(sha, args.repo, run)
     except SystemExit:
@@ -539,6 +547,12 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
             f"## 배포 승격\n\n`{sha[:7]}` 는 `{DEPLOY_TAG}` 태그({previous[:7]})보다 오래된 빌드다. "
             "태그를 되돌리지 않는다.\n"
         )
+        if approval_ref:
+            # An approved dispatch that changes nothing must not look like success.
+            emit(
+                f"\n**승인 `{approval_ref}` 는 적용되지 않았다** — 승인한 SHA 가 이미 배포 중 커밋의 조상이다.\n"
+            )
+            return 1
         return 0
     held = review.held and not approval_ref
     if held:
@@ -607,6 +621,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--repo", default=REPOSITORY)
     run.add_argument("--repo-root", default=".")
     run.add_argument("--approval-ref", default="")
+    run.add_argument(
+        "--approval-gated",
+        action="store_true",
+        help="set only by the job bound to the approval GitHub Environment",
+    )
     run.set_defaults(func=promote)
     ev = sub.add_parser(
         "evaluate", help="print the deploy_approval review of previous..sha"

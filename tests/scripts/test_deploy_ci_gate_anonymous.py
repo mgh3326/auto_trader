@@ -295,3 +295,28 @@ def test_default_mode_still_uses_gh(monkeypatch, capsys):
     monkeypatch.setattr(gate, "_json_command", command)
     assert gate.main(["--sha", SHA]) == 0
     assert all(argv[0] == "gh" for argv in seen)
+
+
+def test_the_compare_check_reads_exactly_one_page_even_when_main_is_far_ahead(
+    github, monkeypatch
+):
+    routes = green_routes("ahead")
+    # compare paginates its commit list: a Link header says there are 500 more pages
+    routes[f"/compare/{SHA}...main"] = FakeResponse(
+        {"status": "ahead"},
+        link='<https://api.github.com/repos/mgh3326/auto_trader/compare/x...main?page=2>; rel="next"',
+    )
+    fake = github(routes)
+    image(monkeypatch)
+    rc = gate.main(
+        [
+            "--github",
+            "anonymous",
+            "--image",
+            f"{gate.IMAGE_REPOSITORY}:deploy",
+            "--main-ancestor",
+        ]
+    )
+    assert rc == 0
+    compares = [url for url, _ in fake.requests if "/compare/" in url]
+    assert len(compares) == 1 and "page=2" not in compares[0]

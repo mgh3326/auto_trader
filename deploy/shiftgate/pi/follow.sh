@@ -244,6 +244,13 @@ if ((rc == 75)); then
   log "deploy.sh found the host lock busy; next tick"
   exit 75
 fi
+if ((rc == 78)) && transient_failure "$WORK/deploy.out"; then
+  # deploy.sh's own gate asked GitHub again and could not read it (rate limit, network): nothing was
+  # touched and the digest was already verified above, so wait and retry once instead of holding it forever.
+  hold_write "$PINNED" "$TRANSIENT_RETRY_SECONDS" "deploy.sh gate evidence unavailable" || true
+  report refused "$PINNED" "$SHA" "deploy.sh gate evidence unavailable, retry in ${TRANSIENT_RETRY_SECONDS}s"
+  exit 78
+fi
 if ((rc != 0)); then
   hold_write "$PINNED" 0 "deploy.sh exit ${rc}" || true
   report failed "$PINNED" "$SHA" "deploy.sh exited ${rc}; see ${LOG_FILE} (rerun deploy.sh or follow.sh --clear-hold after checking)"

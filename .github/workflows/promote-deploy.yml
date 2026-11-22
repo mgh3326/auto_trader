@@ -15,7 +15,9 @@ name: Promote deploy tag
 #      commit (mergewake's rule) and always holds new migrations. A hold writes the reasons and
 #      the re-dispatch command to the job summary and moves nothing.
 #   3. `docker buildx imagetools create` puts `deploy` on the same digest (no rebuild).
-# `approval_ref` (the hk decision key) waives step 2's hold only, never step 1.
+# `approval_ref` (the hk decision key) waives step 2's hold only, never step 1, and only in the
+# `promote-approved` job, which runs in the `at-deploy-approval` GitHub Environment: its required
+# reviewers are the human approval (create it with reviewers before the first approved promote).
 # Runbook: docs/runbooks/pi-shiftgate-deploy.md "자동 배포 (follow)".
 
 on:
@@ -50,9 +52,71 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     # Dispatch only from main: the workflow file that decides what is promoted is main's.
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: >-
+      inputs.approval_ref == '' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     # Never cancelled: a release that was built must still be judged. GitHub keeps only the
     # newest pending run per group; a newer main commit contains the older one's changes.
+    concurrency:
+      group: at-pi-deploy-promote-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - name: Resolve SHA
+        id: sha
+        env:
+          CALL_SHA: ${{ inputs.sha }}
+          DISPATCH_SHA: ${{ inputs.promote_sha }}
+        run: |
+          set -euo pipefail
+          sha="${CALL_SHA:-$DISPATCH_SHA}"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Refusing to promote: '$sha' is not a full 40-hex commit SHA"
+            exit 78
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify, review the range and move the deploy tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTE_SHA: ${{ steps.sha.outputs.sha }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/promote_deploy.py promote \
+            --sha "$PROMOTE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --repo-root .
+
+  promote-approved:
+    runs-on: ubuntu-latest
+    # Dispatch only from main: the workflow file that decides what is promoted is main's.
+    if: >-
+      inputs.approval_ref != '' &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # The approval is enforced by GitHub, not by a string: this Environment must be configured with
+    # required reviewers (a human). The script refuses an approval_ref outside this job.
+    environment: at-deploy-approval
     concurrency:
       group: at-pi-deploy-promote-${{ github.repository }}
       cancel-in-progress: false
@@ -104,4 +168,5 @@ jobs:
             --sha "$PROMOTE_SHA" \
             --repo "$GITHUB_REPOSITORY" \
             --repo-root . \
-            --approval-ref "$APPROVAL_REF"
+            --approval-ref "$APPROVAL_REF" \
+            --approval-gated

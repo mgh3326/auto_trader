@@ -166,7 +166,8 @@ pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main
   보류가 아닐 때만 태그를 옮긴다(정책은 **배포 중 커밋**의 것을 읽는다·정책 파일/환경·비밀 변경·알 수 없는 배포 중 커밋·갈라진 이력·300개 파일 비교 한계·
   읽을 수 없는 정책은 보류). 이 레포의 규칙으로 `alembic/versions/**`·`alembic/env.py` 변경은 정책 문구와 무관하게 항상 보류한다. 보류는 잡을 빨갛게 하지
   않고 태그를 옮기지 않으며 잡 요약(+Discord)에 사유·경로·재승격 명령을 남긴다. 승인은 hk 결정으로 받고 `promote-deploy.yml` 을 `workflow_dispatch`
-  (`promote_sha`, `approval_ref`)로 다시 실행한다 — 승인은 범위 보류만 면제하고 CI·main 조상·이미지 확인은 그대로다. 🔴 `scripts/ci/promote_deploy.py` 의 정책 읽기·
+  (`promote_sha`, `approval_ref`)로 다시 실행한다. `approval_ref` 가 있는 실행은 required reviewers 가 설정된 Environment `at-deploy-approval` 의 `promote-approved` 잡에서만
+  돌고 스크립트는 그 밖의 `approval_ref` 를 거부한다 — 승인은 범위 보류만 면제하고 CI·main 조상·이미지 확인은 그대로다. 🔴 `scripts/ci/promote_deploy.py` 의 정책 읽기·
   글롭은 mergewake 와 같은 규칙(픽스처 `tests/fixtures/mergewake_deploy_approval_paths.json` 로 고정)이며 더 느슨하게 만들지 않는다.
 - **follow(pi)**: `deploy` 태그 → digest → SHA 를 레지스트리에서 읽고, digest 가 `/root/at-run/deployed-digest` 와 같으면 조용히 끝난다(GitHub 호출 없음).
   바뀌었으면 태그를 옮긴 쪽을 믿지 않고 스스로 `deploy_ci_gate.py --github anonymous --main-ancestor` 로 다시 확인한다(공개 레포의 인증 없는 GitHub 읽기, 시간당 60회).

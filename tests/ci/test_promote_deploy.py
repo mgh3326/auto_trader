@@ -363,12 +363,15 @@ class Registry:
         ]
 
 
-def args(repo: Path, sha: str, approval_ref: str = "") -> argparse.Namespace:
+def args(
+    repo: Path, sha: str, approval_ref: str = "", gated: bool = True
+) -> argparse.Namespace:
     return argparse.Namespace(
         sha=sha,
         repo="mgh3326/auto_trader",
         repo_root=str(repo),
         approval_ref=approval_ref,
+        approval_gated=gated,
     )
 
 
@@ -540,3 +543,33 @@ def test_evaluate_exit_codes(repo: Path, capsys: pytest.CaptureFixture[str]) -> 
         json.loads(capsys.readouterr().out.split("\n}\n")[1] + "\n}")["status"]
         == "hold"
     )
+
+
+def test_an_approval_reference_outside_the_gated_job_is_refused_before_anything_runs(
+    repo: Path,
+) -> None:
+    start = base(repo)
+    release = commit(repo, {"alembic/versions/20261122_x.py": "x\n"})
+    fake = Registry(deploy_tag=(OLD_PINNED, start))
+    fake.candidate = release
+    rc = pd.promote(
+        args(repo, release, "decision/2026-11-22/anything", gated=False), fake
+    )
+    assert rc == pd.EXIT_REFUSED
+    assert (
+        fake.calls == []
+    )  # not even the gate ran: a free-form string is not an approval
+
+
+def test_an_approved_dispatch_of_an_already_older_commit_fails_loudly(
+    repo: Path, tmp_path: Path
+) -> None:
+    start = base(repo)
+    release = commit(repo, {"docs/b.md": "b\n"})
+    fake = Registry(gate_stdout=OLD_PINNED, deploy_tag=(PINNED, release))
+    fake.candidate = start
+    rc = pd.promote(args(repo, start, "decision/2026-11-22/old-sha"), fake)
+    assert rc == 1 and fake.created() == []
+    assert "적용되지 않았다" in summary(tmp_path)
+    # without an approval an older build is still a quiet no-op
+    assert pd.promote(args(repo, start), fake) == 0

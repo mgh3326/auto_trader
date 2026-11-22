@@ -76,8 +76,11 @@ def _github_mode() -> str:
     return mode
 
 
-def _anonymous_pages(endpoint: str) -> list[Any]:
-    """GET endpoint (with Link pagination) from api.github.com without credentials."""
+def _anonymous_pages(endpoint: str, *, single: bool = False) -> list[Any]:
+    """GET endpoint (with Link pagination) from api.github.com without credentials.
+
+    `single` reads exactly one response and ignores Link: one request, however long the list.
+    """
     url: str | None = _API_ROOT + endpoint.lstrip("/")
     opener = urllib.request.build_opener(_NoRedirect)
     pages: list[Any] = []
@@ -107,7 +110,7 @@ def _anonymous_pages(endpoint: str) -> list[Any]:
         except (ValueError, TypeError):
             raise GateError("GitHub evidence is not valid JSON") from None
         match = _NEXT_LINK.search(link or "")
-        url = match.group(1) if match else None
+        url = None if single else (match.group(1) if match else None)
     return pages
 
 
@@ -145,7 +148,11 @@ def main_ancestor_problems(sha: str, repo: str) -> list[str]:
     """
     quoted = urllib.parse.quote(sha, safe="")
     if _github_mode() == "anonymous":
-        pages = _anonymous_pages(f"repos/{repo}/compare/{quoted}...main?per_page=1")
+        # The verdict is the first response's `status`; its commit list may span many pages
+        # (one per commit main is ahead), so fetch exactly one request.
+        pages = _anonymous_pages(
+            f"repos/{repo}/compare/{quoted}...main?per_page=1", single=True
+        )
         first = pages[0] if pages else None
     else:
         first = _json_command(

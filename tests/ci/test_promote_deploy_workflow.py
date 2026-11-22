@@ -103,3 +103,20 @@ def test_the_build_job_is_unchanged_in_what_it_gates() -> None:
     assert "github.event.workflow_run.conclusion != 'cancelled'" in " ".join(
         build["if"].split()
     )
+
+
+def test_the_approval_waiver_runs_only_in_the_environment_gated_job() -> None:
+    jobs = load(PROMOTE)["jobs"]
+    gated, plain = jobs["promote-approved"], jobs["promote"]
+    assert gated["environment"] == "at-deploy-approval"
+    assert "environment" not in plain
+    gated_run = executable_text(gated)
+    plain_run = executable_text(plain)
+    assert "--approval-gated" in gated_run and "--approval-ref" in gated_run
+    assert "--approval" not in plain_run  # the ungated job can never carry an approval
+    assert "APPROVAL_REF" not in str(plain)
+    # exactly one of the two jobs runs for a given dispatch
+    assert "inputs.approval_ref == ''" in " ".join(plain["if"].split())
+    assert "inputs.approval_ref != ''" in " ".join(gated["if"].split())
+    # a workflow_call (the automatic path) can only reach the ungated job
+    assert "workflow_dispatch" in gated["if"]
