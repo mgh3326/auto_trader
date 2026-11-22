@@ -125,7 +125,7 @@ PY
   if [[ -n "${AT_FOLLOW_PANEWIRE_LANE:-}" ]] && command -v panewire >/dev/null 2>&1; then
     local -a wrap=()
     command -v timeout >/dev/null 2>&1 && wrap=(timeout 20)
-    "${wrap[@]}" panewire emit --kind lane.event --lane "$AT_FOLLOW_PANEWIRE_LANE" --type info \
+    "${wrap[@]+"${wrap[@]}"}" panewire emit --kind lane.event --lane "$AT_FOLLOW_PANEWIRE_LANE" --type info \
       --text "[at-follow] ${result} ${sha:0:7} ${detail}" >/dev/null 2>&1 || true
   fi
   return 0
@@ -135,6 +135,14 @@ read_marker() { [[ -r "$1" ]] && head -n 1 "$1" || true; }
 
 resolve_tag() { # tag → "<pinned>\t<sha>" (registry 만 읽는다)
   gate --image "${IMAGE_REPOSITORY}:$1" --resolve-only
+}
+
+# 게이트가 남긴 거부 사유(한 줄 요약). 게이트가 비정상 종료해 사유 줄이 없어도 실패하지 않는다.
+gate_detail() {
+  local text
+  text="$( { grep -E 'deploy gate:' "$1" | grep -vE 'Test run [0-9]+|REFUSED \(exit' || true; } | sed 's/^deploy gate: //' | tr '\n' ';' | cut -c1-300)"
+  [[ -n "$text" ]] || text="$(tail -n 1 "$1" 2>/dev/null | cut -c1-200)"
+  printf '%s' "$text"
 }
 
 transient_failure() { grep -Eq 'unverified \(|evidence unavailable|GitHub evidence|registry|inspect' "$1"; }
@@ -195,7 +203,7 @@ log "new ${DEPLOY_TAG} digest ${PINNED##*@} (commit ${SHA:0:7}); verifying"
 export AT_DEPLOY_GATE_GITHUB=anonymous
 verified=""
 if ! verified="$(gate --image "${IMAGE_REPOSITORY}:${DEPLOY_TAG}" --expect-sha "$SHA" --main-ancestor 2>"$WORK/gate.err")"; then
-  detail="$(grep -E 'deploy gate:' "$WORK/gate.err" | tr '\n' ';' | cut -c1-300)"
+  detail="$(gate_detail "$WORK/gate.err")"
   if transient_failure "$WORK/gate.err"; then
     hold_write "$PINNED" "$TRANSIENT_RETRY_SECONDS" "evidence unavailable: ${detail}" || true
     report refused "$PINNED" "$SHA" "evidence unavailable, retry in ${TRANSIENT_RETRY_SECONDS}s: ${detail}"
