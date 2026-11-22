@@ -1,7 +1,8 @@
 # pi (Debian 12, aarch64) 용 shiftgate services.yaml 사본 (hk 5617).
 # 호스트에서는 /etc/shiftgate/services.yaml 로 설치한다 (docs/runbooks/pi-shiftgate-deploy.md §1).
 # 이 파일에는 비밀 값이 없다: env 파일은 경로로만 참조하고 shiftgate 는 열지 않는다.
-# 레포는 스케줄을 등록하지 않는다 — follow/check/prune 타이머 등록 금지, 수동 배포만.
+# 레포는 스케줄을 등록하지 않는다 — shiftgate 자체의 follow/check/prune 타이머 등록 금지. 자동 배포는 게이트를 앞에 둔
+# follow.sh(+ at-follow.timer, 운영자가 설치, hk 6037) 하나뿐이다.
 #
 # 현재 at-swap(/root/at-run/at-swap-<날짜>.sh) 정본과의 대응:
 #   at-api  : uvicorn app.main:app --host 127.0.0.1 --port 8000      -> 색 포트 {port}, HAProxy 가 127.0.0.1:8000 을 바인드

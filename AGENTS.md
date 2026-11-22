@@ -162,6 +162,8 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
    원장을 fill 로 읽는 새 리더는 `execution_ledger_in_effect()` 를 AND 한다 (#1175).
 6. **스케줄러 등록 금지**: 신규 TaskIQ/cron/Prefect 스케줄 연결은 명시 승인 없이 금지.
    기본은 scheduleless 출고(CLI/수동 lever만).
+   예외(운영자 2026-11-22, hk 6037): pi 자동 배포 follow 타이머의 유닛 파일(`deploy/shiftgate/pi/at-follow.*`)은 레포에 두되 설치·enable 은 운영자만 한다
+   (`docs/agent-contracts/developer-reference-contracts.md` 「pi 자동 배포」). 레포 코드는 타이머를 스스로 설치하지 않는다.
 7. **kis_mock 주문은 귀속 없이 나가지 않는다**: `place_order(is_mock=True)` /
    `account_mode="kis_mock"` 는 **`strategy` 필수**. 브로커 전송 **이전에**
    `review.kis_mock_signal_ledger` 에 신호 행이 커밋돼야 하고, 실패하면 주문을 보내지 않는다

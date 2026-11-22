@@ -9,7 +9,7 @@
 #   어느 하나라도 실패하면 이미 바꾼 것까지 역순으로 옛 컨테이너를 복원하고 exit 1.
 # 이미 그 이미지로 실행 중인 싱글턴은 건드리지 않는다(재시도·재개가 멱등). 호스트 배포 잠금을 잡는다(host-lock.sh).
 # deployed-digest 는 여기서 쓰지 않는다: shiftgate 두 서비스와 싱글턴이 모두 성공한 뒤 deploy.sh 가 한 번 쓴다.
-# 스케줄러·타이머는 등록하지 않는다. 수동 실행만.
+# 이 스크립트는 타이머를 설치하지 않고 직접 부르지 않는다: deploy.sh 만 부른다(수동 실행이든 follow.sh 든).
 set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"

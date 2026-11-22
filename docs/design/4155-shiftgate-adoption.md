@@ -23,7 +23,7 @@
 
 1. **한 번에 한 가지만 바꾼다.** 컷오버 단계의 첫 shiftgate 배포는 지금 실행 중인 digest 와 같은 digest 로 한다. 버전 변경과 배포 도구 변경을 섞지 않는다.
 2. **가드는 이동할 뿐 사라지지 않는다.** 컨트랙트가 "제거·완화하지 마라"고 한 것은(MCP 유닛 은퇴 exit 78, `MCP_PROFILE` 필수, 정확한 SHA CI 게이트) 이전 후에도 같은 종료 코드와 같은 시점(첫 변경 전)에 남는다. `docs/agent-contracts/mcp-and-analysis-contracts.md:23`, `:82`, `docs/agent-contracts/developer-reference-contracts.md:124`.
-3. **AT 서비스에 `shiftgate follow` 를 쓰지 않는다.** `follow` 는 태그가 가리키는 digest 를 그대로 배포하므로 정확한 SHA CI 게이트와 mergewake 의 `deploy_approval` 보류 뒤에 올 수 없다(`shiftgate@847ed56 README.md:228-244`, `docs/design.md:173-184`). 배포 진입점은 계속 어댑터 스크립트 하나다.
+3. **AT 서비스에 `shiftgate follow` 를 쓰지 않는다.**(hk 6037 보충: 자동 배포는 shiftgate 의 `follow` 가 아니라 게이트를 앞에 둔 레포의 `deploy/shiftgate/pi/follow.sh` 가 `deploy.sh` 를 부르는 방식이다 — 이 원칙은 그대로다. `docs/runbooks/pi-shiftgate-deploy.md` §4.1.)  `follow` 는 태그가 가리키는 digest 를 그대로 배포하므로 정확한 SHA CI 게이트와 mergewake 의 `deploy_approval` 보류 뒤에 올 수 없다(`shiftgate@847ed56 README.md:228-244`, `docs/design.md:173-184`). 배포 진입점은 계속 어댑터 스크립트 하나다.
 4. **배포는 사람이 승인한 뒤 NCP 에서 실행한다.** CI 에서 마이그레이션이나 라이브 배포를 하지 않는다는 규칙을 유지한다(`docs/runbooks/ncp-pull-deploy.md:413`).
 
 ## 현재 배포 경로
