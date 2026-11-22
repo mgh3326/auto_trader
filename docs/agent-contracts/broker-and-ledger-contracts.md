@@ -6,6 +6,7 @@
 
 - Alpaca Paper 실행 레저 (ROB-84)
 - Binance Demo Order Ledger (ROB-298)
+- Binance Spot Demo 읽기 전용 스트림 수집기 (hk 6067, 6033 K4)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기·CLI (hk 4702 CT-3, hk 4719 CT-4, hk 4753 CT-5a)
@@ -187,6 +188,18 @@ due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세�
 운영자 2026-11-02 결정의 이 경로만 제거하며 venue filter와 다른 전략 상수는
 유지한다. 스케줄 등록·실거래·배포 없음. 런북:
 `docs/runbooks/rob1474-crypto-paper.md`.
+
+### Binance Spot Demo 읽기 전용 스트림 수집기 (hk 6067, 6033 K4)
+
+운영자 결정 D-1(2026-11-22, `dr-6054-1`): `demo-stream.binance.com`·`demo-ws-api.binance.com`을 **데모 전용·읽기 전용·기본 off** allowlist로 허용한다. 설계 `docs/design/6033-mock-venue-streams.md`(K4·D-1·P5–P7). 🔴 주문·취소·원장·REST 서명 경로는 없다.
+
+- **표면**: `app/services/brokers/binance/spot_demo_streams/`(`host_allowlist`·`parsing`·`collector`) + 수동 CLI `scripts/binance_spot_demo_streams.py`. 스케줄러·systemd 등록 없음. `spot_demo` 패키지(서명 REST)는 import 하지 않으며 정적 가드 `tests/services/brokers/binance/spot_demo_streams/test_static_guard.py`가 import 폐쇄(주문·실행·원장·`app.models`·REST transport 없음)와 WS `send` 호출 지점이 구독 요청 1곳뿐임을 고정한다.
+- **게이트**: `BINANCE_SPOT_DEMO_STREAMS_ENABLED` 정확히 `"true"`(기본 off)일 때만 설정이 만들어진다. 심볼은 `--symbols`/`BINANCE_SPOT_DEMO_STREAMS_SYMBOLS`(최대 20개, 대문자 영숫자). 호스트·URL 덮어쓰기 env/CLI 인자는 없다. 사용자 스트림 자격증명은 기존 `BINANCE_SPOT_DEMO_API_{KEY,SECRET}`(없으면 `BINANCE_DEMO_API_*`) 해석기를 그대로 쓰고 값은 로그·출력에 남기지 않는다. `--no-user-stream`은 자격증명 없이 시세만 받는다.
+- **호스트 allowlist**: 새 상수 `SPOT_DEMO_STREAM_HOSTS`(위 두 호스트)는 `SPOT_DEMO_HOSTS`(REST)·`PUBLIC_HOSTS`·`PUBLIC_FUTURES_STREAM_HOSTS`와 서로소이고 `PUBLIC_HOSTS`·`SPOT_DEMO_HOSTS`는 넓히지 않았다. 검사는 URL 문자열에서 소켓을 열기 **전**에(설정 생성 시 + 매 dial 시) 수행한다: 정확한 호스트(접미사 불가)·`wss`·포트 443/9443·종류별 경로(`/ws`·`/stream` / `/ws-api/v3`)·userinfo/fragment 거부, mainnet·testnet·futures·REST 호스트는 `DENIED_STREAM_HOSTS` 로 명시 거부. 연결 후 요청 Host/경로가 요청과 다르면(`websockets` 15의 자동 리다이렉트) 닫고 `BinanceLiveHostBlocked`, 프록시는 끈다(`proxy=None`).
+- **구독**: 시세 `<sym>@depth20`·`@bookTicker`·`@aggTrade`(결합 스트림 `/stream`), 사용자 스트림은 demo-ws-api의 `userDataStream.subscribe.signature`(HMAC, params `apiKey`·`recvWindow`·`timestamp`·`signature`, 정렬된 params 의 HMAC-SHA256). 🔴 `[unverified]`: 문서상 `userDataStream.subscribe`는 Ed25519 `session.logon`이 필요하고 `.signature`가 HMAC 키를 받는지·데모에서 동작하는지는 P7 스모크로 확인한다. 거절(`status != 200`)은 status·code만 기록하고 시세 스트림은 계속된다. 구독 응답 외에 서버로 보내는 프레임은 없다(ping 응답은 라이브러리).
+- **출력**: Redis **스트림**(XADD, 근사 MAXLEN 기본 1000, KIS `book:kis:<symbol>` 선례와 같은 모양) `book:binance_spot_demo:<SYM>`(필드 `ts_received_ms`·`kind`(depth/bookticker/trade)·`json`)과 `fills:binance_spot_demo`(kind `execution_report`/`account_position`/`balance_update`, 그 밖의 사용자 이벤트는 계수만). 값은 정확한 10진 문자열이다. 선택 JSONL(`--record-dir`, UTC 일별 append-only, 수신 원 프레임)은 구독 요청·서명을 기록하지 않는다. malformed 프레임은 버리고 계수하며 Redis 오류는 스트림을 멈추지 않는다(fail-soft).
+- 🔴 **체결 스트림은 어떤 원장에도 쓰지 않는다**: `execution_ledger`·`binance_demo_order_ledger` 등 쓰기 없음, 체결 증거로 쓰지 않는다(대조용 관측, V8/P7 몫). 재연결은 지수 백오프(최대 30초)이고 호스트 위반은 재시도하지 않는다. `serverShutdown` 수신 시 재연결한다.
+- **테스트**: `tests/services/brokers/binance/spot_demo_streams/`(문서 형태 fixture·호스트 allowlist·파서·collector·게이트 off·정적 가드). 런북 `docs/runbooks/binance-spot-demo-streams.md`. 실연결 스모크(P5–P7)는 병합 뒤 설계 세션이 모의 전용으로 수행한다.
 
 ### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 
