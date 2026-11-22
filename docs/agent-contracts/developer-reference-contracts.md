@@ -164,7 +164,7 @@ pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main
 - **승격 판정(promote)**: 후보 SHA 가 main 의 조상이고 전체 스위트 6개 job 이 초록(`deploy_ci_gate.py --main-ancestor --expect-sha`)이며
   이미지 OCI revision 이 그 SHA 일 때만, 그리고 배포 중 커밋(`deploy` 태그의 SHA)과 후보 사이가 mergewake 롤아웃의 `deploy_approval` 규칙에서
   보류가 아닐 때만 태그를 옮긴다(정책은 **배포 중 커밋**의 것을 읽는다·정책 파일/환경·비밀 변경·알 수 없는 배포 중 커밋·갈라진 이력·300개 파일 비교 한계·
-  읽을 수 없는 정책은 보류). 이 레포의 규칙으로 `alembic/versions/**`·`alembic/env.py` 변경은 정책 문구와 무관하게 항상 보류한다. 보류는 잡을 빨갛게 하지
+  읽을 수 없는 정책은 보류). 이 레포의 규칙으로 `alembic/versions/**`·`alembic/env.py` 변경과 판정·설치 도구 자체(`promote_deploy.py`·`deploy_ci_gate.py`·`promote-deploy.yml`·`deploy.yml`·`deploy/shiftgate/pi/**`) 변경은 정책 문구와 무관하게 항상 보류한다(mergewake 규칙의 완화가 아니라 추가 규칙). 🔴 판정 도구는 후보의 트리가 아니라 신뢰 ref(워크플로가 체크아웃한 main HEAD, `github.sha`)에서 실행되고 후보는 `--sha` 로만 들어간다 — 릴리스가 자기를 판정하는 코드를 바꿔 자기 게이트를 풀 수 없다(`tests/ci/test_promote_deploy_workflow.py`). `promote-approved` 는 자동 promote 와 별도 concurrency 그룹(후보 SHA 별)이라 승인 실행이 다음 main push 에 조용히 취소되지 않고, 태그를 옮기기 직전 `deploy` 태그를 다시 읽어 달라졌으면 옮기지 않는다. 보류는 잡을 빨갛게 하지
   않고 태그를 옮기지 않으며 잡 요약(+Discord)에 사유·경로·재승격 명령을 남긴다. 승인은 hk 결정으로 받고 `promote-deploy.yml` 을 `workflow_dispatch`
   (`promote_sha`, `approval_ref`)로 다시 실행한다. `approval_ref` 가 있는 실행은 required reviewers 가 설정된 Environment `at-deploy-approval` 의 `promote-approved` 잡에서만
   돌고 스크립트는 그 밖의 `approval_ref` 를 거부한다 — 승인은 범위 보류만 면제하고 CI·main 조상·이미지 확인은 그대로다. 🔴 `scripts/ci/promote_deploy.py` 의 정책 읽기·
@@ -172,7 +172,8 @@ pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main
 - **follow(pi)**: `deploy` 태그 → digest → SHA 를 레지스트리에서 읽고, digest 가 `/root/at-run/deployed-digest` 와 같으면 조용히 끝난다(GitHub 호출 없음).
   바뀌었으면 태그를 옮긴 쪽을 믿지 않고 스스로 `deploy_ci_gate.py --github anonymous --main-ancestor` 로 다시 확인한다(공개 레포의 인증 없는 GitHub 읽기, 시간당 60회).
   호스트 배포 잠금(`host-lock.sh`) → `systemctl start at-pg-backup.service`(성공해야만 진행) → `deploy.sh sha-<7>`(`--allow-unverified` 는 이 경로에 없다).
-  거부·실패한 digest 는 `/root/at-run/follow-hold` 로 묶여 매 틱 재시도하지 않고(일시 장애만 retry-after 뒤 한 번), 결과는 `follow.log`·`follow-status.json`
+  방금 검증한 digest 는 `AT_FOLLOW_VERIFIED_DIGEST` 로 deploy.sh 에 넘겨 같은 틱에 GitHub 를 두 번 묻지 않는다(deploy.sh 는 태그가 그 digest 인지만 레지스트리에서 확인하고, 변수가 없거나 어긋나면 전체 게이트 — 수동 실행은 불변).
+  거부·실패한 digest 는 `/root/at-run/follow-hold` 로 묶여 매 틱 재시도하지 않는다. 게이트 자신의 문구(`GitHub evidence unavailable`·`unverified (`)로 알 수 있는 일시 장애만 retry-after 뒤 digest 마다 최대 3번 다시 시도하고(`follow-transient`) 그 뒤 영구 hold 다. 성공한 백업은 digest 별로 기록해 일시 장애 재시도에서 다시 돌리지 않는다(`follow-backup-ok`, 1시간 이내). 결과는 `follow.log`·`follow-status.json`
   (+ 있으면 panewire `info`)에 남는다. 롤백은 `follow.sh --hold` 후 `deploy.sh --rollback`.
 - **신뢰 경계**: `deploy` 태그 쓰기 권한(Actions `GITHUB_TOKEN`, GHCR 패키지 쓰기)은 신뢰 경계다. follow 의 재확인은 "main 조상 + 전체 스위트 초록"까지다.
   hk 쪽 자동 재승격(결정에 A 로 답하면 dispatch)은 후속 작업이다. 런북: `docs/runbooks/pi-shiftgate-deploy.md` §4.1.

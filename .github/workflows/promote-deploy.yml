@@ -15,6 +15,8 @@ name: Promote deploy tag
 #      commit (mergewake's rule) and always holds new migrations. A hold writes the reasons and
 #      the re-dispatch command to the job summary and moves nothing.
 #   3. `docker buildx imagetools create` puts `deploy` on the same digest (no rebuild).
+# The tooling that judges (promote_deploy.py, deploy_ci_gate.py) runs from main's checkout, never
+# from the candidate's tree; a range that edits that tooling is held for a human.
 # `approval_ref` (the hk decision key) waives step 2's hold only, never step 1, and only in the
 # `promote-approved` job, which runs in the `at-deploy-approval` GitHub Environment: its required
 # reviewers are the human approval (create it with reviewers before the first approved promote).
@@ -79,10 +81,14 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout repository
+      # The judging tooling comes from the TRUSTED ref: github.sha is main's HEAD for both the
+      # workflow_run-triggered call and a main dispatch. The candidate is only `--sha` below; its
+      # own tree is never executed here. Full history so the candidate and the deployed commit
+      # are both present for the range review.
+      - name: Checkout the trusted ref (main)
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ steps.sha.outputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -117,8 +123,12 @@ jobs:
     # The approval is enforced by GitHub, not by a string: this Environment must be configured with
     # required reviewers (a human). The script refuses an approval_ref outside this job.
     environment: at-deploy-approval
+    # Its own group, per candidate SHA: GitHub keeps only the newest pending run of a group, so
+    # sharing the automatic promote's group let the next main push silently cancel a pending
+    # approval. Never cancelled. promote_deploy.py re-reads the tag right before moving it and
+    # refuses if another promote moved it meanwhile.
     concurrency:
-      group: at-pi-deploy-promote-${{ github.repository }}
+      group: at-pi-deploy-promote-approved-${{ github.repository }}-${{ inputs.promote_sha }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -139,10 +149,14 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout repository
+      # The judging tooling comes from the TRUSTED ref: github.sha is main's HEAD for both the
+      # workflow_run-triggered call and a main dispatch. The candidate is only `--sha` below; its
+      # own tree is never executed here. Full history so the candidate and the deployed commit
+      # are both present for the range review.
+      - name: Checkout the trusted ref (main)
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ steps.sha.outputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 

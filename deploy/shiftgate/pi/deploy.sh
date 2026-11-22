@@ -44,7 +44,7 @@ usage: deploy.sh [--allow-unverified REASON] <tag>
          digest 를 직접 받지 않는다: 게이트는 태그만 받아 이미지의 SHA 를 확인한다.
   --allow-unverified REASON  CI 증거만 면제하는 기록되는 우회(이미지 고정은 그대로).
   --rollback  세 컴포넌트(at-api, at-mcp, at-upbit-ws)를 deployed-digest 로 수렴시키고, 이미 같으면 deployed-digest.previous 로 되돌린다.
-  환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR
+  환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_FOLLOW_VERIFIED_DIGEST(follow.sh 전용) AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR
   종료 코드: 2 사용법 · 75 다른 배포가 잠금을 잡음 · 78 게이트/설정 거부 · 그 밖은 실패한 단계의 코드(3 = shiftgate recover 필요)
 USAGE
 }
@@ -91,10 +91,21 @@ python_ok() {
 }
 
 verified_deploy_image() {
-  local gate digest
+  local gate digest resolved
   local -a args=(--image "${IMAGE_REPOSITORY}:${TAG}")
   gate="$(gate_script)" || { printf 'deploy gate is unavailable: install scripts/deploy_ci_gate.py beside this script\n' >&2; return 78; }
   python_ok || return 78
+  # follow.sh (hk 6091) has just run the whole gate on this very digest and hands it over so that one tick does
+  # not ask GitHub twice (60/hour anonymous). The handoff only replaces the GitHub half: the tag must still
+  # resolve, in the registry, to exactly that digest. Anything else (no handoff, a mismatch, a registry error)
+  # falls through to the full gate below, so a manual run is exactly as strict as before.
+  if [[ -z "$ALLOW_UNVERIFIED" ]] && is_ref "${AT_FOLLOW_VERIFIED_DIGEST:-}"; then
+    resolved="$("$PYTHON" "$gate" "${args[@]}" --resolve-only 2>/dev/null)" || resolved=""
+    if [[ "${resolved%%$'\t'*}" == "$AT_FOLLOW_VERIFIED_DIGEST" ]]; then
+      printf '%s\n' "$AT_FOLLOW_VERIFIED_DIGEST"
+      return 0
+    fi
+  fi
   [[ -z "$ALLOW_UNVERIFIED" ]] || args+=(--allow-unverified "$ALLOW_UNVERIFIED")
   digest="$("$PYTHON" "$gate" "${args[@]}")" || return $?
   is_ref "$digest" || { printf 'deploy gate returned no immutable image digest\n' >&2; return 78; }

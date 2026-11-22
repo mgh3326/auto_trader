@@ -57,7 +57,7 @@ sys.exit(78)
 
 FAKE_DEPLOY = r"""#!/usr/bin/env bash
 d="$FAKE_DIR"
-printf 'deploy %s|github=%s|lock=%s\n' "$*" "${AT_DEPLOY_GATE_GITHUB:-}" "${AT_DEPLOY_LOCK_HELD:-}" >>"$d/calls"
+printf 'deploy %s|github=%s|lock=%s|verified=%s\n' "$*" "${AT_DEPLOY_GATE_GITHUB:-}" "${AT_DEPLOY_LOCK_HELD:-}" "${AT_FOLLOW_VERIFIED_DIGEST:-}" >>"$d/calls"
 rc="$(cat "$d/deploy_rc" 2>/dev/null || echo 0)"
 if [[ "$rc" == 0 && ! -e "$d/deploy_skips_marker" ]]; then
   value="$(cat "$d/marker_value" 2>/dev/null || cut -f1 "$d/tag.deploy")"
@@ -298,7 +298,7 @@ def test_a_held_digest_is_skipped_quietly_until_a_new_digest_appears(
     assert any(c.startswith("deploy sha-ccccccc") for c in calls(host))
 
 
-def test_evidence_that_was_merely_unavailable_is_retried_once_after_the_wait(
+def test_evidence_that_was_merely_unavailable_is_retried_after_the_wait(
     host: dict,
 ) -> None:
     (host["fake"] / "verdict").write_text(
@@ -349,6 +349,120 @@ def test_a_rate_limited_gate_inside_deploy_sh_is_retried_later_not_held_forever(
     )
     assert follow(host).returncode == 78
     assert hold_line(host)[2] == "0"
+
+
+def deploy_gate_unavailable(host: dict) -> None:
+    (host["fake"] / "deploy_rc").write_text("78")
+    (host["fake"] / "deploy_out").write_text(
+        "deploy gate: test (3.13, 1): unverified (GitHub evidence unavailable (HTTP 403))"
+    )
+
+
+def expire_hold(host: dict) -> None:
+    digest, created, _retry, reason = hold_line(host)
+    (host["run"] / "follow-hold").write_text(f"{digest}\t{created}\t1\t{reason}\n")
+
+
+def backups(host: dict) -> int:
+    return sum(c.startswith("systemctl start") for c in calls(host))
+
+
+def test_follow_hands_deploy_sh_the_digest_it_just_verified(host: dict) -> None:
+    assert follow(host).returncode == 0
+    deploy_call = next(c for c in calls(host) if c.startswith("deploy "))
+    assert deploy_call.endswith(f"|verified={REF_B}")  # no second GitHub round for it
+
+
+def test_a_retry_after_a_transient_deploy_sh_failure_does_not_back_up_again(
+    host: dict,
+) -> None:
+    deploy_gate_unavailable(host)
+    assert follow(host).returncode == 78
+    assert backups(host) == 1
+    expire_hold(host)
+    assert follow(host).returncode == 78  # deploy.sh still cannot read GitHub
+    assert (
+        backups(host) == 1
+    )  # the backup already taken for this digest is not repeated
+    # once it installs, the record is gone: the next digest gets its own backup
+    expire_hold(host)
+    (host["fake"] / "deploy_rc").write_text("0")
+    assert follow(host).returncode == 0
+    assert backups(host) == 1
+    assert not (host["run"] / "follow-backup-ok").exists()
+
+
+def test_a_stale_backup_record_is_not_reused(host: dict) -> None:
+    deploy_gate_unavailable(host)
+    assert follow(host).returncode == 78
+    expire_hold(host)
+    (host["run"] / "follow-backup-ok").write_text(f"{REF_B}\t1\n")  # taken long ago
+    assert follow(host).returncode == 78
+    assert backups(host) == 2
+
+
+def test_a_backup_record_of_another_digest_is_not_reused(host: dict) -> None:
+    import time
+
+    (host["run"] / "follow-backup-ok").write_text(f"{REF_A}\t{int(time.time())}\n")
+    assert follow(host).returncode == 0
+    assert backups(host) == 1
+
+
+def test_transient_deploy_sh_failures_are_capped_per_digest_then_held_for_good(
+    host: dict,
+) -> None:
+    deploy_gate_unavailable(host)
+    for attempt in (1, 2, 3):  # three retries are allowed
+        assert follow(host).returncode == 78
+        assert int(hold_line(host)[2]) > 0, attempt
+        expire_hold(host)
+    assert follow(host).returncode == 78  # the fourth failure in a row
+    assert hold_line(host)[2] == "0" and "retries exhausted" in hold_line(host)[3]
+    n = len(calls(host))
+    assert follow(host).returncode == 0 and len(calls(host)) == n  # quiet from now on
+    assert backups(host) == 1
+
+
+def test_transient_evidence_failures_of_the_followers_own_gate_are_capped_too(
+    host: dict,
+) -> None:
+    (host["fake"] / "verdict").write_text(
+        "main-ancestor: unverified (GitHub evidence unavailable (HTTP 403))"
+    )
+    for _ in range(3):
+        assert follow(host).returncode == 78
+        expire_hold(host)
+    assert follow(host).returncode == 78
+    assert hold_line(host)[2] == "0"
+    assert backups(host) == 0  # it never got as far as the backup
+
+
+def test_a_permanent_deploy_sh_refusal_that_mentions_a_registry_is_held_not_retried(
+    host: dict,
+) -> None:
+    (host["fake"] / "deploy_rc").write_text("78")
+    (host["fake"] / "deploy_out").write_text(
+        "deploy refused: image registry digest does not match the inspect result"
+    )
+    assert follow(host).returncode == 78
+    assert hold_line(host)[2] == "0"  # permanent: no retry-after
+
+
+def test_a_permanent_gate_refusal_that_mentions_a_registry_is_held_not_retried(
+    host: dict,
+) -> None:
+    (host["fake"] / "verdict").write_text("REFUSED: registry image is not from main")
+    assert follow(host).returncode == 78
+    assert hold_line(host)[2] == "0"
+
+
+def test_clear_hold_forgets_the_backup_record(host: dict) -> None:
+    deploy_gate_unavailable(host)
+    follow(host)
+    assert (host["run"] / "follow-backup-ok").exists()
+    assert follow(host, "--clear-hold").returncode == 0
+    assert not (host["run"] / "follow-backup-ok").exists()
 
 
 def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:

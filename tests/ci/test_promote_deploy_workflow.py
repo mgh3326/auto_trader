@@ -120,3 +120,41 @@ def test_the_approval_waiver_runs_only_in_the_environment_gated_job() -> None:
     assert "inputs.approval_ref != ''" in " ".join(gated["if"].split())
     # a workflow_call (the automatic path) can only reach the ungated job
     assert "workflow_dispatch" in gated["if"]
+
+
+# --- hk 6091: the judging tooling runs from the trusted ref; approvals are never dropped -------
+
+
+def test_both_jobs_run_the_tooling_from_the_trusted_ref_not_the_candidates_tree() -> (
+    None
+):
+    jobs = load(PROMOTE)["jobs"]
+    for name in ("promote", "promote-approved"):
+        steps = jobs[name]["steps"]
+        checkouts = [
+            s for s in steps if s.get("uses", "").startswith("actions/checkout@")
+        ]
+        assert len(checkouts) == 1, name
+        with_ = checkouts[0]["with"]
+        assert with_["ref"] == "${{ github.sha }}", name  # main HEAD, not the candidate
+        assert with_["fetch-depth"] == 0 and with_["persist-credentials"] is False
+        # the candidate is only an argument; no step checks out or runs from it
+        assert "steps.sha.outputs.sha" not in str(with_), name
+        runs = [s["run"] for s in steps if "run" in s]
+        assert any('--sha "$PROMOTE_SHA"' in run for run in runs), name
+
+
+def test_an_approval_run_has_its_own_concurrency_group_and_is_never_cancelled() -> None:
+    jobs = load(PROMOTE)["jobs"]
+    plain, gated = (
+        jobs["promote"]["concurrency"],
+        jobs["promote-approved"]["concurrency"],
+    )
+    assert (
+        plain["group"] != gated["group"]
+    )  # the next main push cannot cancel an approval
+    assert "${{ github.repository }}" in gated["group"]
+    assert (
+        "${{ inputs.promote_sha }}" in gated["group"]
+    )  # distinct SHAs never replace each other
+    assert gated["cancel-in-progress"] is False
