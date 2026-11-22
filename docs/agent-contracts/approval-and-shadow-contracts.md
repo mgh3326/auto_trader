@@ -297,6 +297,12 @@ wipe-edit 그대로). 만료는 승인 카드를 원 위치에서 편집하고, 
 - **금지**: 이 PR 은 키를 켜지 않는다. 스케줄러·자동 플립 없음
 - **런북**: `docs/runbooks/order-proposals.md` §Approval-window defense in depth
 
+### 자동승인 경로의 승인창 차단 기록 (hk 6062, 설계 `docs/design/6038-sell-proposal-clock.md` §3.1.1)
+
+`dispatch_proposal` 의 자동승인 분기가 승인창을 평가해 막히면(`DEFER_SESSION_CLOSED`·`NO_EXECUTABLE_WINDOW`·`CALENDAR_UNKNOWN`·`INVALID_VALID_UNTIL`·`EXPIRED`), 수동 경로(`send_proposal_for_approval`)와 **같은 헬퍼** `_record_approval_window_block` 으로 `approval_dispatch_state='failed'` + `approval_dispatch_failure_code='<CODE>/<detail>'` 를 원장에 먼저 기록한다. 새 `attempt_id` 하나를 start/finish 가 공유하는 같은 fence 이고, `EXPIRED` 일 때만 이어서 `expire_mutable_rungs_if_needed` 를 부른 뒤 커밋한다. 전에는 이 분기가 아무것도 기록하지 않아 장외에 만든 제안이 NULL·코드 없음으로 `valid_until` 까지 남았다. retro `block_reason`(hk 5610)은 이 기록을 그대로 읽는다.
+
+🔴 이 분기는 기록만 더한다: nonce·카드·브로커 호출·재검증·자동 제출을 추가하지 않고, advisory lock·커밋 순서와 허용 창의 동작은 바뀌지 않는다. 같은 기록을 읽는 재확인·자동 제출 레버(hk 6063)는 별도 티켓이며 이 변경에 없다. 이 PR 은 주문 경로(T3)이므로 배포는 운영자 승인 사항이다. 테스트: `tests/services/order_proposals/test_dispatch_auto_window_record.py`(DB 없음, 다섯 코드·트랩), `test_dispatch.py::test_auto_dispatch_*`(CI DB).
+
 ### 전략 슬리브 — 실계좌 안의 전략별 예산·손실 한도 (ROB-1470)
 
 기존 실계좌(KIS·Toss·Upbit) 안에서 ROB-1458 규칙별 카나리의 돈과 결과를 **DB 에서** 분리한다.
