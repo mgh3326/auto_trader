@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Sequence
 from typing import Any
 
@@ -31,6 +35,14 @@ REQUIRED_CHECKS = (
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _REVISION = "org.opencontainers.image.revision"
+# hk 6037: the pi has no gh auth. `anonymous` reads the public repo's Actions evidence
+# straight from api.github.com (60 requests/hour per address), so callers only use it
+# when a digest changed. `gh` (default) keeps every existing caller unchanged.
+GITHUB_MODES = ("gh", "anonymous")
+_GITHUB_MODE_ENV = "AT_DEPLOY_GATE_GITHUB"
+_API_ROOT = "https://api.github.com/"
+_NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+_MAX_PAGES = 20
 
 
 class GateError(Exception):
@@ -52,11 +64,67 @@ def _json_command(argv: list[str]) -> Any:
         raise GateError(f"{argv[0]} evidence is not valid JSON") from None
 
 
-def _api_rows(endpoint: str, key: str) -> list[dict[str, Any]]:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _github_mode() -> str:
+    mode = os.environ.get(_GITHUB_MODE_ENV, "gh") or "gh"
+    if mode not in GITHUB_MODES:
+        raise GateError(f"{_GITHUB_MODE_ENV} must be one of {', '.join(GITHUB_MODES)}")
+    return mode
+
+
+def _anonymous_pages(endpoint: str) -> list[Any]:
+    """GET endpoint (with Link pagination) from api.github.com without credentials."""
+    url: str | None = _API_ROOT + endpoint.lstrip("/")
+    opener = urllib.request.build_opener(_NoRedirect)
+    pages: list[Any] = []
+    while url:
+        if not url.startswith(_API_ROOT) or len(pages) >= _MAX_PAGES:
+            raise GateError("GitHub evidence pagination is not trustworthy")
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "auto-trader-deploy-gate",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with opener.open(request, timeout=30) as response:
+                body = response.read(8 * 1024 * 1024 + 1)
+                link = response.headers.get("Link", "")
+        except urllib.error.HTTPError as exc:
+            raise GateError(f"GitHub evidence unavailable (HTTP {exc.code})") from None
+        except (OSError, ValueError):
+            raise GateError("GitHub evidence unavailable") from None
+        if len(body) > 8 * 1024 * 1024:
+            raise GateError("GitHub evidence is too large")
+        try:
+            pages.append(json.loads(body))
+        except (ValueError, TypeError):
+            raise GateError("GitHub evidence is not valid JSON") from None
+        match = _NEXT_LINK.search(link or "")
+        url = match.group(1) if match else None
+    return pages
+
+
+def _api_pages(endpoint: str) -> list[Any]:
+    if _github_mode() == "anonymous":
+        return _anonymous_pages(endpoint)
     pages = _json_command(
         ["gh", "api", "--method", "GET", "--paginate", "--slurp", endpoint]
     )
-    if not isinstance(pages, list) or not pages:
+    if not isinstance(pages, list):
+        raise GateError("GitHub evidence has no pages")
+    return pages
+
+
+def _api_rows(endpoint: str, key: str) -> list[dict[str, Any]]:
+    pages = _api_pages(endpoint)
+    if not pages:
         raise GateError("GitHub evidence has no pages")
     rows = []
     for page in pages:
@@ -67,6 +135,33 @@ def _api_rows(endpoint: str, key: str) -> list[dict[str, Any]]:
                 raise GateError(f"GitHub evidence has an invalid {key} row")
             rows.append(row)
     return rows
+
+
+def main_ancestor_problems(sha: str, repo: str) -> list[str]:
+    """Return a problem unless `sha` is main itself or an ancestor of main.
+
+    compare/<sha>...main: base=sha, head=main. `ahead`/`identical` means main contains
+    the commit; `behind`/`diverged` means it is not on main's history.
+    """
+    quoted = urllib.parse.quote(sha, safe="")
+    if _github_mode() == "anonymous":
+        pages = _anonymous_pages(f"repos/{repo}/compare/{quoted}...main?per_page=1")
+        first = pages[0] if pages else None
+    else:
+        first = _json_command(
+            [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                f"repos/{repo}/compare/{quoted}...main?per_page=1",
+            ]
+        )
+    if not isinstance(first, dict) or not isinstance(first.get("status"), str):
+        raise GateError("GitHub compare evidence is invalid")
+    if first["status"] in ("ahead", "identical"):
+        return []
+    return [f"main-ancestor: {sha} is not an ancestor of main (compare {first['status']})"]
 
 
 def _positive_int(value: Any) -> bool:
@@ -201,7 +296,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     target.add_argument("--image")
     parser.add_argument("--repo", default=REPOSITORY)
     parser.add_argument("--allow-unverified", metavar="REASON")
+    parser.add_argument(
+        "--github",
+        choices=GITHUB_MODES,
+        help="evidence source: gh (authenticated gh CLI, default) or anonymous "
+        f"(public api.github.com, rate limited); env {_GITHUB_MODE_ENV}",
+    )
+    parser.add_argument(
+        "--main-ancestor",
+        action="store_true",
+        help="also require the SHA to be main or an ancestor of main (hk 6037)",
+    )
+    parser.add_argument(
+        "--expect-sha",
+        metavar="SHA",
+        help="with --image: refuse unless the image's OCI revision is exactly this SHA",
+    )
+    parser.add_argument(
+        "--resolve-only",
+        action="store_true",
+        help="with --image: print '<pinned digest>\\t<sha>' from the registry only, "
+        "no GitHub request and no CI verdict",
+    )
     args = parser.parse_args(argv)
+    if args.github:
+        os.environ[_GITHUB_MODE_ENV] = args.github
+    if args.resolve_only and not args.image:
+        parser.error("--resolve-only needs --image")
+    if args.expect_sha and not args.image:
+        parser.error("--expect-sha needs --image")
     reason = args.allow_unverified
     if reason is not None and not reason.strip():
         print(
@@ -220,13 +343,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             sha = image_sha(references)
         if not isinstance(sha, str) or not _SHA.fullmatch(sha):
             raise GateError("deploy SHA must be a full 40-character commit SHA")
+        if args.expect_sha and args.expect_sha != sha:
+            raise GateError(f"image revision {sha} is not the expected {args.expect_sha}")
+        _github_mode()
     except GateError as exc:
         print(f"deploy gate: REFUSED: {exc}", file=sys.stderr)
         return 78
+    if args.resolve_only:
+        print(f"{pinned}\t{sha}")
+        return 0
     try:
         problems = verify_sha(sha, args.repo)
     except GateError as exc:
         problems = [f"{name}: unverified ({exc})" for name in REQUIRED_CHECKS]
+    ancestry: list[str] = []
+    if args.main_ancestor:
+        try:
+            ancestry = main_ancestor_problems(sha, args.repo)
+        except GateError as exc:
+            ancestry = [f"main-ancestor: unverified ({exc})"]
+        for problem in ancestry:
+            print(f"deploy gate: {problem}", file=sys.stderr)
+        if ancestry:
+            # --allow-unverified waives CI evidence only, never which commit this is.
+            print("deploy gate: REFUSED (exit 78); not on main", file=sys.stderr)
+            return 78
     for problem in problems:
         print(f"deploy gate: {problem}", file=sys.stderr)
     if reason is not None:
