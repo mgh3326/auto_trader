@@ -182,6 +182,10 @@ tests/services/brokers/binance/spot_demo/test_execution_client_order_test.py
 tests/services/brokers/binance/spot_demo/test_get_all_open_orders.py
 tests/services/brokers/binance/spot_demo/test_secret_redaction.py
 tests/services/brokers/binance/spot_demo/test_spot_demo_submit_callers.py
+tests/services/brokers/binance/spot_demo_streams/test_collector.py
+tests/services/brokers/binance/spot_demo_streams/test_host_allowlist.py
+tests/services/brokers/binance/spot_demo_streams/test_parsing.py
+tests/services/brokers/binance/spot_demo_streams/test_static_guard.py
 tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/binance/test_ws_reconnect.py
 tests/services/brokers/kis/test_market_data_throttle_retry.py
