@@ -17,8 +17,13 @@ The script moves the tag only when ALL of these hold:
       - the policy file itself, env/secret-looking paths always hold;
       - an unknown previous deployment, divergent history, an unreadable comparison or one
         that reaches GitHub's 300-file limit holds;
-    plus one rule of this repo that does not depend on the old policy text: any change
-    under alembic/versions/ or alembic/env.py holds (a new migration is never automatic).
+    plus two rules of this repo that do not depend on the old policy text: any change
+    under alembic/versions/ or alembic/env.py holds (a new migration is never automatic),
+    and so does any change to the promote/deploy tooling itself (`TOOLING_PATHS`).
+The judging tooling (this script, deploy_ci_gate.py) always runs from the TRUSTED ref, the
+workflow's own checkout of main, never from the candidate's tree; the candidate is only
+`--sha`. A release therefore cannot judge itself with its own edited code, and the tooling
+path hold above makes a change to that code a human decision.
 A hold does not fail the job. It writes the matched paths, reasons and the exact
 re-dispatch command to the job summary (and Discord when configured). An operator records
 the decision in hk and re-runs promote-deploy.yml with `approval_ref`; the approval waives
@@ -48,11 +53,26 @@ DEPLOY_TAG = "deploy"
 POLICY_PATH = ".mergewake/policy.yaml"
 # GitHub's compare API stops listing files here; mergewake holds when it is reached.
 FILE_LIMIT = 300
-# New migrations and the migration runner always hold, whatever the previous policy says.
+# The code that decides what is promoted and installed. A range that edits it holds, so the
+# change is reviewed by a human instead of taking effect unseen (hk 6091). This is a rule of
+# this repo beside mergewake's deploy_approval, not a relaxation of it.
+TOOLING_PATHS = (
+    "scripts/ci/promote_deploy.py",
+    "scripts/deploy_ci_gate.py",
+    ".github/workflows/promote-deploy.yml",
+    ".github/workflows/deploy.yml",
+    "deploy/shiftgate/pi/**",
+)
+# New migrations, the migration runner and the promote/deploy tooling always hold, whatever
+# the previous policy says.
 ALWAYS_HOLD = (
     (
         ("alembic/versions/**", "alembic/env.py"),
         "Production migrations change persistent schema or data and need operator coordination (always held).",
+    ),
+    (
+        TOOLING_PATHS,
+        "The promote/deploy tooling decides what reaches production; a change to it needs a human decision (always held).",
     ),
 )
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -571,6 +591,14 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
             + f" · 걸린 경로 {len(set(review.paths))}개 · 다시 승격: {command}"
         )
         return 0
+    # promote and promote-approved run in separate concurrency groups, so another promote may
+    # have moved the tag since the review above. Moving it now could rewind it: refuse instead.
+    if current_deploy(run) != (previous_digest, previous):
+        print(
+            "promote: the deploy tag moved while this run was reviewing; nothing was changed, re-run it",
+            file=sys.stderr,
+        )
+        return 1
     done = run(
         [
             "docker",

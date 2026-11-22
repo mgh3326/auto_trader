@@ -573,3 +573,67 @@ def test_an_approved_dispatch_of_an_already_older_commit_fails_loudly(
     assert "적용되지 않았다" in summary(tmp_path)
     # without an approval an older build is still a quiet no-op
     assert pd.promote(args(repo, start), fake) == 0
+
+
+# --- hk 6091: the tooling that judges a release is itself held for a human --------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scripts/ci/promote_deploy.py",
+        "scripts/deploy_ci_gate.py",
+        ".github/workflows/promote-deploy.yml",
+        ".github/workflows/deploy.yml",
+        "deploy/shiftgate/pi/follow.sh",
+        "deploy/shiftgate/pi/deploy.sh",
+        "deploy/shiftgate/pi/at-follow.timer",
+    ],
+)
+def test_a_range_that_edits_the_promote_or_deploy_tooling_holds(
+    repo: Path, path: str
+) -> None:
+    # an empty deploy_approval policy at the deployed commit: only the repo's own rule can hold it
+    start = base(repo, policy="deploy_approval: []\n")
+    release = commit(repo, {path: "changed\n"})
+    result = review(repo, start, release)
+    assert result.held and path in result.paths
+    assert any("promote/deploy tooling" in reason for reason in result.reasons)
+
+
+def test_other_ci_and_deploy_paths_are_not_swept_into_the_tooling_hold(
+    repo: Path,
+) -> None:
+    start = base(repo, policy="deploy_approval: []\n")
+    release = commit(
+        repo,
+        {
+            "scripts/ci/other_tool.py": "x\n",
+            ".github/workflows/test.yml": "x\n",
+            "docs/runbooks/pi-shiftgate-deploy.md": "x\n",
+        },
+    )
+    assert review(repo, start, release).status == "routine"
+
+
+def test_the_tag_is_not_moved_when_another_promote_moved_it_during_the_run(
+    repo: Path,
+) -> None:
+    start = base(repo)
+    release = commit(repo, {"docs/b.md": "b\n"})
+    fake = Registry(deploy_tag=(OLD_PINNED, start))
+    fake.candidate = release
+    elsewhere = (f"{IMAGE}@sha256:{'e' * 64}", "e" * 40)
+    original = fake.__call__
+
+    def moved_before_the_create(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        # the first read (review) sees the old tag; by the time of the second, another run moved it
+        if (
+            "--resolve-only" in argv
+            and sum("--resolve-only" in c for c in fake.calls) == 1
+        ):
+            fake.deploy_tag = elsewhere
+        return original(argv)
+
+    assert pd.promote(args(repo, release), moved_before_the_create) == 1
+    assert fake.created() == []

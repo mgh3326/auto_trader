@@ -647,6 +647,64 @@ def test_gate_refusal_touches_nothing(deploy_env: dict) -> None:
     assert not (deploy_env["run"] / "shiftgate-deploy.lock").exists()
 
 
+# hk 6091: follow.sh hands over the digest it just verified so a tick asks GitHub once.
+FAKE_GATE_HANDOFF = f"""\
+import sys
+args = sys.argv[1:]
+open(sys.argv[0] + ".calls", "a").write(" ".join(args) + "\\n")
+if "--resolve-only" in args:
+    print("{PINNED}\\t" + "a" * 40)
+    sys.exit(0)
+print("deploy gate: REFUSED: the full gate must not run for a handed-over digest", file=sys.stderr)
+sys.exit(78)
+"""
+
+
+def test_a_handed_over_digest_skips_the_github_half_but_still_resolves_the_tag(
+    deploy_env: dict,
+) -> None:
+    deploy_env["gate"].write_text(FAKE_GATE_HANDOFF)
+    result = deploy(deploy_env, "sha-aaaaaaa", AT_FOLLOW_VERIFIED_DIGEST=PINNED)
+    assert result.returncode == 0, result.stderr
+    gate_calls = (
+        (deploy_env["gate"].with_name("gate.py.calls")).read_text().splitlines()
+    )
+    assert gate_calls == [
+        f"--image {IMAGE}:sha-aaaaaaa --resolve-only"
+    ]  # registry only
+    assert marker(deploy_env) == REF_B  # PINNED == REF_B: it deployed that digest
+
+
+def test_a_handed_over_digest_that_the_tag_does_not_resolve_to_runs_the_full_gate(
+    deploy_env: dict,
+) -> None:
+    deploy_env["gate"].write_text(FAKE_GATE_HANDOFF)
+    other = f"{IMAGE}@sha256:{'2' * 64}"
+    result = deploy(deploy_env, "sha-aaaaaaa", AT_FOLLOW_VERIFIED_DIGEST=other)
+    assert result.returncode == 78 and "no container was touched" in result.stderr
+    assert recorded(deploy_env) == []
+    gate_calls = (
+        (deploy_env["gate"].with_name("gate.py.calls")).read_text().splitlines()
+    )
+    assert (
+        gate_calls[-1] == f"--image {IMAGE}:sha-aaaaaaa"
+    )  # fell through to the full gate
+
+
+def test_without_a_valid_handoff_a_manual_run_always_runs_the_full_gate(
+    deploy_env: dict,
+) -> None:
+    # without the variable (a manual run) the full gate always runs
+    deploy_env["gate"].write_text(FAKE_GATE_HANDOFF)
+    result = deploy(deploy_env, "sha-aaaaaaa")
+    assert result.returncode == 78 and recorded(deploy_env) == []
+    # a malformed handoff value is ignored, not trusted
+    result = deploy(
+        deploy_env, "sha-aaaaaaa", AT_FOLLOW_VERIFIED_DIGEST="sha256:" + "1" * 64
+    )
+    assert result.returncode == 78 and recorded(deploy_env) == []
+
+
 def test_gate_python_too_old_refuses_before_any_container(deploy_env: dict) -> None:
     old = executable(deploy_env["tmp"] / "oldpy", "#!/bin/sh\nexit 1\n")
     result = deploy(deploy_env, "main", AT_DEPLOY_GATE_PYTHON=str(old))
