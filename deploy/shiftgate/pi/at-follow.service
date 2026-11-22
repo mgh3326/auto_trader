@@ -1,0 +1,15 @@
+# pi 자동 배포 follow (hk 6037). 레포에는 파일만 있다: 설치·enable 은 설계 세션이 한다
+# (docs/runbooks/pi-shiftgate-deploy.md 「자동 배포 (follow)」). 타이머가 부르는 한 번짜리 실행이다.
+[Unit]
+Description=AT pi auto deploy: install the deploy-tag image after re-verifying it (hk 6037)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/at-run/shiftgate-pi/follow.sh
+# 75 = 다른 배포가 호스트 잠금을 잡고 있다: 실패가 아니라 다음 틱에 다시 한다.
+SuccessExitStatus=75
+# 백업 + 배포(이미지 pull 포함)가 끝나기까지 충분한 시간.
+TimeoutStartSec=3600
+Nice=10

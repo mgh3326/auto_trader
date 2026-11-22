@@ -467,7 +467,11 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
     if approval_ref and not _APPROVAL_REF.fullmatch(approval_ref):
         print("promote: --approval-ref is not a valid hk decision reference", file=sys.stderr)
         return EXIT_REFUSED
-    pinned = verify_candidate(sha, args.repo, run)
+    try:
+        pinned = verify_candidate(sha, args.repo, run)
+    except SystemExit:
+        notify_discord(f"⛔ AT 배포 승격 거부 {sha[:7]} — 게이트(CI·main 조상·이미지 확인)를 통과하지 못했다. deploy 태그는 그대로다.")
+        raise
     previous_digest, previous = current_deploy(run)
     review = review_range(Path(args.repo_root), previous, sha)
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
