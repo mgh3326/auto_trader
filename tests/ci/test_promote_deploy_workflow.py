@@ -18,7 +18,9 @@ def load(path: Path) -> dict:
     return data
 
 
-def test_deploy_yml_calls_the_promote_workflow_only_after_a_successful_main_push_build() -> None:
+def test_deploy_yml_calls_the_promote_workflow_only_after_a_successful_main_push_build() -> (
+    None
+):
     job = load(DEPLOY)["jobs"]["promote"]
     assert job["uses"] == "./.github/workflows/promote-deploy.yml"
     assert job["needs"] == "build-and-push"
@@ -33,7 +35,11 @@ def test_deploy_yml_calls_the_promote_workflow_only_after_a_successful_main_push
     ):
         assert needle in condition, needle
     assert job["with"]["sha"] == "${{ needs.build-and-push.outputs.sha }}"
-    assert job["permissions"] == {"contents": "read", "packages": "write", "actions": "read"}
+    assert job["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "actions": "read",
+    }
 
 
 def test_promote_runs_one_at_a_time_and_is_never_cancelled() -> None:
@@ -67,8 +73,12 @@ def test_the_logic_lives_in_the_script_and_the_tag_is_moved_nowhere_else() -> No
     assert any("python3 scripts/ci/promote_deploy.py promote" in run for run in runs)
     assert "imagetools create" not in executable_text(load(PROMOTE)["jobs"]["promote"])
     assert "imagetools create" not in executable_text(load(DEPLOY)["jobs"]["promote"])
-    checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout@"))
-    assert checkout["with"]["fetch-depth"] == 0  # the range review needs the deployed commit
+    checkout = next(
+        s for s in steps if s.get("uses", "").startswith("actions/checkout@")
+    )
+    assert (
+        checkout["with"]["fetch-depth"] == 0
+    )  # the range review needs the deployed commit
     assert checkout["with"]["persist-credentials"] is False
     # approval is an input to the script, never an expression that skips a step
     assert all("approval" not in str(step.get("if", "")) for step in steps)
@@ -78,11 +88,18 @@ def test_there_is_no_path_into_the_pi() -> None:
     jobs = [load(PROMOTE)["jobs"]["promote"], load(DEPLOY)["jobs"]["promote"]]
     for job in jobs:
         text = executable_text(job)
-        assert not re.search(r"\b(ssh|scp|rsync|tailscale|cloudflared|nc)\b", text, re.I)
+        assert not re.search(
+            r"\b(ssh|scp|rsync|tailscale|cloudflared|nc)\b", text, re.I
+        )
     secrets = set(re.findall(r"secrets\.([A-Z_]+)", PROMOTE.read_text()))
-    assert secrets == {"GITHUB_TOKEN", "DISCORD_WEBHOOK_URL"}  # no deploy key, no ssh secret
+    assert secrets == {
+        "GITHUB_TOKEN",
+        "DISCORD_WEBHOOK_URL",
+    }  # no deploy key, no ssh secret
 
 
 def test_the_build_job_is_unchanged_in_what_it_gates() -> None:
     build = load(DEPLOY)["jobs"]["build-and-push"]
-    assert "github.event.workflow_run.conclusion != 'cancelled'" in " ".join(build["if"].split())
+    assert "github.event.workflow_run.conclusion != 'cancelled'" in " ".join(
+        build["if"].split()
+    )

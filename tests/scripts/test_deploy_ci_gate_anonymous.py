@@ -69,7 +69,12 @@ def green_routes(compare_status: str = "ahead") -> dict[str, object]:
         "/actions/runs/100/attempts/1/jobs?": FakeResponse(
             {
                 "jobs": [
-                    {"id": n, "name": name, "status": "completed", "conclusion": "success"}
+                    {
+                        "id": n,
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
                     for n, name in enumerate(CHECKS, 1)
                 ]
             }
@@ -161,7 +166,13 @@ def test_main_ancestor_accepts_ahead_and_identical(github, monkeypatch):
         image(monkeypatch)
         assert (
             gate.main(
-                ["--github", "anonymous", "--image", f"{gate.IMAGE_REPOSITORY}:deploy", "--main-ancestor"]
+                [
+                    "--github",
+                    "anonymous",
+                    "--image",
+                    f"{gate.IMAGE_REPOSITORY}:deploy",
+                    "--main-ancestor",
+                ]
             )
             == 0
         )
@@ -174,7 +185,13 @@ def test_a_commit_off_main_is_refused_even_with_a_green_suite(
     github(green_routes(status))
     image(monkeypatch)
     rc = gate.main(
-        ["--github", "anonymous", "--image", f"{gate.IMAGE_REPOSITORY}:deploy", "--main-ancestor"]
+        [
+            "--github",
+            "anonymous",
+            "--image",
+            f"{gate.IMAGE_REPOSITORY}:deploy",
+            "--main-ancestor",
+        ]
     )
     assert rc == 78
     err = capsys.readouterr().err
@@ -207,7 +224,13 @@ def test_unreadable_ancestry_evidence_refuses(github, monkeypatch):
     image(monkeypatch)
     assert (
         gate.main(
-            ["--github", "anonymous", "--image", f"{gate.IMAGE_REPOSITORY}:deploy", "--main-ancestor"]
+            [
+                "--github",
+                "anonymous",
+                "--image",
+                f"{gate.IMAGE_REPOSITORY}:deploy",
+                "--main-ancestor",
+            ]
         )
         == 78
     )
@@ -217,15 +240,20 @@ def test_expect_sha_must_match_the_images_revision(github, monkeypatch, capsys):
     github(green_routes())
     image(monkeypatch, sha=OTHER)
     rc = gate.main(
-        ["--github", "anonymous", "--image", f"{gate.IMAGE_REPOSITORY}:deploy", "--expect-sha", SHA]
+        [
+            "--github",
+            "anonymous",
+            "--image",
+            f"{gate.IMAGE_REPOSITORY}:deploy",
+            "--expect-sha",
+            SHA,
+        ]
     )
     assert rc == 78
     assert "is not the expected" in capsys.readouterr().err
 
 
-def test_resolve_only_prints_digest_and_sha_and_touches_no_github(
-    monkeypatch, capsys
-):
+def test_resolve_only_prints_digest_and_sha_and_touches_no_github(monkeypatch, capsys):
     monkeypatch.setattr(
         gate, "_api_pages", lambda _e: pytest.fail("GitHub must not be read")
     )
@@ -243,11 +271,22 @@ def test_default_mode_still_uses_gh(monkeypatch, capsys):
     def command(argv: list[str]):
         seen.append(argv)
         if "/workflows/test.yml/runs?" in argv[-1]:
-            return [{"workflow_runs": [{"id": 100, "run_attempt": 1, "head_sha": SHA, "event": "push"}]}]
+            return [
+                {
+                    "workflow_runs": [
+                        {"id": 100, "run_attempt": 1, "head_sha": SHA, "event": "push"}
+                    ]
+                }
+            ]
         return [
             {
                 "jobs": [
-                    {"id": n, "name": name, "status": "completed", "conclusion": "success"}
+                    {
+                        "id": n,
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
                     for n, name in enumerate(CHECKS, 1)
                 ]
             }

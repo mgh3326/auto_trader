@@ -35,7 +35,16 @@ OLD_PINNED = f"{IMAGE}@{OLD_DIGEST}"
 
 def git(root: Path, *args: str) -> str:
     done = subprocess.run(
-        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            *args,
+        ],
         capture_output=True,
         text=True,
         check=True,
@@ -104,7 +113,10 @@ def test_the_reader_fails_closed_on_anything_it_does_not_understand(text: str) -
 
 
 def test_an_explicit_empty_list_is_an_empty_policy() -> None:
-    assert pd.parse_deploy_approval("version: 1\ndeploy_approval: []\nenabled: true\n") == []
+    assert (
+        pd.parse_deploy_approval("version: 1\ndeploy_approval: []\nenabled: true\n")
+        == []
+    )
 
 
 @pytest.mark.parametrize(
@@ -117,11 +129,21 @@ def test_an_explicit_empty_list_is_an_empty_policy() -> None:
         ("**/prefect.yaml", "a/b/prefect.yaml", True),
         ("app/services/kis_trading*.py", "app/services/kis_trading_service.py", True),
         ("app/services/kis_trading*.py", "app/services/x/kis_trading_a.py", False),
-        ("ops/ncp/systemd/job-kickoff-[0-9]*.timer", "ops/ncp/systemd/job-kickoff-0905.timer", True),
-        ("ops/ncp/systemd/job-kickoff-[0-9]*.timer", "ops/ncp/systemd/job-kickoff-us-x.timer", False),
+        (
+            "ops/ncp/systemd/job-kickoff-[0-9]*.timer",
+            "ops/ncp/systemd/job-kickoff-0905.timer",
+            True,
+        ),
+        (
+            "ops/ncp/systemd/job-kickoff-[0-9]*.timer",
+            "ops/ncp/systemd/job-kickoff-us-x.timer",
+            False,
+        ),
     ],
 )
-def test_globs_follow_mergewakes_segment_rules(glob: str, name: str, expected: bool) -> None:
+def test_globs_follow_mergewakes_segment_rules(
+    glob: str, name: str, expected: bool
+) -> None:
     assert pd.match_glob(glob, name) is expected
 
 
@@ -134,7 +156,9 @@ def test_invalid_globs_are_errors_not_matches(glob: str) -> None:
 # ------------------------------------------------------- the fixture of mergewake
 
 
-def test_every_row_of_the_mergewake_fixture_holds_or_passes_the_same_way(repo: Path) -> None:
+def test_every_row_of_the_mergewake_fixture_holds_or_passes_the_same_way(
+    repo: Path,
+) -> None:
     """tests/fixtures/mergewake_deploy_approval_paths.json is the rule's own evidence."""
     start = base(repo)
     wrong = []
@@ -153,7 +177,9 @@ def test_every_row_of_the_mergewake_fixture_holds_or_passes_the_same_way(repo: P
 
 def test_a_routine_range_promotes(repo: Path) -> None:
     start = base(repo)
-    release = commit(repo, {"docs/b.md": "b\n", "app/services/mock_strategy/x.py": "x\n"})
+    release = commit(
+        repo, {"docs/b.md": "b\n", "app/services/mock_strategy/x.py": "x\n"}
+    )
     result = review(repo, start, release)
     assert result.status == "routine" and result.paths == [] and result.reasons == []
 
@@ -169,14 +195,18 @@ def test_a_routine_range_promotes(repo: Path) -> None:
         "config/trading_policy.yaml",
     ],
 )
-def test_ranges_touching_approval_paths_hold_and_name_them(repo: Path, path: str) -> None:
+def test_ranges_touching_approval_paths_hold_and_name_them(
+    repo: Path, path: str
+) -> None:
     start = base(repo)
     release = commit(repo, {"docs/b.md": "b\n", path: "x\n"})
     result = review(repo, start, release)
     assert result.held and result.paths == [path] and result.reasons
 
 
-def test_a_new_migration_holds_even_when_the_deployed_policy_has_no_rules(repo: Path) -> None:
+def test_a_new_migration_holds_even_when_the_deployed_policy_has_no_rules(
+    repo: Path,
+) -> None:
     start = base(repo, policy="version: 1\ndeploy_approval: []\n")
     routine = commit(repo, {"docs/b.md": "b\n"})
     assert review(repo, start, routine).status == "routine"
@@ -196,13 +226,24 @@ def test_a_release_cannot_relax_its_own_gate_by_editing_the_policy(repo: Path) -
     )
     result = review(repo, start, release)
     assert result.held
-    assert ".mergewake/policy.yaml" in result.paths  # the policy file itself always holds
-    assert "app/services/brokers/kis/domestic_orders.py" in result.paths  # old rules still apply
+    assert (
+        ".mergewake/policy.yaml" in result.paths
+    )  # the policy file itself always holds
+    assert (
+        "app/services/brokers/kis/domestic_orders.py" in result.paths
+    )  # old rules still apply
 
 
 @pytest.mark.parametrize(
     "path",
-    [".env", "deploy/.env.api", "env.example", "config/secrets/token.txt", "keys/server.pem", "a/credentials.json"],
+    [
+        ".env",
+        "deploy/.env.api",
+        "env.example",
+        "config/secrets/token.txt",
+        "keys/server.pem",
+        "a/credentials.json",
+    ],
 )
 def test_environment_and_secret_paths_always_hold(repo: Path, path: str) -> None:
     start = base(repo, policy="version: 1\ndeploy_approval: []\n")
@@ -212,7 +253,14 @@ def test_environment_and_secret_paths_always_hold(repo: Path, path: str) -> None
 
 def test_a_rename_is_checked_by_both_names(repo: Path) -> None:
     start = base(repo)
-    commit(repo, {"app/services/brokers/kis/domestic_orders.py": "def f():\n    return 1\n" * 20}, "add")
+    commit(
+        repo,
+        {
+            "app/services/brokers/kis/domestic_orders.py": "def f():\n    return 1\n"
+            * 20
+        },
+        "add",
+    )
     start = git(repo, "rev-parse", "HEAD")
     git(repo, "mv", "app/services/brokers/kis/domestic_orders.py", "docs/moved.md")
     git(repo, "commit", "-q", "-m", "rename out of a held path")
@@ -298,17 +346,30 @@ class Registry:
         if "--resolve-only" in argv:
             if self.deploy_tag is None:
                 return subprocess.CompletedProcess(argv, 78, "", "no such tag\n")
-            return subprocess.CompletedProcess(argv, 0, f"{self.deploy_tag[0]}\t{self.deploy_tag[1]}\n", "")
-        return subprocess.CompletedProcess(argv, self.gate_rc, self.gate_stdout + "\n", "gate\n")
+            return subprocess.CompletedProcess(
+                argv, 0, f"{self.deploy_tag[0]}\t{self.deploy_tag[1]}\n", ""
+            )
+        return subprocess.CompletedProcess(
+            argv, self.gate_rc, self.gate_stdout + "\n", "gate\n"
+        )
 
     candidate = ""
 
     def created(self) -> list[list[str]]:
-        return [call for call in self.calls if call[:4] == ["docker", "buildx", "imagetools", "create"]]
+        return [
+            call
+            for call in self.calls
+            if call[:4] == ["docker", "buildx", "imagetools", "create"]
+        ]
 
 
 def args(repo: Path, sha: str, approval_ref: str = "") -> argparse.Namespace:
-    return argparse.Namespace(sha=sha, repo="mgh3326/auto_trader", repo_root=str(repo), approval_ref=approval_ref)
+    return argparse.Namespace(
+        sha=sha,
+        repo="mgh3326/auto_trader",
+        repo_root=str(repo),
+        approval_ref=approval_ref,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -322,13 +383,17 @@ def summary(tmp_path: Path) -> str:
     return path.read_text() if path.exists() else ""
 
 
-def test_a_routine_range_moves_the_deploy_tag_onto_the_verified_digest(repo: Path, tmp_path: Path) -> None:
+def test_a_routine_range_moves_the_deploy_tag_onto_the_verified_digest(
+    repo: Path, tmp_path: Path
+) -> None:
     start = base(repo)
     release = commit(repo, {"docs/b.md": "b\n"})
     fake = Registry(deploy_tag=(OLD_PINNED, start))
     fake.candidate = release
     assert pd.promote(args(repo, release), fake) == 0
-    assert fake.created() == [["docker", "buildx", "imagetools", "create", "--tag", f"{IMAGE}:deploy", PINNED]]
+    assert fake.created() == [
+        ["docker", "buildx", "imagetools", "create", "--tag", f"{IMAGE}:deploy", PINNED]
+    ]
     assert "승격" in summary(tmp_path)
     # the gate ran first and asked for the exact commit, main ancestry and the image identity
     first = fake.calls[0]
@@ -337,7 +402,9 @@ def test_a_routine_range_moves_the_deploy_tag_onto_the_verified_digest(repo: Pat
     assert first[first.index("--image") + 1] == f"{IMAGE}:sha-{release[:7]}"
 
 
-def test_a_held_range_moves_nothing_and_says_what_to_approve(repo: Path, tmp_path: Path) -> None:
+def test_a_held_range_moves_nothing_and_says_what_to_approve(
+    repo: Path, tmp_path: Path
+) -> None:
     start = base(repo)
     release = commit(repo, {"alembic/versions/20261122_x.py": "x\n"})
     fake = Registry(deploy_tag=(OLD_PINNED, start))
@@ -354,7 +421,10 @@ def test_an_approval_waives_the_range_hold_only(repo: Path, tmp_path: Path) -> N
     release = commit(repo, {"alembic/versions/20261122_x.py": "x\n"})
     fake = Registry(deploy_tag=(OLD_PINNED, start))
     fake.candidate = release
-    assert pd.promote(args(repo, release, "decision/2026-11-22/at-migration-ok"), fake) == 0
+    assert (
+        pd.promote(args(repo, release, "decision/2026-11-22/at-migration-ok"), fake)
+        == 0
+    )
     assert len(fake.created()) == 1
     assert "decision/2026-11-22/at-migration-ok" in summary(tmp_path)
 
@@ -367,7 +437,9 @@ def test_an_approval_waives_the_range_hold_only(repo: Path, tmp_path: Path) -> N
     assert refused.created() == []
 
 
-def test_a_malformed_approval_reference_is_refused_before_anything_runs(repo: Path) -> None:
+def test_a_malformed_approval_reference_is_refused_before_anything_runs(
+    repo: Path,
+) -> None:
     release = base(repo)
     fake = Registry()
     assert pd.promote(args(repo, release, "ok; rm -rf /"), fake) == pd.EXIT_REFUSED
@@ -390,7 +462,9 @@ def test_a_gate_answer_that_is_not_a_digest_is_refused(repo: Path) -> None:
         pd.promote(args(repo, release), Registry(gate_stdout=f"{IMAGE}:main"))
 
 
-def test_no_deploy_tag_yet_holds_for_bootstrap_approval(repo: Path, tmp_path: Path) -> None:
+def test_no_deploy_tag_yet_holds_for_bootstrap_approval(
+    repo: Path, tmp_path: Path
+) -> None:
     release = base(repo)
     fake = Registry(deploy_tag=None)
     fake.candidate = release
@@ -400,7 +474,9 @@ def test_no_deploy_tag_yet_holds_for_bootstrap_approval(repo: Path, tmp_path: Pa
     assert len(fake.created()) == 1
 
 
-def test_an_older_build_never_rewinds_the_tag_and_the_current_one_is_a_no_op(repo: Path) -> None:
+def test_an_older_build_never_rewinds_the_tag_and_the_current_one_is_a_no_op(
+    repo: Path,
+) -> None:
     start = base(repo)
     release = commit(repo, {"docs/b.md": "b\n"})
     fake = Registry(deploy_tag=(PINNED, release))
@@ -454,7 +530,13 @@ def test_evaluate_exit_codes(repo: Path, capsys: pytest.CaptureFixture[str]) -> 
     start = base(repo)
     routine = commit(repo, {"docs/b.md": "b\n"})
     held = commit(repo, {"alembic/versions/20261122_x.py": "x\n"})
-    ns = lambda prev, sha: argparse.Namespace(previous=prev, sha=sha, repo_root=str(repo))  # noqa: E731
+
+    def ns(prev: str, sha: str) -> argparse.Namespace:
+        return argparse.Namespace(previous=prev, sha=sha, repo_root=str(repo))
+
     assert pd.evaluate(ns(start, routine)) == 0
     assert pd.evaluate(ns(routine, held)) == pd.EXIT_HOLD
-    assert json.loads(capsys.readouterr().out.split("\n}\n")[1] + "\n}")["status"] == "hold"
+    assert (
+        json.loads(capsys.readouterr().out.split("\n}\n")[1] + "\n}")["status"]
+        == "hold"
+    )

@@ -161,7 +161,9 @@ def main_ancestor_problems(sha: str, repo: str) -> list[str]:
         raise GateError("GitHub compare evidence is invalid")
     if first["status"] in ("ahead", "identical"):
         return []
-    return [f"main-ancestor: {sha} is not an ancestor of main (compare {first['status']})"]
+    return [
+        f"main-ancestor: {sha} is not an ancestor of main (compare {first['status']})"
+    ]
 
 
 def _positive_int(value: Any) -> bool:
@@ -344,7 +346,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(sha, str) or not _SHA.fullmatch(sha):
             raise GateError("deploy SHA must be a full 40-character commit SHA")
         if args.expect_sha and args.expect_sha != sha:
-            raise GateError(f"image revision {sha} is not the expected {args.expect_sha}")
+            raise GateError(
+                f"image revision {sha} is not the expected {args.expect_sha}"
+            )
         _github_mode()
     except GateError as exc:
         print(f"deploy gate: REFUSED: {exc}", file=sys.stderr)

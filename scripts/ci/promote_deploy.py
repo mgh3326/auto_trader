@@ -72,7 +72,9 @@ class PolicyError(HoldError):
 # --------------------------------------------------------------------- policy
 
 _RULE_START = re.compile(r"^  - paths:\s*(\[.*\])?\s*(#.*)?$")
-_PATH_ITEM = re.compile(r"^      - ('([^']*)'|\"([^\"]*)\"|([^\s#'\"][^#]*?))\s*(#.*)?$")
+_PATH_ITEM = re.compile(
+    r"^      - ('([^']*)'|\"([^\"]*)\"|([^\s#'\"][^#]*?))\s*(#.*)?$"
+)
 _REASON = re.compile(r"^    reason:\s*(.*?)\s*$")
 _TOP_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*:")
 
@@ -218,7 +220,8 @@ def is_protected(name: str) -> bool:
     ):
         return True
     return any(
-        segment in ("secrets", "secret", "env", ".env") for segment in name.lower().split("/")
+        segment in ("secrets", "secret", "env", ".env")
+        for segment in name.lower().split("/")
     )
 
 
@@ -256,7 +259,13 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def changed_files(root: Path, previous: str, release: str) -> list[tuple[str, str]]:
     """(path, previous_name) for every changed file; a rename lists both names."""
     done = _git(
-        root, "diff", "--name-status", "-z", "-M", "--no-ext-diff", f"{previous}..{release}"
+        root,
+        "diff",
+        "--name-status",
+        "-z",
+        "-M",
+        "--no-ext-diff",
+        f"{previous}..{release}",
     )
     if done.returncode != 0:
         raise HoldError("change range unavailable")
@@ -296,14 +305,18 @@ def review_range(root: Path, previous: str, release: str) -> Review:
     for sha in (previous, release):
         if _git(root, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
             review.status = "hold"
-            review.reasons.append(f"commit {sha[:7]} is not in the checkout (history unavailable)")
+            review.reasons.append(
+                f"commit {sha[:7]} is not in the checkout (history unavailable)"
+            )
             return review
     if _git(root, "merge-base", "--is-ancestor", release, previous).returncode == 0:
         review.status = "stale"  # an older build finishing late: nothing to promote
         return review
     if _git(root, "merge-base", "--is-ancestor", previous, release).returncode != 0:
         review.status = "hold"
-        review.reasons.append("divergent history: the deployed commit is not an ancestor of the release")
+        review.reasons.append(
+            "divergent history: the deployed commit is not an ancestor of the release"
+        )
         return review
     try:
         files = changed_files(root, previous, release)
@@ -313,14 +326,18 @@ def review_range(root: Path, previous: str, release: str) -> Review:
         return review
     if len(files) >= FILE_LIMIT:
         review.status = "hold"
-        review.reasons.append(f"change range reaches the {FILE_LIMIT}-file comparison limit")
+        review.reasons.append(
+            f"change range reaches the {FILE_LIMIT}-file comparison limit"
+        )
         return review
     # Load the policy from the DEPLOYED commit: a release cannot relax its own gate.
     policy = _git(root, "show", f"{previous}:{POLICY_PATH}")
     rules: list[dict[str, Any]] = []
     if policy.returncode != 0:
         review.status = "hold"
-        review.reasons.append("deployment approval policy unavailable at the deployed commit")
+        review.reasons.append(
+            "deployment approval policy unavailable at the deployed commit"
+        )
     else:
         try:
             rules = parse_deploy_approval(policy.stdout)
@@ -386,7 +403,9 @@ def verify_candidate(sha: str, repo: str, run: Runner) -> str:
     if done.returncode != 0:
         raise SystemExit(EXIT_REFUSED)
     pinned = done.stdout.strip().splitlines()[-1] if done.stdout.strip() else ""
-    if not re.fullmatch(rf"{re.escape(IMAGE_REPOSITORY)}@sha256:[0-9a-f]{{64}}", pinned):
+    if not re.fullmatch(
+        rf"{re.escape(IMAGE_REPOSITORY)}@sha256:[0-9a-f]{{64}}", pinned
+    ):
         print("promote: the gate returned no immutable image digest", file=sys.stderr)
         raise SystemExit(EXIT_REFUSED)
     return pinned
@@ -395,7 +414,13 @@ def verify_candidate(sha: str, repo: str, run: Runner) -> str:
 def current_deploy(run: Runner) -> tuple[str, str]:
     """(pinned digest, commit) the `deploy` tag carries now; ('none','unknown') if unknown."""
     done = run(
-        [sys.executable, _gate_script(), "--image", f"{IMAGE_REPOSITORY}:{DEPLOY_TAG}", "--resolve-only"]
+        [
+            sys.executable,
+            _gate_script(),
+            "--image",
+            f"{IMAGE_REPOSITORY}:{DEPLOY_TAG}",
+            "--resolve-only",
+        ]
     )
     if done.returncode != 0 or "\t" not in done.stdout:
         return "none", "unknown"
@@ -422,7 +447,10 @@ def render_summary(
             *[f"- {reason}" for reason in data["reasons"]],
             "",
             "### 걸린 경로",
-            *([f"- `{path}`" for path in data["paths"]] or ["- (경로 없음: 범위를 확인하지 못함)"]),
+            *(
+                [f"- `{path}`" for path in data["paths"]]
+                or ["- (경로 없음: 범위를 확인하지 못함)"]
+            ),
             "",
             "### 운영자가 할 일",
             "1. hk 에 위 범위를 승인하는 결정을 남긴다(사람 승인 · 후보 SHA 정확히 일치).",
@@ -439,7 +467,9 @@ def render_summary(
             *[f"- 면제된 사유: {reason}" for reason in data["reasons"]],
         ]
     else:
-        lines.append("- 결과: **승격** — `deploy` 태그를 같은 digest 로 옮겼다(이미지 재빌드 없음).")
+        lines.append(
+            "- 결과: **승격** — `deploy` 태그를 같은 digest 로 옮겼다(이미지 재빌드 없음)."
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -450,7 +480,12 @@ def notify_discord(message: str) -> None:
         return
     body = json.dumps({"content": message[:1800]}).encode()
     request = urllib.request.Request(
-        hook, data=body, headers={"Content-Type": "application/json", "User-Agent": "auto-trader-promote"}
+        hook,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "auto-trader-promote",
+        },
     )
     try:
         urllib.request.urlopen(request, timeout=10).close()  # noqa: S310 - https webhook from a secret
@@ -465,12 +500,17 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
         return EXIT_REFUSED
     approval_ref = args.approval_ref or ""
     if approval_ref and not _APPROVAL_REF.fullmatch(approval_ref):
-        print("promote: --approval-ref is not a valid hk decision reference", file=sys.stderr)
+        print(
+            "promote: --approval-ref is not a valid hk decision reference",
+            file=sys.stderr,
+        )
         return EXIT_REFUSED
     try:
         pinned = verify_candidate(sha, args.repo, run)
     except SystemExit:
-        notify_discord(f"⛔ AT 배포 승격 거부 {sha[:7]} — 게이트(CI·main 조상·이미지 확인)를 통과하지 못했다. deploy 태그는 그대로다.")
+        notify_discord(
+            f"⛔ AT 배포 승격 거부 {sha[:7]} — 게이트(CI·main 조상·이미지 확인)를 통과하지 못했다. deploy 태그는 그대로다."
+        )
         raise
     previous_digest, previous = current_deploy(run)
     review = review_range(Path(args.repo_root), previous, sha)
@@ -488,7 +528,9 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
 
     if review.status == "same":
         if previous_digest == pinned:
-            emit(f"## 배포 승격\n\n`{sha[:7]}` 는 이미 `{DEPLOY_TAG}` 태그가 가리킨다. 할 일 없음.\n")
+            emit(
+                f"## 배포 승격\n\n`{sha[:7]}` 는 이미 `{DEPLOY_TAG}` 태그가 가리킨다. 할 일 없음.\n"
+            )
             return 0
         # Same commit, different digest (a rebuild): the tag follows the verified image.
         review.status = "routine"
@@ -500,7 +542,11 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
         return 0
     held = review.held and not approval_ref
     if held:
-        emit(render_summary(review, held=True, approval_ref="", pinned=pinned, command=command))
+        emit(
+            render_summary(
+                review, held=True, approval_ref="", pinned=pinned, command=command
+            )
+        )
         print(
             f"::warning::deploy held for operator approval: {sha[:7]} ({len(review.paths)} paths)",
             flush=True,
@@ -512,7 +558,15 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
         )
         return 0
     done = run(
-        ["docker", "buildx", "imagetools", "create", "--tag", f"{IMAGE_REPOSITORY}:{DEPLOY_TAG}", pinned]
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "create",
+            "--tag",
+            f"{IMAGE_REPOSITORY}:{DEPLOY_TAG}",
+            pinned,
+        ]
     )
     sys.stderr.write(done.stderr)
     if done.returncode != 0:
@@ -525,7 +579,15 @@ def promote(args: argparse.Namespace, run: Runner = _run) -> int:
             file=sys.stderr,
         )
         return 1
-    emit(render_summary(review, held=False, approval_ref=approval_ref, pinned=pinned, command=command))
+    emit(
+        render_summary(
+            review,
+            held=False,
+            approval_ref=approval_ref,
+            pinned=pinned,
+            command=command,
+        )
+    )
     return 0
 
 
@@ -538,13 +600,17 @@ def evaluate(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("promote", help="verify the SHA, review the range, move the deploy tag")
+    run = sub.add_parser(
+        "promote", help="verify the SHA, review the range, move the deploy tag"
+    )
     run.add_argument("--sha", required=True)
     run.add_argument("--repo", default=REPOSITORY)
     run.add_argument("--repo-root", default=".")
     run.add_argument("--approval-ref", default="")
     run.set_defaults(func=promote)
-    ev = sub.add_parser("evaluate", help="print the deploy_approval review of previous..sha")
+    ev = sub.add_parser(
+        "evaluate", help="print the deploy_approval review of previous..sha"
+    )
     ev.add_argument("--previous", required=True, help="full SHA or 'unknown'")
     ev.add_argument("--sha", required=True)
     ev.add_argument("--repo-root", default=".")

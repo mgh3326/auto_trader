@@ -27,7 +27,7 @@ REF_A, REF_B = f"{IMAGE}@sha256:{HEX_A}", f"{IMAGE}@sha256:{HEX_B}"
 
 # --- fakes --------------------------------------------------------------------------------------
 
-FAKE_GATE = r'''
+FAKE_GATE = r"""
 import json, os, sys
 d = os.environ["FAKE_DIR"]
 argv = sys.argv[1:]
@@ -53,9 +53,9 @@ if verdict == "ok":
     sys.exit(0)
 sys.stderr.write("deploy gate: " + verdict + "\n")
 sys.exit(78)
-'''
+"""
 
-FAKE_DEPLOY = r'''#!/usr/bin/env bash
+FAKE_DEPLOY = r"""#!/usr/bin/env bash
 d="$FAKE_DIR"
 printf 'deploy %s|github=%s|lock=%s\n' "$*" "${AT_DEPLOY_GATE_GITHUB:-}" "${AT_DEPLOY_LOCK_HELD:-}" >>"$d/calls"
 rc="$(cat "$d/deploy_rc" 2>/dev/null || echo 0)"
@@ -65,17 +65,17 @@ if [[ "$rc" == 0 && ! -e "$d/deploy_skips_marker" ]]; then
 fi
 echo "fake deploy output"
 exit "$rc"
-'''
+"""
 
-FAKE_SYSTEMCTL = r'''#!/usr/bin/env bash
+FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >>"$FAKE_DIR/calls"
 exit "$(cat "$FAKE_DIR/backup_rc" 2>/dev/null || echo 0)"
-'''
+"""
 
-FAKE_PANEWIRE = r'''#!/usr/bin/env bash
+FAKE_PANEWIRE = r"""#!/usr/bin/env bash
 printf 'panewire %s\n' "$*" >>"$FAKE_DIR/calls"
 exit "$(cat "$FAKE_DIR/panewire_rc" 2>/dev/null || echo 0)"
-'''
+"""
 
 
 def executable(path: Path, body: str) -> Path:
@@ -112,7 +112,9 @@ def host(tmp_path: Path) -> dict:
     return state
 
 
-def set_tags(state: dict, *, deploy: tuple[str, str], sha: tuple[str, str] | None) -> None:
+def set_tags(
+    state: dict, *, deploy: tuple[str, str], sha: tuple[str, str] | None
+) -> None:
     (state["fake"] / "tag.deploy").write_text(f"{deploy[0]}\t{deploy[1]}\n")
     short = deploy[1][:7]
     target = state["fake"] / f"tag.sha-{short}"
@@ -146,7 +148,11 @@ def calls(state: dict) -> list[str]:
 
 def gate_log(state: dict) -> list[dict]:
     path = state["fake"] / "gate.log"
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    return (
+        [json.loads(line) for line in path.read_text().splitlines()]
+        if path.exists()
+        else []
+    )
 
 
 def verifications(state: dict) -> list[dict]:
@@ -164,22 +170,33 @@ def hold_line(state: dict) -> list[str]:
 # --- the happy path and the quiet no-ops --------------------------------------------------------
 
 
-def test_a_new_verified_digest_is_installed_after_a_backup_by_deploy_sh_with_the_sha_tag(host: dict) -> None:
+def test_a_new_verified_digest_is_installed_after_a_backup_by_deploy_sh_with_the_sha_tag(
+    host: dict,
+) -> None:
     result = follow(host)
     assert result.returncode == 0, result.stderr
     steps = calls(host)
-    assert [s.split("|")[0] for s in steps] == [f"systemctl start at-pg-backup.service", f"deploy sha-{SHA_B[:7]}"]
+    assert [s.split("|")[0] for s in steps] == [
+        "systemctl start at-pg-backup.service",
+        f"deploy sha-{SHA_B[:7]}",
+    ]
     deploy_call = steps[1]
     assert "--allow-unverified" not in deploy_call  # the timer never waives the gate
-    assert "github=anonymous" in deploy_call  # deploy.sh's own gate needs no gh on the pi
-    assert re.search(r"lock=\d+", deploy_call)  # follow holds the host lock and deploy.sh inherits it
+    assert (
+        "github=anonymous" in deploy_call
+    )  # deploy.sh's own gate needs no gh on the pi
+    assert re.search(
+        r"lock=\d+", deploy_call
+    )  # follow holds the host lock and deploy.sh inherits it
     assert (host["run"] / "deployed-digest").read_text().strip() == REF_B
     assert status(host)["result"] == "deployed" and status(host)["sha"] == SHA_B
     assert not (host["run"] / "follow-hold").exists()
     assert not (host["run"] / "shiftgate-deploy.lock").exists()  # the lock is released
 
 
-def test_the_independent_check_asks_for_main_ancestry_and_the_exact_sha_anonymously(host: dict) -> None:
+def test_the_independent_check_asks_for_main_ancestry_and_the_exact_sha_anonymously(
+    host: dict,
+) -> None:
     follow(host)
     (check,) = verifications(host)
     assert {"--main-ancestor", "--expect-sha", SHA_B}.issubset(check["argv"])
@@ -187,7 +204,9 @@ def test_the_independent_check_asks_for_main_ancestry_and_the_exact_sha_anonymou
     assert check["github"] == "anonymous"
 
 
-def test_the_same_digest_twice_is_a_quiet_no_op_that_never_reads_github(host: dict) -> None:
+def test_the_same_digest_twice_is_a_quiet_no_op_that_never_reads_github(
+    host: dict,
+) -> None:
     assert follow(host).returncode == 0
     host["fake"].joinpath("calls").write_text("")
     (host["fake"] / "gate.log").unlink()
@@ -211,7 +230,7 @@ def test_a_digest_already_installed_by_hand_is_not_installed_again(host: dict) -
     "verdict",
     [
         "main-ancestor: bbbb is not an ancestor of main (compare diverged)",
-        "test (3.13, 2): not successful [\"completed\", \"failure\"]",
+        'test (3.13, 2): not successful ["completed", "failure"]',
         "lint: missing",
     ],
 )
@@ -226,23 +245,31 @@ def test_a_refused_sha_installs_nothing_and_is_held(host: dict, verdict: str) ->
     assert digest == REF_B and retry_at == "0" and "gate refused" in reason
 
 
-def test_a_hand_moved_tag_onto_an_unverified_image_is_refused_even_if_the_tag_looks_legit(host: dict) -> None:
+def test_a_hand_moved_tag_onto_an_unverified_image_is_refused_even_if_the_tag_looks_legit(
+    host: dict,
+) -> None:
     # Someone moved `deploy` onto a digest whose commit never passed CI: the gate (not the tag) decides.
     set_tags(host, deploy=(REF_B, SHA_B), sha=(REF_B, SHA_B))
-    (host["fake"] / "verdict").write_text("lint: missing (no exact-SHA push/dispatch Test run)")
+    (host["fake"] / "verdict").write_text(
+        "lint: missing (no exact-SHA push/dispatch Test run)"
+    )
     assert follow(host).returncode == 78
     assert calls(host) == []
 
 
 def test_a_tag_that_moves_between_resolve_and_verify_is_refused(host: dict) -> None:
-    (host["fake"] / "verify_digest").write_text(REF_A)  # the gate saw a different digest
+    (host["fake"] / "verify_digest").write_text(
+        REF_A
+    )  # the gate saw a different digest
     result = follow(host)
     assert result.returncode == 78 and calls(host) == []
     assert "moved during verification" in status(host)["detail"]
 
 
 def test_the_sha_tag_must_be_the_verified_digest(host: dict) -> None:
-    set_tags(host, deploy=(REF_B, SHA_B), sha=(REF_A, SHA_B))  # sha-<7> points elsewhere
+    set_tags(
+        host, deploy=(REF_B, SHA_B), sha=(REF_A, SHA_B)
+    )  # sha-<7> points elsewhere
     assert follow(host).returncode == 78
     assert calls(host) == []
 
@@ -250,26 +277,40 @@ def test_the_sha_tag_must_be_the_verified_digest(host: dict) -> None:
 # --- invariant: a failed digest is not retried every tick ---------------------------------------
 
 
-def test_a_held_digest_is_skipped_quietly_until_a_new_digest_appears(host: dict) -> None:
+def test_a_held_digest_is_skipped_quietly_until_a_new_digest_appears(
+    host: dict,
+) -> None:
     (host["fake"] / "verdict").write_text("lint: missing")
     assert follow(host).returncode == 78
     n = len(verifications(host))
     quiet = follow(host)
-    assert quiet.returncode == 0 and quiet.stderr == "" and len(verifications(host)) == n
+    assert (
+        quiet.returncode == 0 and quiet.stderr == "" and len(verifications(host)) == n
+    )
     # a new digest appears and passes: the old hold does not get in the way
     (host["fake"] / "verdict").write_text("ok")
-    set_tags(host, deploy=(f"{IMAGE}@sha256:{'c' * 64}", "c" * 40), sha=(f"{IMAGE}@sha256:{'c' * 64}", "c" * 40))
+    set_tags(
+        host,
+        deploy=(f"{IMAGE}@sha256:{'c' * 64}", "c" * 40),
+        sha=(f"{IMAGE}@sha256:{'c' * 64}", "c" * 40),
+    )
     assert follow(host).returncode == 0
     assert any(c.startswith("deploy sha-ccccccc") for c in calls(host))
 
 
-def test_evidence_that_was_merely_unavailable_is_retried_once_after_the_wait(host: dict) -> None:
-    (host["fake"] / "verdict").write_text("main-ancestor: unverified (GitHub evidence unavailable (HTTP 403))")
+def test_evidence_that_was_merely_unavailable_is_retried_once_after_the_wait(
+    host: dict,
+) -> None:
+    (host["fake"] / "verdict").write_text(
+        "main-ancestor: unverified (GitHub evidence unavailable (HTTP 403))"
+    )
     assert follow(host).returncode == 78
     digest, created, retry_at, reason = hold_line(host)
     assert int(retry_at) > int(created) and "evidence unavailable" in reason
     n = len(verifications(host))
-    assert follow(host).returncode == 0 and len(verifications(host)) == n  # inside the wait: skipped
+    assert (
+        follow(host).returncode == 0 and len(verifications(host)) == n
+    )  # inside the wait: skipped
     # the wait is over and GitHub answers now
     (host["run"] / "follow-hold").write_text(f"{digest}\t{created}\t1\t{reason}\n")
     (host["fake"] / "verdict").write_text("ok")
@@ -290,7 +331,10 @@ def test_a_failed_install_is_held_and_not_retried_on_the_next_tick(host: dict) -
 def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:
     (host["fake"] / "deploy_skips_marker").write_text("")
     assert follow(host).returncode == 1
-    assert status(host)["result"] == "failed" and "deployed-digest" in status(host)["detail"]
+    assert (
+        status(host)["result"] == "failed"
+        and "deployed-digest" in status(host)["detail"]
+    )
 
 
 # --- invariant: the backup must succeed before anything is installed ----------------------------
@@ -324,7 +368,24 @@ def test_a_busy_host_lock_is_exit_75_without_a_backup_or_install(host: dict) -> 
         result = follow(host)
         assert result.returncode == 75
         assert calls(host) == [] and verifications(host) == []
-        assert not (host["run"] / "follow-hold").exists()  # busy is not a failure of the digest
+        assert not (
+            host["run"] / "follow-hold"
+        ).exists()  # busy is not a failure of the digest
+    finally:
+        holder.send_signal(signal.SIGTERM)
+        holder.wait(timeout=10)
+
+
+def test_the_no_op_tick_never_contends_for_the_host_lock(host: dict) -> None:
+    # while a manual deploy holds the lock, ticks for an already-installed digest stay silent (not 75)
+    set_deployed(host, REF_B)
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        lock = host["run"] / "shiftgate-deploy.lock"
+        lock.mkdir()
+        (lock / "pid").write_text(f"{holder.pid}\n")
+        result = follow(host)
+        assert result.returncode == 0 and result.stderr == ""
     finally:
         holder.send_signal(signal.SIGTERM)
         holder.wait(timeout=10)
@@ -337,7 +398,9 @@ def test_a_dead_owners_lock_is_reclaimed(host: dict) -> None:
     assert follow(host).returncode == 0
 
 
-def test_a_deployment_that_finished_while_waiting_for_the_lock_is_not_repeated(host: dict) -> None:
+def test_a_deployment_that_finished_while_waiting_for_the_lock_is_not_repeated(
+    host: dict,
+) -> None:
     # simulated: marker already matches by the time the lock is held
     set_deployed(host, REF_B)
     assert follow(host).returncode == 0 and calls(host) == []
@@ -346,7 +409,9 @@ def test_a_deployment_that_finished_while_waiting_for_the_lock_is_not_repeated(h
 # --- reporting never decides the deploy ---------------------------------------------------------
 
 
-def test_panewire_is_used_only_when_present_and_asked_for_and_never_fails_the_deploy(host: dict) -> None:
+def test_panewire_is_used_only_when_present_and_asked_for_and_never_fails_the_deploy(
+    host: dict,
+) -> None:
     follow(host)
     assert not any(c.startswith("panewire") for c in calls(host))  # no lane configured
     set_deployed(host, REF_A)
@@ -354,7 +419,10 @@ def test_panewire_is_used_only_when_present_and_asked_for_and_never_fails_the_de
     (host["fake"] / "panewire_rc").write_text("1")  # the notifier is broken
     result = follow(host, AT_FOLLOW_PANEWIRE_LANE="design")
     assert result.returncode == 0
-    assert any(c.startswith("panewire emit --kind lane.event --lane design --type info") for c in calls(host))
+    assert any(
+        c.startswith("panewire emit --kind lane.event --lane design --type info")
+        for c in calls(host)
+    )
     assert status(host)["result"] == "deployed"
 
 
@@ -374,16 +442,22 @@ def test_an_unreadable_registry_changes_nothing_and_is_not_held(host: dict) -> N
 # --- operator commands: hold for rollback, clear, status ----------------------------------------
 
 
-def test_hold_pins_the_current_tag_digest_so_a_rollback_is_not_undone(host: dict) -> None:
+def test_hold_pins_the_current_tag_digest_so_a_rollback_is_not_undone(
+    host: dict,
+) -> None:
     # B was installed, turned out bad and was rolled back: the marker is A again, the tag still says B.
     set_deployed(host, REF_A)
     assert follow(host, "--hold", "rolled back: bad release").returncode == 0
     assert hold_line(host)[0] == REF_B
-    assert follow(host).returncode == 0 and calls(host) == []  # the timer does not reinstall B
+    assert (
+        follow(host).returncode == 0 and calls(host) == []
+    )  # the timer does not reinstall B
     assert "hold" in follow(host, "--status").stdout
     assert follow(host, "--clear-hold").returncode == 0
     assert not (host["run"] / "follow-hold").exists()
-    assert follow(host).returncode == 0 and any(c.startswith("deploy sha-") for c in calls(host))
+    assert follow(host).returncode == 0 and any(
+        c.startswith("deploy sha-") for c in calls(host)
+    )
 
 
 def test_usage_errors_touch_nothing(host: dict) -> None:
@@ -400,7 +474,7 @@ def test_a_missing_gate_refuses_before_any_registry_or_install_step(host: dict) 
 
 # --- the real gate end to end: fake registry + fake api.github.com -------------------------------
 
-FAKE_DOCKER = r'''#!/usr/bin/env bash
+FAKE_DOCKER = r"""#!/usr/bin/env bash
 # buildx imagetools inspect <ref> --format '{{json .Manifest}}' | '{{json .Image}}'
 ref="$4"
 for arg do fmt="$arg"; done
@@ -413,9 +487,9 @@ case "$fmt" in
   *.Image*) printf '{"config":{"Labels":{"org.opencontainers.image.revision":"%s"}}}\n' "$(cat "$FAKE_DIR/image_sha")" ;;
   *) exit 42 ;;
 esac
-'''
+"""
 
-SITECUSTOMIZE = r'''
+SITECUSTOMIZE = r"""
 import io, json, os, urllib.request
 
 routes = json.load(open(os.path.join(os.environ["FAKE_DIR"], "github_routes.json")))
@@ -443,22 +517,31 @@ class Opener:
 
 
 urllib.request.build_opener = lambda *a, **k: Opener()
-'''
+"""
 
 
-def real_gate_host(host: dict, *, revision: str, compare: str, jobs_ok: bool = True) -> None:
+def real_gate_host(
+    host: dict, *, revision: str, compare: str, jobs_ok: bool = True
+) -> None:
     fake = host["fake"]
     (fake / "image_hex").write_text("b" * 64)
     (fake / "image_sha").write_text(revision)
     executable(host["bin"] / "docker", FAKE_DOCKER)
     names = ["lint", "taskiq-smoke", *(f"test (3.13, {n})" for n in range(1, 5))]
     jobs = [
-        {"id": i, "name": n, "status": "completed", "conclusion": "success" if (jobs_ok or i != 3) else "failure"}
+        {
+            "id": i,
+            "name": n,
+            "status": "completed",
+            "conclusion": "success" if (jobs_ok or i != 3) else "failure",
+        }
         for i, n in enumerate(names, 1)
     ]
     routes = {
         "/actions/workflows/test.yml/runs?": {
-            "workflow_runs": [{"id": 100, "run_attempt": 1, "head_sha": revision, "event": "push"}]
+            "workflow_runs": [
+                {"id": 100, "run_attempt": 1, "head_sha": revision, "event": "push"}
+            ]
         },
         "/actions/runs/100/attempts/1/jobs?": {"jobs": jobs},
         "/compare/": {"status": compare},
@@ -480,26 +563,38 @@ def github_requests(host: dict) -> list[str]:
     return path.read_text().splitlines() if path.exists() else []
 
 
-def test_end_to_end_a_green_main_commit_is_installed_with_no_gh_and_no_credentials(host: dict) -> None:
+def test_end_to_end_a_green_main_commit_is_installed_with_no_gh_and_no_credentials(
+    host: dict,
+) -> None:
     real_gate_host(host, revision=SHA_B, compare="ahead")
     result = follow(host)
     assert result.returncode == 0, result.stderr
     assert any(c.startswith(f"deploy sha-{SHA_B[:7]}") for c in calls(host))
     requests = github_requests(host)
-    assert requests and all(r.startswith("https://api.github.com/repos/mgh3326/auto_trader/") for r in requests)
+    assert requests and all(
+        r.startswith("https://api.github.com/repos/mgh3326/auto_trader/")
+        for r in requests
+    )
     assert all("authorization" not in r.split("|")[1] for r in requests)
 
 
-def test_end_to_end_a_hand_moved_tag_onto_a_commit_that_is_not_on_main_installs_nothing(host: dict) -> None:
+def test_end_to_end_a_hand_moved_tag_onto_a_commit_that_is_not_on_main_installs_nothing(
+    host: dict,
+) -> None:
     real_gate_host(host, revision=SHA_B, compare="diverged")
     result = follow(host)
     assert result.returncode == 78
     assert calls(host) == []
-    assert "not an ancestor of main" in result.stderr or "not an ancestor of main" in status(host)["detail"]
+    assert (
+        "not an ancestor of main" in result.stderr
+        or "not an ancestor of main" in status(host)["detail"]
+    )
     assert (host["run"] / "deployed-digest").read_text().strip() == REF_A
 
 
-def test_end_to_end_a_hand_moved_tag_onto_a_red_commit_installs_nothing(host: dict) -> None:
+def test_end_to_end_a_hand_moved_tag_onto_a_red_commit_installs_nothing(
+    host: dict,
+) -> None:
     real_gate_host(host, revision=SHA_B, compare="ahead", jobs_ok=False)
     result = follow(host)
     assert result.returncode == 78
@@ -509,7 +604,9 @@ def test_end_to_end_a_hand_moved_tag_onto_a_red_commit_installs_nothing(host: di
 
 def test_end_to_end_github_being_unreachable_never_installs(host: dict) -> None:
     real_gate_host(host, revision=SHA_B, compare="ahead")
-    (host["fake"] / "github_routes.json").write_text("{}")  # every request is an unexpected one
+    (host["fake"] / "github_routes.json").write_text(
+        "{}"
+    )  # every request is an unexpected one
     result = follow(host)
     assert result.returncode == 78 and calls(host) == []
 
@@ -526,7 +623,9 @@ def test_follow_is_valid_executable_bash_and_never_waives_the_gate() -> None:
     assert "--allow-unverified" not in text
     assert "shiftgate follow" not in text and "--heal" not in text
     assert "--main-ancestor" in text and "AT_DEPLOY_GATE_GITHUB=anonymous" in text
-    assert "ssh " not in text and "scp " not in text  # nothing reaches into the pi, nothing reaches out
+    assert (
+        "ssh " not in text and "scp " not in text
+    )  # nothing reaches into the pi, nothing reaches out
 
 
 def test_the_units_run_follow_from_the_installed_path_and_treat_75_as_success() -> None:
@@ -539,6 +638,12 @@ def test_the_units_run_follow_from_the_installed_path_and_treat_75_as_success() 
 
 
 def test_follow_help_lists_only_its_real_flags() -> None:
-    usage = subprocess.run(["bash", str(FOLLOW), "--help"], capture_output=True, text=True, check=False)
+    usage = subprocess.run(
+        ["bash", str(FOLLOW), "--help"], capture_output=True, text=True, check=False
+    )
     assert usage.returncode == 0
-    assert set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", usage.stderr)) == {"--hold", "--clear-hold", "--status"}
+    assert set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", usage.stderr)) == {
+        "--hold",
+        "--clear-hold",
+        "--status",
+    }
