@@ -205,6 +205,7 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
 tests/services/execution_intent_gateway/test_http_contract_fixtures.py
+tests/services/execution_intent_gateway/test_intent_exposure.py
 tests/services/execution_intent_gateway/test_intent_fills.py
 tests/services/execution_intent_gateway/test_intent_fills_db.py
 tests/services/execution_intent_gateway/test_kis_mock_forwarder.py

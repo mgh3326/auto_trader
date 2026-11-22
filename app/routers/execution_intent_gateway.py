@@ -40,6 +40,10 @@ from app.services.execution_intent_gateway.account_control import (
     PostgresAccountControlStore,
 )
 from app.services.execution_intent_gateway.decisions import MOCK_ACCOUNTS, Refusal
+from app.services.execution_intent_gateway.exposure import (
+    build_kis_exposure,
+    build_upbit_exposure,
+)
 from app.services.execution_intent_gateway.gateway import IntentGateway
 from app.services.execution_intent_gateway.kis_mock_forwarder import KisMockForwarder
 from app.services.execution_intent_gateway.query import (
@@ -288,13 +292,20 @@ async def get_intent(
             raise HTTPException(status_code=404, detail="intent_not_found")
         if journal.intent.account in UPBIT_ACCOUNTS:
             fills = await fills_reader.read_fills(journal.intent, journal.children)
+            upbit_orders = await upbit_store.read_intent_orders(journal.intent)
             upbit = build_upbit_reconciliation(
-                journal.children,
-                await upbit_store.read_intent_orders(journal.intent),
-                filled_by_uuid(fills),
+                journal.children, upbit_orders, filled_by_uuid(fills)
             )
             return JSONResponse(
-                upbit_reconciliation_json(intent_id, journal.children, upbit)
+                {
+                    **upbit_reconciliation_json(intent_id, journal.children, upbit),
+                    "exposure": build_upbit_exposure(
+                        journal.intent,
+                        journal.children,
+                        upbit_orders,
+                        filled_by_uuid(fills),
+                    ),
+                }
             )
         if journal.intent.account not in MOCK_ACCOUNTS:
             raise HTTPException(status_code=404, detail="intent_not_found")
@@ -306,7 +317,10 @@ async def get_intent(
         logger.error("intent query raised: error_class=%s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="query_unavailable") from exc
     return JSONResponse(
-        reconciliation_json(intent_id, journal.children, reconciliation)
+        {
+            **reconciliation_json(intent_id, journal.children, reconciliation),
+            "exposure": build_kis_exposure(journal.intent, journal.children, evidence),
+        }
     )
 
 
