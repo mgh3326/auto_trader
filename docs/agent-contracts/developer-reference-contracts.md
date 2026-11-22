@@ -153,6 +153,31 @@ mock/paper and telemetry-only paths remain automatic. Environment and secret
 changes are never automatic. This policy does not relax the exact-SHA CI gate,
 register schedules, enable trading switches or authorize an order.
 
+## pi 자동 배포 (hk 6037)
+
+pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main push → Test(전체 스위트) → `deploy.yml` 이
+`ghcr.io/mgh3326/auto_trader:sha-<7>` 빌드 → `promote` 잡(`promote-deploy.yml`, `scripts/ci/promote_deploy.py`)이 `deploy` 태그를
+같은 digest 로 옮김(재빌드 없음) → pi 의 systemd 타이머가 `deploy/shiftgate/pi/follow.sh` 를 실행 → 백업 → 기존
+`deploy/shiftgate/pi/deploy.sh sha-<7>`. 🔴 pi 로 들어오는 경로(ssh·터널·배포 키)는 없다. 🔴 `shiftgate follow` 는 여전히 쓰지 않는다
+(게이트를 우회한다). 타이머 파일은 레포에 있으나 **설치·enable 은 운영자(설계 세션)만 한다** — 레포 코드가 스스로 타이머를 설치하지 않는다.
+
+- **승격 판정(promote)**: 후보 SHA 가 main 의 조상이고 전체 스위트 6개 job 이 초록(`deploy_ci_gate.py --main-ancestor --expect-sha`)이며
+  이미지 OCI revision 이 그 SHA 일 때만, 그리고 배포 중 커밋(`deploy` 태그의 SHA)과 후보 사이가 mergewake 롤아웃의 `deploy_approval` 규칙에서
+  보류가 아닐 때만 태그를 옮긴다(정책은 **배포 중 커밋**의 것을 읽는다·정책 파일/환경·비밀 변경·알 수 없는 배포 중 커밋·갈라진 이력·300개 파일 비교 한계·
+  읽을 수 없는 정책은 보류). 이 레포의 규칙으로 `alembic/versions/**`·`alembic/env.py` 변경은 정책 문구와 무관하게 항상 보류한다. 보류는 잡을 빨갛게 하지
+  않고 태그를 옮기지 않으며 잡 요약(+Discord)에 사유·경로·재승격 명령을 남긴다. 승인은 hk 결정으로 받고 `promote-deploy.yml` 을 `workflow_dispatch`
+  (`promote_sha`, `approval_ref`)로 다시 실행한다. `approval_ref` 가 있는 실행은 required reviewers 가 설정된 Environment `at-deploy-approval` 의 `promote-approved` 잡에서만
+  돌고 스크립트는 그 밖의 `approval_ref` 를 거부한다 — 승인은 범위 보류만 면제하고 CI·main 조상·이미지 확인은 그대로다. 🔴 `scripts/ci/promote_deploy.py` 의 정책 읽기·
+  글롭은 mergewake 와 같은 규칙(픽스처 `tests/fixtures/mergewake_deploy_approval_paths.json` 로 고정)이며 더 느슨하게 만들지 않는다.
+- **follow(pi)**: `deploy` 태그 → digest → SHA 를 레지스트리에서 읽고, digest 가 `/root/at-run/deployed-digest` 와 같으면 조용히 끝난다(GitHub 호출 없음).
+  바뀌었으면 태그를 옮긴 쪽을 믿지 않고 스스로 `deploy_ci_gate.py --github anonymous --main-ancestor` 로 다시 확인한다(공개 레포의 인증 없는 GitHub 읽기, 시간당 60회).
+  호스트 배포 잠금(`host-lock.sh`) → `systemctl start at-pg-backup.service`(성공해야만 진행) → `deploy.sh sha-<7>`(`--allow-unverified` 는 이 경로에 없다).
+  거부·실패한 digest 는 `/root/at-run/follow-hold` 로 묶여 매 틱 재시도하지 않고(일시 장애만 retry-after 뒤 한 번), 결과는 `follow.log`·`follow-status.json`
+  (+ 있으면 panewire `info`)에 남는다. 롤백은 `follow.sh --hold` 후 `deploy.sh --rollback`.
+- **신뢰 경계**: `deploy` 태그 쓰기 권한(Actions `GITHUB_TOKEN`, GHCR 패키지 쓰기)은 신뢰 경계다. follow 의 재확인은 "main 조상 + 전체 스위트 초록"까지다.
+  hk 쪽 자동 재승격(결정에 A 로 답하면 dispatch)은 후속 작업이다. 런북: `docs/runbooks/pi-shiftgate-deploy.md` §4.1.
+- **테스트**: `tests/ci/test_promote_deploy.py`, `tests/ci/test_promote_deploy_workflow.py`, `tests/scripts/test_pi_follow.py`, `tests/scripts/test_deploy_ci_gate_anonymous.py`.
+
 ## 문제 해결
 
 플릿 세션(스폰된 워커, 디자인 세션, 리드 세션)은 테스트·DB·호스트 규칙에 스폰 프리앰블의 `Host safety (fleet-v1)` 블록을 따른다. 아래 명령은 사람과 CI를 위한 것이다.

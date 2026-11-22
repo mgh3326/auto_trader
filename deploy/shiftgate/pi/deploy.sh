@@ -20,7 +20,8 @@
 #   hk 5753: 이 릴리스 이전 이미지로 되돌리면 TaskIQ producer 가 다시 살아난다. 워커가 멈춰 있으면 큐에 메시지가
 #   쌓이므로, 롤백 전에 docs/runbooks/pi-shiftgate-deploy.md 「롤백 경계」의 조건(W5 게이트 off, OPS_TASK_KICK_TOKEN
 #   비움, NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=false)을 운영자가 확인한다. 이 스크립트는 그 조건을 검사하지 않는다.
-# 스케줄러·follow 타이머는 등록하지 않는다. 수동 실행만.
+# 이 스크립트는 타이머를 설치하지 않는다. 자동 배포(hk 6037)는 운영자가 설치한 follow.sh 가 같은 진입점(deploy.sh <sha-태그>)을
+# 부르는 것이고, shiftgate 자체의 follow/check/prune 타이머는 등록하지 않는다. 수동 실행도 그대로 쓴다.
 set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"

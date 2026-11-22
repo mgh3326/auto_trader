@@ -162,9 +162,12 @@ jobs:
           Raspberry Pi Docker production deploy path that used the old Pi SSH
           deployment secret and `scripts/deploy.sh`.
 
-          Production deployment is operator-run on NCP with:
+          NCP production deployment is operator-run with:
           - `scripts/deploy-ncp-pull.sh`
           - `docs/runbooks/ncp-pull-deploy.md`
+
+          The pi (shiftgate) deploys itself from the `deploy` tag moved by the
+          `promote` job below (hk 6037): `docs/runbooks/pi-shiftgate-deploy.md`.
           EOF
 
       - name: Build Summary
@@ -273,6 +276,30 @@ jobs:
     with:
       sha: ${{ needs.build-and-push.outputs.sha }}
       image: ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }}
+
+  # hk 6037: pi auto deploy. After a successful main-push build, move the `deploy` tag onto the
+  # same digest (no rebuild) when the exact-SHA gate is green and the deployed..candidate range
+  # is routine under `deploy_approval`; otherwise hold and say why in the job summary. The pi's
+  # follow timer installs the tag after re-verifying it itself. Never cancelled; one at a time.
+  # promote-deploy.yml can also be dispatched by an operator to promote a held commit.
+  promote:
+    needs: build-and-push
+    if: >-
+      needs.build-and-push.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    uses: ./.github/workflows/promote-deploy.yml
+    with:
+      sha: ${{ needs.build-and-push.outputs.sha }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
   notify:
     if: failure()

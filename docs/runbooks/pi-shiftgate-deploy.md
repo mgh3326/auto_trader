@@ -8,15 +8,16 @@ pi(Debian 12, aarch64)의 AT 앱 컨테이너를 `shiftgate`(https://github.com/
 | `at-mcp` | shiftgate blue/green (`shiftgate-at-mcp-blue/green`, 색 포트 18765/28765, 호스트 네트워크) | HAProxy `100.90.137.33:8765` (tailnet 전용) |
 | `at-upbit-ws` | shiftgate 범위 밖 싱글턴(HTTP 아님 — shiftgate docs/design.md "gap"). `swap-singletons.sh` 가 이름 보관·정지·새 run·상태 확인·실패 시 복원 | 없음 |
 
-레포 파일(운영자가 호스트에 복사한다. 레포는 아무것도 설치·실행·스케줄하지 않는다):
+레포 파일(운영자가 호스트에 복사한다. 레포는 아무것도 설치·실행·스케줄하지 않는다 — 타이머도 설계 세션이 §4.1 절차로 설치한다):
 
 - `deploy/shiftgate/pi/services.yaml` — 최종 설정. `/etc/shiftgate/services.yaml`.
 - `deploy/shiftgate/pi/services.cutover.yaml` — 컷오버 1단계 전용. `services.yaml` 과 `binds` 두 줄(임시 포트 8100/8865)만 다르다.
 - `deploy/shiftgate/pi/deploy.sh <tag>` / `deploy.sh --rollback` — 일상 배포와 복구의 유일한 진입점.
 - `deploy/shiftgate/pi/swap-singletons.sh <image@digest>` — `deploy.sh` 가 부르는 싱글턴 교체(직접 부르지 않는다).
-- `deploy/shiftgate/pi/host-lock.sh` — 두 스크립트가 source 하는 호스트 배포 잠금.
+- `deploy/shiftgate/pi/host-lock.sh` — 배포 스크립트들이 source 하는 호스트 배포 잠금.
+- `deploy/shiftgate/pi/follow.sh` + `at-follow.service` / `at-follow.timer` — 자동 배포(hk 6037, §4.1). `deploy` 태그가 새 digest 를 가리키면 스스로 다시 검증한 뒤 백업 → `deploy.sh` 로 설치한다.
 
-규칙: `shiftgate follow` / `check` / `prune` 타이머를 등록하지 않는다(수동 배포만 — follow 는 `deploy_ci_gate.py` 의 정확한 SHA 전체 스위트 게이트를 우회한다). `MCP_PROFILE=default` 는 `services.yaml` 에 명시되어 있어야 한다(#1189). `deploy_ci_gate.py` 와 은퇴 컨테이너 검사 규칙(ROB-1436)은 완화하지 않는다. env 파일은 경로로만 참조하고 열거나 출력하지 않는다.
+규칙: shiftgate 자체의 `follow` / `check` / `prune` 타이머는 등록하지 않는다(`shiftgate follow` 는 `deploy_ci_gate.py` 의 정확한 SHA 전체 스위트 게이트와 승인 보류를 우회한다). 자동 배포는 그 게이트를 앞에 둔 레포의 `follow.sh` 하나뿐이고(hk 6037, §4.1) 설치·enable 은 운영자(설계 세션)만 한다. 레포 코드는 어떤 타이머도 스스로 설치하지 않는다. `MCP_PROFILE=default` 는 `services.yaml` 에 명시되어 있어야 한다(#1189). `deploy_ci_gate.py` 와 은퇴 컨테이너 검사 규칙(ROB-1436)은 완화하지 않는다. env 파일은 경로로만 참조하고 열거나 출력하지 않는다.
 
 이 문서에서 **[live check]** 는 레포에서 확인하지 못해 pi 에서 직접 확인해야 하는 값이다.
 
@@ -46,7 +47,7 @@ shiftgate --config /etc/shiftgate/services.yaml status
 
 ```bash
 install -d -m 0755 /root/at-run/shiftgate-pi
-install -m 0755 deploy/shiftgate/pi/deploy.sh deploy/shiftgate/pi/swap-singletons.sh deploy/shiftgate/pi/host-lock.sh scripts/deploy_ci_gate.py /root/at-run/shiftgate-pi/
+install -m 0755 deploy/shiftgate/pi/deploy.sh deploy/shiftgate/pi/swap-singletons.sh deploy/shiftgate/pi/host-lock.sh deploy/shiftgate/pi/follow.sh scripts/deploy_ci_gate.py /root/at-run/shiftgate-pi/
 python3 -c 'import sys; print(sys.version_info >= (3, 11))'
 gh auth status
 ```
@@ -181,6 +182,93 @@ docker rm at-api at-mcp
 
 `deploy.sh` 의 인자는 **태그**다(`deploy_ci_gate.py --image` 가 태그만 받는다). 싱글턴만 실패했을 때도 같은 `deploy.sh <tag>` 를 다시 실행한다(이미 끝난 서비스는 건너뛰고 싱글턴만 교체하며 마커를 갱신한다). `swap-singletons.sh` 를 직접 부르지 않는다.
 
+### 4.1 자동 배포 (follow, hk 6037)
+
+AT `main` 커밋이 pi 에 스스로 배포된다. handoffkeep 과 같은 모양이다(hk:doc `decision/2026-11-08/hk-push-rollout-shiftgate`). **pi 로 들어오는 경로는 없다** — GitHub Actions 는 pi 에 접속하지 않고, pi 가 레지스트리를 읽는다.
+
+```
+main push → Test(전체 스위트) → deploy.yml 이 ghcr.io/mgh3326/auto_trader:sha-<7> 빌드
+          → promote 잡(promote-deploy.yml)이 `deploy` 태그를 같은 digest 로 옮김(재빌드 없음)
+          → pi 의 at-follow.timer(1분) → follow.sh → 백업 → deploy.sh sha-<7>
+```
+
+| 불변식 | 강제 위치 | 확인 |
+|---|---|---|
+| main 의 조상이고 전체 스위트가 초록인 SHA 만 설치된다 | promote 잡 + follow.sh(독립 재확인) | `tests/scripts/test_pi_follow.py`, `tests/scripts/test_deploy_ci_gate_anonymous.py` |
+| deploy_approval 경로·새 마이그레이션·환경/비밀 변경·범위를 알 수 없는 배포는 자동으로 설치되지 않는다 | promote 잡 (`scripts/ci/promote_deploy.py`) | `tests/ci/test_promote_deploy.py` (mergewake 픽스처 87행 포함) |
+| 태그를 손으로 옮겨도 검증 안 된 이미지는 설치되지 않는다 | follow.sh 가 태그 digest 의 SHA 를 스스로 다시 확인 | 실제 게이트 + 가짜 레지스트리/GitHub 로 end to end |
+| 같은 digest 두 번은 무동작, 실패한 digest 는 매 틱 재시도하지 않는다 | follow.sh (`deployed-digest` 비교, `follow-hold`) | `test_pi_follow.py` |
+| 백업이 성공해야 설치한다 | follow.sh (`systemctl start at-pg-backup.service`) | 실패하는 백업 스텁 |
+| pi 로 들어오는 경로가 없다 | 설계(Actions 에 ssh·터널·배포 키 없음) | `tests/ci/test_promote_deploy_workflow.py` |
+
+**승격(promote)의 판정** — mergewake 롤아웃의 규칙과 같다(`internal/pipeline/deploy_approval.go`, `docs/deploy-approval.md`). 후보 SHA 가 main 의 조상이고 전체 스위트 6개 job 이 초록이며 `sha-<7>` 이미지의 OCI revision 이 정확히 그 SHA 일 때만 다음으로 간다. 그 뒤 `deploy` 태그가 지금 가리키는 SHA(배포 중)와 후보 사이의 변경 범위를 `.mergewake/policy.yaml` 의 `deploy_approval` 로 판정한다. 정책은 **배포 중 커밋의 것**을 읽는다(릴리스가 자기 게이트를 풀 수 없다). 보류 조건: 경로(이름 변경은 두 이름 모두)가 규칙에 걸림 · 정책 파일 자체·환경/비밀로 보이는 경로 변경 · 레포 규칙으로 `alembic/versions/**`·`alembic/env.py` 변경(새 마이그레이션은 정책 문구와 무관하게 항상 보류) · 배포 중 커밋을 알 수 없음(`deploy` 태그가 없음 = 첫 승격 포함) · 이력이 갈라졌거나 체크아웃에 없음 · 비교가 300개 파일에 닿음 · 배포 중 커밋의 정책을 읽을 수 없음. 보류는 잡을 빨갛게 만들지 않는다: `deploy` 태그를 **옮기지 않고**(pi 는 이전 버전 유지) 잡 요약에 사유·걸린 경로·재승격 명령을 남기고 Discord(`DISCORD_WEBHOOK_URL`, 설정된 경우)로 알린다.
+
+**보류된 범위의 승인** — 보류는 사람 결정이 풀며 Actions 는 hk 에 접속하지 않으므로 절차는 둘로 나뉜다:
+
+1. hk 에 그 범위를 승인하는 결정을 남긴다(후보 SHA·걸린 경로·사유를 질문에 그대로 쓴다. 사람 승인 전용). 잡 요약이 그 문구를 준다.
+2. 승인된 뒤 같은 SHA 를 다시 승격한다. `approval_ref` 에 hk 결정 문서 키를 넣는다:
+
+```bash
+gh workflow run promote-deploy.yml --ref main -f promote_sha="<40자 SHA>" -f approval_ref="<hk 결정 문서 키>"
+```
+
+승인은 **범위 보류만** 면제한다. CI·main 조상·이미지 확인은 다시 한다. `approval_ref` 가 있는 실행은 GitHub Environment `at-deploy-approval` 에 묶인 `promote-approved` 잡에서만 돈다 — 그 Environment 에 **required reviewers(사람)를 설정해야** 승인이 GitHub 에서 강제된다(1회성 설정, 설계 세션/운영자가 저장소 설정에서 만든다. 만들지 않으면 보호 없는 Environment 가 자동 생성되므로 승인 승격을 쓰기 전에 반드시 확인한다). 스크립트는 이 잡 밖의 `approval_ref` 를 거부한다. 리뷰어 대기 중인 실행은 같은 concurrency 그룹을 잡고 있으므로 승인하거나 거절해 끝낸다. `approval_ref` 문자열 자체는 요약에 기록될 뿐 Actions 가 hk 에서 검증하지는 못한다. 이미 배포 중 커밋의 조상인 SHA 를 승인 승격하면 실패로 끝난다(승인이 적용되지 않았다는 뜻). hk 쪽 자동 재승격(답이 A 면 dispatch)은 후속 작업이다. 마이그레이션은 이 경로가 적용하지 않는다 — `deploy.sh` 에 마이그레이션 단계가 없다. 새 스키마를 기대하는 이미지가 설치되기 전에 운영자가 pi 의 기존 절차(백업·`alembic upgrade`)로 **먼저** 적용한 뒤 승인 승격을 한다.
+
+**첫 승격(부트스트랩)** — `deploy` 태그가 아직 없으므로 승격은 보류된다. 지금 pi 에 배포된 SHA(`deployed-digest` 의 이미지 SHA)를 위 명령으로 승인 승격하면 태그가 그 digest 를 가리키고 follow.sh 는 아무것도 하지 않는다(같은 digest).
+
+**1회성 설치와 켜기** — 설계 세션이 pi 에서 root 로 한다. 먼저 전제를 확인한다 **[live check]**: `at-pg-backup.service` 가 설치되어 있고 수동으로 성공하는지, GHCR 읽기 로그인(§1), Python 3.11 이상:
+
+```bash
+systemctl cat at-pg-backup.service
+systemctl start at-pg-backup.service
+install -m 0755 deploy/shiftgate/pi/follow.sh deploy/shiftgate/pi/deploy.sh deploy/shiftgate/pi/host-lock.sh deploy/shiftgate/pi/swap-singletons.sh scripts/deploy_ci_gate.py /root/at-run/shiftgate-pi/
+install -m 0644 deploy/shiftgate/pi/at-follow.service deploy/shiftgate/pi/at-follow.timer /etc/systemd/system/
+systemctl daemon-reload
+```
+
+타이머를 켜기 전에 한 번 직접 돌려 본다. 부트스트랩이 끝나 있으면 아무 출력 없이 exit 0 이어야 한다(`deploy` 태그 digest == `deployed-digest`):
+
+```bash
+/root/at-run/shiftgate-pi/follow.sh
+/root/at-run/shiftgate-pi/follow.sh --status
+```
+
+켜고 확인한다:
+
+```bash
+systemctl enable --now at-follow.timer
+systemctl list-timers at-follow.timer
+journalctl -u at-follow.service -n 50 --no-pager
+```
+
+끄기(자동 배포 중단, 수동 `deploy.sh` 는 그대로 쓸 수 있다):
+
+```bash
+systemctl disable --now at-follow.timer
+```
+
+**결과 읽기** — `/root/at-run/follow-status.json`(마지막 결과: `deployed`·`refused`·`failed`·`backup_failed`·`held`), `/root/at-run/follow.log`(`deploy.sh` 출력 포함), journal(`at-follow.service`). `AT_FOLLOW_PANEWIRE_LANE` 을 유닛 환경에 주면 `panewire` 가 있을 때 `info` 로 알린다(알림이 실패해도 배포는 영향 없다).
+
+**hold** — 검증이 거부했거나 설치가 실패한 digest 는 `/root/at-run/follow-hold` 에 기록되어 다음 틱부터 건너뛴다(새 digest 가 오면 그 digest 를 다시 판정한다). GitHub 읽기 불가·백업 실패처럼 digest 와 무관한 일시 장애는 retry-after(10분/15분) 뒤에 한 번 다시 시도한다. 원인을 확인한 뒤 같은 digest 를 다시 시도하려면:
+
+```bash
+/root/at-run/shiftgate-pi/follow.sh --clear-hold
+```
+
+GitHub 인증 없는 읽기는 시간당 60회 한도다. follow.sh 는 digest 가 바뀐 틱에만 부르고(한 번에 약 5회, `deploy.sh` 의 게이트 포함) 같은 digest 는 hold 로 묶인다.
+
+**롤백(자동 배포 중)** — 롤백한 digest 를 follow 가 다시 올리지 않게 **먼저 hold 하고** 롤백한다:
+
+```bash
+/root/at-run/shiftgate-pi/follow.sh --hold "<롤백 이유>"
+/root/at-run/shiftgate-pi/deploy.sh --rollback
+/root/at-run/shiftgate-pi/follow.sh --status
+```
+
+그다음 고친 릴리스가 승격되면(새 digest) follow 가 자동으로 올린다. 소스 revert 와 DB 롤백은 별개이며 §5 의 롤백 경계(hk 5753)는 그대로 적용된다.
+
+**한계(알고 쓴다)**: `deploy` 태그를 쓸 수 있는 쪽(Actions 의 `GITHUB_TOKEN`, GHCR 패키지 쓰기 권한자)은 신뢰 경계다. follow.sh 의 재확인은 "main 의 조상 + 전체 스위트 초록"까지만 막는다 — 승인 보류가 걸렸어야 할 범위의 이미지를 손으로 태그에 올리면 설치된다. 그래서 패키지 쓰기 권한을 제한하고 태그를 손으로 옮기지 않는다. 마이그레이션이 든 릴리스를 승인 없이 태그에 올리지 않는다.
+
 ## 5. 롤백과 복구
 
 모든 롤백은 `deploy.sh --rollback` 하나로 한다(호스트 잠금을 잡고, 게이트는 보지 않는 긴급 경로). 기준은 `deployed-digest` — **마지막으로 세 컴포넌트(`at-api`, `at-mcp`, `at-upbit-ws`)가 모두 끝난 릴리스**다:
@@ -267,4 +355,4 @@ W5 Telegram durable inbox 를 다시 켜려면 TaskIQ worker 복원이 먼저다
 - MCP 스트리밍: HAProxy `timeout client/server/tunnel 1h`. 응답을 버퍼링하지 않으므로 SSE 스트림이 그대로 흐른다. 헬스는 인증 없는 `GET /health`(이벤트 루프 생존)이며 `/mcp` 는 점검하지 않는다.
 - 로그 드라이버는 `daemon`(현재 at-swap 과 같은 데몬 기본값).
 - shiftgate 드레인은 CLI 를 `drain_timeout` 까지 막고 취소하지 않는다(shiftgate docs/design.md). 그래서 `at-mcp` 는 1시간이 아니라 300초다.
-- `deploy.sh` 는 DB 백업·마이그레이션을 하지 않는다(pi 의 기존 절차 그대로 운영자 몫).
+- `deploy.sh` 는 DB 백업·마이그레이션을 하지 않는다(pi 의 기존 절차 그대로 운영자 몫). 자동 배포(`follow.sh`)는 설치 전에 `at-pg-backup.service` 를 돌려 성공해야만 진행하며, 마이그레이션이 든 릴리스는 승격 단계에서 항상 보류된다(§4.1).

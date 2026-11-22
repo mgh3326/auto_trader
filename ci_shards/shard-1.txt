@@ -16,6 +16,8 @@ tests/ci/test_change_classifier.py
 tests/ci/test_deploy_gate_workflow.py
 tests/ci/test_file_shard_plan_workflow_entrypoint.py
 tests/ci/test_migration_expand_contract_lint.py
+tests/ci/test_promote_deploy.py
+tests/ci/test_promote_deploy_workflow.py
 tests/ci/test_required_aggregator.py
 tests/contracts/test_retro_v1_contract.py
 tests/core/test_cli.py
@@ -130,6 +132,7 @@ tests/scripts/test_ncp_mcp_watchdog.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_bhost_deploy.py
+tests/scripts/test_pi_follow.py
 tests/scripts/test_pi_shiftgate_deploy.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py

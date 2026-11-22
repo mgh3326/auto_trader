@@ -117,6 +117,7 @@ tests/scripts/test_dagu_gate_inputs_dag.py
 tests/scripts/test_dagu_snapshot_refresh_dags.py
 tests/scripts/test_dagu_terminal_reconcile_dag.py
 tests/scripts/test_daily_candle_and_night_sweep_clis.py
+tests/scripts/test_deploy_ci_gate_anonymous.py
 tests/scripts/test_deploy_ncp_pull_image_prune.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_list_recent_watch_events_cli.py

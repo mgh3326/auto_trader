@@ -1,0 +1,13 @@
+# pi 자동 배포 follow 타이머 (hk 6037). 서비스가 끝난 뒤 60초에 다시 돈다(겹치지 않는다).
+# GitHub API 는 digest 가 바뀐 틱에만 부르므로 평소 틱은 레지스트리 읽기 한 번이다.
+[Unit]
+Description=AT pi auto deploy follow (every minute after the last run)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=at-follow.service
+
+[Install]
+WantedBy=timers.target
