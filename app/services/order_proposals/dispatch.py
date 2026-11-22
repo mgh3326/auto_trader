@@ -1129,6 +1129,16 @@ async def dispatch_proposal(
         )
         gate_now = window.observed_at
         if not window.allowed:
+            # hk 6062 (design 6038 §3.1.1): ledger the fail-closed window block
+            # exactly like the manual path, so an off-session proposal keeps a
+            # ``failed`` + DEFER_*/EXPIRED/... code instead of NULL. This only
+            # records: no nonce, no card, no broker call, same lock and commit.
+            await _record_approval_window_block(
+                service=service,
+                group=group,
+                decision=window,
+                attempt_id=uuid.uuid4(),
+            )
             if window.code is ApprovalWindowCode.EXPIRED:
                 await service.expire_mutable_rungs_if_needed(proposal_id, now=gate_now)
             await session.commit()

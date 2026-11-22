@@ -454,6 +454,122 @@ async def test_dispatch_closed_or_unknown_session_is_durably_blocked_without_tel
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known", "expected", "expected_failure"),
+    [
+        (
+            True,
+            ApprovalWindowCode.DEFER_SESSION_CLOSED,
+            "DEFER_SESSION_CLOSED/submission_session_closed",
+        ),
+        (
+            False,
+            ApprovalWindowCode.CALENDAR_UNKNOWN,
+            "CALENDAR_UNKNOWN/nxt_capability_stale",
+        ),
+    ],
+)
+async def test_auto_dispatch_closed_or_unknown_session_is_durably_blocked(
+    monkeypatch, db_session, known, expected, expected_failure
+):
+    """hk 6062: the auto path ledgers the block exactly like the manual path."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=UTC)
+    group.valid_until = now + timedelta(days=2)
+    await db_session.commit()
+    notifier = _FakeNotifier()
+
+    async def evaluator(group, *, now):
+        async def resolver(group, *, now):
+            return SubmissionSessionEvidence(
+                known=known,
+                source="test",
+                current_session="closed" if known else "unknown",
+                allowed_sessions=("regular",),
+                allowed_now=False,
+                next_allowed_at=now + timedelta(hours=12) if known else None,
+                detail=None if known else "nxt_capability_stale",
+            )
+
+        return await evaluate_approval_window(group, now=now, session_resolver=resolver)
+
+    async def broker_trap(**kwargs):
+        raise AssertionError("a blocked window must not reach revalidation")
+
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=broker_trap,
+        window_evaluator=evaluator,
+    )
+
+    assert isinstance(result, ApprovalWindowDecision)
+    assert result.code is expected
+    assert notifier.sent_messages == []
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce is None
+    assert refreshed.approval_nonce_used_at is None
+    assert refreshed.approval_dispatch_state == "failed"
+    assert refreshed.approval_dispatch_failure_code == expected_failure
+    assert refreshed.approval_dispatch_attempted_at == now
+    assert refreshed.approval_dispatch_published_at is None
+    assert [rung.state for rung in rungs] == ["pending_approval"]
+
+
+@pytest.mark.asyncio
+async def test_auto_dispatch_expired_is_ledgered_and_expires_rungs(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    deadline = datetime(2026, 7, 23, 4, 55, tzinfo=UTC)
+    group.valid_until = deadline
+    await db_session.commit()
+    notifier = _FakeNotifier()
+
+    async def broker_trap(**kwargs):
+        raise AssertionError("an expired proposal must not reach revalidation")
+
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=deadline,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=broker_trap,
+    )
+
+    assert isinstance(result, ApprovalWindowDecision)
+    assert result.code is ApprovalWindowCode.EXPIRED
+    assert notifier.sent_messages == []
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce is None
+    assert refreshed.lifecycle_state == "expired"
+    assert refreshed.approval_dispatch_state == "failed"
+    assert (
+        refreshed.approval_dispatch_failure_code
+        == "EXPIRED/now_at_or_after_valid_until"
+    )
+    assert [rung.state for rung in rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
 async def test_manual_dispatch_freezes_published_batch_and_starts_next_card(
     monkeypatch, db_session
 ):
