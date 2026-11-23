@@ -15,10 +15,12 @@ KR·US 닫힌 1분봉을 `research.kr_candles_1m` / `research.us_candles_1m` 에
 uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 005930 000660] [--dry-run]
 ```
 
-- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `skipped_value_unknown`, `errors`, `error_details`(종목·venue·예외 클래스만), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
+- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `null_value`, `errors`, `error_details`(종목·venue·예외 클래스만), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
 - 닫힌 봉만 쓴다(`시작 + 1분 + 10초 <= 요청 직전`). 같은 봉을 다시 받으면 `already_present` 이고 `retrieved_at` 은 최초 값 그대로다.
 - `targets_truncated` 가 0 이 아니면 상한(`SESSION_MINUTES_MAX_SYMBOLS_*`)에 걸린 것이다. 낮은 순위(pick log → 스냅샷 순위 → 고정 목록 → 보유) 순으로 잘린다.
 - KIS 분봉 한 번 호출은 최근 구간만 돌려준다(KR 최대 30행, US 최대 120행). 5분 간격 DAG 에서는 겹치지만, 실행이 한동안 멈추면 그 구간은 비며 소급 채움은 없다(진단의 `missing_minutes` 로 보인다).
+
+- KR `value` 는 증명될 때만 채운다(직전 행 차분 또는 venue 첫 분). 그 밖의 분은 봉은 저장하되 `value` 가 NULL 이고 `null_value` 로 센다. 🔴 KR 연속 집계(5m/15m/30m/1h)의 `value` 는 1분봉 `value` 가 NULL 인 분이 있으면 **부분합**이다(`SUM` 이 NULL 을 무시). 집계 값을 거래대금으로 쓰기 전에 진단의 `value_null` 을 확인한다.
 
 ## 3. 커버리지 확인
 
@@ -26,7 +28,7 @@ uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 00593
 uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11-24 [--symbols 005930]
 ```
 
-읽기 전용(8초 timeout). 종목 × venue × session_segment 별 `rows`, `expected_minutes`, `missing_minutes`, `latency_p50_s`/`latency_p95_s`(= `retrieved_at − (time_utc + 1분)`). 백필·승격(`%backfill%`, `promote-%`) 배치 행은 제외한다. `UNKNOWN` 세그먼트 행은 예상 분이 0 으로 따로 나온다.
+읽기 전용(8초 timeout). 종목 × venue × session_segment 별 `rows`, `expected_minutes`, `missing_minutes`, `value_null`/`value_null_ratio`(세션별 NULL `value` 분 수·비율), `latency_p50_s`/`latency_p95_s`(= `retrieved_at − (time_utc + 1분)`). 백필·승격(`%backfill%`, `promote-%`) 배치 행은 제외한다. `UNKNOWN` 세그먼트 행은 예상 분이 0 으로 따로 나온다.
 
 ## 4. 주의
 

@@ -122,6 +122,7 @@ KR_INSERT = (
     "batch_id) VALUES (:t, '2026-11-24', '005930', 'KRX', :seg, 'KIS', 1,1,1,1,1,1, "
     "now(), 'b')"
 )
+KR_INSERT_NULL_VALUE = KR_INSERT.replace("1,1,1,1,1,1,", "1,1,1,1,1,NULL,")
 US_INSERT = (
     "INSERT INTO research.us_candles_1m (time_utc, session_date, symbol, venue, "
     "session_segment, source, open, high, low, close, volume, value, retrieved_at, "
@@ -229,6 +230,11 @@ async def test_round_trip_krx_after_unknown_segment_and_downgrade_refusal(conn) 
     await conn.execute(text("DELETE FROM research.us_candles_1m"))
     refusal = await _downgrade_refusal(conn)
     assert refusal is not None and "KRX_AFTER" in refusal
+    # value is nullable after the upgrade; a NULL-value row blocks restoring NOT NULL
+    await conn.execute(text("DELETE FROM research.kr_candles_1m"))
+    await conn.execute(text(KR_INSERT_NULL_VALUE), {"t": T0, "seg": "UNKNOWN"})
+    refusal = await _downgrade_refusal(conn)
+    assert refusal is not None and "NULL value" in refusal
 
     await conn.execute(text("DELETE FROM research.kr_candles_1m"))
     await conn.run_sync(_run_step, "downgrade")
@@ -236,6 +242,8 @@ async def test_round_trip_krx_after_unknown_segment_and_downgrade_refusal(conn) 
         await conn.execute(text("SELECT to_regclass('research.us_candles_1m')"))
     ).scalar_one() is None
     assert await _rejected(conn, KR_INSERT, {"t": T0, "seg": "KRX_AFTER"})
+    # NOT NULL is back after the downgrade
+    assert await _rejected(conn, KR_INSERT_NULL_VALUE, {"t": T0, "seg": "UNKNOWN"})
 
     # And back up again.
     await conn.run_sync(_run_step, "upgrade")

@@ -21,11 +21,16 @@ Additive. ``public.*_candles_1m`` are untouched.
 4. Conditional ``at_app`` grants (hard rule 18): SELECT, INSERT on both
    research minute tables, SELECT on the four continuous aggregates (only with
    timescaledb) and USAGE on schema research, only if the role exists.
-5. The widened/narrowed ``session_segment`` CHECK is added NOT VALID (no scan
+5. ``research.kr_candles_1m.value`` drops NOT NULL: KIS reports the day-
+   cumulative trade value, so a per-minute value is only stored when it can be
+   proven; otherwise NULL (the bar is kept). Continuous-aggregate ``SUM(value)``
+   ignores NULL, so a bucket with NULL minutes is a partial sum.
+6. The widened/narrowed ``session_segment`` CHECK is added NOT VALID (no scan
    under ACCESS EXCLUSIVE on the deep-history hypertable).
 
-Downgrade refuses while ``research.us_candles_1m`` has rows or
-``research.kr_candles_1m`` has a ``KRX_AFTER`` row (it would discard receipts).
+Downgrade refuses while ``research.us_candles_1m`` has rows, while
+``research.kr_candles_1m`` has a ``KRX_AFTER`` row (it would discard receipts)
+or while it has a row with a NULL ``value`` (NOT NULL cannot be restored).
 """
 
 # expand-contract: contract-step 6145
@@ -103,6 +108,7 @@ def _set_kr_segment_check(values: Sequence[str]) -> None:
 
 def upgrade() -> None:
     _set_kr_segment_check(KR_SEGMENTS_NEW)
+    op.execute("ALTER TABLE research.kr_candles_1m ALTER COLUMN value DROP NOT NULL")
 
     op.execute("CREATE SCHEMA IF NOT EXISTS research")
     op.execute(
@@ -226,6 +232,13 @@ def downgrade() -> None:
                     'cannot narrow session_segment: KRX_AFTER rows exist'
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            IF EXISTS (
+                SELECT 1 FROM research.kr_candles_1m WHERE value IS NULL LIMIT 1
+            ) THEN
+                RAISE EXCEPTION
+                    'cannot restore NOT NULL: rows with NULL value exist'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
         END
         $$
         """
@@ -233,4 +246,5 @@ def downgrade() -> None:
     for view_name, _ in US_CAGG_SPECS:
         op.execute(f"DROP MATERIALIZED VIEW IF EXISTS research.{view_name}")
     op.execute("DROP TABLE research.us_candles_1m")
+    op.execute("ALTER TABLE research.kr_candles_1m ALTER COLUMN value SET NOT NULL")
     _set_kr_segment_check(KR_SEGMENTS_OLD)

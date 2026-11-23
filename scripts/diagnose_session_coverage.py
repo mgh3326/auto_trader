@@ -35,14 +35,16 @@ from app.services.research_candles.session_minutes_collector import (
 )
 
 _SELECT_KR = text(
-    "SELECT symbol, venue, session_segment, time_utc, retrieved_at "
+    "SELECT symbol, venue, session_segment, time_utc, retrieved_at, "
+    "(value IS NULL) AS value_is_null "
     "FROM research.kr_candles_1m "
     "WHERE session_date_kst = :session_date "
     "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
     "AND batch_id NOT LIKE :backfill_a AND batch_id NOT LIKE :backfill_b"
 )
 _SELECT_US = text(
-    "SELECT symbol, venue, session_segment, time_utc, retrieved_at "
+    "SELECT symbol, venue, session_segment, time_utc, retrieved_at, "
+    "(value IS NULL) AS value_is_null "
     "FROM research.us_candles_1m "
     "WHERE session_date = :session_date "
     "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
@@ -87,6 +89,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                     session_segment=row.session_segment,
                     time_utc=row.time_utc,
                     retrieved_at=row.retrieved_at,
+                    value_is_null=bool(row.value_is_null),
                 )
                 for row in result
             ]

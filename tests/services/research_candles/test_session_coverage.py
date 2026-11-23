@@ -190,3 +190,36 @@ def test_diagnostic_reads_only_research_minute_tables() -> None:
     literals = " ".join(_string_literals(ast.parse(SCRIPT.read_text())))
     assert "research.kr_candles_1m" in literals and "research.us_candles_1m" in literals
     assert "public." not in literals
+
+
+def test_value_null_count_and_ratio_per_segment() -> None:
+    minutes = _regular_minutes()[:10]
+    rows = [
+        cov.StoredMinute(
+            symbol="005930",
+            venue="KRX",
+            session_segment="KRX_REGULAR",
+            time_utc=m,
+            retrieved_at=m + timedelta(minutes=1, seconds=5),
+            value_is_null=index < 3,
+        )
+        for index, m in enumerate(minutes)
+    ]
+    report = cov.coverage_report(
+        rows, market="kr", session_date=KR_DATE, as_of=_utc_kst(21, 0)
+    )
+    regular = next(
+        e for e in report["entries"] if e["session_segment"] == "KRX_REGULAR"
+    )
+    assert (regular["rows"], regular["value_null"], regular["value_null_ratio"]) == (
+        10,
+        3,
+        0.3,
+    )
+    after = next(e for e in report["entries"] if e["session_segment"] == "KRX_AFTER")
+    assert (after["value_null"], after["value_null_ratio"]) == (0, None)
+
+
+def test_diagnostic_selects_the_value_null_flag() -> None:
+    literals = " ".join(_string_literals(ast.parse(SCRIPT.read_text())))
+    assert literals.count("(value IS NULL) AS value_is_null") == 2

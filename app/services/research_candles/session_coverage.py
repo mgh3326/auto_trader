@@ -5,6 +5,8 @@ Per symbol x venue x session_segment for one session date:
 * ``rows``              — distinct stored minutes
 * ``expected_minutes``  — minutes of that segment that were already closed at ``as_of``
 * ``missing_minutes``   — expected minutes with no stored row
+* ``value_null`` / ``value_null_ratio`` — stored minutes whose KR ``value`` is NULL
+  (not provable from the cumulative KIS value; a cagg SUM over them is partial)
 * ``latency_p50/p95_s`` — ``retrieved_at - (time_utc + 1 min)`` in seconds
 
 The expected set comes from ``session_segment_of`` itself, so the diagnostic
@@ -52,6 +54,7 @@ class StoredMinute:
     session_segment: str
     time_utc: datetime
     retrieved_at: datetime
+    value_is_null: bool = False
 
 
 def _day_minutes(market: str, session_date: date) -> list[datetime]:
@@ -128,12 +131,17 @@ def coverage_report(
                 (r.retrieved_at - (r.time_utc + BAR)).total_seconds()
                 for r in present.values()
             )
+            value_null = sum(1 for r in present.values() if r.value_is_null)
             entries.append(
                 {
                     "symbol": symbol,
                     "venue": venue,
                     "session_segment": segment,
                     "rows": len(present),
+                    "value_null": value_null,
+                    "value_null_ratio": (
+                        round(value_null / len(present), 4) if present else None
+                    ),
                     "expected_minutes": len(closed_expected),
                     "missing_minutes": len(closed_expected - set(present)),
                     "latency_p50_s": _round(percentile(latencies, 0.5)),

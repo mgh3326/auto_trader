@@ -200,6 +200,10 @@ def _kr_bars(frame: pd.DataFrame, venue: str = "KRX"):
     )
 
 
+def _hhmm(out) -> list[str]:
+    return [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars]
+
+
 def test_kr_value_is_the_difference_of_accumulated_values() -> None:
     out = _kr_bars(
         _cum_frame(
@@ -219,60 +223,116 @@ def test_kr_value_is_the_difference_of_accumulated_values() -> None:
         Decimal(0),
         Decimal(150),
     ]
-    assert out.skipped_value_unknown == 0
+    assert out.null_value == 0
 
 
-def test_kr_first_traded_minute_of_the_day_is_kept_when_the_frame_reaches_back_to_day_start() -> (
-    None
-):
-    # Short frame (< one KIS page): nothing was cut off, so 08:03 is the day's first row.
+def test_kr_not_first_minute_and_no_predecessor_keeps_the_bar_with_null_value() -> None:
+    # NTX first traded minute is 08:03, not the venue's first clock minute 08:00.
     out = _kr_bars(
         _cum_frame(["2026-11-24 08:03", "2026-11-24 08:04"], [40, 55]), venue="NTX"
     )
-    assert [b.value for b in out.bars] == [Decimal(40), Decimal(15)]
-    assert out.skipped_value_unknown == 0
+    assert _hhmm(out) == ["08:03", "08:04"]
+    assert [b.value for b in out.bars] == [None, Decimal(15)]
+    assert out.null_value == 1
+    # frame length proves nothing: a short frame does not turn the oldest row's
+    # accumulated value into a per-minute value
+    assert out.bars[0].open is not None and out.bars[0].volume is not None
 
 
-def test_kr_oldest_row_of_a_full_page_frame_is_skipped_not_guessed() -> None:
-    labels = [f"2026-11-24 10:{minute:02d}" for minute in range(sc.KR_MINUTE_PAGE_ROWS)]
+def test_kr_oldest_row_of_a_longer_frame_is_kept_with_null_value() -> None:
+    labels = [f"2026-11-24 10:{minute:02d}" for minute in range(30)]
     out = _kr_bars(_cum_frame(labels, [1000 + 10 * i for i in range(len(labels))]))
-    assert len(out.bars) == len(labels) - 1
-    assert out.bars[0].time_utc.astimezone(KST).strftime("%H:%M") == "10:01"
-    assert {b.value for b in out.bars} == {Decimal(10)}
-    assert out.skipped_value_unknown == 1
+    assert len(out.bars) == 30
+    assert out.bars[0].value is None and {b.value for b in out.bars[1:]} == {
+        Decimal(10)
+    }
+    assert out.null_value == 1
 
 
-def test_kr_row_after_a_dropped_invalid_row_is_skipped_and_counted() -> None:
+def test_kr_decreasing_accumulated_value_is_null_and_so_is_the_next_row() -> None:
+    out = _kr_bars(
+        _cum_frame(
+            [
+                "2026-11-24 09:00",
+                "2026-11-24 09:01",
+                "2026-11-24 09:02",
+                "2026-11-24 09:03",
+            ],
+            [500, 400, 450, 470],
+        )
+    )
+    # 09:01 decreased -> NULL; 09:02 uses a suspect baseline -> NULL; 09:03 = 470 - 450
+    assert [b.value for b in out.bars] == [Decimal(500), None, None, Decimal(20)]
+    assert out.null_value == 2
+
+
+def test_kr_row_after_a_dropped_invalid_row_has_null_value() -> None:
     frame = _cum_frame(
-        ["2026-11-24 09:00", "2026-11-24 09:01", "2026-11-24 09:02"], [100, 250, 400]
+        [
+            "2026-11-24 09:00",
+            "2026-11-24 09:01",
+            "2026-11-24 09:02",
+            "2026-11-24 09:03",
+        ],
+        [100, 250, 400, 460],
     )
     frame.loc[1, "close"] = float("nan")
     out = _kr_bars(frame)
-    # 09:01 dropped (invalid); 09:02 would absorb its value, so it is not stored.
-    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["09:00"]
-    assert out.skipped_invalid == 1 and out.skipped_value_unknown == 1
+    # 09:01 is dropped (invalid OHLC); 09:02 would absorb its value -> NULL; 09:03 normal
+    assert _hhmm(out) == ["09:00", "09:02", "09:03"]
+    assert [b.value for b in out.bars] == [Decimal(100), None, Decimal(60)]
+    assert out.skipped_invalid == 1 and out.null_value == 1
 
 
-def test_kr_invalid_first_row_of_the_day_blocks_the_next_row() -> None:
+def test_kr_invalid_first_row_of_the_day_makes_the_next_value_null() -> None:
     frame = _cum_frame(["2026-11-24 09:00", "2026-11-24 09:01"], [100, 250])
     frame.loc[0, "open"] = float("nan")
     out = _kr_bars(frame)
-    assert (
-        out.bars == [] and out.skipped_invalid == 1 and out.skipped_value_unknown == 1
+    assert _hhmm(out) == ["09:01"] and out.bars[0].value is None
+    assert out.skipped_invalid == 1 and out.null_value == 1
+
+
+def test_kr_unreadable_value_keeps_the_bar_and_breaks_the_chain() -> None:
+    frame = _cum_frame(
+        ["2026-11-24 09:00", "2026-11-24 09:01", "2026-11-24 09:02"], [100, 250, 400]
     )
-
-
-def test_kr_decreasing_accumulated_value_is_skipped() -> None:
-    out = _kr_bars(_cum_frame(["2026-11-24 09:00", "2026-11-24 09:01"], [500, 400]))
-    assert [b.value for b in out.bars] == [
-        Decimal(500)
-    ] and out.skipped_value_unknown == 1
+    frame["value"] = frame["value"].astype(float)
+    frame.loc[1, "value"] = float("nan")
+    out = _kr_bars(frame)
+    assert _hhmm(out) == ["09:00", "09:01", "09:02"]
+    assert [b.value for b in out.bars] == [Decimal(100), None, None]
 
 
 def test_kr_accumulation_does_not_carry_across_days() -> None:
     out = _kr_bars(_cum_frame(["2026-11-23 15:29", "2026-11-24 09:00"], [9000, 70]))
-    # each day's first row of a short frame is its own accumulated value; not 70 - 9000
-    assert [b.value for b in out.bars] == [Decimal(9000), Decimal(70)]
+    # 11-23 15:29 has no provable value; 11-24 09:00 is its day's first minute (70, not 70-9000)
+    assert [b.value for b in out.bars] == [None, Decimal(70)]
+
+
+def test_kr_null_value_is_written_as_sql_null() -> None:
+    import asyncio
+
+    bars = _kr_bars(_cum_frame(["2026-11-24 10:00"], [5000])).bars
+    assert bars[0].value is None
+    captured: list[dict] = []
+
+    class _Session:
+        async def execute(self, statement, params=None):
+            captured.append(params)
+            return SimpleNamespace(rowcount=1)
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):  # pragma: no cover
+            raise AssertionError
+
+    asyncio.run(
+        sc.SqlMinuteWriter(_Session(), "kr").insert(
+            bars, batch_id="b", retrieved_at=NOW
+        )
+    )
+    assert captured[0]["value"] is None
 
 
 def test_kr_ntx_first_minute_is_0800_and_us_value_is_untouched() -> None:

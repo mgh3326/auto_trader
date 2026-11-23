@@ -98,7 +98,7 @@ class MinuteBar:
     low: Decimal
     close: Decimal
     volume: Decimal
-    value: Decimal
+    value: Decimal | None  # KR: NULL when the per-minute value cannot be proven
 
 
 @dataclass(slots=True)
@@ -106,13 +106,8 @@ class FrameResult:
     bars: list[MinuteBar] = field(default_factory=list)
     skipped_forming: int = 0
     skipped_invalid: int = 0
-    skipped_value_unknown: int = 0
+    null_value: int = 0  # KR bars kept with a NULL value
 
-
-#: KIS ``inquire_minute_chart`` returns at most this many rows per call (the
-#: published per-call limit). A frame shorter than this reaches back to the
-#: venue's day start; a full one may be truncated at its old end.
-KR_MINUTE_PAGE_ROWS = 30
 
 #: First minute of a KR venue's day: its accumulated value starts from zero, so
 #: the accumulated value itself is that bar's value.
@@ -145,19 +140,19 @@ def bars_from_frame(
     """KIS frame (``datetime`` = naive START label in the local clock) -> bars.
 
     KR ``value`` (``acml_tr_pbmn``) is the ACCUMULATED trade value of the day,
-    not the per-minute amount (``volume`` is per minute). The stored per-bar
-    value is the difference to the previous row of the same KST day in the
-    frame; the venue's first minute of the day is the accumulated value itself.
-    The day's oldest row in a frame shorter than one KIS page
-    (``KR_MINUTE_PAGE_ROWS``) is the day's first traded minute (nothing was cut
-    off), so its accumulated value is its own value even when it is not the
-    venue's first clock minute. In a full-page frame the oldest row may have been
-    cut off, so it is skipped and counted (``skipped_value_unknown``); earlier
-    runs recorded that minute while it was still inside a short frame. A row whose
-    accumulated value went down, or that follows a row dropped as invalid (that
-    row's trade value would be folded into the difference), is skipped and
-    counted too: a first-write-wins row must never carry a guess.
-    US ``value`` is per bar.
+    not the per-minute amount (``volume`` is per minute). The per-minute value is
+    stored only when it is proven:
+
+    * the previous row of the same KST day is in the frame -> the difference, or
+    * the bar is exactly the venue's first minute of the day (KRX 09:00,
+      NTX 08:00) -> the accumulated value itself.
+
+    Anything else is stored as NULL — the bar is kept, the value is not guessed
+    (unknown is neither 0 nor an estimate; frame length is never used to infer
+    that the day start was reached). A row whose accumulated value went down, the
+    row after it, and the row after a row dropped as invalid are NULL too, because
+    the baseline (or a dropped minute's trade value) would otherwise be folded
+    into the difference. US ``value`` is per bar and stored as is.
     """
     result = FrameResult()
     if frame is None or frame.empty:
@@ -166,7 +161,6 @@ def bars_from_frame(
     parsed_rows: dict[datetime, list[Decimal]] = {}
     invalid_starts: list[datetime] = []
     records = frame.to_dict("records")
-    complete_frame = len(records) < KR_MINUTE_PAGE_ROWS
     for item in records:
         parsed = pd.to_datetime(item.get("datetime"), errors="coerce")
         if pd.isna(parsed):
@@ -187,13 +181,17 @@ def bars_from_frame(
             _decimal(item.get(key))
             for key in ("open", "high", "low", "close", "volume", "value")
         ]
-        if any(v is None for v in values):
+        if any(v is None for v in values[:5]) or (values[5] is None and market != "kr"):
             result.skipped_invalid += 1
             invalid_starts.append(start_utc)
             continue
+        if values[5] is None:
+            # KR bar is usable, its accumulated value is not: acts as a chain break
+            invalid_starts.append(start_utc)
         parsed_rows[start_utc] = values  # type: ignore[assignment]
 
     previous: tuple[datetime, Decimal] | None = None
+    suspect_next = False
     for start_utc in sorted(parsed_rows):
         o, h, low, c, vol, value = parsed_rows[start_utc]
         if market == "kr":
@@ -210,16 +208,21 @@ def bars_from_frame(
                 and (lower is None or dropped > lower)
                 for dropped in invalid_starts
             )
-            if not dropped_between:
+            if not same_day_previous:
+                suspect_next = False
+            decreased = False
+            if not dropped_between and not suspect_next and accumulated is not None:
                 if same_day_previous and previous is not None:
                     if accumulated >= previous[1]:
                         value = accumulated - previous[1]
-                elif complete_frame or local.time() == _KR_DAY_FIRST_MINUTE.get(venue):
+                    else:
+                        decreased = True
+                elif local.time() == _KR_DAY_FIRST_MINUTE.get(venue):
                     value = accumulated
-            previous = (start_utc, accumulated)
-            if value is None:
-                result.skipped_value_unknown += 1
-                continue
+            suspect_next = decreased
+            previous = (start_utc, accumulated) if accumulated is not None else previous
+            if value is None and is_closed(start_utc, observed_before):
+                result.null_value += 1
         if not is_closed(start_utc, observed_before):
             result.skipped_forming += 1
             continue
@@ -618,7 +621,7 @@ async def collect(
     nxt = set(nxt_eligible)
     exchanges = us_exchanges or {}
     inserted = already_present = skipped_forming = skipped_invalid = 0
-    skipped_value_unknown = would_write = 0
+    null_value = would_write = 0
     reads = 0
     errors: list[dict[str, str]] = [dict(item) for item in prior_errors]
     for symbol in unresolved_symbols:
@@ -655,7 +658,7 @@ async def collect(
             )
             skipped_forming += parsed.skipped_forming
             skipped_invalid += parsed.skipped_invalid
-            skipped_value_unknown += parsed.skipped_value_unknown
+            null_value += parsed.null_value
             if dry_run:
                 would_write += len(parsed.bars)
             elif parsed.bars:
@@ -686,7 +689,7 @@ async def collect(
         "already_present": already_present,
         "skipped_forming": skipped_forming,
         "skipped_invalid": skipped_invalid,
-        "skipped_value_unknown": skipped_value_unknown,
+        "null_value": null_value,
         "would_write": would_write if dry_run else None,
         "errors": len(errors),
         "error_details": errors,
