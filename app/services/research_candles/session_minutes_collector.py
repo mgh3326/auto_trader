@@ -109,6 +109,11 @@ class FrameResult:
     skipped_value_unknown: int = 0
 
 
+#: KIS ``inquire_minute_chart`` returns at most this many rows per call (the
+#: published per-call limit). A frame shorter than this reaches back to the
+#: venue's day start; a full one may be truncated at its old end.
+KR_MINUTE_PAGE_ROWS = 30
+
 #: First minute of a KR venue's day: its accumulated value starts from zero, so
 #: the accumulated value itself is that bar's value.
 _KR_DAY_FIRST_MINUTE = {"KRX": KR_REGULAR_OPEN_KST, "NTX": KR_PREMARKET_OPEN_KST}
@@ -143,17 +148,26 @@ def bars_from_frame(
     not the per-minute amount (``volume`` is per minute). The stored per-bar
     value is the difference to the previous row of the same KST day in the
     frame; the venue's first minute of the day is the accumulated value itself.
-    A bar whose predecessor is not in the frame (oldest row), or whose
-    accumulated value went down, is skipped and counted
-    (``skipped_value_unknown``): a first-write-wins row must never carry a guess.
-    A later run sees that minute with its predecessor. US ``value`` is per bar.
+    The day's oldest row in a frame shorter than one KIS page
+    (``KR_MINUTE_PAGE_ROWS``) is the day's first traded minute (nothing was cut
+    off), so its accumulated value is its own value even when it is not the
+    venue's first clock minute. In a full-page frame the oldest row may have been
+    cut off, so it is skipped and counted (``skipped_value_unknown``); earlier
+    runs recorded that minute while it was still inside a short frame. A row whose
+    accumulated value went down, or that follows a row dropped as invalid (that
+    row's trade value would be folded into the difference), is skipped and
+    counted too: a first-write-wins row must never carry a guess.
+    US ``value`` is per bar.
     """
     result = FrameResult()
     if frame is None or frame.empty:
         return result
     local_tz = _KST if market == "kr" else _ET
     parsed_rows: dict[datetime, list[Decimal]] = {}
-    for item in frame.to_dict("records"):
+    invalid_starts: list[datetime] = []
+    records = frame.to_dict("records")
+    complete_frame = len(records) < KR_MINUTE_PAGE_ROWS
+    for item in records:
         parsed = pd.to_datetime(item.get("datetime"), errors="coerce")
         if pd.isna(parsed):
             result.skipped_invalid += 1
@@ -175,6 +189,7 @@ def bars_from_frame(
         ]
         if any(v is None for v in values):
             result.skipped_invalid += 1
+            invalid_starts.append(start_utc)
             continue
         parsed_rows[start_utc] = values  # type: ignore[assignment]
 
@@ -184,14 +199,23 @@ def bars_from_frame(
         if market == "kr":
             local = start_utc.astimezone(_KST)
             accumulated, value = value, None
-            if (
+            same_day_previous = (
                 previous is not None
                 and previous[0].astimezone(_KST).date() == local.date()
-            ):
-                if accumulated >= previous[1]:
-                    value = accumulated - previous[1]
-            elif local.time() == _KR_DAY_FIRST_MINUTE.get(venue):
-                value = accumulated
+            )
+            lower = previous[0] if same_day_previous and previous else None
+            dropped_between = any(
+                dropped < start_utc
+                and dropped.astimezone(_KST).date() == local.date()
+                and (lower is None or dropped > lower)
+                for dropped in invalid_starts
+            )
+            if not dropped_between:
+                if same_day_previous and previous is not None:
+                    if accumulated >= previous[1]:
+                        value = accumulated - previous[1]
+                elif complete_frame or local.time() == _KR_DAY_FIRST_MINUTE.get(venue):
+                    value = accumulated
             previous = (start_utc, accumulated)
             if value is None:
                 result.skipped_value_unknown += 1

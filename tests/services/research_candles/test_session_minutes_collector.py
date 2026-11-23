@@ -222,11 +222,44 @@ def test_kr_value_is_the_difference_of_accumulated_values() -> None:
     assert out.skipped_value_unknown == 0
 
 
-def test_kr_oldest_row_without_predecessor_is_skipped_not_guessed() -> None:
-    out = _kr_bars(_cum_frame(["2026-11-24 10:00", "2026-11-24 10:01"], [5000, 5200]))
-    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["10:01"]
-    assert out.bars[0].value == Decimal(200)
+def test_kr_first_traded_minute_of_the_day_is_kept_when_the_frame_reaches_back_to_day_start() -> (
+    None
+):
+    # Short frame (< one KIS page): nothing was cut off, so 08:03 is the day's first row.
+    out = _kr_bars(
+        _cum_frame(["2026-11-24 08:03", "2026-11-24 08:04"], [40, 55]), venue="NTX"
+    )
+    assert [b.value for b in out.bars] == [Decimal(40), Decimal(15)]
+    assert out.skipped_value_unknown == 0
+
+
+def test_kr_oldest_row_of_a_full_page_frame_is_skipped_not_guessed() -> None:
+    labels = [f"2026-11-24 10:{minute:02d}" for minute in range(sc.KR_MINUTE_PAGE_ROWS)]
+    out = _kr_bars(_cum_frame(labels, [1000 + 10 * i for i in range(len(labels))]))
+    assert len(out.bars) == len(labels) - 1
+    assert out.bars[0].time_utc.astimezone(KST).strftime("%H:%M") == "10:01"
+    assert {b.value for b in out.bars} == {Decimal(10)}
     assert out.skipped_value_unknown == 1
+
+
+def test_kr_row_after_a_dropped_invalid_row_is_skipped_and_counted() -> None:
+    frame = _cum_frame(
+        ["2026-11-24 09:00", "2026-11-24 09:01", "2026-11-24 09:02"], [100, 250, 400]
+    )
+    frame.loc[1, "close"] = float("nan")
+    out = _kr_bars(frame)
+    # 09:01 dropped (invalid); 09:02 would absorb its value, so it is not stored.
+    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["09:00"]
+    assert out.skipped_invalid == 1 and out.skipped_value_unknown == 1
+
+
+def test_kr_invalid_first_row_of_the_day_blocks_the_next_row() -> None:
+    frame = _cum_frame(["2026-11-24 09:00", "2026-11-24 09:01"], [100, 250])
+    frame.loc[0, "open"] = float("nan")
+    out = _kr_bars(frame)
+    assert (
+        out.bars == [] and out.skipped_invalid == 1 and out.skipped_value_unknown == 1
+    )
 
 
 def test_kr_decreasing_accumulated_value_is_skipped() -> None:
@@ -238,10 +271,8 @@ def test_kr_decreasing_accumulated_value_is_skipped() -> None:
 
 def test_kr_accumulation_does_not_carry_across_days() -> None:
     out = _kr_bars(_cum_frame(["2026-11-23 15:29", "2026-11-24 09:00"], [9000, 70]))
-    # 11-23 15:29 has no predecessor (skipped); 11-24 09:00 is the first minute of its day
-    assert [b.value for b in out.bars] == [
-        Decimal(70)
-    ] and out.skipped_value_unknown == 1
+    # each day's first row of a short frame is its own accumulated value; not 70 - 9000
+    assert [b.value for b in out.bars] == [Decimal(9000), Decimal(70)]
 
 
 def test_kr_ntx_first_minute_is_0800_and_us_value_is_untouched() -> None:

@@ -18,7 +18,7 @@ uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 00593
 - 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `skipped_value_unknown`, `errors`, `error_details`(종목·venue·예외 클래스만), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
 - 닫힌 봉만 쓴다(`시작 + 1분 + 10초 <= 요청 직전`). 같은 봉을 다시 받으면 `already_present` 이고 `retrieved_at` 은 최초 값 그대로다.
 - `targets_truncated` 가 0 이 아니면 상한(`SESSION_MINUTES_MAX_SYMBOLS_*`)에 걸린 것이다. 낮은 순위(pick log → 스냅샷 순위 → 고정 목록 → 보유) 순으로 잘린다.
-- KIS 분봉 한 번 호출은 최근 구간만 돌려준다(KR 약 30봉, US 최대 120봉). 5분 간격 DAG 에서는 겹치지만, 실행이 한동안 멈추면 그 구간은 비며 소급 채움은 없다(진단의 `missing_minutes` 로 보인다).
+- KIS 분봉 한 번 호출은 최근 구간만 돌려준다(KR 최대 30행, US 최대 120행). 5분 간격 DAG 에서는 겹치지만, 실행이 한동안 멈추면 그 구간은 비며 소급 채움은 없다(진단의 `missing_minutes` 로 보인다).
 
 ## 3. 커버리지 확인
 
