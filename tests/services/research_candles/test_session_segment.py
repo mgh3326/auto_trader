@@ -103,7 +103,9 @@ def test_us_edt_and_est_open_are_different_utc_instants() -> None:
 
 
 def test_us_early_close_moves_post_market_start() -> None:
-    assert session_segment_of("us", "NASD", _et(US_EARLY_CLOSE, "12:59")) == "US_REGULAR"
+    assert (
+        session_segment_of("us", "NASD", _et(US_EARLY_CLOSE, "12:59")) == "US_REGULAR"
+    )
     assert session_segment_of("us", "NASD", _et(US_EARLY_CLOSE, "13:00")) == "US_POST"
 
 
