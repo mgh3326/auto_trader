@@ -1071,6 +1071,10 @@ class Settings(BaseSettings):
     # must stay false until that lands. run_gated_tick enforces that in code --
     # a non-dry spawner against a volatile store returns status="blocked".
     WATCH_TRIGGER_REPRICING_ENABLED: bool = False
+    # hk 6145 — 세션 분봉 수집기(scripts/collect_session_minutes.py)의 고정 수집 목록.
+    # 쉼표 구분, 기본 비어 있음. 매매 판단 정책(YAML)이 아니라 수집 설정이다.
+    SESSION_MINUTES_FIXED_SYMBOLS_KR: str = ""
+    SESSION_MINUTES_FIXED_SYMBOLS_US: str = ""
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
