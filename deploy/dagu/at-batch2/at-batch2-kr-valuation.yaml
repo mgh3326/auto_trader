@@ -1,0 +1,23 @@
+# 16:30 KST 월–금 KR 밸류에이션 스냅샷 갱신. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 등록 전 기존 TaskIQ market_valuation_snapshots.kr_scheduled(16:30 KST) 비실행을 확인해 중복 실행을 막는다.
+# XKRX 비거래일은 --skip-non-session으로 건너뛰고, 커밋 여부는 컨테이너 안의 설정
+# market_valuation_snapshots_commit_enabled 가 정한다(--commit-from-settings).
+# 스케줄은 UTC(07:30)로 표기한다. 실패는 journal 한 줄로 남긴다.
+description: "KR valuation snapshot refresh (holiday-gated, commit from settings)"
+schedule: "CRON_TZ=UTC 30 7 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: build
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_market_valuation_snapshots --market kr --all --skip-non-session --commit-from-settings || rc=$?
+      exit "$rc"
+    timeout_sec: 3600
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-kr-valuation status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-batch2-kr-valuation status=failure"'
