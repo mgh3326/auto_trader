@@ -1075,6 +1075,10 @@ class Settings(BaseSettings):
     # 쉼표 구분, 기본 비어 있음. 매매 판단 정책(YAML)이 아니라 수집 설정이다.
     SESSION_MINUTES_FIXED_SYMBOLS_KR: str = ""
     SESSION_MINUTES_FIXED_SYMBOLS_US: str = ""
+    # 스크리너 스냅샷(DB-only) 프리셋별 상위 N 과 시장별 수집 종목 총 상한.
+    SESSION_MINUTES_SCREENER_TOP_N: int = 20
+    SESSION_MINUTES_MAX_SYMBOLS_KR: int = 150
+    SESSION_MINUTES_MAX_SYMBOLS_US: int = 150
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""

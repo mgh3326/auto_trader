@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -290,11 +290,122 @@ def parse_symbol_list(market: Market, raw: str | None) -> list[str]:
     return sorted({s for s in symbols if s})
 
 
+#: Highest priority first. holdings > fixed list > snapshot rank > pick log (hk 6145).
+TARGET_ORIGIN_ORDER = (
+    "kis_holdings",
+    "manual_holdings",
+    "fixed_list",
+    "screener_snapshot",
+    "screener_pick_log",
+)
+DEFAULT_SCREENER_TOP_N = 20
+DEFAULT_MAX_SYMBOLS = 150
+
+
 @dataclass(slots=True)
 class TargetSet:
     symbols: list[str]
     by_origin: dict[str, int]
     errors: list[dict[str, str]] = field(default_factory=list)
+    truncated: dict[str, int] = field(default_factory=dict)
+
+
+def select_with_cap(
+    tiers: Sequence[tuple[str, Sequence[str]]], max_symbols: int
+) -> tuple[list[str], dict[str, int]]:
+    """Keep symbols in tier order up to ``max_symbols``; report what was cut.
+
+    A symbol found in several tiers belongs to the first (highest priority) one.
+    Returns ``(kept_in_priority_order, truncated_count_by_origin)``.
+    """
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for origin, symbols in tiers:
+        for symbol in symbols:
+            if symbol not in seen:
+                seen.add(symbol)
+                ordered.append((origin, symbol))
+    cap = max(int(max_symbols), 0)
+    kept = [symbol for _, symbol in ordered[:cap]]
+    truncated: dict[str, int] = {}
+    for origin, _ in ordered[cap:]:
+        truncated[origin] = truncated.get(origin, 0) + 1
+    return kept, truncated
+
+
+def _row_rank(row: Mapping[str, Any], position: int) -> int:
+    rank = row.get("rank")
+    return (
+        rank
+        if isinstance(rank, int) and not isinstance(rank, bool) and rank >= 1
+        else position
+    )
+
+
+async def snapshot_top_symbols(
+    *,
+    market: Market,
+    top_n: int,
+    snapshot_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    presets_fn: Callable[[str], Sequence[Any]] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Union of the top ``top_n`` rows of every available screener preset.
+
+    DB-only: ``screen_stocks_snapshot_impl`` makes no HTTP call and — being the
+    impl, not the registered MCP tool — never writes ``screener_pick_log``
+    (hard rule 13: the observer is wired in the registration layer only). No
+    observer sink argument is passed. Symbols are ordered by best rank across
+    presets, then by preset order.
+    """
+    if snapshot_fn is None:
+        from app.mcp_server.tooling.screener_snapshot_tool import (
+            screen_stocks_snapshot_impl as snapshot_fn,
+        )
+    if presets_fn is None:
+        from app.services.invest_view_model.screener_presets import (
+            preset_definitions as presets_fn,
+        )
+
+    best: dict[str, tuple[int, int]] = {}
+    errors: list[dict[str, str]] = []
+    limit = max(int(top_n), 1)
+    available = [
+        p for p in presets_fn(market) if getattr(p, "availability", None) == "active"
+    ]
+    for preset_index, preset in enumerate(available):
+        preset_id = str(getattr(preset, "id", ""))
+        try:
+            payload = await snapshot_fn(preset=preset_id, market=market, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - one preset must not stop target selection
+            errors.append(
+                {
+                    "origin": "screener_snapshot",
+                    "preset": preset_id,
+                    "error_class": type(exc).__name__,
+                }
+            )
+            continue
+        if isinstance(payload, Mapping) and payload.get("error"):
+            errors.append(
+                {
+                    "origin": "screener_snapshot",
+                    "preset": preset_id,
+                    "error_class": "SnapshotError",
+                }
+            )
+            continue
+        rows = (payload or {}).get("results") or []
+        for position, row in enumerate(rows[:limit], start=1):
+            symbol = normalize_symbol(market, row.get("symbol"))
+            if symbol is None:
+                continue
+            key = (_row_rank(row, position), preset_index)
+            if symbol not in best or key < best[symbol]:
+                best[symbol] = key
+    ordered = [
+        symbol for symbol, _ in sorted(best.items(), key=lambda kv: (kv[1], kv[0]))
+    ]
+    return ordered, errors
 
 
 async def build_targets(
@@ -305,19 +416,25 @@ async def build_targets(
     user_id: int,
     fixed_symbols_raw: str | None,
     now: datetime,
+    screener_top_n: int = DEFAULT_SCREENER_TOP_N,
+    max_symbols: int = DEFAULT_MAX_SYMBOLS,
+    snapshot_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    presets_fn: Callable[[str], Sequence[Any]] | None = None,
 ) -> TargetSet:
-    """KIS holdings + manual holdings + today's admitted picks + fixed list."""
+    """Holdings (KIS + manual) > fixed list > screener snapshot top N > pick log.
+
+    Over ``max_symbols`` the lower tiers are cut first and the number cut per
+    origin is reported in ``truncated``.
+    """
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
 
-    found: dict[str, set[str]] = {}
+    found: dict[str, list[str]] = {}
     errors: list[dict[str, str]] = []
 
     def add(origin: str, values: Iterable[object]) -> None:
-        for value in values:
-            symbol = normalize_symbol(market, value)
-            if symbol:
-                found.setdefault(origin, set()).add(symbol)
+        symbols = (normalize_symbol(market, value) for value in values)
+        found[origin] = sorted({s for s in symbols if s})
 
     try:
         if market == "kr":
@@ -337,6 +454,22 @@ async def build_targets(
         add("manual_holdings", (getattr(h, "ticker", None) for h in manual))
     except Exception as exc:  # noqa: BLE001
         errors.append({"origin": "manual_holdings", "error_class": type(exc).__name__})
+
+    found["fixed_list"] = parse_symbol_list(market, fixed_symbols_raw)
+
+    try:
+        ranked, snapshot_errors = await snapshot_top_symbols(
+            market=market,
+            top_n=screener_top_n,
+            snapshot_fn=snapshot_fn,
+            presets_fn=presets_fn,
+        )
+        found["screener_snapshot"] = ranked
+        errors.extend(snapshot_errors)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(
+            {"origin": "screener_snapshot", "error_class": type(exc).__name__}
+        )
 
     try:
         if market == "kr":
@@ -358,12 +491,13 @@ async def build_targets(
             {"origin": "screener_pick_log", "error_class": type(exc).__name__}
         )
 
-    add("fixed_list", parse_symbol_list(market, fixed_symbols_raw))
-    symbols = sorted(set().union(*found.values())) if found else []
+    tiers = [(origin, found.get(origin, [])) for origin in TARGET_ORIGIN_ORDER]
+    symbols, truncated = select_with_cap(tiers, max_symbols)
     return TargetSet(
-        symbols=symbols,
-        by_origin={origin: len(values) for origin, values in sorted(found.items())},
+        symbols=sorted(symbols),
+        by_origin={origin: len(values) for origin, values in found.items() if values},
         errors=errors,
+        truncated=truncated,
     )
 
 
@@ -505,6 +639,8 @@ __all__ = [
     "MinuteWriter",
     "SqlMinuteWriter",
     "TargetSet",
+    "select_with_cap",
+    "snapshot_top_symbols",
     "bars_from_frame",
     "build_targets",
     "collect",
