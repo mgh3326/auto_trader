@@ -178,17 +178,35 @@ async def load_daily_bars(
     rows = await db.execute(
         stmt, {"tz": tzname, "symbol": symbol, "start": start, "end": end}
     )
-    return [
-        DailyBar(
+    # One bar per session date. A US symbol can hold a 00:00Z row (KIS, Yahoo,
+    # Toss) and a 05:00Z row (Alpaca IEX) for the same session, which both map
+    # to one date. The rule: keep the earliest stored timestamp, the 00:00Z
+    # convention the consolidated writers use. Two rows with the same timestamp
+    # (for example two exchanges) are ambiguous, so the symbol fails closed.
+    kept: dict[dt.date, tuple[dt.datetime, DailyBar]] = {}
+    for row in rows:
+        session = daily_session_date(market, row.time)
+        bar = DailyBar(
             symbol=symbol,
-            session_date=daily_session_date(market, row.time),
+            session_date=session,
             open=Decimal(str(row.open)),
             high=Decimal(str(row.high)),
             low=Decimal(str(row.low)),
             close=Decimal(str(row.close)),
             volume=Decimal(str(row.volume if row.volume is not None else 0)),
         )
-        for row in rows
+        held = kept.get(session)
+        if held is None:
+            kept[session] = (row.time, bar)
+        elif held[0] == row.time:
+            raise ValueError(
+                f"{symbol}: ambiguous duplicate daily rows at {row.time.isoformat()}"
+            )
+        elif row.time < held[0]:
+            kept[session] = (row.time, bar)
+        # Otherwise the held row is the earlier one and the later row is dropped.
+    return [
+        bar for _, bar in sorted(kept.values(), key=lambda item: item[1].session_date)
     ]
 
 

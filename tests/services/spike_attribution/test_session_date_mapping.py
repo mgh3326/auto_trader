@@ -252,3 +252,47 @@ def test_a_new_us_entry_is_served_and_kr_keeps_its_directory(tmp_path: Path) -> 
         market="us", session_date=session, symbol="NVDA", now=NOW, root=tmp_path
     )
     assert read.state == STATE_FRESH
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_with_00z_and_05z_rows_for_one_session_keeps_the_00z_bar() -> (
+    None
+):
+    # Two stored rows for the same US session: KIS/Yahoo/Toss at 00:00Z and an
+    # Alpaca IEX row at 05:00Z. Both map to 2026-11-20. Keep the earlier 00:00Z.
+    rows = _rows(US_BARS[:5], 0) + [
+        SimpleNamespace(
+            time=dt.datetime(2026, 11, 20, 5, tzinfo=UTC),
+            open=Decimal("184"),
+            high=Decimal("190"),
+            low=Decimal("181"),
+            close=Decimal("188"),
+            volume=Decimal("1"),
+        )
+    ]
+    loaded = await load_daily_bars(
+        _FakeDB(rows),
+        market="us",
+        symbol="NVDA",
+        start=dt.date(2026, 11, 16),
+        end=dt.date(2026, 11, 23),
+    )
+    nov20 = [b for b in loaded if b.session_date == dt.date(2026, 11, 20)]
+    assert len(nov20) == 1
+    assert nov20[0].close == Decimal("185")
+    session_dates = [b.session_date for b in loaded]
+    assert session_dates == sorted(set(session_dates))
+
+
+@pytest.mark.asyncio
+async def test_two_rows_with_the_same_timestamp_fail_closed() -> None:
+    rows = _rows(US_BARS[:2], 0)
+    rows.append(rows[0])
+    with pytest.raises(ValueError, match="ambiguous duplicate"):
+        await load_daily_bars(
+            _FakeDB(rows),
+            market="us",
+            symbol="NVDA",
+            start=dt.date(2026, 11, 16),
+            end=dt.date(2026, 11, 17),
+        )
