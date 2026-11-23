@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -74,9 +75,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--symbol/--limit backfills."
         ),
     )
+    parser.add_argument(
+        "--commit-from-settings",
+        action="store_true",
+        help=(
+            "Commit exactly when market_valuation_snapshots_commit_enabled is true "
+            "in the running environment. Mutually exclusive with --commit."
+        ),
+    )
+    parser.add_argument(
+        "--skip-non-session",
+        action="store_true",
+        help=(
+            "Exit 0 with a skipped_holiday line, without building, when today is "
+            "not a trading session for --market (XKRX for kr, XNYS for us)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
+    if args.commit and args.commit_from_settings:
+        parser.error("--commit and --commit-from-settings are mutually exclusive")
     if args.limit is None:
         args.limit = 20
     if args.batch_size < 1:
@@ -85,6 +104,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--concurrency must be >= 1")
     args.dry_run = not args.commit
     return args
+
+
+def _market_session_today(market: str) -> bool:
+    # Reuse the shared XKRX/XNYS gate; imported lazily like the retired TaskIQ task.
+    from app.tasks.invest_screener_snapshot_tasks import is_market_session_today
+
+    return is_market_session_today(market)
+
+
+def _commit_from_settings() -> bool:
+    from app.core.config import settings
+
+    return bool(settings.market_valuation_snapshots_commit_enabled)
 
 
 def _print_result(result) -> None:
@@ -133,6 +165,13 @@ def _print_result(result) -> None:
 async def run(args: argparse.Namespace) -> int:
     from app.jobs import market_valuation_snapshots as snapshot_job
     from app.services.snapshot_commit_guard import PartialCommitBlocked
+
+    if args.skip_non_session and not _market_session_today(args.market):
+        print(json.dumps({"status": "skipped_holiday", "market": args.market}))
+        return 0
+    if args.commit_from_settings:
+        args.commit = _commit_from_settings()
+        args.dry_run = not args.commit
 
     request = snapshot_job.MarketValuationSnapshotBuildRequest(
         market=args.market,
