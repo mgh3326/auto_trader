@@ -329,7 +329,7 @@ async def test_sql_writer_targets_only_the_research_table(
         market=market,
         symbol="X",
         venue="KRX" if market == "kr" else "NASD",
-        observed_before=NOW,
+        observed_before=datetime(2027, 1, 1, tzinfo=UTC),
     ).bars
     assert bar
     inserted, present = await sc.SqlMinuteWriter(session, market).insert(
