@@ -40,8 +40,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import kst_day_window
-from app.services.execution_ledger.kis_lots import us_trading_day_window
-from app.services.research_candles.session_segment import session_segment_of
+from app.services.brokers.kis.live_order_expiry import (
+    KR_PREMARKET_OPEN_KST,
+    KR_REGULAR_OPEN_KST,
+)
+from app.services.research_candles.session_segment import (
+    session_segment_of,
+    us_session_date,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,16 +106,17 @@ class FrameResult:
     bars: list[MinuteBar] = field(default_factory=list)
     skipped_forming: int = 0
     skipped_invalid: int = 0
+    skipped_value_unknown: int = 0
+
+
+#: First minute of a KR venue's day: its accumulated value starts from zero, so
+#: the accumulated value itself is that bar's value.
+_KR_DAY_FIRST_MINUTE = {"KRX": KR_REGULAR_OPEN_KST, "NTX": KR_PREMARKET_OPEN_KST}
 
 
 def is_closed(bar_start_utc: datetime, observed_before: datetime) -> bool:
     """True once the minute is over by at least the 10 s grace."""
     return bar_start_utc + BAR + CLOSE_GRACE <= observed_before
-
-
-def us_session_date(bar_start_utc: datetime) -> date:
-    """ET trading day of ``bar_start_utc`` (20:00 ET rollover, kis_lots helper)."""
-    return us_trading_day_window(bar_start_utc)[1].astimezone(_ET).date()
 
 
 def _decimal(value: object) -> Decimal | None:
@@ -130,15 +137,24 @@ def bars_from_frame(
     venue: str,
     observed_before: datetime,
 ) -> FrameResult:
-    """KIS frame (``datetime`` = naive START label in the local clock) -> bars."""
+    """KIS frame (``datetime`` = naive START label in the local clock) -> bars.
+
+    KR ``value`` (``acml_tr_pbmn``) is the ACCUMULATED trade value of the day,
+    not the per-minute amount (``volume`` is per minute). The stored per-bar
+    value is the difference to the previous row of the same KST day in the
+    frame; the venue's first minute of the day is the accumulated value itself.
+    A bar whose predecessor is not in the frame (oldest row), or whose
+    accumulated value went down, is skipped and counted
+    (``skipped_value_unknown``): a first-write-wins row must never carry a guess.
+    A later run sees that minute with its predecessor. US ``value`` is per bar.
+    """
     result = FrameResult()
     if frame is None or frame.empty:
         return result
     local_tz = _KST if market == "kr" else _ET
-    seen: set[datetime] = set()
+    parsed_rows: dict[datetime, list[Decimal]] = {}
     for item in frame.to_dict("records"):
-        raw = item.get("datetime")
-        parsed = pd.to_datetime(raw, errors="coerce")
+        parsed = pd.to_datetime(item.get("datetime"), errors="coerce")
         if pd.isna(parsed):
             result.skipped_invalid += 1
             continue
@@ -151,7 +167,7 @@ def bars_from_frame(
         start_utc = (
             stamp.to_pydatetime().astimezone(UTC).replace(second=0, microsecond=0)
         )
-        if start_utc in seen:
+        if start_utc in parsed_rows:
             continue
         values = [
             _decimal(item.get(key))
@@ -160,11 +176,29 @@ def bars_from_frame(
         if any(v is None for v in values):
             result.skipped_invalid += 1
             continue
+        parsed_rows[start_utc] = values  # type: ignore[assignment]
+
+    previous: tuple[datetime, Decimal] | None = None
+    for start_utc in sorted(parsed_rows):
+        o, h, low, c, vol, value = parsed_rows[start_utc]
+        if market == "kr":
+            local = start_utc.astimezone(_KST)
+            accumulated, value = value, None
+            if (
+                previous is not None
+                and previous[0].astimezone(_KST).date() == local.date()
+            ):
+                if accumulated >= previous[1]:
+                    value = accumulated - previous[1]
+            elif local.time() == _KR_DAY_FIRST_MINUTE.get(venue):
+                value = accumulated
+            previous = (start_utc, accumulated)
+            if value is None:
+                result.skipped_value_unknown += 1
+                continue
         if not is_closed(start_utc, observed_before):
             result.skipped_forming += 1
             continue
-        seen.add(start_utc)
-        o, h, low, c, vol, val = values  # type: ignore[misc]
         result.bars.append(
             MinuteBar(
                 time_utc=start_utc,
@@ -182,10 +216,9 @@ def bars_from_frame(
                 low=low,
                 close=c,
                 volume=vol,
-                value=val,
+                value=value,
             )
         )
-    result.bars.sort(key=lambda bar: bar.time_utc)
     return result
 
 
@@ -560,7 +593,8 @@ async def collect(
     batch = batch_id or new_batch_id(market, clock())
     nxt = set(nxt_eligible)
     exchanges = us_exchanges or {}
-    inserted = already_present = skipped_forming = skipped_invalid = would_write = 0
+    inserted = already_present = skipped_forming = skipped_invalid = 0
+    skipped_value_unknown = would_write = 0
     reads = 0
     errors: list[dict[str, str]] = [dict(item) for item in prior_errors]
     for symbol in unresolved_symbols:
@@ -597,6 +631,7 @@ async def collect(
             )
             skipped_forming += parsed.skipped_forming
             skipped_invalid += parsed.skipped_invalid
+            skipped_value_unknown += parsed.skipped_value_unknown
             if dry_run:
                 would_write += len(parsed.bars)
             elif parsed.bars:
@@ -627,6 +662,7 @@ async def collect(
         "already_present": already_present,
         "skipped_forming": skipped_forming,
         "skipped_invalid": skipped_invalid,
+        "skipped_value_unknown": skipped_value_unknown,
         "would_write": would_write if dry_run else None,
         "errors": len(errors),
         "error_details": errors,
@@ -650,5 +686,4 @@ __all__ = [
     "normalize_symbol",
     "parse_symbol_list",
     "resolve_us_exchanges",
-    "us_session_date",
 ]

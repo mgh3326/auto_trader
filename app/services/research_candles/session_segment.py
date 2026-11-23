@@ -28,11 +28,12 @@ concrete session.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from app.mcp_server.tooling.market_session import (
+    US_EXTENDED_CLOSE_ET,
     US_SESSION_AFTERHOURS,
     US_SESSION_PREMARKET,
     US_SESSION_REGULAR,
@@ -63,6 +64,7 @@ KR_VENUES = ("KRX", "NTX")
 US_VENUES = ("NASD", "NYSE", "AMEX")
 
 _KST = ZoneInfo("Asia/Seoul")
+_ET = ZoneInfo("America/New_York")
 
 _US_SEGMENT_BY_SESSION = {
     US_SESSION_PREMARKET: US_PRE,
@@ -105,6 +107,20 @@ def _us_segment(venue: str, bar_start_utc: datetime) -> str:
     if venue not in US_VENUES:
         return UNKNOWN
     return _US_SEGMENT_BY_SESSION.get(us_market_session(bar_start_utc), UNKNOWN)
+
+
+def us_session_date(bar_start_utc: datetime) -> date:
+    """ET trading day of an instant: rolls over at 20:00 ET (DST aware).
+
+    Same rule as ``execution_ledger.kis_lots.us_trading_day_window`` (a bar in
+    the 04:00-20:00 ET extended session belongs to its own ET date, a daytime
+    bar after 20:00 to the next one), kept here as a pure helper so research
+    code does not import the ledger package.
+    """
+    local = bar_start_utc.astimezone(_ET)
+    if local.time() >= US_EXTENDED_CLOSE_ET:
+        return local.date() + timedelta(days=1)
+    return local.date()
 
 
 def session_segment_of(market: str, venue: str, bar_start_utc: datetime) -> str:

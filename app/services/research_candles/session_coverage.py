@@ -25,12 +25,12 @@ from zoneinfo import ZoneInfo
 from app.services.research_candles.session_minutes_collector import (
     BAR,
     CLOSE_GRACE,
-    us_session_date,
 )
 from app.services.research_candles.session_segment import (
     KR_VENUES,
     UNKNOWN,
     session_segment_of,
+    us_session_date,
 )
 
 _KST = ZoneInfo("Asia/Seoul")

@@ -19,7 +19,10 @@ Additive. ``public.*_candles_1m`` are untouched.
    GROUP BY bucket, symbol, venue, session_segment, so a bucket never mixes
    sessions.
 4. Conditional ``at_app`` grants (hard rule 18): SELECT, INSERT on both
-   research minute tables and USAGE on schema research, only if the role exists.
+   research minute tables, SELECT on the four continuous aggregates (only with
+   timescaledb) and USAGE on schema research, only if the role exists.
+5. The widened/narrowed ``session_segment`` CHECK is added NOT VALID (no scan
+   under ACCESS EXCLUSIVE on the deep-history hypertable).
 
 Downgrade refuses while ``research.us_candles_1m`` has rows or
 ``research.kr_candles_1m`` has a ``KRX_AFTER`` row (it would discard receipts).
@@ -86,10 +89,15 @@ def _cagg_sql(view_name: str, interval: str) -> str:
 
 
 def _set_kr_segment_check(values: Sequence[str]) -> None:
+    # NOT VALID: no chunk scan while ACCESS EXCLUSIVE is held (the table is the
+    # no-retention deep-history hypertable, a promotion target). New and updated
+    # rows are checked immediately. Existing rows already satisfy the old CHECK,
+    # which is a subset of the widened one, and the downgrade guard proves there
+    # is no KRX_AFTER row before narrowing, so no VALIDATE revision is needed.
     op.execute(f"ALTER TABLE research.kr_candles_1m DROP CONSTRAINT {KR_CHECK}")
     op.execute(
         f"ALTER TABLE research.kr_candles_1m ADD CONSTRAINT {KR_CHECK} "
-        f"CHECK (session_segment IN ({_quoted(values)}))"
+        f"CHECK (session_segment IN ({_quoted(values)})) NOT VALID"
     )
 
 
@@ -184,6 +192,20 @@ def upgrade() -> None:
         $$
         """
     )
+    # The continuous aggregates exist only with timescaledb: SELECT for at_app.
+    for view_name, _ in US_CAGG_SPECS:
+        op.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
+                   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
+                    GRANT SELECT ON research.{view_name} TO at_app;
+                END IF;
+            END
+            $$
+            """
+        )
 
 
 def downgrade() -> None:

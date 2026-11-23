@@ -27,7 +27,7 @@ def _bars(market: str, venue: str, symbol: str):
     import pandas as pd
 
     labels = (
-        ["2026-11-24 10:00", "2026-11-24 10:01"]
+        ["2026-11-24 09:00", "2026-11-24 09:01"]
         if market == "kr"
         else ["2026-11-24 09:30", "2026-11-24 09:31"]
     )

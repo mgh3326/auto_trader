@@ -72,6 +72,18 @@ def test_migration_adds_no_retention_or_refresh_policy_and_guards_timescale() ->
 
 
 @pytest.mark.unit
+def test_kr_check_is_added_not_valid_and_cagg_grants_are_guarded() -> None:
+    source = MIGRATION_PATH.read_text()
+    assert "NOT VALID" in source
+    assert "GRANT SELECT ON research.{view_name} TO at_app" in source
+    grant_block = source[source.index("GRANT SELECT ON research.{view_name}") - 400 :]
+    assert (
+        "extname = 'timescaledb'" in grant_block.split("$$")[0]
+        or "extname = 'timescaledb'" in grant_block[:400]
+    )
+
+
+@pytest.mark.unit
 def test_revision_chain_and_length() -> None:
     migration = _load(MIGRATION_PATH, "hk6145_chain")
     assert migration.down_revision == "20261122_hk6026_market_event"
@@ -166,6 +178,17 @@ async def test_round_trip_krx_after_unknown_segment_and_downgrade_refusal(conn) 
     assert await _rejected(conn, KR_INSERT, {"t": T0, "seg": "KRX_AFTER"})
 
     await conn.run_sync(_run_step, "upgrade")
+    # Added NOT VALID: no scan under ACCESS EXCLUSIVE; new rows are still checked.
+    validated = (
+        await conn.execute(
+            text(
+                "SELECT convalidated FROM pg_constraint WHERE "
+                "conrelid = 'research.kr_candles_1m'::regclass AND contype = 'c' "
+                "AND conname = 'ck_research_kr_candles_1m_session_segment'"
+            )
+        )
+    ).scalar_one()
+    assert validated is False
 
     await conn.execute(text(KR_INSERT), {"t": T0, "seg": "KRX_AFTER"})
     assert await _rejected(

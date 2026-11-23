@@ -81,20 +81,20 @@ def _clock(value: datetime):
 
 
 def test_forming_bar_is_excluded_and_counted() -> None:
-    # 10:03 is closed; 10:04 ends 10:05:00 (+10 s grace = 10:05:10) -> forming at 10:05:05.
-    frame = _frame(["2026-11-24 10:03", "2026-11-24 10:04", "2026-11-24 10:05"])
-    now = datetime(2026, 11, 24, 10, 5, 5, tzinfo=KST).astimezone(UTC)
+    # 09:00 is closed; 09:01 ends 09:02:00 (+10 s grace = 09:02:10) -> forming at 09:02:05.
+    frame = _frame(["2026-11-24 09:00", "2026-11-24 09:01", "2026-11-24 09:02"])
+    now = datetime(2026, 11, 24, 9, 2, 5, tzinfo=KST).astimezone(UTC)
     out = sc.bars_from_frame(
         frame, market="kr", symbol="005930", venue="KRX", observed_before=now
     )
-    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["10:03"]
+    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["09:00"]
     assert out.skipped_forming == 2
 
 
 def test_bar_becomes_closed_exactly_at_start_plus_70_seconds() -> None:
-    frame = _frame(["2026-11-24 10:04"])
-    at = datetime(2026, 11, 24, 10, 5, 10, tzinfo=KST).astimezone(UTC)
-    before = datetime(2026, 11, 24, 10, 5, 9, tzinfo=KST).astimezone(UTC)
+    frame = _frame(["2026-11-24 09:00"])
+    at = datetime(2026, 11, 24, 9, 1, 10, tzinfo=KST).astimezone(UTC)
+    before = datetime(2026, 11, 24, 9, 1, 9, tzinfo=KST).astimezone(UTC)
     assert (
         len(
             sc.bars_from_frame(
@@ -168,7 +168,7 @@ def test_us_session_date_rolls_at_2000_et() -> None:
 
 
 def test_invalid_or_duplicate_rows_are_dropped() -> None:
-    frame = _frame(["2026-11-24 10:00", "2026-11-24 10:00", "2026-11-24 10:01"])
+    frame = _frame(["2026-11-24 09:00", "2026-11-24 09:00", "2026-11-24 09:01"])
     frame.loc[2, "close"] = float("nan")
     out = sc.bars_from_frame(
         frame,
@@ -181,6 +181,84 @@ def test_invalid_or_duplicate_rows_are_dropped() -> None:
     assert isinstance(out.bars[0].open, Decimal)
 
 
+# ------------------------------------------------- KR accumulated value ---
+
+
+def _cum_frame(labels: list[str], cumulative: list[int]) -> pd.DataFrame:
+    frame = _frame(labels)
+    frame["value"] = cumulative
+    return frame
+
+
+def _kr_bars(frame: pd.DataFrame, venue: str = "KRX"):
+    return sc.bars_from_frame(
+        frame,
+        market="kr",
+        symbol="005930",
+        venue=venue,
+        observed_before=datetime(2026, 12, 1, tzinfo=UTC),
+    )
+
+
+def test_kr_value_is_the_difference_of_accumulated_values() -> None:
+    out = _kr_bars(
+        _cum_frame(
+            [
+                "2026-11-24 09:00",
+                "2026-11-24 09:01",
+                "2026-11-24 09:02",
+                "2026-11-24 09:05",
+            ],
+            [100, 250, 250, 400],
+        )
+    )
+    # first minute of the KRX day = accumulated itself; a gap minute uses the previous row
+    assert [b.value for b in out.bars] == [
+        Decimal(100),
+        Decimal(150),
+        Decimal(0),
+        Decimal(150),
+    ]
+    assert out.skipped_value_unknown == 0
+
+
+def test_kr_oldest_row_without_predecessor_is_skipped_not_guessed() -> None:
+    out = _kr_bars(_cum_frame(["2026-11-24 10:00", "2026-11-24 10:01"], [5000, 5200]))
+    assert [b.time_utc.astimezone(KST).strftime("%H:%M") for b in out.bars] == ["10:01"]
+    assert out.bars[0].value == Decimal(200)
+    assert out.skipped_value_unknown == 1
+
+
+def test_kr_decreasing_accumulated_value_is_skipped() -> None:
+    out = _kr_bars(_cum_frame(["2026-11-24 09:00", "2026-11-24 09:01"], [500, 400]))
+    assert [b.value for b in out.bars] == [
+        Decimal(500)
+    ] and out.skipped_value_unknown == 1
+
+
+def test_kr_accumulation_does_not_carry_across_days() -> None:
+    out = _kr_bars(_cum_frame(["2026-11-23 15:29", "2026-11-24 09:00"], [9000, 70]))
+    # 11-23 15:29 has no predecessor (skipped); 11-24 09:00 is the first minute of its day
+    assert [b.value for b in out.bars] == [
+        Decimal(70)
+    ] and out.skipped_value_unknown == 1
+
+
+def test_kr_ntx_first_minute_is_0800_and_us_value_is_untouched() -> None:
+    out = _kr_bars(
+        _cum_frame(["2026-11-24 08:00", "2026-11-24 08:01"], [30, 80]), venue="NTX"
+    )
+    assert [b.value for b in out.bars] == [Decimal(30), Decimal(50)]
+    us = sc.bars_from_frame(
+        _cum_frame(["2026-12-15 10:00", "2026-12-15 10:01"], [700, 900]),
+        market="us",
+        symbol="NVDA",
+        venue="NASD",
+        observed_before=datetime(2027, 1, 1, tzinfo=UTC),
+    )
+    assert [b.value for b in us.bars] == [Decimal(700), Decimal(900)]  # per-bar, as is
+
+
 # ------------------------------------------------------------------ collect --
 
 
@@ -191,9 +269,9 @@ NOW = datetime(2026, 11, 24, 12, 0, tzinfo=UTC)  # 21:00 KST
 async def test_nx_is_read_only_for_nxt_eligible_symbols() -> None:
     kis = FakeKis(
         kr_frames={
-            ("005930", "J"): _frame(["2026-11-24 10:00"]),
-            ("005930", "NX"): _frame(["2026-11-24 10:00"]),
-            ("000660", "J"): _frame(["2026-11-24 10:00"]),
+            ("005930", "J"): _frame(["2026-11-24 09:00"]),
+            ("005930", "NX"): _frame(["2026-11-24 08:00"]),
+            ("000660", "J"): _frame(["2026-11-24 09:00"]),
         }
     )
     writer = RecordingWriter()
@@ -214,9 +292,9 @@ async def test_nx_is_read_only_for_nxt_eligible_symbols() -> None:
 @pytest.mark.asyncio
 async def test_rerun_reports_already_present_and_uses_one_batch_per_run() -> None:
     kis = FakeKis(
-        kr_frames={("005930", "J"): _frame(["2026-11-24 10:00", "2026-11-24 10:01"])}
+        kr_frames={("005930", "J"): _frame(["2026-11-24 09:00", "2026-11-24 09:01"])}
     )
-    first_bar_time = datetime(2026, 11, 24, 1, 0, tzinfo=UTC)
+    first_bar_time = datetime(2026, 11, 24, 0, 0, tzinfo=UTC)
     writer = RecordingWriter(present={("005930", "KRX", first_bar_time)})
     report = await sc.collect(
         market="kr",
@@ -259,7 +337,7 @@ async def test_one_failing_symbol_does_not_stop_the_run_and_does_not_leak_messag
     None
 ):
     kis = FakeKis(
-        kr_frames={("000660", "J"): _frame(["2026-11-24 10:00"])}, fail={"005930"}
+        kr_frames={("000660", "J"): _frame(["2026-11-24 09:00"])}, fail={"005930"}
     )
     report = await sc.collect(
         market="kr",
@@ -277,7 +355,7 @@ async def test_one_failing_symbol_does_not_stop_the_run_and_does_not_leak_messag
 
 @pytest.mark.asyncio
 async def test_dry_run_never_calls_the_writer() -> None:
-    kis = FakeKis(kr_frames={("005930", "J"): _frame(["2026-11-24 10:00"])})
+    kis = FakeKis(kr_frames={("005930", "J"): _frame(["2026-11-24 09:00"])})
     writer = RecordingWriter()
     report = await sc.collect(
         market="kr",
@@ -325,7 +403,7 @@ async def test_sql_writer_targets_only_the_research_table(
 ) -> None:
     session = _RecordingSession()
     bar = sc.bars_from_frame(
-        _frame(["2026-11-24 10:00"]),
+        _frame(["2026-11-24 09:00"]),
         market=market,
         symbol="X",
         venue="KRX" if market == "kr" else "NASD",
@@ -371,7 +449,6 @@ FORBIDDEN_FRAGMENTS = (
     "place",
 )
 ALLOWED_MODULES = (
-    "app.services.execution_ledger.kis_lots",  # us_trading_day_window (pure date helper)
     "app.services.brokers.kis.client",  # CLI constructs the client; see attribute allowlist
     "app.services.brokers.kis.live_order_expiry",  # stdlib-only KR window constants
 )
@@ -439,3 +516,77 @@ def test_modules_register_nothing() -> None:
         source = path.read_text().lower()
         for forbidden in ("taskiq", "prefect", "@broker", "crontab", "schedule="):
             assert forbidden not in source, (relative, forbidden)
+
+
+def _module_file(name: str) -> Path | None:
+    base = REPO / name.replace(".", "/")
+    if (base / "__init__.py").exists():
+        return base / "__init__.py"
+    if base.with_suffix(".py").exists():
+        return base.with_suffix(".py")
+    return None
+
+
+def _import_time_imports(path: Path) -> set[str]:
+    """``app.*`` modules imported when ``path`` is imported (function bodies are lazy)."""
+    found: set[str] = set()
+
+    def visit(nodes: list[ast.stmt]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                found.update(a.name for a in node.names if a.name.startswith("app."))
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                if node.module.startswith("app"):
+                    found.add(node.module)
+                    found.update(f"{node.module}.{a.name}" for a in node.names)
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            else:
+                for field_name in ("body", "orelse", "finalbody", "handlers"):
+                    inner = getattr(node, field_name, None)
+                    if isinstance(inner, list):
+                        visit([n for n in inner if isinstance(n, ast.stmt)])
+                        for handler in inner:
+                            if isinstance(handler, ast.ExceptHandler):
+                                visit(handler.body)
+
+    visit(ast.parse(path.read_text()).body)
+    return found
+
+
+def _import_closure(roots: list[str]) -> set[str]:
+    seen: set[str] = set()
+    todo = list(roots)
+    while todo:
+        name = todo.pop()
+        # importing a.b.c imports the packages a, a.b first
+        parts = name.split(".")
+        for end in range(1, len(parts) + 1):
+            parent = ".".join(parts[:end])
+            if parent in seen:
+                continue
+            path = _module_file(parent)
+            if path is None:
+                continue
+            seen.add(parent)
+            todo.extend(_import_time_imports(path))
+    return seen
+
+
+def test_import_closure_reaches_no_execution_ledger_package() -> None:
+    """Closure, not just direct imports: importing the collector, the segment
+    helper and the coverage math must not (statically, at import time) reach the
+    execution-ledger package, where the ledger writer lives."""
+    closure = _import_closure(
+        [
+            "app.services.research_candles.session_minutes_collector",
+            "app.services.research_candles.session_coverage",
+            "app.services.research_candles.session_segment",
+        ]
+    )
+    assert "app.services.research_candles.session_segment" in closure
+    assert len(closure) > 10  # the walk really followed imports
+    offenders = sorted(
+        m for m in closure if m.startswith("app.services.execution_ledger")
+    )
+    assert offenders == []
