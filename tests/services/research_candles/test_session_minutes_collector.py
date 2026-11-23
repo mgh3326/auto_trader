@@ -384,6 +384,7 @@ ALLOWED_KIS_ATTRIBUTES = {
 GUARDED = (
     "app/services/research_candles/session_minutes_collector.py",
     "app/services/research_candles/session_segment.py",
+    "app/services/research_candles/session_coverage.py",
     "scripts/collect_session_minutes.py",
     "scripts/diagnose_session_coverage.py",
 )

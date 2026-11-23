@@ -128,6 +128,16 @@ async def _rejected(conn, sql: str, params: dict) -> bool:
     return False
 
 
+async def _downgrade_refusal(conn) -> str | None:
+    """Error text if the downgrade is refused (savepoint rolled back), else None."""
+    try:
+        async with conn.begin_nested():
+            await conn.run_sync(_run_step, "downgrade")
+    except DBAPIError as exc:
+        return str(exc)
+    return None
+
+
 @pytest_asyncio.fixture
 async def conn():
     from app.core.db import engine
@@ -190,20 +200,12 @@ async def test_round_trip_krx_after_unknown_segment_and_downgrade_refusal(conn) 
         conn, US_INSERT, {"t": T0.replace(minute=1), "venue": "NASD", "seg": "US_PRE"}
     )
 
-    # Downgrade refused while rows exist (us rows, then only the KRX_AFTER row).
-    async with conn.begin_nested() as sp:
-        with pytest.raises(DBAPIError) as excinfo:
-            await conn.run_sync(_run_step, "downgrade")
-        assert "restrict_violation" in str(excinfo.value) or "rows exist" in str(
-            excinfo.value
-        )
-        await sp.rollback()
+    # Downgrade refused while rows exist (us rows first, then only the KRX_AFTER row).
+    refusal = await _downgrade_refusal(conn)
+    assert refusal is not None and "rows exist" in refusal
     await conn.execute(text("DELETE FROM research.us_candles_1m"))
-    async with conn.begin_nested() as sp:
-        with pytest.raises(DBAPIError) as excinfo:
-            await conn.run_sync(_run_step, "downgrade")
-        assert "KRX_AFTER" in str(excinfo.value)
-        await sp.rollback()
+    refusal = await _downgrade_refusal(conn)
+    assert refusal is not None and "KRX_AFTER" in refusal
 
     await conn.execute(text("DELETE FROM research.kr_candles_1m"))
     await conn.run_sync(_run_step, "downgrade")
