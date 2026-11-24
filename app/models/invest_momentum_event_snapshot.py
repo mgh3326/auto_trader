@@ -261,7 +261,9 @@ class InvestMomentumEventRun(Base):
             + "))",
             name="ck_invest_momentum_event_runs_status_reason",
         ),
-        Index("ix_invest_momentum_event_runs_date_snapshot", "trading_date", "snapshot_at"),
+        Index(
+            "ix_invest_momentum_event_runs_date_snapshot", "trading_date", "snapshot_at"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

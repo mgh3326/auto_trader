@@ -130,16 +130,35 @@ class _Result:
 
 
 class _RecordingSession:
-    def __init__(self, pick_symbols):
+    """Dispatches by statement text: pick log, intraday movers, minute rows today."""
+
+    def __init__(
+        self,
+        pick_symbols,
+        mover_rows=(),
+        have_today=(),
+        mover_fail: bool = False,
+    ):
         self.pick_symbols = pick_symbols
+        self.mover_rows = list(mover_rows)
+        self.have_today = list(have_today)
+        self.mover_fail = mover_fail
         self.statements: list[str] = []
+        self.rollbacks = 0
 
     async def execute(self, statement, params=None):
-        self.statements.append(str(statement))
+        text = str(statement)
+        self.statements.append(text)
+        if "invest_momentum_event_snapshots" in text:
+            if self.mover_fail:
+                raise RuntimeError("detail that must not leak")
+            return _Result(self.mover_rows)
+        if "kr_candles_1m" in text:
+            return _Result(self.have_today)
         return _Result(self.pick_symbols)
 
-    async def rollback(self):  # pragma: no cover
-        raise AssertionError("unexpected rollback")
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 class _Kis:
@@ -190,6 +209,8 @@ async def test_build_targets_includes_snapshot_top_n_respects_cap_and_writes_no_
         s.lstrip().upper().startswith("SELECT") for s in session.statements
     )
     assert all("INSERT" not in s.upper() for s in session.statements)
+    assert session.rollbacks == 0
+    assert "intraday_movers" not in targets.by_origin and targets.backfill == []
 
 
 def test_snapshot_selection_cannot_write_the_pick_log() -> None:
@@ -216,3 +237,125 @@ def test_snapshot_selection_cannot_write_the_pick_log() -> None:
         and p.name != "screener_tool_pick_log.py"
     ]
     assert wired == ["app/mcp_server/tooling/analysis_registration.py"]
+
+
+# ----------------------------------------------- intraday_movers origin (hk 6154)
+
+
+def _mover(symbol: str):
+    return SimpleNamespace(
+        symbol=symbol,
+        name=None,
+        snapshot_at=NOW,
+        trade_type="KRX",
+        market_type="ALL",
+        order_type="up",
+        rank=1,
+        change_rate=None,
+        trade_value=None,
+    )
+
+
+class _NoHoldingsKis:
+    async def fetch_my_stocks(self):
+        return []
+
+    async def fetch_my_us_stocks(self):  # pragma: no cover
+        return []
+
+
+async def _kr_targets(monkeypatch, session, **kwargs):
+    import app.services.manual_holdings_service as manual_module
+
+    class _Manual:
+        def __init__(self, session):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type=None):
+            return []
+
+    monkeypatch.setattr(manual_module, "ManualHoldingsService", _Manual)
+    params = {
+        "market": "kr",
+        "session": session,
+        "kis": _NoHoldingsKis(),
+        "user_id": 1,
+        "fixed_symbols_raw": None,
+        "now": NOW,
+        "screener_top_n": 3,
+        "max_symbols": 150,
+        "snapshot_fn": FakeSnapshot({}),
+        "presets_fn": lambda market: [],
+    }
+    params.update(kwargs)
+    return await sc.build_targets(**params)
+
+
+@pytest.mark.asyncio
+async def test_intraday_movers_origin_is_reported_and_backfills_only_new_symbols(
+    monkeypatch,
+) -> None:
+    session = _RecordingSession(
+        [], mover_rows=[_mover("000700"), _mover("000701")], have_today=["000701"]
+    )
+    targets = await _kr_targets(monkeypatch, session)
+    assert targets.by_origin["intraday_movers"] == 2
+    assert targets.symbols == ["000700", "000701"]
+    assert targets.backfill == ["000700"]  # 000701 already has rows today
+    assert targets.errors == []
+    assert all(s.lstrip().upper().startswith("SELECT") for s in session.statements)
+
+
+@pytest.mark.asyncio
+async def test_intraday_movers_are_cut_after_every_other_origin(monkeypatch) -> None:
+    session = _RecordingSession(
+        ["000500"], mover_rows=[_mover("000700"), _mover("000701")]
+    )
+    # cap 2: fixed list (1) + pick log (1) fill it; both movers are the tail cut
+    targets = await _kr_targets(
+        monkeypatch, session, fixed_symbols_raw="000200", max_symbols=2
+    )
+    assert targets.symbols == ["000200", "000500"]
+    assert targets.truncated == {"intraday_movers": 2}
+    assert targets.backfill == []  # a cut symbol is not collected, so no backfill
+
+
+@pytest.mark.asyncio
+async def test_intraday_movers_query_failure_is_reported_and_the_run_continues(
+    monkeypatch,
+) -> None:
+    session = _RecordingSession(["000500"], mover_fail=True)
+    targets = await _kr_targets(monkeypatch, session)
+    assert targets.symbols == ["000500"]
+    assert targets.errors == [
+        {"origin": "intraday_movers", "error_class": "RuntimeError"}
+    ]
+    assert session.rollbacks == 1
+    assert "detail that must not leak" not in str(targets.errors)
+
+
+@pytest.mark.asyncio
+async def test_us_targets_never_query_intraday_movers(monkeypatch) -> None:
+    import app.services.manual_holdings_service as manual_module
+
+    class _Manual:
+        def __init__(self, session):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type=None):
+            return []
+
+    monkeypatch.setattr(manual_module, "ManualHoldingsService", _Manual)
+    session = _RecordingSession([], mover_rows=[_mover("000700")])
+    targets = await sc.build_targets(
+        market="us",
+        session=session,  # type: ignore[arg-type]
+        kis=_Kis(),  # type: ignore[arg-type]
+        user_id=1,
+        fixed_symbols_raw=None,
+        now=NOW,
+        snapshot_fn=FakeSnapshot({}),
+        presets_fn=lambda market: [],
+    )
+    assert "intraday_movers" not in targets.by_origin
+    assert not any("invest_momentum_event_snapshots" in s for s in session.statements)

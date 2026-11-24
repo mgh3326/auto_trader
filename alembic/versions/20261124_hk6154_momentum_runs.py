@@ -18,8 +18,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "20261124_hk6154_momentum_runs"
 down_revision: str | Sequence[str] | None = "20261124_hk6145_session_minutes"

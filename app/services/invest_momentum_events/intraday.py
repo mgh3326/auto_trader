@@ -18,8 +18,8 @@ Rules:
   re-running a snapshot changes nothing.
 * ``run_id`` is derived from ``snapshot_at`` (uuid5), so the same snapshot is the
   same run.
-* No scheduler, no order/ledger/approval/broker-mutation import, nothing here
-  writes ``review.screener_pick_log`` (hard rules 6, 13).
+* No scheduler, no order/ledger/approval/broker-mutation import, and nothing here
+  writes the screener pick log (hard rules 6, 13).
 """
 
 from __future__ import annotations
@@ -152,7 +152,9 @@ def classify_payload(payload: Any) -> SurfaceOutcome:
     return SurfaceOutcome(STATUS_ERROR, "unparseable")
 
 
-async def fetch_surface(fetcher: NaverRankingFetcher, order_type: str) -> SurfaceOutcome:
+async def fetch_surface(
+    fetcher: NaverRankingFetcher, order_type: str
+) -> SurfaceOutcome:
     try:
         payload = await fetcher.fetch_domestic_stock_default(
             trade_type=TRADE_TYPE,

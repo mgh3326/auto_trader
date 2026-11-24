@@ -93,7 +93,9 @@ class InvestMomentumEventSnapshotsRepository:
                 reason=reason,
                 row_count=row_count,
             )
-            .on_conflict_do_nothing(constraint="uq_invest_momentum_event_runs_run_surface")
+            .on_conflict_do_nothing(
+                constraint="uq_invest_momentum_event_runs_run_surface"
+            )
         )
         result = await self._session.execute(stmt)
         return (getattr(result, "rowcount", 0) or 0) > 0
