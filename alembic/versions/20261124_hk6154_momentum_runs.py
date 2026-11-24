@@ -27,19 +27,8 @@ down_revision: str | Sequence[str] | None = "20261124_hk6145_session_minutes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-ERROR_REASONS = (
-    "http_4xx",
-    "http_5xx",
-    "timeout",
-    "transport",
-    "bad_response",
-    "unparseable",
-    "unexpected",
-)
-
 
 def upgrade() -> None:
-    reasons = ", ".join(f"'{r}'" for r in ERROR_REASONS)
     op.create_table(
         "invest_momentum_event_runs",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=False), primary_key=True),
@@ -53,7 +42,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.TIMESTAMP(timezone=True),
-            server_default=sa.func.now(),
+            server_default=sa.text("now()"),
             nullable=False,
         ),
         sa.UniqueConstraint(
@@ -62,7 +51,9 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(status = 'ok' AND reason IS NULL AND row_count > 0)"
             " OR (status = 'empty' AND reason = 'no_rows' AND row_count = 0)"
-            f" OR (status = 'error' AND row_count = 0 AND reason IN ({reasons}))",
+            " OR (status = 'error' AND row_count = 0 AND reason IN ("
+            "'http_4xx', 'http_5xx', 'timeout', 'transport', "
+            "'bad_response', 'unparseable', 'unexpected'))",
             name="ck_invest_momentum_event_runs_status_reason",
         ),
     )
@@ -71,6 +62,7 @@ def upgrade() -> None:
         "invest_momentum_event_runs",
         ["trading_date", "snapshot_at"],
     )
+    # expand-contract: contract-step 6154
     op.execute(
         """
         DO $$
@@ -85,6 +77,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # expand-contract: contract-step 6154
     op.execute(
         """
         DO $$
@@ -97,8 +90,10 @@ def downgrade() -> None:
         $$
         """
     )
+    # expand-contract: contract-step 6154
     op.drop_index(
         "ix_invest_momentum_event_runs_date_snapshot",
         table_name="invest_momentum_event_runs",
     )
+    # expand-contract: contract-step 6154
     op.drop_table("invest_momentum_event_runs")
