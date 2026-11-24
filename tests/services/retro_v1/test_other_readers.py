@@ -258,16 +258,22 @@ async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
     )
     assert response["data"][0]["market"] == "crypto"
     assert "public.crypto_candles_1d" in crypto.statements[-1]
-    with pytest.raises(RetroReadError) as err:
-        await read_get_bars(
-            FakeSession(),
-            symbol="BTC",
-            market="crypto",
-            tf="1d",
-            from_=CUTOFF,
-            to=CUTOFF,
-        )
-    assert "market" in err.value.safe_message.lower()
+    # a bare base symbol with an explicit crypto market becomes the Upbit key
+    bare = await read_get_bars(
+        FakeSession(
+            {
+                "FROM public.crypto_candles_1d": [
+                    bar_row("KRW-BTC", datetime(2026, 1, 5, tzinfo=UTC), "95000000")
+                ]
+            }
+        ),
+        symbol="BTC",
+        market="crypto",
+        tf="1d",
+        from_=CUTOFF,
+        to=CUTOFF,
+    )
+    assert bare["data"][0]["symbol"] == "KRW-BTC"
     with pytest.raises(RetroReadError) as err:
         await read_get_bars(
             FakeSession(),
@@ -315,6 +321,51 @@ async def test_get_bars_explicit_crypto_shape_and_legacy_us_inference() -> None:
     )
     assert preferred["data"][0]["symbol"] == "BAC.PL"
     assert preferred["data"][0]["market"] == "us"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tf", ["1m", "1d"])
+async def test_crypto_window_with_no_rows_is_missing_data_not_an_empty_success(
+    tf: str,
+) -> None:
+    table = "crypto_candles_1m" if tf == "1m" else "crypto_candles_1d"
+    session = FakeSession({f"FROM public.{table}": []})
+    response = await read_get_bars(
+        session, symbol="KRW-SAHARA", market="crypto", tf=tf, from_=CUTOFF, to=CUTOFF
+    )
+    validate(response, "GetBarsResponse")
+    assert response["data"] == [] and response["total"] == 0
+    assert {"field": "data", "reason": "missing_data"} in response["unknowns"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol", ["SAHARA", "sahara"])
+async def test_bare_crypto_symbol_with_market_binds_the_upbit_key(symbol: str) -> None:
+    def rows(sql: str, params: dict[str, object]) -> list[object]:
+        return [bar_row("KRW-SAHARA", datetime(2026, 1, 5, tzinfo=UTC), "1.5")]
+
+    session = FakeSession({"FROM public.crypto_candles_1d": WithParams(rows)})
+    response = await read_get_bars(
+        session, symbol=symbol, market="crypto", tf="1d", from_=CUTOFF, to=CUTOFF
+    )
+    validate(response, "GetBarsResponse")
+    assert session.bound_params[-1]["symbols"] == ["KRW-SAHARA"]
+    assert response["data"][0]["symbol"] == "KRW-SAHARA"
+    assert {"field": "data", "reason": "missing_data"} not in response["unknowns"]
+
+
+@pytest.mark.asyncio
+async def test_bare_symbol_without_market_keeps_inference() -> None:
+    def rows(sql: str, params: dict[str, object]) -> list[object]:
+        return []
+
+    session = FakeSession({"FROM public.us_candles_1d": WithParams(rows)})
+    response = await read_get_bars(
+        session, symbol="SAHARA", tf="1d", from_=CUTOFF, to=CUTOFF
+    )
+    assert response["data"] == []
+    assert session.bound_params[-1]["symbols"] == ["SAHARA"]
+    assert response["total"] == 0
 
 
 @pytest.mark.asyncio

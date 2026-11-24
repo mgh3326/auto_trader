@@ -114,6 +114,9 @@ class FakeSession:
     def __init__(self, routes: dict[str, Any] | None = None) -> None:
         self.routes = routes or {}
         self.statements: list[str] = []
+        # the raw bind parameters the reader passed to each execute (expanding
+        # parameters are only visible here, not in the compiled params)
+        self.bound_params: list[Any] = []
         self._in_tx = False
         self.begun = 0
         self.nested = 0
@@ -139,6 +142,7 @@ class FakeSession:
         compiled = statement.compile(dialect=postgresql.dialect())
         sql = str(compiled)
         self.statements.append(sql)
+        self.bound_params.append(params)
         for fragment, value in self.routes.items():
             if fragment in sql:
                 if isinstance(value, BaseException):

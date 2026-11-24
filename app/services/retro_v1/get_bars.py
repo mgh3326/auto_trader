@@ -28,7 +28,12 @@ from app.services.retro_v1.envelope import (
     read_snapshot,
     resolve_from,
 )
-from app.services.retro_v1.market import MarketInfo, normalize_symbol, select_market
+from app.services.retro_v1.market import (
+    MarketInfo,
+    normalize_symbol,
+    select_market,
+    symbol_for_market,
+)
 
 TIMEFRAMES = ("1m", "5m", "60m", "1d")
 
@@ -115,7 +120,7 @@ async def read_get_bars(
     check_limit(limit)
     if tf not in TIMEFRAMES:
         raise RetroReadError("validation_error")
-    clean = check_symbol(symbol)
+    clean = symbol_for_market(check_symbol(symbol), market)
     market_info = select_market(clean, market)
     normalized = normalize_symbol(clean, market_info)
     digest_values = {"symbol": normalized, "tf": tf, "start": start, "end": end}
@@ -150,6 +155,10 @@ async def read_get_bars(
                 unknowns.note("data", "incomplete_evidence")
             elif ok:
                 total = len(bars)
+            # Crypto has no coverage table: an empty window is not an empty
+            # success, the same unknown the research-table path reports (hk 6244).
+            if ok and not bars and market_info.key == "crypto":
+                unknowns.note("data", "missing_data")
             if ok and daily_bars.has_minute_extras(market_info, tf):
 
                 async def coverage() -> datetime | None:
