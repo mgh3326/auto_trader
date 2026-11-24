@@ -32,5 +32,9 @@ def test_dag_commits_with_job_scoped_flag_and_never_overlaps() -> None:
     assert "--env-file /root/at-secrets/.env.api" in script
     assert "-m scripts.toss_fill_reconcile_poller --commit || rc=$?" in script
     assert "TOSS_FILL_POLL_MARKET_GATE_ENABLED" not in script
-    # A run must end before the next 5-minute tick so passes never overlap.
-    assert step["timeout_sec"] < 300
+    # Overlap is prevented by the container, not by Dagu's timeout (which
+    # only stops the docker client): a fixed name makes docker refuse a second
+    # container, and timeout inside the container ends the poller itself.
+    assert "--name at-toss-fill-poll " in script
+    assert '"$(cat /root/at-run/deployed-digest)" timeout -k 10 200 /app/.venv/bin/python' in script
+    assert 200 + 10 < step["timeout_sec"] < 300

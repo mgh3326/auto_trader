@@ -4,8 +4,11 @@
 # 활성화 플래그는 이 잡의 docker run -e 에만 있다. 공유 .env.api 는 바꾸지 않는다(docker 는 -e 를 --env-file 보다 우선한다).
 # 스크립트가 시장 게이트(KRX 09:00–20:00 KST 또는 미국 프리·정규·애프터)를 스스로 보고, 밖이면 skipped 로 브로커 호출 없이 끝난다.
 # 스케줄은 그 합집합을 덮는다: 월 09:00 KST 부터 토 10:55 KST(미국 애프터 20:00 ET 종료) 까지 5분 간격.
-# 🔴 동시 실행 금지: 두 reconcile 패스가 겹치면 이중 부기 가능성이 있다(runbook toss-fill-reconcile-poller). max_active_runs: 1 이고
-# timeout 이 간격보다 짧다. at-terminal-reconcile 의 toss 단계는 terminal_only 라 체결을 부기하지 않는다.
+# 🔴 동시 실행 금지: 두 reconcile 패스가 겹치면 이중 부기 가능성이 있다(runbook toss-fill-reconcile-poller).
+# Dagu 의 timeout_sec 는 docker 클라이언트만 끊으므로 겹침 방지를 컨테이너에 건다:
+#  - --name at-toss-fill-poll: 같은 이름의 컨테이너가 남아 있으면 docker 가 새 실행을 거부한다(종료 코드 125, 단계 실패).
+#  - 컨테이너 안 timeout -k 10 200: 클라이언트가 죽어도 폴러는 200초에 TERM, 210초에 KILL 로 끝난다.
+# at-terminal-reconcile 의 toss 단계는 terminal_only 라 체결을 부기하지 않는다.
 # 종료 코드: 0 = disabled·skipped·preview·ran, 1 = 처리되지 않은 예외(단계 실패).
 description: "Toss fill-to-ledger reconcile poller (discover + reconcile, books confirmed fills)"
 schedule:
@@ -20,7 +23,7 @@ steps:
   - name: poll
     script: |
       rc=0
-      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e TOSS_FILL_POLL_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.toss_fill_reconcile_poller --commit || rc=$?
+      docker run --rm --init --name at-toss-fill-poll --network host --workdir /app --env-file /root/at-secrets/.env.api -e TOSS_FILL_POLL_ENABLED=true "$(cat /root/at-run/deployed-digest)" timeout -k 10 200 /app/.venv/bin/python -m scripts.toss_fill_reconcile_poller --commit || rc=$?
       exit "$rc"
     timeout_sec: 240
 handler_on:

@@ -140,15 +140,24 @@ The operator answered yes to `decision-request/2026-11-24/at-toss-fill-poll`
 `--commit` every 5 minutes on the pi worker over the union of the KR and US
 windows. The script's market gate still decides whether a pass calls Toss.
 `TOSS_FILL_POLL_ENABLED=true` is set only on that job's `docker run -e`; the
-shared `.env.api` is unchanged. `max_active_runs: 1` and a 240 s timeout keep
-two passes from overlapping. The OCI Dagu copy is the registered one; the
+shared `.env.api` is unchanged. The OCI Dagu copy is the registered one; the
 repo file is its copy. To stop the poller, suspend the DAG on OCI.
 
-`max_active_runs` does not cover a separately started CLI process. Before any
-manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll` on OCI and
-wait until its current run, if any, has finished. A run finishes within its
-240 s timeout. Then run the manual pass and resume the DAG. The same rule
-applies to a manual `toss_reconcile_orders(dry_run=False)` call.
+Overlap is prevented by the container, not by Dagu. Dagu's `timeout_sec`
+(240 s) only stops the docker client, so a killed client can leave the
+container running. Two things bound the container itself:
+
+- It is named `at-toss-fill-poll`. While a container with that name exists,
+  docker refuses to start another one (exit 125, the DAG step fails).
+- The poller runs under `timeout -k 10 200` inside the container, so it gets
+  TERM at 200 s and KILL at 210 s even if the client is gone.
+
+Before any manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll`
+on OCI. Check that `docker ps --filter name=at-toss-fill-poll` on pi is empty.
+Then run the manual pass with the same `--name at-toss-fill-poll`, so docker
+refuses it if a scheduled pass is still running, and resume the DAG afterwards.
+A manual `toss_reconcile_orders(dry_run=False)` call needs the same suspend
+and check.
 
 The launchd section below is superseded by this job and kept for history.
 
