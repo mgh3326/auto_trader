@@ -11,7 +11,7 @@ primary key, NULL ``session_date`` allowed, downgrade refused while rows exist.
 from __future__ import annotations
 
 import importlib.util
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,7 +107,7 @@ def _params(**overrides):
         "month": "2612",
         "roll": "front",
         "seg": "FUT_DAY",
-        "session_date": "2026-11-24",
+        "session_date": date(2026, 11, 24),
         "source": "KIS",
     }
     base.update(overrides)
@@ -149,7 +149,7 @@ async def test_round_trip_checks_and_downgrade_refusal(conn) -> None:
             _params(
                 t=T0.replace(minute=index),
                 seg=segment,
-                session_date=None if segment == "UNKNOWN" else "2026-11-25",
+                session_date=None if segment == "UNKNOWN" else date(2026, 11, 25),
             ),
         )
     for state in ("front", "next", "expiring", "expired"):
