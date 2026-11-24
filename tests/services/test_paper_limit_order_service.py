@@ -22,7 +22,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.services.paper_limit_order_service import (
     PaperLimitOrderService,
     _first_crossing_bar_start,
@@ -133,6 +133,31 @@ def _patch_ohlcv(monkeypatch: pytest.MonkeyPatch, fetcher: Any) -> None:
         return await fetcher(symbol, "crypto", "day", 200, end=end)
 
     monkeypatch.setattr(paper_limit_service, "_fetch_upbit_daily_page", _daily_page)
+
+
+# Upbit's day cut is 09:00 KST. Placement at 08:57 and reconcile at 09:02 put the
+# reconcile window across that cut. The reconcile tests below pin the clock to
+# these instants so they do not depend on when the suite runs.
+BOUNDARY_PLACED_AT = dt.datetime(2026, 11, 24, 8, 57, tzinfo=KST)
+BOUNDARY_RECONCILE_AT = dt.datetime(2026, 11, 24, 9, 2, tzinfo=KST)
+
+
+def _pin_now(monkeypatch: pytest.MonkeyPatch, at: dt.datetime) -> None:
+    """Pin ``now_kst`` in this test module and in the service module to ``at``."""
+    import app.services.paper_limit_order_service as paper_limit_service
+
+    def _now() -> dt.datetime:
+        return at
+
+    monkeypatch.setattr(paper_limit_service, "now_kst", _now)
+    monkeypatch.setitem(globals(), "now_kst", _now)
+
+
+@pytest.fixture
+def boundary_clock(monkeypatch: pytest.MonkeyPatch) -> dt.datetime:
+    """Placement clock: 08:57 KST, the instant the boundary tests place at."""
+    _pin_now(monkeypatch, BOUNDARY_PLACED_AT)
+    return BOUNDARY_PLACED_AT
 
 
 def test_first_crossing_bar_helper_ignores_touch_before_placement() -> None:
@@ -554,7 +579,7 @@ async def test_place_limit_rejects_below_min_notional(
 
 @pytest.mark.asyncio
 async def test_reconcile_fills_when_market_crosses(
-    db_session: Any, monkeypatch: pytest.MonkeyPatch
+    db_session: Any, monkeypatch: pytest.MonkeyPatch, boundary_clock: dt.datetime
 ) -> None:
     pts = PaperTradingService(db_session)
     acct = await pts.create_account(
@@ -577,7 +602,7 @@ async def test_reconcile_fills_when_market_crosses(
 
     _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
-        account_id=acct.id, now=now_kst() + dt.timedelta(minutes=5)
+        account_id=acct.id, now=BOUNDARY_RECONCILE_AT
     )
     assert res["success"]
     assert res["filled"] == 1
@@ -595,6 +620,58 @@ async def test_reconcile_fills_when_market_crosses(
     assert any(p["symbol"] == "KRW-BTC" for p in positions), (
         "filled resting buy must produce an open PaperPosition"
     )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fills_across_upbit_day_cut_placed_0857_reconciled_0902(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch, boundary_clock: dt.datetime
+) -> None:
+    """Placement 08:57 KST, crossing candle 09:01 KST, reconcile 09:02 KST.
+
+    The 09:01 candle is on the new Upbit day, so the scan walks back from the
+    current day to the placement day. The daily fake must serve a bar on the
+    placement day, or that backward walk gets an empty page and the scan is
+    marked incomplete (nothing fills). Real Upbit history always has that bar.
+    """
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("paper-boundary"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    placed = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+    assert placed["success"], placed
+    trigger = dt.datetime(2026, 11, 24, 9, 1, tzinfo=KST)
+    daily = [
+        _dated_bar(
+            Decimal("89000000"),
+            Decimal("91000000"),
+            _upbit_day_start(BOUNDARY_PLACED_AT),
+        )
+    ]
+    minute = [_dated_bar(Decimal("88000000"), Decimal("91000000"), trigger)]
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        if period == "day":
+            return _before_end(daily, end)
+        return _on_upbit_day_before_end(minute, end) if end else []
+
+    _patch_ohlcv(monkeypatch, _bars)
+    res = await svc.reconcile_pending_orders(
+        account_id=acct.id, now=BOUNDARY_RECONCILE_AT
+    )
+    detail = await svc.get_pending_order(
+        account_id=acct.id, order_id=placed["order_id"]
+    )
+    assert res["scan_incomplete"] == 0, res
+    assert res["filled"] == 1, res
+    assert detail["filled_at"] == trigger
+    assert detail["fill_bar_start"] == trigger
 
 
 @pytest.mark.asyncio
@@ -777,7 +854,7 @@ async def test_reconcile_sell_fills_when_high_touches(
 
 @pytest.mark.asyncio
 async def test_reconcile_handles_tz_naive_upbit_timestamps(
-    db_session: Any, monkeypatch: pytest.MonkeyPatch
+    db_session: Any, monkeypatch: pytest.MonkeyPatch, boundary_clock: dt.datetime
 ) -> None:
     """Real Upbit candles carry tz-NAIVE timestamps; placed_at is tz-aware.
     Reconcile must not raise TypeError comparing them (blocker #1)."""
@@ -805,8 +882,7 @@ async def test_reconcile_handles_tz_naive_upbit_timestamps(
 
     _patch_ohlcv(monkeypatch, _bars)
     res = await svc.reconcile_pending_orders(
-        account_id=acct.id,
-        now=(naive_after + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+        account_id=acct.id, now=BOUNDARY_RECONCILE_AT
     )
     assert res["filled"] == 1, res  # must fill, not crash
 
@@ -847,7 +923,7 @@ async def test_reconcile_excludes_bars_before_placement(
 
 @pytest.mark.asyncio
 async def test_reconcile_isolates_failure_no_double_fill(
-    db_session: Any, monkeypatch: pytest.MonkeyPatch
+    db_session: Any, monkeypatch: pytest.MonkeyPatch, boundary_clock: dt.datetime
 ) -> None:
     """A failing order in the batch must not abort the batch nor leave an
     already-booked trade re-fillable on the next reconcile (blocker #2)."""
@@ -892,7 +968,7 @@ async def test_reconcile_isolates_failure_no_double_fill(
 
     res = await svc.reconcile_pending_orders(
         account_id=acct_id,
-        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+        now=BOUNDARY_RECONCILE_AT,
     )
     assert res["filled"] == 1, res  # A filled; the bad sell did not abort the batch
 
@@ -902,7 +978,7 @@ async def test_reconcile_isolates_failure_no_double_fill(
     assert len(btc_trades1) == 1, btc_trades1
     await svc.reconcile_pending_orders(
         account_id=acct_id,
-        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+        now=BOUNDARY_RECONCILE_AT,
     )
     trades2 = await pts.get_trade_history(acct_id, limit=50)
     btc_trades2 = [t for t in trades2 if t["symbol"] == "KRW-BTC"]
@@ -988,7 +1064,7 @@ async def test_place_sell_below_min_notional_rejected(
 
 @pytest.mark.asyncio
 async def test_reconcile_failure_does_not_skip_later_orders(
-    db_session: Any, monkeypatch: pytest.MonkeyPatch
+    db_session: Any, monkeypatch: pytest.MonkeyPatch, boundary_clock: dt.datetime
 ) -> None:
     """A failing order EARLY in the batch must not skip a later crossed order in
     the SAME reconcile pass. Pre-fix, the except-branch rollback expired the
@@ -1046,7 +1122,7 @@ async def test_reconcile_failure_does_not_skip_later_orders(
 
     res = await svc.reconcile_pending_orders(
         account_id=acct.id,
-        now=(ts + dt.timedelta(minutes=2)).replace(tzinfo=now_kst().tzinfo),
+        now=BOUNDARY_RECONCILE_AT,
     )
     # bad sell fails, but the later good buy MUST still fill in this same pass
     assert res["filled"] == 1, res
