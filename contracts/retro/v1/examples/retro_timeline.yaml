@@ -1,0 +1,79 @@
+operation: retro_timeline
+request:
+  path: /trading/api/retro/v1/retro_timeline
+  query:
+    market: kr
+    date: '2026-01-05'
+status: 200
+response:
+  as_of: '2026-11-24T12:00:00Z'
+  data_as_of: '2026-01-05T02:00:00Z'
+  timezone: KST
+  total: 2
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns: []
+  data:
+  - symbol: '000660'
+    market: kr
+    state: admitted_no_record
+    reason: no_decision_record
+    events:
+    - at: '2026-01-05T00:20:00Z'
+      source: observation_log
+      kind: up
+      reason: null
+      ref: null
+    - at: '2026-01-05T00:30:00Z'
+      source: pick_log
+      kind: admitted
+      reason: round_robin
+      ref: candidate-0123456789abcdef0123
+    minute_bars:
+    - venue: KRX
+      rows: 390
+      first_bar_at: '2026-01-05T00:00:00Z'
+      last_bar_at: '2026-01-05T06:29:00Z'
+  - symbol: '005930'
+    market: kr
+    state: proposed_filled
+    reason: filled
+    events:
+    - at: '2026-01-05T01:00:00Z'
+      source: proposal
+      kind: filled
+      reason: null
+      ref: proposal-0123456789abcdef0123
+    - at: '2026-01-05T02:00:00Z'
+      source: order
+      kind: filled
+      reason: null
+      ref: order-0123456789abcdef0123
+    - at: '2026-01-05T02:00:00Z'
+      source: fill
+      kind: buy_filled
+      reason: null
+      ref: fill-0123456789abcdef0123
+    minute_bars:
+    - venue: KRX
+      rows: 390
+      first_bar_at: '2026-01-05T00:00:00Z'
+      last_bar_at: '2026-01-05T06:29:00Z'
+    - venue: NTX
+      rows: 60
+      first_bar_at: '2026-01-04T23:00:00Z'
+      last_bar_at: '2026-01-04T23:59:00Z'
+  coverage:
+    observation_log:
+      status: runs_recorded
+      runs:
+        ok: 3
+        empty: 0
+        error: 0
+    pick_log:
+      status: calls_recorded
+      calls: 2
+    minute_bars:
+      status: available

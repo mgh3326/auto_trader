@@ -739,6 +739,99 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_timeline:
+    get:
+      operationId: retro_timeline
+      description: >-
+        One row per symbol that appears in any evidence source for one KST
+        date and market (or the requested symbol), with a closed state and the
+        ordered events behind it. Sources and date basis: the observation log
+        (first capture, trading_date; KR only), the screener pick log
+        (recorded_at), recorded decisions and deferred_no_action forecasts
+        (decided_at, created_at), and the chain's proposals, orders and fills —
+        all on the KST calendar day of the request. Minute bars are counts and
+        first/last bar start only; KR by the KST day, US by the stored ET
+        trading day equal to the requested date. A source read that failed or
+        was cut off makes the rows it could have changed null with reason
+        source_unavailable — never a weaker state. coverage says what was
+        recording that day, so not_observed is distinguishable from nothing
+        was recording. Refs are opaque; no raw text, account numbers or broker
+        order numbers.
+      parameters:
+      - name: market
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - kr
+          - us
+          - crypto
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: symbol
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroTimelineResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     DecimalValue:
@@ -1971,6 +2064,209 @@ components:
       description: total counts matching decision rows in the requested KST window
         before pagination, or null with count_unavailable. Page length is never
         total.
+      unevaluatedProperties: false
+    TimelineEvent:
+      description: >-
+        One piece of evidence. kind and reason are closed codes copied from the
+        source vocabularies (pick log admission and reason, decision kind, the
+        chain's proposal/order/fill status and reason, the ranking surface of
+        an observation); never raw text. ref is the opaque ref the same record
+        has in retro_day or retro_decisions; the observation log has none.
+      type: object
+      additionalProperties: false
+      required:
+      - at
+      - source
+      - kind
+      - reason
+      - ref
+      properties:
+        at: *id004
+        source:
+          type: string
+          enum:
+          - observation_log
+          - pick_log
+          - decision
+          - proposal
+          - order
+          - fill
+        kind: *id001
+        reason: *id002
+        ref: *id002
+    TimelineMinuteBars:
+      description: >-
+        Stored one-minute bars of the symbol on the date for one venue: row
+        count and the start of the first and last bar. No prices.
+      type: object
+      additionalProperties: false
+      required:
+      - venue
+      - rows
+      - first_bar_at
+      - last_bar_at
+      properties:
+        venue: *id001
+        rows:
+          type: integer
+          minimum: 0
+        first_bar_at: *id004
+        last_bar_at: *id004
+    RetroTimelineRow:
+      description: >-
+        state is null only with reason source_unavailable. Precedence:
+        proposed_filled/proposed_unfilled (a proposal, order, fill or
+        proposal/direct-order decision exists; filled by the chain's fills),
+        admitted_held (an admitted pick and a declined decision or
+        deferred_no_action forecast; a declined record with no pick row at all
+        reports reason declined_without_pick_record), admitted_no_record (an
+        admitted pick and no decision record of any kind - never a hold),
+        candidate_not_admitted (pick rows only not_admitted or
+        dropped_preselection, reason is the recorded admission reason),
+        observed_only (observation log first capture only, or pick rows whose
+        admission was never recorded), not_observed (a requested symbol in no
+        source). minute_bars is null with minute_bars_reason when unread.
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - market
+      - state
+      - reason
+      - events
+      - minute_bars
+      properties:
+        symbol:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+        market:
+          type: string
+          enum:
+          - kr
+          - us
+          - crypto
+        state:
+          type:
+          - string
+          - 'null'
+          enum:
+          - not_observed
+          - observed_only
+          - candidate_not_admitted
+          - admitted_no_record
+          - admitted_held
+          - proposed_unfilled
+          - proposed_filled
+          - null
+        reason: *id001
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineEvent'
+        minute_bars:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/TimelineMinuteBars'
+        minute_bars_reason:
+          type: string
+          enum:
+          - unsupported_market
+          - source_unavailable
+    TimelineCoverage:
+      description: >-
+        What was recording on the date. observation_log_not_running means no
+        run status row exists for the KST date (runs counts those rows by
+        status); it is not proof that no snapshot exists. pick_log.calls is the
+        number of distinct screener calls recorded that day for the market.
+      type: object
+      additionalProperties: false
+      required:
+      - observation_log
+      - pick_log
+      - minute_bars
+      properties:
+        observation_log:
+          type: object
+          additionalProperties: false
+          required:
+          - status
+          - runs
+          properties:
+            status:
+              type: string
+              enum:
+              - runs_recorded
+              - observation_log_not_running
+              - unsupported_market
+              - source_unavailable
+            runs:
+              type:
+              - object
+              - 'null'
+              additionalProperties: false
+              required:
+              - ok
+              - empty
+              - error
+              properties:
+                ok:
+                  type: integer
+                  minimum: 0
+                empty:
+                  type: integer
+                  minimum: 0
+                error:
+                  type: integer
+                  minimum: 0
+        pick_log:
+          type: object
+          additionalProperties: false
+          required:
+          - status
+          - calls
+          properties:
+            status:
+              type: string
+              enum:
+              - calls_recorded
+              - no_calls
+              - source_unavailable
+            calls:
+              type:
+              - integer
+              - 'null'
+              minimum: 0
+        minute_bars:
+          type: object
+          additionalProperties: false
+          required:
+          - status
+          properties:
+            status:
+              type: string
+              enum:
+              - available
+              - unsupported_market
+              - source_unavailable
+    RetroTimelineResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        - coverage
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/RetroTimelineRow'
+          coverage:
+            $ref: '#/components/schemas/TimelineCoverage'
+      description: total counts the symbols in the date's population before
+        pagination, or null with count_unavailable when a source read failed or
+        was cut off. Page length is never total.
       unevaluatedProperties: false
   securitySchemes:
     RetroReadToken:
