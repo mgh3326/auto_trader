@@ -31,6 +31,42 @@ def _account(account: str) -> dict[str, str]:
     return {"CANO": account, "ACNT_PRDT_CD": "03"}
 
 
+async def fetch_master_rows() -> list[dict[str, str]]:
+    """Download and parse the index futures/options master (no env gate).
+
+    Callers own their gate: ``FuturesRead.master`` checks
+    ``KIS_FUTURES_READ_ENABLED``; the quotes layer checks its own.
+    """
+    async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+        response = await client.get(_MASTER_URL)
+        response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        info = archive.getinfo("fo_idx_code_mts.mst")
+        if info.file_size > 20_000_000:
+            raise ValueError("종목마스터 크기가 너무 큽니다")
+        rows = archive.read(info).decode("cp949").splitlines()
+    names = (
+        "product_type",
+        "short_code",
+        "standard_code",
+        "name",
+        "atm",
+        "strike",
+        "month_type",
+        "underlying_code",
+        "underlying_name",
+    )
+    result = []
+    for row in rows:
+        values = row.split("|")
+        if len(values) != len(names):
+            raise ValueError("종목마스터 행 형식이 올바르지 않습니다")
+        result.append(
+            dict(zip(names, (value.strip() for value in values), strict=True))
+        )
+    return result
+
+
 class FuturesRead:
     def __init__(self, parent: Any) -> None:
         self._parent = parent
@@ -140,31 +176,4 @@ class FuturesRead:
 
     async def master(self) -> list[dict[str, str]]:
         _enabled()
-        async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
-            response = await client.get(_MASTER_URL)
-            response.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-            info = archive.getinfo("fo_idx_code_mts.mst")
-            if info.file_size > 20_000_000:
-                raise ValueError("종목마스터 크기가 너무 큽니다")
-            rows = archive.read(info).decode("cp949").splitlines()
-        names = (
-            "product_type",
-            "short_code",
-            "standard_code",
-            "name",
-            "atm",
-            "strike",
-            "month_type",
-            "underlying_code",
-            "underlying_name",
-        )
-        result = []
-        for row in rows:
-            values = row.split("|")
-            if len(values) != len(names):
-                raise ValueError("종목마스터 행 형식이 올바르지 않습니다")
-            result.append(
-                dict(zip(names, (value.strip() for value in values), strict=True))
-            )
-        return result
+        return await fetch_master_rows()

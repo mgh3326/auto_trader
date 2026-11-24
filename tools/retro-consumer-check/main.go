@@ -234,7 +234,8 @@ var decisionReasons = []string{
 	"no_budget_cap", "stop_not_below_reference_price", "not_applicable", "missing_entry_price",
 	"missing_entry_session", "no_risk_per_unit", "no_complete_session", "window_open",
 	"missing_notional", "missing_currency", "rate_unavailable", "not_provided", "no_proposal",
-	"no_linked_order", "no_fills", "no_exit_fill", "missing_data",
+	"no_linked_order", "no_fills", "no_exit_fill", "missing_data", "sell_decision",
+	"side_not_recorded",
 }
 
 // Field helpers for the decision row schema. Each returns one closed key.
@@ -297,7 +298,7 @@ var tradeCostsFields = []nestedField{
 }
 
 // retroDecisionsRowFields is the closed DecisionRow schema (openapi components/DecisionRow):
-// every one of its 45 keys is required and no other key is allowed.
+// its 45 base keys are required, the four hk 6040 keys are optional, and no other key is allowed.
 var retroDecisionsRowFields = []nestedField{
 	{name: "decision_ref", kind: kindRefRequired},
 	enumOrNullField("decision_kind", "proposal", "direct_order", "declined"),
@@ -346,6 +347,12 @@ var retroDecisionsRowFields = []nestedField{
 	decimalField("r_multiple"),
 	reasonField("r_multiple_reason"),
 	enumField("basis", "broker", "inference", "unknown"),
+	// hk 6040 optional keys: present only on a sell decision (sell_*) or when the
+	// side was never recorded (side_reason).
+	{name: "side_reason", kind: kindEnumOrNull, values: decisionReasons, optional: true},
+	{name: "sell_filled_quantity", kind: kindDecimalOrNull, optional: true},
+	{name: "sell_avg_price", kind: kindDecimalOrNull, optional: true},
+	{name: "sell_fill_reason", kind: kindEnumOrNull, values: decisionReasons, optional: true},
 }
 
 // retroDecisionsOperation is the retro_decisions check definition, shared by the gate

@@ -557,3 +557,243 @@ async def test_declined_would_be_entry_fills_plan_fields_but_is_no_order() -> No
     assert row["reference_price"] == "70000"
     assert row["reference_kind"] == "limit"
     assert row["planned_risk_amount"] is None
+
+
+# --------------------------------------------------------------------------- #
+# hk 6040 — sell decisions report their own sell fills; declined side honesty
+# --------------------------------------------------------------------------- #
+NEW_OPTIONAL_KEYS = {
+    "side_reason",
+    "sell_filled_quantity",
+    "sell_avg_price",
+    "sell_fill_reason",
+}
+
+
+def _sell_session(**extra):
+    """The 041510 shape: a sell proposal whose order has two sell fills."""
+    base = {
+        "FROM review.decision_evidence_rungs": [decision_rung(side="sell")],
+        "FROM review.order_proposal_rungs": [rung(100, 10, side="sell")],
+        "FROM review.kis_live_order_ledger": [
+            live_order(
+                100, FILL_AT, idempotency_key=SEND_KEY, status="filled", side="sell"
+            )
+        ],
+        "FROM review.execution_ledger": [
+            ledger(
+                1000,
+                FILL_AT,
+                side="sell",
+                fill_seq=0,
+                filled_qty=Decimal("1"),
+                filled_price=Decimal("70000"),
+                filled_notional=Decimal("70000"),
+            ),
+            ledger(
+                1001,
+                FILL_AT + timedelta(minutes=1),
+                side="sell",
+                fill_seq=1,
+                filled_qty=Decimal("3"),
+                filled_price=Decimal("72000"),
+                filled_notional=Decimal("216000"),
+            ),
+        ],
+    }
+    base.update(extra)
+    return linked_session(decisions=[decision(1, side="sell")], **base)
+
+
+@pytest.mark.asyncio
+async def test_sell_decision_reports_its_own_sell_fills_not_a_buy_zero() -> None:
+    # Fails on 3b37df6ff: the reader keeps buy fills only, so this row came back
+    # with filled_quantity "0" and fill_reason "no_fills" despite two sell fills.
+    response = await read_retro_decisions(
+        _sell_session(), from_="2026-01-01", to="2026-01-31"
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["side"] == "sell"
+    assert row["sell_filled_quantity"] == "4"
+    assert row["sell_avg_price"] == "71500"
+    assert row["sell_fill_reason"] is None
+    assert row["filled_quantity"] is None and row["entry_avg_price"] is None
+    assert row["fill_reason"] == "sell_decision"
+    assert row["order_count"] == 1 and row["order_states"] == ["filled"]
+    assert "side_reason" not in row
+
+
+@pytest.mark.asyncio
+async def test_sell_decision_without_fills_reports_no_fills_not_a_buy_field() -> None:
+    response = await read_retro_decisions(
+        _sell_session(**{"FROM review.execution_ledger": []}),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = response["data"][0]
+    assert row["sell_filled_quantity"] == "0"
+    assert row["sell_avg_price"] is None and row["sell_fill_reason"] == "no_fills"
+    assert row["filled_quantity"] is None and row["fill_reason"] == "sell_decision"
+
+
+@pytest.mark.asyncio
+async def test_sell_decision_never_counts_a_buy_fill_of_the_same_order() -> None:
+    mixed = [
+        ledger(1000, FILL_AT, side="sell", filled_qty=Decimal("3")),
+        ledger(1002, FILL_AT, side="buy", fill_seq=5, filled_qty=Decimal("9")),
+    ]
+    response = await read_retro_decisions(
+        _sell_session(**{"FROM review.execution_ledger": mixed}),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    row = response["data"][0]
+    assert row["sell_filled_quantity"] == "3" and row["filled_quantity"] is None
+
+
+@pytest.mark.asyncio
+async def test_buy_decision_row_has_none_of_the_new_optional_keys() -> None:
+    response = await read_retro_decisions(
+        linked_session(), from_="2026-01-01", to="2026-01-31"
+    )
+    row = response["data"][0]
+    assert NEW_OPTIONAL_KEYS.isdisjoint(row)
+    assert row["side"] == "buy" and row["filled_quantity"] == "3"
+    assert row["fill_reason"] is None
+
+
+def _declined_row(response):
+    return response["data"][1]
+
+
+@pytest.mark.asyncio
+async def test_placeholder_declined_buy_is_reported_without_a_side() -> None:
+    # The historical writer stored side=buy and a rung 0 with no prices.
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        side="buy",
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    placeholder = decision_rung(
+        DECISION_B,
+        planned_quantity=None,
+        planned_notional=None,
+        limit_price=None,
+    )
+    response = await read_retro_decisions(
+        linked_session(
+            decisions=[decision(1), declined],
+            **{"FROM review.decision_evidence_rungs": [decision_rung(), placeholder]},
+        ),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = _declined_row(response)
+    assert row["side"] is None and row["side_reason"] == "side_not_recorded"
+    assert row["planned_risk_amount"] is None and row["risk_reason"] == "not_applicable"
+    assert "sell_filled_quantity" not in row
+
+
+@pytest.mark.asyncio
+async def test_new_declined_without_side_or_rung_is_side_not_recorded() -> None:
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        side=None,
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    response = await read_retro_decisions(
+        linked_session(decisions=[decision(1), declined]),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = _declined_row(response)
+    assert row["side"] is None and row["side_reason"] == "side_not_recorded"
+
+
+@pytest.mark.asyncio
+async def test_declined_with_would_be_entry_stays_a_buy() -> None:
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        side="buy",
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    response = await read_retro_decisions(
+        linked_session(
+            decisions=[decision(1), declined],
+            **{
+                "FROM review.decision_evidence_rungs": [
+                    decision_rung(),
+                    decision_rung(DECISION_B, limit_price=Decimal("70000")),
+                ]
+            },
+        ),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    row = _declined_row(response)
+    assert row["side"] == "buy" and "side_reason" not in row
+
+
+@pytest.mark.asyncio
+async def test_declined_buy_is_not_called_a_placeholder_when_rungs_unreadable() -> None:
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        side="buy",
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    response = await read_retro_decisions(
+        linked_session(
+            decisions=[decision(1), declined],
+            **{
+                "FROM review.decision_evidence_rungs": operational_error(),
+            },
+        ),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    assert _declined_row(response)["side"] == "buy"
+
+
+@pytest.mark.asyncio
+async def test_declined_sell_stays_a_sell_without_fill_keys_leaking_buy() -> None:
+    declined = decision(
+        9,
+        DECISION_B,
+        decision_kind="declined",
+        side="sell",
+        stop_price=None,
+        stop_source=None,
+        decided_at=DECIDED + timedelta(hours=1),
+    )
+    response = await read_retro_decisions(
+        linked_session(decisions=[decision(1), declined]),
+        from_="2026-01-01",
+        to="2026-01-31",
+    )
+    validate(response, "RetroDecisionsResponse")
+    row = _declined_row(response)
+    assert row["side"] == "sell" and "side_reason" not in row
+    assert row["filled_quantity"] is None and row["fill_reason"] == "sell_decision"
+    # No order resolves to this decision: null with a reason, never a buy 0.
+    assert row["sell_filled_quantity"] is None
+    assert row["sell_fill_reason"] == "no_linked_order"

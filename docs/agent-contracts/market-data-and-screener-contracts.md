@@ -26,6 +26,7 @@
 - Upbit KRW 15분 봉 장중 신호 사전등록·과거 재생 (hk 6035)
 - 세션 분봉 타임라인 — research 분봉 수집·커버리지 진단 (hk 6145)
 - 장중 급등·급락 관측 로그 (hk 6154)
+- 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 
 ## 기준 원문 계약
 
@@ -146,8 +147,8 @@ KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다
 - **행**: 반환된 후보마다 1행(`admission='admitted'`, `admission_reason='returned_to_session'`, `selection_seq` = 반환 목록 안 1-based 위치(offset 포함),
   `rank` = `screen_stocks`는 반환 순서, snapshot은 도구의 rank — 다중 preset 병합 행은 첫 매칭 preset에만 rank가 있고 나머지 preset 행은 null).
   도구 자신이 이미 아는 제거는 `not_admitted` + 닫힌 사유: `halted_suspect`(screen_stocks, `meta.halted_suspect_excluded`),
-  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`(snapshot; `exclude_held`는
-  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
+  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`·`invalid_market_cap_bound`(snapshot; `exclude_held`는
+  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). `invalid_market_cap_bound`(hk 5763)는 `min_market_cap`/`max_market_cap_eok`가 NaN 또는 무한대일 때 그 경계로 빠진 행의 사유다. 비교가 정의되지 않으므로 `below_min_market_cap`/`above_max_market_cap`으로 표시하지 않는다. 페이지 내용은 바뀌지 않는다. 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
   `screen_stocks_enrich`의 만성 실패 제외·`isHeld`는 이 변경 범위 밖이며 enrich는 기록하지 않는다. 시장은 kr/us만 기록한다(kospi/kosdaq/konex/all → kr, crypto 미기록).
 - **source**: `screen_stocks` / `screen_stocks_snapshot:<preset>`(다중 preset 스윕에서도 (call, source, symbol) 유일키 유지). `family`는 `screen_stocks_live`/`screener_snapshot`.
   US 심볼은 DB 형식(`BRK.B`, `app/core/symbol.py`)으로 저장해 `decision_evidence`의 candidate ref(`call_id`+정규 심볼)가 그대로 해석된다.
@@ -161,7 +162,7 @@ KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다
   🔴 `decision_evidence`는 후보 ref 없는 같은 KST 날짜 매수 place에서 `admitted` 행을 `inference`로 연결하므로, 세션이 반환받은 후보는 이제 그 추론 대상이 된다.
 - **스냅샷 provenance**: 병합 행의 표시 가격은 첫 매칭 preset의 것이므로, 그 가격을 싣는 모든 행의 `data_asof`/`fetched_at`도 첫 매칭 preset 기준이다
   (`source_params.price_provenance_preset`). 행 자신의 preset freshness는 `source_params.matched_preset_freshness`에 따로 둔다.
-- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다.
+- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다. 도구 호출 안에서는(hk 5763) 기록 예산이 `min(10초, 남은 도구 데드라인 − 2초)`로 줄어든다. 남은 예산이 1초 미만이면 기록을 시작하지 않고 태그 없는 결과를 그대로 반환한다. 남은 데드라인은 `app/core/tool_deadline.py`가 `ToolTimeoutMiddleware`의 호출별 데드라인에서 읽으며, 도구 호출 밖(데드라인 없음)에서는 기존 10초다. 호출자 취소는 그대로 전파된다.
   초과하면 태그 없는 원 응답을 돌려주고, 호출자 취소는 그대로 전파된다. `raw_row`/`gate_features`/`call_context`는 `JSONB(none_as_null=True)`라
   파이썬 None이 JSON `null`이 아니라 SQL NULL로 저장된다(`*_object` CHECK는 SQL NULL 또는 객체만 허용).
 - **fanout 규칙은 그대로**: `funnel-a1` A-record(소스 top-10 전수·admission·`dropped_preselection`)는 `discover_buy_candidates_fanout` 전용이고 이 두 도구는 위 규칙을 따른다.
@@ -758,3 +759,17 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
 - **6145 연동**: 수집 대상 출처 `intraday_movers`(KR 전용, 최초 포착 종목)가 `TARGET_ORIGIN_ORDER` 끝(pick log 다음)에 있어 상한에서 가장 먼저 잘린다. 조회 실패는 다른 출처처럼 `error_details` 에 보고되고 실행은 계속된다. 🔴 KIS `inquire_minute_chart` 는 `n=200` 이어도 호출당 약 30봉만 주므로, 오늘 분봉 행이 없는 새 종목은 `end_time`(`FID_INPUT_HOUR_1`, `HHMMSS`) 커서로 한 페이지를 더 읽어 합친다(`backfill_symbols`/`backfill_pages`). `end_time` 은 `inquire_minute_chart` 의 추가 선택 인자(기본 동작 불변)다. 추가 페이지 실패는 첫 페이지를 지우지 않는다.
 - **금지**: 이 경로가 `review.screener_pick_log` 에 쓰는 것(하드룰 13), 주문·원장·승인·브로커 변경 모듈 import(정적 테스트), 스케줄러 등록, 상태 없는 빈 순위를 성공으로 기록하는 것.
 - **테스트**: `tests/services/invest_momentum_events/test_intraday.py`(순수), `test_intraday_db.py`(CI DB), `tests/services/research_candles/test_session_minutes_{targets,earlier_page}.py`, `tests/scripts/test_dagu_intraday_movers_dag.py`.
+
+### 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
+
+설계 `hk:doc design/2026-11-24/at-session-timeline` §1(선물 행)·§5, 결정 `decision/2026-11-24/at-session-timeline` 항목 2·3. 🔴 주문·취소·승인·원장 경로, `app/services/kis_futures_mock/*` 동작(상수·달력은 읽기만), 옵션·주식선물, 5750 overnight_context, retro/v1, Dagu 등록, 과거 백필은 범위 밖이다. 스케줄러 등록 없음(하드룰 6).
+
+- **게이트**: `KIS_FUTURES_QUOTES_ENABLED` 정확히 `"true"`(기본 off, 기존 `KIS_FUTURES_READ_ENABLED` 와 별개). `open_quotes_view()` 가 KIS 클라이언트를 만들기 **전에**, KIS 계층(`futures_quotes.py`)이 토큰 조회 전과 후에 다시 검사한다(꺼지면 `FuturesQuotesGateOff`, CLI 종료 코드 2). 실전 호스트(`https://openapi.koreainvestment.com:9443`)·실전 앱키 네임스페이스만 쓰며 새 자격증명은 없다. 모의 클라이언트·다른 호스트는 요청 전에 거부된다.
+- **표면**: `app/services/brokers/kis/futures_quotes.py`(`/uapi/domestic-futureoption/v1/quotations/` 두 경로뿐 — 시세 `inquire-price` TR `FHMIF10000000`, 분봉 `inquire-time-fuopchartprice` TR `FHKIF03020200`, 시장 코드 `F`; 근거: KIS 공식 샘플 `examples_llm/domestic_futureoption/{inquire_price,inquire_time_fuopchartprice}/`와 `examples_user/domestic_futureoption/domestic_futureoption_functions.py`, https://github.com/koreainvestment/open-trading-api) + `KISClient.quote_futures_{master,price,minutes}` + 읽기 view `app/services/kis_futures_quotes/view.py`(`price`·`minute_bars`·`master`·`close` — 종목마스터는 계약월 해석에 필요한 공개 다운로드). `/trading/` 경로·주문 TR·계좌번호는 도달 불가(정적 테스트 `tests/services/kis_futures_quotes/test_view_and_layer.py`가 import·문자열 상수·허용 메서드를 고정한다). `[unverified]` 미니 선물도 시장 코드 `F` 인지, `stck_cntg_hour` 가 시작 라벨인지는 운영자 첫 스모크로 확인한다.
+- **🔴 야간은 `unsupported`**: KIS 공식 샘플에 야간 시세·분봉 TR 이 없다(야간 샘플은 잔고·주문·체결·증거금뿐, 야간 시세는 실시간 웹소켓). `minute_bars(session="night")` 는 `FuturesQuotesUnsupported` 이고 수집기 출력은 `night: "unsupported"` 로 이를 드러낸다(0행을 조용히 두지 않는다). 야간 TR 이 문서화되면 별도 PR.
+- **닫힌 상품·계약월**(`contracts.py`): KOSPI200 선물(`F200`, 마스터 상품종류 `1`, 이름 `F YYYYMM` — `[unverified]` 레포의 기존 마스터 픽스처 기준)과 미니 KOSPI200 선물(`MF200`, kis_futures_mock 상수 재사용). 근월·차근월은 종목마스터 행(상품종류·기초자산·이름 패턴·단축코드의 연도 숫자·월 일치)에서만 정하고 코드를 추측하지 않는다. 같은 달에 단축코드가 둘이면 그 달은 버린다. `roll_state` ∈ {front, next, expiring, expired}: expired = 최종거래일 다음 날부터, expiring = 최종거래일이 든 주(월–일)의 최종거래일까지, 그 외는 만료 전 계약 중 순서(근월=front, 차근월=next, 셋째 이후는 `ValueError`). 최종거래일 = 둘째 목요일 — kis_futures_mock 달력 범위(2026-11-23~12-30) 안에서는 휴장 보정, **밖에서는 휴장 보정 없는 둘째 목요일**(docstring 에 명시).
+- **세션·거래일**(`session_segment.py`, `session_segment_of("futures", …)`·`futures_session_date`, venue 무시, KR/US 출력은 바이트 동일): KST 시작 시각 기준 08:45–15:45 `FUT_DAY`(XKRX 거래일만, `session_date` = 그 날), 18:00–익일 06:00 `FUT_NIGHT`(그 야간이 **시작된 날** D 가 XKRX 거래일일 때만, `session_date` = D 다음 XKRX 거래일 — 금요일 야간 → 월요일, 휴일 전날 야간 → 휴일 다음 거래일), 그 밖·비거래일·달력이 다음 거래일을 확인하지 못하면 `UNKNOWN` + `session_date` NULL(추측 없음). `session_date` 규칙은 시세 행에만 쓴다.
+- **표**: `research.kr_futures_candles_1m`(마이그레이션 `20261124_hk6148_futures_min`, 추가형) — `time_utc`(봉 시작)·`symbol`(`MF200.2612`)·`product`·`contract_month`(YYMM)·`roll_state`·`session_segment`(FUT_DAY|FUT_NIGHT|UNKNOWN)·`session_date`(nullable)·`source`(KIS|UNKNOWN)·OHLC·`volume`·`retrieved_at`(최초 수신)·`batch_id`, PK `(time_utc, symbol)`. `value` 열은 없다(`acml_tr_pbmn` 은 누적, 분 단위 값 미증명 — 6145 와 같은 이유). `open_interest` 열도 없다(분봉 TR 은 미결제약정을 봉별로 주지 않는다). timescaledb 가 있을 때만 하이퍼테이블, 보관·refresh 정책 없음, `at_app` 조건부 GRANT(SELECT·INSERT, 하드룰 18), downgrade 는 행이 있으면 거부.
+- **수집기**: `app/services/research_candles/futures_minutes_collector.py` + 수동 CLI `scripts/collect_futures_minutes.py [--dry-run]`(6145 수집기의 대상 선정 코드는 건드리지 않았다). 마스터에서 근월·차근월을 해석해 당일(KST) 주간 분봉을 읽고, 닫힌 봉(`시작 + 1분 + 10초 <= 요청 직전`)만 `ON CONFLICT (time_utc, symbol) DO NOTHING` 으로 쓴다(재실행은 0행·`retrieved_at` 불변). 출력 JSON: `inserted`/`already_present`/`skipped_forming`/`skipped_invalid`/`products_resolved`/`night`/`errors`/(dry-run 만) `samples`(+`error_details`: 종목·예외 클래스만), 종료 코드 0 = 정상·1 = 오류·2 = 게이트 꺼짐. 해석되지 않은 상품은 `UnresolvedProduct` 오류다.
+- **진단**: `scripts/diagnose_session_coverage.py --market futures --date D`(같은 READ ONLY·8초 규칙). 예상 분은 주간 세션만이고 야간 행은 예상 0 으로 따로 나오며 `night_collection: "unsupported"` 가 붙는다.
+- **DAG 사본**: `deploy/dagu/at-futures-minutes/`(주간 월–금 08:40–15:50 KST, 야간 월–금 17:55–익일 06:10 KST, 5분 간격 — 등록되지 않는 복사본, 등록은 별도 운영자 승인). **테스트**: `tests/services/kis_futures_quotes/`, `tests/services/research_candles/test_futures_{session_segment,minutes_collector,session_coverage,minutes_db}.py`, `tests/test_hk6148_futures_minutes_migration_db.py`, `tests/scripts/test_dagu_futures_minutes_dags.py`(DB 는 CI). 런북 `docs/runbooks/futures-minutes.md`.

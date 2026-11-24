@@ -1729,6 +1729,8 @@ components:
       - no_fills
       - no_exit_fill
       - missing_data
+      - sell_decision
+      - side_not_recorded
       - null
     Excursion:
       description: >-
@@ -1793,7 +1795,13 @@ components:
         daily-bar excursions (basis always inference, adjusted unknown).
         retrospective_ref is the stored decision_id link (recorded) or the
         single correlation-derived review (inference); r_multiple needs both
-        entry and exit fills plus a known risk per unit.
+        entry and exit fills plus a known risk per unit. A sell decision
+        reports entry_avg_price and filled_quantity as null with fill_reason
+        sell_decision and carries its own linked sell fills in the optional
+        sell_filled_quantity, sell_avg_price and sell_fill_reason. A declined
+        decision that never recorded a side (stored NULL, or the historical
+        placeholder buy with an empty rung 0) reports side null with the
+        optional side_reason side_not_recorded.
       type: object
       additionalProperties: false
       required:
@@ -1941,6 +1949,14 @@ components:
           $ref: '#/components/schemas/DecisionReason'
         basis:
           $ref: '#/components/schemas/EvidenceBasis'
+        side_reason:
+          $ref: '#/components/schemas/DecisionReason'
+        sell_filled_quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        sell_avg_price:
+          $ref: '#/components/schemas/DecimalValue'
+        sell_fill_reason:
+          $ref: '#/components/schemas/DecisionReason'
     RetroDecisionsResponse:
       allOf:
       - $ref: '#/components/schemas/Envelope'

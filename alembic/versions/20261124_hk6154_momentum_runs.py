@@ -1,7 +1,7 @@
 """hk 6154: status rows for intraday momentum ranking runs.
 
 Revision ID: 20261124_hk6154_momentum_runs
-Revises: 20261124_hk6145_session_minutes
+Revises: 20261124_hk6148_futures_min
 Create Date: 2026-11-24
 
 Additive. ``review``-free: a new ``public.invest_momentum_event_runs`` table with
@@ -23,7 +23,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261124_hk6154_momentum_runs"
-down_revision: str | Sequence[str] | None = "20261124_hk6145_session_minutes"
+down_revision: str | Sequence[str] | None = "20261124_hk6148_futures_min"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

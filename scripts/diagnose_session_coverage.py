@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hk 6145: READ-ONLY coverage and latency report for the session minute tables.
 
-    uv run python -m scripts.diagnose_session_coverage --market kr|us --date YYYY-MM-DD \\
+    uv run python -m scripts.diagnose_session_coverage --market kr|us|futures --date YYYY-MM-DD \\
         [--symbols 005930 000660]
 
 One ``READ ONLY`` transaction with an 8 s statement timeout, SELECT only. Per
@@ -42,6 +42,14 @@ _SELECT_KR = text(
     "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
     "AND batch_id NOT LIKE :backfill_a AND batch_id NOT LIKE :backfill_b"
 )
+_SELECT_FUTURES = text(
+    "SELECT symbol, 'KRX' AS venue, session_segment, time_utc, retrieved_at, "
+    "FALSE AS value_is_null "
+    "FROM research.kr_futures_candles_1m "
+    "WHERE session_date = :session_date "
+    "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
+    "AND batch_id NOT LIKE :backfill_a AND batch_id NOT LIKE :backfill_b"
+)
 _SELECT_US = text(
     "SELECT symbol, venue, session_segment, time_utc, retrieved_at, "
     "(value IS NULL) AS value_is_null "
@@ -54,7 +62,7 @@ _SELECT_US = text(
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--market", required=True, choices=("kr", "us"))
+    parser.add_argument("--market", required=True, choices=("kr", "us", "futures"))
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--symbols", nargs="+", default=None)
     return parser.parse_args(argv)
@@ -64,10 +72,16 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
     symbols: list[str] | None = None
     if args.symbols:
         parts = (p for chunk in args.symbols for p in chunk.split(","))
-        symbols = sorted(
-            {s for s in (normalize_symbol(args.market, p) for p in parts) if s}
-        )
-    statement = _SELECT_KR if args.market == "kr" else _SELECT_US
+        if args.market == "futures":
+            # contract symbols like MF200.2612 — used as given, upper-cased
+            symbols = sorted({p.strip().upper() for p in parts if p.strip()})
+        else:
+            symbols = sorted(
+                {s for s in (normalize_symbol(args.market, p) for p in parts) if s}
+            )
+    statement = {"kr": _SELECT_KR, "us": _SELECT_US, "futures": _SELECT_FUTURES}[
+        args.market
+    ]
     now = datetime.now(UTC)
     async with engine.connect() as conn:
         async with conn.begin():

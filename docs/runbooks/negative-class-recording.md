@@ -119,7 +119,12 @@ forecast_save(
   `declined_limit_price_required`, `declined_size_required`, `declined_size_ambiguous`,
   `declined_quote_incomplete`, `declined_value_invalid`, `declined_account_mode_invalid`.
 - 같은 `forecast_id`를 갱신(`updated`)하면서 입력을 주면 `declined_not_created`로
-  롤백한다. 입력을 주지 않은 호출은 종전과 바이트 동일한 증거를 쓴다.
+  롤백한다. 입력도 `decision_side`도 주지 않은 호출은 hk 6040부터 `side=NULL`·rung 없음으로
+기록한다(전에는 `side='buy'` + 값 없는 rung 0 — 매도 검토도 매수로 남던 원인).
+- `decision_side="buy"|"sell"`(선택, hk 6040): 매도 검토를 기각했다면 `sell`을 준다. `declined_*`
+  입력과 `sell`을 함께 주면 `decision_side_conflict`, 그 밖의 값은 `decision_side_invalid`로
+  쓰기 전에 거부된다. `decision_evidence`는 append-only라 과거 행(side=buy placeholder)은
+  고치지 않고 retro/v1이 `side=null`·`side_reason=side_not_recorded`로 보인다.
 - 기록: `review.decision_evidence`(`decision_kind='declined'`, `side='buy'`),
   `decision_evidence_rungs`(rung 0 의 `limit_price`·`planned_quantity`/`planned_notional`),
   `decision_reference_prices`(`limit`, rung 0; 시세가 있으면 `quote_at_decision`).
