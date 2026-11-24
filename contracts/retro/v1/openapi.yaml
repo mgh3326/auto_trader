@@ -1399,6 +1399,38 @@ components:
           - type: 'null'
         basis: &id007
           $ref: '#/components/schemas/EvidenceBasis'
+        session_segment:
+          description: Session label of a kr/us 1m bar (research table). Absent for
+            other bars.
+          type: string
+          enum:
+          - KRX_REGULAR
+          - KRX_AFTER
+          - NXT_PRE
+          - NXT_OVERLAP
+          - NXT_POST
+          - US_PRE
+          - US_REGULAR
+          - US_POST
+          - US_DAY
+          - UNKNOWN
+        value:
+          description: Per-bar traded value of a kr/us 1m bar, exact decimal. Absent
+            (never 0) when storage holds NULL; value_reason says why.
+          type: string
+          pattern: ^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$
+        value_reason:
+          description: Present only when value is absent on a kr/us 1m bar.
+          $ref: '#/components/schemas/UnknownReason'
+        first_received_at:
+          description: First receipt time (research retrieved_at) of a kr/us 1m bar.
+            Absent when the row came from a backfill/promotion batch.
+          type: string
+          format: date-time
+        first_received_reason:
+          description: Present only when first_received_at is absent on a kr/us 1m
+            bar.
+          $ref: '#/components/schemas/UnknownReason'
     GapRow:
       type: object
       additionalProperties: false

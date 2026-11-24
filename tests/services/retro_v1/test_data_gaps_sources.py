@@ -164,7 +164,7 @@ async def test_minute_and_daily_bars_older_than_the_last_session_are_stale() -> 
     ten_days_ago = NOW - timedelta(days=10)
     session = gap_session(
         **{
-            "FROM public.kr_candles_1m": [ns(latest=ten_days_ago)],
+            "FROM research.kr_candles_1m": [ns(latest=ten_days_ago)],
             "FROM public.crypto_candles_1d": [ns(latest=ten_days_ago)],
         }
     )
@@ -179,7 +179,7 @@ async def test_minute_and_daily_bars_older_than_the_last_session_are_stale() -> 
 
 @pytest.mark.asyncio
 async def test_bars_with_no_rows_at_all_are_missing_data() -> None:
-    session = gap_session(**{"FROM public.us_candles_1m": [ns(latest=None)]})
+    session = gap_session(**{"FROM research.us_candles_1m": [ns(latest=None)]})
     rows = by_dataset(await read_data_gaps(session))
     assert rows["candles_1m.us"]["missing_reason"] == "missing_data"
 
@@ -287,7 +287,7 @@ async def test_manual_only_market_event_sources_are_never_reported_missing() -> 
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_one_db_failure_is_an_unknown_and_other_rows_remain() -> None:
-    session = gap_session(**{"FROM public.kr_candles_1m": operational_error()})
+    session = gap_session(**{"FROM research.kr_candles_1m": operational_error()})
     response = await read_data_gaps(session)
     validate(response, "DataGapsResponse")
     assert response["total"] is None
