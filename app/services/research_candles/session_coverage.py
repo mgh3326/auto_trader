@@ -58,7 +58,12 @@ class StoredMinute:
 
 
 def _day_minutes(market: str, session_date: date) -> list[datetime]:
-    if market == "kr":
+    if market == "futures":
+        # Day session only (hk 6148): no night TR is documented, so night minutes
+        # are not expected (night rows, if any, are reported with expected 0).
+        start = datetime.combine(session_date, time(8, 0), tzinfo=_KST)
+        count = 9 * 60
+    elif market == "kr":
         start = datetime.combine(session_date, time(7, 0), tzinfo=_KST)
         count = 14 * 60
     else:
@@ -155,6 +160,7 @@ def coverage_report(
         "session_date": session_date.isoformat(),
         "as_of": as_of.astimezone(UTC).isoformat(),
         "venues_expected": list(KR_VENUES) if market == "kr" else None,
+        "night_collection": "unsupported" if market == "futures" else None,
         "entries": entries,
         "symbols_without_rows": sorted(set(requested_symbols) - with_rows),
     }

@@ -1,0 +1,25 @@
+# 선물 분봉 수집(야간): 월–금 17:55 ~ 익일 06:10 KST 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 야간 시세·분봉 TR 이 KIS 공식 샘플에 없어 수집기는 야간을 night="unsupported" 로 보고한다(0행을 조용히 두지 않는다).
+# 야간 TR 이 문서화되기 전에는 등록해도 새 행이 없다. 등록은 별도 운영자 승인으로만 한다.
+description: "KR index futures night-session minute bars (night TR unsupported; reports night=unsupported)"
+schedule:
+  - "CRON_TZ=Asia/Seoul 55 17 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */5 18-23 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */5 0-5 * * 2-6"
+  - "CRON_TZ=Asia/Seoul 0-10/5 6 * * 2-6"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e KIS_FUTURES_QUOTES_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_futures_minutes || rc=$?
+      exit "$rc"
+    timeout_sec: 240
+handler_on:
+  success:
+    command: 'logger -t at-dagu-futures-minutes "dag=at-futures-minutes-night status=success"'
+  failure:
+    command: 'logger -t at-dagu-futures-minutes "dag=at-futures-minutes-night status=failure"'

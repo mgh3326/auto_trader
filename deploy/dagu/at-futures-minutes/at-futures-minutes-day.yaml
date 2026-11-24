@@ -1,0 +1,24 @@
+# 선물 분봉 수집(주간): 월–금 08:40–15:50 KST 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# KOSPI200·미니 KOSPI200 선물의 근월·차근월 닫힌 1분봉만 research.kr_futures_candles_1m 에 삽입 전용으로 쓴다.
+# 등록은 hk 6148 머지와 research 마이그레이션(20261124_hk6148_futures_min) 적용 뒤, 별도 운영자 승인으로만 한다.
+description: "KR index futures day-session minute bars into research.kr_futures_candles_1m"
+schedule:
+  - "CRON_TZ=Asia/Seoul 40-55/5 8 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */5 9-14 * * 1-5"
+  - "CRON_TZ=Asia/Seoul 0-50/5 15 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e KIS_FUTURES_QUOTES_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_futures_minutes || rc=$?
+      exit "$rc"
+    timeout_sec: 240
+handler_on:
+  success:
+    command: 'logger -t at-dagu-futures-minutes "dag=at-futures-minutes-day status=success"'
+  failure:
+    command: 'logger -t at-dagu-futures-minutes "dag=at-futures-minutes-day status=failure"'

@@ -1,6 +1,6 @@
 """hk 6145: session label of a 1-minute bar, from its start time.
 
-One pure function, market-generic (hk 6148 reuses it for futures):
+One pure function, market-generic (hk 6148 adds futures):
 
     session_segment_of(market, venue, bar_start_utc) -> str
 
@@ -21,6 +21,16 @@ US (ET): 04:00-regular open US_PRE; regular session US_REGULAR;
   regular close-20:00 US_POST; 20:00-04:00 and non-session days -> UNKNOWN
   (``US_DAY`` exists in the table CHECK for a later day-market reader; this
   function never returns it).
+
+Futures (hk 6148, ``market="futures"``, venue ignored — one KRX derivatives venue),
+KST on the bar START, ``futures_session_date`` gives the trading date:
+  08:45-15:45 FUT_DAY on a confirmed XKRX trading day; session_date = that day
+  18:00-06:00 FUT_NIGHT: the night session that STARTED on KST day D (bars before
+  06:00 belong to the previous calendar day's night); D must be an XKRX trading
+  day, and session_date is the NEXT XKRX trading day after D (Friday night ->
+  Monday; the night before a holiday -> the first trading day after it)
+  everything else, a non-trading D, or a calendar that cannot confirm the next
+  trading day -> UNKNOWN with session_date None (never guessed).
 
 ``UNKNOWN`` is a value, not an error: it is stored, never guessed into a
 concrete session.
@@ -47,6 +57,12 @@ from app.services.brokers.kis.live_order_expiry import (
     KRX_AFTER_CLOSE_KST,
     KRX_AFTER_OPEN_KST,
 )
+from app.services.kis_futures_mock.session_calendar import (
+    REGULAR_CLOSE as FUTURES_DAY_CLOSE_KST,
+)
+from app.services.kis_futures_mock.session_calendar import (
+    REGULAR_OPEN as FUTURES_DAY_OPEN_KST,
+)
 from app.services.market_events.session_calendar import is_trading_session
 
 UNKNOWN = "UNKNOWN"
@@ -59,6 +75,13 @@ NXT_POST = "NXT_POST"
 US_PRE = "US_PRE"
 US_REGULAR = "US_REGULAR"
 US_POST = "US_POST"
+FUT_DAY = "FUT_DAY"
+FUT_NIGHT = "FUT_NIGHT"
+
+FUTURES_NIGHT_OPEN_KST = time(18, 0)
+FUTURES_NIGHT_CLOSE_KST = time(6, 0)
+#: Calendar days searched for the next trading day after a night session start.
+_FUTURES_NEXT_DAY_SEARCH = 10
 
 KR_VENUES = ("KRX", "NTX")
 US_VENUES = ("NASD", "NYSE", "AMEX")
@@ -123,11 +146,51 @@ def us_session_date(bar_start_utc: datetime) -> date:
     return local.date()
 
 
+@lru_cache(maxsize=512)
+def _next_kr_trading_day(day: date) -> date | None:
+    for offset in range(1, _FUTURES_NEXT_DAY_SEARCH + 1):
+        candidate = day + timedelta(days=offset)
+        if _kr_session_day(candidate):
+            return candidate
+    return None
+
+
+def _futures_classify(bar_start_utc: datetime) -> tuple[str, date | None]:
+    local = bar_start_utc.astimezone(_KST)
+    clock = local.time()
+    if _in(clock, FUTURES_DAY_OPEN_KST, FUTURES_DAY_CLOSE_KST):
+        if _kr_session_day(local.date()):
+            return FUT_DAY, local.date()
+        return UNKNOWN, None
+    if clock >= FUTURES_NIGHT_OPEN_KST or clock < FUTURES_NIGHT_CLOSE_KST:
+        start_day = (
+            local.date()
+            if clock >= FUTURES_NIGHT_OPEN_KST
+            else local.date() - timedelta(days=1)
+        )
+        if not _kr_session_day(start_day):
+            return UNKNOWN, None
+        trading_date = _next_kr_trading_day(start_day)
+        if trading_date is None:
+            return UNKNOWN, None
+        return FUT_NIGHT, trading_date
+    return UNKNOWN, None
+
+
+def futures_session_date(bar_start_utc: datetime) -> date | None:
+    """Trading date of a futures bar (day bar: its KST date; night bar: the next
+    XKRX trading day after the night session start). ``None`` when the segment is
+    ``UNKNOWN`` or the timestamp is naive."""
+    if bar_start_utc.tzinfo is None:
+        return None
+    return _futures_classify(bar_start_utc.astimezone(UTC))[1]
+
+
 def session_segment_of(market: str, venue: str, bar_start_utc: datetime) -> str:
     """Session label of the bar that starts at ``bar_start_utc`` (tz-aware).
 
-    ``market`` is ``"kr"`` or ``"us"``; anything else, a naive timestamp or an
-    unknown venue gives ``UNKNOWN``.
+    ``market`` is ``"kr"``, ``"us"`` or ``"futures"``; anything else, a naive
+    timestamp or an unknown venue gives ``UNKNOWN``.
     """
     if bar_start_utc.tzinfo is None:
         return UNKNOWN
@@ -136,4 +199,6 @@ def session_segment_of(market: str, venue: str, bar_start_utc: datetime) -> str:
         return _kr_segment(venue, bar_start)
     if market == "us":
         return _us_segment(venue, bar_start)
+    if market == "futures":
+        return _futures_classify(bar_start)[0]
     return UNKNOWN
