@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,6 +19,7 @@ from app.services.decision_evidence import (
     DeclinedEntryError,
     ReferencePrice,
     parse_declined_entry,
+    parse_decision_side,
 )
 from app.services.invalid_sample_eligibility.cohort import (
     COMPATIBILITY_CALIBRATION_COHORT,
@@ -76,6 +77,10 @@ async def forecast_save(
     declined_quote_price: Any = None,
     declined_quote_asof: Any = None,
     declined_account_mode: Any = None,
+    # hk 6040: the side of a declined decision when the session knows it.
+    # Omitted → stored as NULL (never guessed as buy). Untyped for the same
+    # reason as the declined_* inputs: parse_decision_side owns the rejection.
+    decision_side: Any = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
@@ -91,6 +96,12 @@ async def forecast_save(
             quote_price=declined_quote_price,
             quote_asof=declined_quote_asof,
             account_mode=declined_account_mode,
+        )
+        recorded_side = parse_decision_side(
+            side=decision_side,
+            instrument_type=instrument_type,
+            bucket=decision_bucket,
+            entry=declined_entry,
         )
     except DeclinedEntryError as exc:
         return {"success": False, "error": exc.code, "error_code": exc.code}
@@ -127,7 +138,9 @@ async def forecast_save(
                 and row.decision_bucket == "deferred_no_action"
                 and instrument_type in {"equity_kr", "equity_us", "crypto"}
             )
-            if declined_entry is not None and not records_declined:
+            if (
+                declined_entry is not None or recorded_side is not None
+            ) and not records_declined:
                 # Nothing is committed yet, so this discards the flushed row
                 # (or the update) and leaves zero forecast and evidence rows.
                 await db.rollback()
@@ -143,6 +156,7 @@ async def forecast_save(
                     created_by=created_by,
                     instrument_type=instrument_type,
                     entry=declined_entry,
+                    side=recorded_side,
                 )
             await db.commit()
             await db.refresh(row)
@@ -167,6 +181,7 @@ def _declined_evidence(
     instrument_type: str,
     decided_at: datetime,
     account_mode: Any,
+    side: Literal["buy", "sell"] | None,
 ) -> DecisionEvidence:
     return DecisionEvidence(
         decision_kind="declined",
@@ -175,7 +190,7 @@ def _declined_evidence(
         symbol=row.symbol,
         decided_at=decided_at,
         account_mode=account_mode,
-        side="buy",
+        side=side,
         forecast_ids=(row.forecast_id,),
         report_item_uuid=(
             UUID(str(row.report_item_uuid))
@@ -193,17 +208,22 @@ async def _record_declined_evidence(
     created_by: str,
     instrument_type: str,
     entry: DeclinedEntry | None,
+    side: Literal["buy", "sell"] | None,
 ) -> None:
     now = datetime.now(UTC)
     if entry is None:
+        # No would-be entry: the decision is stored with the side the caller
+        # gave (or NULL) and no rung — a placeholder buy rung was a lie that
+        # retro/v1 could not tell from a real one (hk 6040).
         evidence = _declined_evidence(
             row,
             created_by=created_by,
             instrument_type=instrument_type,
             decided_at=now,
             account_mode=None,
+            side=side,
         )
-        rungs = [DecisionRung(rung_index=0, side="buy")]
+        rungs: list[DecisionRung] = []
         prices: list[ReferencePrice] = []
     else:
         evidence = _declined_evidence(
@@ -212,6 +232,7 @@ async def _record_declined_evidence(
             instrument_type=instrument_type,
             decided_at=now,
             account_mode=entry.account_mode,
+            side="buy",
         )
         rungs = [
             DecisionRung(

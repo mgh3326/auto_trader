@@ -233,6 +233,32 @@ def parse_declined_entry(
     )
 
 
+def parse_decision_side(
+    *,
+    side: object,
+    instrument_type: str,
+    bucket: str | None,
+    entry: DeclinedEntry | None,
+) -> Literal["buy", "sell"] | None:
+    """Validate the optional side of a declined decision before any write.
+
+    ``None`` means the caller did not say, which is stored as NULL rather than
+    guessed. A would-be entry is always a BUY (hk 5719), so a SELL beside one is
+    a conflict, never a silent coercion.
+    """
+    if side is None:
+        return None
+    if not isinstance(side, str) or side.strip() not in ("buy", "sell"):
+        raise DeclinedEntryError("decision_side_invalid")
+    if (bucket.strip() if isinstance(bucket, str) else bucket) != "deferred_no_action":
+        raise DeclinedEntryError("declined_bucket_required")
+    if instrument_type not in DECLINED_ENTRY_MARKETS:
+        raise DeclinedEntryError("declined_market_unsupported")
+    if entry is not None and side.strip() == "sell":
+        raise DeclinedEntryError("decision_side_conflict")
+    return cast(Literal["buy", "sell"], side.strip())
+
+
 def account_scope(account_mode: Literal["kis_live", "toss_live", "upbit"]) -> str:
     return {"kis_live": "kis_live", "toss_live": "toss_live", "upbit": "upbit_live"}[
         account_mode

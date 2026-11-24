@@ -516,7 +516,9 @@ async def test_negative_forecast_records_decision_before_commit(monkeypatch):
     assert evidence.decision_kind == "declined" and evidence.forecast_ids == (
         row.forecast_id,
     )
-    assert rungs[0].rung_index == 0
+    # hk 6040: no side given → NULL and no placeholder rung.
+    assert evidence.side is None
+    assert rungs == []
 
 
 @pytest.mark.asyncio
@@ -735,7 +737,7 @@ async def test_declined_entry_writes_rung_limit_size_quote_and_account(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_legacy_declined_evidence_is_unchanged_without_new_inputs(monkeypatch):
+async def test_declined_without_inputs_stores_no_side_and_no_rung(monkeypatch):
     from dataclasses import replace
     from datetime import UTC, datetime
 
@@ -753,14 +755,12 @@ async def test_legacy_declined_evidence_is_unchanged_without_new_inputs(monkeypa
     )
     assert result["success"] is True
     evidence, rungs, prices = record.await_args.args
-    assert rungs == [forecast_tools.DecisionRung(rung_index=0, side="buy")]
+    # hk 6040: the side was never decided, so none is stored and no buy rung.
+    assert rungs == []
     assert prices == []
-    assert evidence.account_mode is None
+    assert evidence.account_mode is None and evidence.side is None
     pinned = replace(evidence, decided_at=datetime(2026, 11, 20, 1, 0, tzinfo=UTC))
-    assert (
-        evidence_hash(pinned)
-        == "ee5f44d3aed074413d32e01788c25d974856a6992ede9ad76f4ee702fcaf7afb"
-    )
+    assert evidence_hash(pinned) == "d88cde9c943cbbf4d2baf05c89e39d06ee3b135a6db6646f564a1c4926188e52"
 
 
 @pytest.mark.asyncio
@@ -832,3 +832,118 @@ async def test_registered_tool_passes_decimal_text_through_to_evidence(monkeypat
     _, rungs, _ = record.await_args.args
     assert rungs[0].limit_price == Decimal("70000.5")
     assert rungs[0].planned_quantity == Decimal("3")
+
+
+# --------------------------------------------------------------------------- #
+# hk 6040 — decision_side: a deferred SELL review is no longer stored as buy
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_decision_side_sell_without_entry_stores_sell_and_no_rung(monkeypatch):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="QQQM",
+        instrument_type="equity_us",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-27",
+        decision_bucket="deferred_no_action",
+        decision_side="sell",
+    )
+    assert result["success"] is True
+    assert events == ["record", "commit"]
+    evidence, rungs, prices = record.await_args.args
+    assert evidence.decision_kind == "declined" and evidence.side == "sell"
+    assert rungs == [] and prices == []
+
+
+@pytest.mark.asyncio
+async def test_decision_side_buy_without_entry_stores_buy_and_no_rung(monkeypatch):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await _save_declined(
+        forecast_tools,
+        declined_limit_price=None,
+        declined_quantity=None,
+        declined_account_mode=None,
+        decision_side="buy",
+    )
+    assert result["success"] is True
+    evidence, rungs, _ = record.await_args.args
+    assert evidence.side == "buy" and rungs == []
+
+
+@pytest.mark.asyncio
+async def test_decision_side_sell_with_declined_entry_is_rejected_before_any_write(
+    monkeypatch,
+):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await _save_declined(forecast_tools, decision_side="sell")
+    code = "decision_side_conflict"
+    assert result == {"success": False, "error": code, "error_code": code}
+    save.assert_not_awaited()
+    record.assert_not_awaited()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_decision_side_buy_with_declined_entry_keeps_the_5719_buy(monkeypatch):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    result = await _save_declined(forecast_tools, decision_side="buy")
+    assert result["success"] is True
+    evidence, rungs, _ = record.await_args.args
+    assert evidence.side == "buy" and [r.side for r in rungs] == ["buy"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides,code",
+    [
+        ({"decision_side": "hold"}, "decision_side_invalid"),
+        ({"decision_side": 1}, "decision_side_invalid"),
+        (
+            {"decision_side": "sell", "decision_bucket": "new_buy_candidate"},
+            "declined_bucket_required",
+        ),
+        (
+            {"decision_side": "sell", "instrument_type": "forex"},
+            "declined_market_unsupported",
+        ),
+    ],
+)
+async def test_invalid_decision_side_writes_nothing(monkeypatch, overrides, code):
+    forecast_tools, db, save, record, events = _declined_harness(monkeypatch)
+    values = {
+        "created_by": "session",
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "forecast_target": {},
+        "probability": 0.5,
+        "review_date": "2026-11-27",
+        "decision_bucket": "deferred_no_action",
+    }
+    values.update(overrides)
+    result = await forecast_tools.forecast_save(**values)
+    assert result == {"success": False, "error": code, "error_code": code}
+    save.assert_not_awaited()
+    record.assert_not_awaited()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_decision_side_on_an_updated_forecast_rolls_back(monkeypatch):
+    forecast_tools, db, save, record, events = _declined_harness(
+        monkeypatch, action="updated"
+    )
+    result = await forecast_tools.forecast_save(
+        created_by="session",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target={},
+        probability=0.5,
+        review_date="2026-11-27",
+        decision_bucket="deferred_no_action",
+        decision_side="sell",
+    )
+    assert result["error_code"] == "declined_not_created"
+    assert events == ["rollback"]
+    record.assert_not_awaited()
