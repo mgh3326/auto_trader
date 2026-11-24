@@ -463,9 +463,7 @@ async def _minute_bars(
     return dict(out)
 
 
-def _forecast_events(
-    data: ChainData, market: MarketInfo
-) -> list[tuple[str, Event]]:
+def _forecast_events(data: ChainData, market: MarketInfo) -> list[tuple[str, Event]]:
     return [
         (
             _key(str(f.symbol), market),

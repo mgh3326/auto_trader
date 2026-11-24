@@ -256,3 +256,34 @@ async def test_scoreboard_flow_complete_cannot_be_supplied_through_http(
     assert response.status_code == 200
     assert response.json()["flows_complete"] is False
     assert reader.await_args.kwargs == params
+
+
+@pytest.mark.asyncio
+async def test_retro_timeline_requires_market_and_date_and_allows_symbol(
+    client, monkeypatch
+):
+    headers = {"X-Retro-Read-Token": "retro-secret"}
+    mock = AsyncMock(return_value={"data": []})
+    monkeypatch.setitem(retro_v1.READERS, "retro_timeline", mock)
+    path = f"{retro_v1.PREFIX}/retro_timeline"
+    for query in (
+        "",
+        "?market=kr",
+        "?date=2026-01-05",
+        "?market=kr&date=2026-01-05&from=2026-01-01",
+        "?market=kr&date=2026-1-5",
+    ):
+        response = await client.get(path + query, headers=headers)
+        assert response.status_code == 422, query
+    mock.assert_not_awaited()
+    response = await client.get(
+        path + "?market=kr&date=2026-01-05&symbol=005930&limit=7", headers=headers
+    )
+    assert response.status_code == 200
+    mock.assert_awaited_once()
+    assert mock.await_args.kwargs == {
+        "market": "kr",
+        "date": "2026-01-05",
+        "symbol": "005930",
+        "limit": 7,
+    }
