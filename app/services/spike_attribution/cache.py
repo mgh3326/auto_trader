@@ -200,9 +200,18 @@ def classify_state(
     return STATE_STALE, age, expected
 
 
+# Directory name per market inside the cache root. US is versioned: entries
+# computed before the UTC session-date mapping read each 00:00Z bar as the
+# previous New York session, so their cached ``no_bar_for_session_date``
+# negatives are wrong. A new directory means those files are never read. They
+# are left on disk, not deleted here. KR keeps its directory and format.
+_MARKET_CACHE_DIR: dict[str, str] = {"kr": "kr", "us": "us-utc-session-v2"}
+
+
 def _entry_path(root: Path, *, market: str, session_date: dt.date, symbol: str) -> Path:
     safe_symbol = symbol.replace("/", "_").replace("..", "_")
-    return root / market / session_date.isoformat() / f"{safe_symbol}.json"
+    market_dir = _MARKET_CACHE_DIR.get(market, market)
+    return root / market_dir / session_date.isoformat() / f"{safe_symbol}.json"
 
 
 def write_entry(entry: CacheEntry, *, root: Path | None = None) -> Path:

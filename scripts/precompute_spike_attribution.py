@@ -31,8 +31,8 @@ import sqlalchemy as sa
 from app.core.db import AsyncSessionLocal
 from app.services.spike_attribution.cache import MODE_INTRADAY, MODE_PREOPEN, cache_dir
 from app.services.spike_attribution.materials import (
+    DAILY_DATE_TZ_BY_MARKET,
     DAILY_TABLE_BY_MARKET,
-    SESSION_TZ_BY_MARKET,
 )
 from app.services.spike_attribution.precompute import MODES, precompute_session
 from app.services.spike_attribution.spec import EXPERIMENT_ID, spec_sha256
@@ -48,7 +48,7 @@ async def _turnover_top_symbols(
     """
 
     table = DAILY_TABLE_BY_MARKET[market]
-    tzname = str(SESSION_TZ_BY_MARKET[market])
+    tzname = str(DAILY_DATE_TZ_BY_MARKET[market])
     stmt = sa.text(
         f"""
         WITH d AS (

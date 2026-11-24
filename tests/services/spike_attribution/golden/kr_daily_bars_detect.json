@@ -1,0 +1,88 @@
+{
+  "bars": [
+    {
+      "close": "100000",
+      "high": "101000",
+      "low": "98000",
+      "open": "99000",
+      "session_date": "2026-08-13",
+      "symbol": "035420",
+      "volume": "1000000"
+    },
+    {
+      "close": "101000",
+      "high": "102000",
+      "low": "99500",
+      "open": "100000",
+      "session_date": "2026-08-14",
+      "symbol": "035420",
+      "volume": "900000"
+    },
+    {
+      "close": "102000",
+      "high": "103000",
+      "low": "100500",
+      "open": "101000",
+      "session_date": "2026-08-17",
+      "symbol": "035420",
+      "volume": "950000"
+    },
+    {
+      "close": "103000",
+      "high": "104000",
+      "low": "101500",
+      "open": "102000",
+      "session_date": "2026-08-18",
+      "symbol": "035420",
+      "volume": "800000"
+    },
+    {
+      "close": "104000",
+      "high": "105000",
+      "low": "102500",
+      "open": "103000",
+      "session_date": "2026-08-19",
+      "symbol": "035420",
+      "volume": "700000"
+    },
+    {
+      "close": "112000",
+      "high": "116000",
+      "low": "103500",
+      "open": "104000",
+      "session_date": "2026-08-20",
+      "symbol": "035420",
+      "volume": "3000000"
+    }
+  ],
+  "diagnostics": {
+    "halted_suspect": {
+      "bars_examined": 3,
+      "frozen_sessions": 0,
+      "krx_halt_master": "unavailable",
+      "min_sessions": 3,
+      "note": "halted_suspect is a suspicion derived from inert daily bars (consecutive zero-volume or zero-variation sessions), not a confirmed trading halt — no KRX halt master is available to this service. Indicators are withheld rather than estimated.",
+      "reasons": [],
+      "suspected": false
+    }
+  },
+  "event": {
+    "close": "112000",
+    "close_to_close_pct": "7.6923",
+    "direction": "up",
+    "high": "116000",
+    "intraday_extreme_pct": "11.5385",
+    "low": "103500",
+    "market": "kr",
+    "prev_close": "104000",
+    "session_date": "2026-08-20",
+    "symbol": "035420",
+    "triggered_bases": "('close_to_close', 'intraday_extreme')",
+    "window_end_inclusive": "2026-08-20T15:30:00+09:00",
+    "window_start_exclusive": "2026-08-19T15:30:00+09:00"
+  },
+  "market": "kr",
+  "session_date": "2026-08-20",
+  "stored_hour_utc": 0,
+  "symbol": "035420"
+}
