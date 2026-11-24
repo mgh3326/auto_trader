@@ -81,6 +81,21 @@ def test_migration_only_touches_the_new_table(step: str) -> None:
         assert other not in joined.replace("kr_futures_candles_1m", "")
 
 
+@pytest.mark.unit
+def test_downgrade_locks_the_table_before_the_emptiness_check_and_the_drop() -> None:
+    migration = _load(MIGRATION_PATH, "hk6148_lock_order")
+    captured: list[str] = []
+    migration.op = SimpleNamespace(execute=lambda sql: captured.append(str(sql)))
+    migration.downgrade()
+    assert (
+        captured[0]
+        == "LOCK TABLE research.kr_futures_candles_1m IN ACCESS EXCLUSIVE MODE"
+    )
+    check = next(i for i, sql in enumerate(captured) if "rows exist" in sql)
+    drop = next(i for i, sql in enumerate(captured) if sql.startswith("DROP TABLE"))
+    assert 0 < check < drop
+
+
 # -------------------------------------------------------------------- DB ----
 
 

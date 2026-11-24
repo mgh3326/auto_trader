@@ -234,6 +234,32 @@ class SqlFuturesMinuteWriter:
         return inserted, len(bars) - inserted
 
 
+def _samples(
+    contract: ResolvedContract, bars: Sequence[FuturesBar]
+) -> list[dict[str, Any]]:
+    """First and last two closed bars of a contract (dry-run smoke evidence).
+
+    Shows the stored UTC start next to its KST label so the operator can compare a
+    bar with the exchange before the first real insert.
+    """
+    chosen = list(bars[:2]) + [b for b in bars[-2:] if b not in bars[:2]]
+    return [
+        {
+            "symbol": contract.symbol,
+            "time_utc": bar.time_utc.isoformat(),
+            "kst": bar.time_utc.astimezone(_KST).strftime("%Y-%m-%d %H:%M"),
+            "open": str(bar.open),
+            "high": str(bar.high),
+            "low": str(bar.low),
+            "close": str(bar.close),
+            "volume": str(bar.volume),
+            "session_segment": bar.session_segment,
+            "roll_state": bar.roll_state,
+        }
+        for bar in chosen
+    ]
+
+
 def new_batch_id(now: datetime) -> str:
     return f"{BATCH_PREFIX}-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
 
@@ -251,6 +277,7 @@ async def collect(
     batch = batch_id or new_batch_id(clock())
     inserted = already_present = skipped_forming = skipped_invalid = 0
     would_write = reads = 0
+    samples: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     contracts: list[ResolvedContract] = []
     unresolved: list[str] = []
@@ -277,6 +304,7 @@ async def collect(
             skipped_invalid += parsed.skipped_invalid
             if dry_run:
                 would_write += len(parsed.bars)
+                samples.extend(_samples(contract, parsed.bars))
             elif parsed.bars:
                 assert writer is not None
                 new, present = await writer.insert(
@@ -316,6 +344,7 @@ async def collect(
         "skipped_forming": skipped_forming,
         "skipped_invalid": skipped_invalid,
         "would_write": would_write if dry_run else None,
+        "samples": samples if dry_run else None,
         "night": night,
         "errors": len(errors),
         "error_details": errors,

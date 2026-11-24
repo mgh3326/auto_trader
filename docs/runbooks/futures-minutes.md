@@ -5,8 +5,9 @@ KOSPI200 선물·미니 KOSPI200 선물의 근월·차근월 닫힌 1분봉(주�
 ## 1. 적용 순서 (운영자·설계 세션)
 
 1. 코드 배포 뒤 마이그레이션 `20261124_hk6148_futures_min` 적용(`uv run alembic upgrade head`). 추가형이며 다른 표는 바뀌지 않는다.
-2. 수동 확인(실전 KIS 시세 읽기, 새 게이트): `KIS_FUTURES_QUOTES_ENABLED=true uv run python -m scripts.collect_futures_minutes --dry-run` 으로 `products_resolved`(2)·`contracts`·`would_write` 를 확인한 뒤 `--dry-run` 없이 1회 실행. 게이트 값은 그 한 번의 실행에만 둔다(공유 env 파일에 넣지 않는다).
-3. 스모크 확인 항목(`[unverified]`): ① 미니 선물 단축코드(`A05…`)와 시장 코드 `F` 가 시세·분봉 TR 에서 받아들여지는지 ② `stck_cntg_hour` 가 봉 시작 라벨인지(거래소 화면의 한 봉과 대조) ③ `cntg_vol` 이 분 단위 거래량인지 ④ 한 번에 최대 102행이라 주간 전체(420분)가 5페이지 안에 받아지는지. 어긋나면 수집기를 켜지 말고 설계 세션에 알린다.
+2. 스모크는 **dry-run 으로만** 한다(DB 에 쓰지 않는다): `KIS_FUTURES_QUOTES_ENABLED=true uv run python -m scripts.collect_futures_minutes --dry-run` — `products_resolved`(2)·`contracts`·`would_write` 와 `samples`(계약별 처음·마지막 닫힌 봉의 UTC 시작·KST 라벨·OHLC·거래량)를 확인한다. 게이트 값은 그 실행에만 둔다(공유 env 파일에 넣지 않는다).
+3. 스모크 확인 항목(`[unverified]`, 모두 dry-run 출력으로 확인): ① 미니 선물 단축코드(`A05…`)와 시장 코드 `F` 가 시세·분봉 TR 에서 받아들여지는지(`errors` 0, `products_resolved` 2) ② `samples` 의 KST 라벨이 거래소 화면 봉의 **시작** 시각과 같은지 ③ `samples` 의 거래량이 분 단위 거래량인지 ④ 한 번에 최대 102행이라 주간 전체(420분)가 5페이지 안에 받아지는지(`errors` 0). 🔴 `ON CONFLICT DO NOTHING` 이라 잘못된 행은 재실행으로 고쳐지지 않는다 — 하나라도 어긋나면 첫 실제 삽입을 하지 말고 설계 세션에 알린다.
+   네 항목이 모두 맞은 뒤에만 `--dry-run` 없이 첫 실제 수집을 1회 실행한다.
 4. DAG 사본(`deploy/dagu/at-futures-minutes/`) 등록은 위 1–3 뒤에 **별도 운영자 승인**으로만 한다. 저장소는 등록하지 않는다.
 
 ## 2. 수집기

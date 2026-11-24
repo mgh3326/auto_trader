@@ -125,6 +125,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Held through the emptiness check and the DROP (same transaction): a collector
+    # INSERT cannot commit between them and be dropped with its first-receipt time.
+    op.execute("LOCK TABLE research.kr_futures_candles_1m IN ACCESS EXCLUSIVE MODE")
     op.execute(
         """
         DO $$

@@ -216,6 +216,28 @@ def test_dry_run_writes_nothing() -> None:
     )
     assert report["would_write"] == 4
     assert report["inserted"] == 0
+    # smoke evidence: stored UTC start next to its KST label, per contract
+    assert {x["symbol"] for x in report["samples"]} == {
+        "F200.2612",
+        "F200.2703",
+        "MF200.2612",
+        "MF200.2703",
+    }
+    first = report["samples"][0]
+    assert first["kst"] == "2026-11-24 10:00"
+    assert first["time_utc"] == "2026-11-24T01:00:00+00:00"
+    assert (first["open"], first["volume"]) == ("400.00", "5")
+
+
+def test_a_real_run_has_no_samples() -> None:
+    report = asyncio.run(
+        fc.collect(
+            view=FakeView([_row("100000")]),
+            writer=MemoryWriter(),
+            clock=lambda: at("10:05"),
+        )
+    )
+    assert report["samples"] is None
 
 
 def test_one_contract_failure_is_an_error_and_does_not_stop_the_others() -> None:
