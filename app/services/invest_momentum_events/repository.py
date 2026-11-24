@@ -20,6 +20,11 @@ from app.services.invest_momentum_events.models import (
     ThemeEventUpsert,
 )
 
+#: Falling rankings (hk 6154) are observation rows, not early-catch candidates:
+#: the candidate scorer is built for rising/volume/value surfaces and would give a
+#: falling stock the default surface weight plus its rank score.
+NON_CANDIDATE_ORDER_TYPES: tuple[str, ...] = ("down",)
+
 
 @dataclass(frozen=True)
 class MomentumCandidateSignal:
@@ -193,7 +198,10 @@ class InvestMomentumEventSnapshotsRepository:
         price-rank appearance. Rank deltas are computed against the prior same-day
         snapshot for the same symbol/surface/venue/order combination when present.
         """
-        conditions = [InvestMomentumEventSnapshot.market == "kr"]
+        conditions = [
+            InvestMomentumEventSnapshot.market == "kr",
+            InvestMomentumEventSnapshot.order_type.notin_(NON_CANDIDATE_ORDER_TYPES),
+        ]
         if trading_date is not None:
             conditions.append(InvestMomentumEventSnapshot.trading_date == trading_date)
 
@@ -210,6 +218,9 @@ class InvestMomentumEventSnapshotsRepository:
                 .where(
                     InvestMomentumEventSnapshot.snapshot_at == latest_snapshot_at,
                     InvestMomentumEventSnapshot.market == "kr",
+                    InvestMomentumEventSnapshot.order_type.notin_(
+                        NON_CANDIDATE_ORDER_TYPES
+                    ),
                 )
                 .limit(1)
             )
@@ -220,6 +231,9 @@ class InvestMomentumEventSnapshotsRepository:
             .where(
                 InvestMomentumEventSnapshot.market == "kr",
                 InvestMomentumEventSnapshot.trading_date == trading_date,
+                InvestMomentumEventSnapshot.order_type.notin_(
+                    NON_CANDIDATE_ORDER_TYPES
+                ),
             )
             .order_by(
                 InvestMomentumEventSnapshot.snapshot_at.asc(),

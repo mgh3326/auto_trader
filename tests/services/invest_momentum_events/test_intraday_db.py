@@ -250,3 +250,26 @@ async def test_first_captures_returns_the_earliest_appearance_per_symbol(
     again = await intraday.first_captures(db_session, DAY)
     assert again == captures  # deterministic
     await _clean(db_session)
+
+
+async def test_falling_rows_never_become_early_catch_candidates(db_session) -> None:
+    await _clean(db_session)
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    await repo.insert_momentum(
+        _payload(T1, "005930", "up", 1, change_rate=Decimal("5"))
+    )
+    # a newer snapshot that only has a falling ranking must not hide the older one
+    await repo.insert_momentum(
+        _payload(T2, "000660", "down", 1, change_rate=Decimal("-9"))
+    )
+    await repo.insert_momentum(
+        _payload(T2, "005930", "down", 2, change_rate=Decimal("-1"))
+    )
+    await db_session.commit()
+
+    candidates = await repo.list_candidate_signals(trading_date=DAY)
+    assert [c.symbol for c in candidates] == ["005930"]
+    assert candidates[0].latest_snapshot_at == T1
+    assert [s["orderType"] for s in candidates[0].signals] == ["up"]
+    assert candidates[0].surface_count == 1
+    await _clean(db_session)
