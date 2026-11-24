@@ -760,7 +760,10 @@ async def test_declined_without_inputs_stores_no_side_and_no_rung(monkeypatch):
     assert prices == []
     assert evidence.account_mode is None and evidence.side is None
     pinned = replace(evidence, decided_at=datetime(2026, 11, 20, 1, 0, tzinfo=UTC))
-    assert evidence_hash(pinned) == "d88cde9c943cbbf4d2baf05c89e39d06ee3b135a6db6646f564a1c4926188e52"
+    assert (
+        evidence_hash(pinned)
+        == "d88cde9c943cbbf4d2baf05c89e39d06ee3b135a6db6646f564a1c4926188e52"
+    )
 
 
 @pytest.mark.asyncio

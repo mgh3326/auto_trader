@@ -18,8 +18,8 @@ from app.services.decision_evidence import (
     DeclinedEntry,
     DeclinedEntryError,
     ReferencePrice,
-    parse_declined_entry,
     parse_decision_side,
+    parse_declined_entry,
 )
 from app.services.invalid_sample_eligibility.cohort import (
     COMPATIBILITY_CALIBRATION_COHORT,
