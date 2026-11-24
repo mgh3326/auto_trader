@@ -36,5 +36,8 @@ def test_dag_commits_with_job_scoped_flag_and_never_overlaps() -> None:
     # only stops the docker client): a fixed name makes docker refuse a second
     # container, and timeout inside the container ends the poller itself.
     assert "--name at-toss-fill-poll " in script
-    assert '"$(cat /root/at-run/deployed-digest)" timeout -k 10 200 /app/.venv/bin/python' in script
+    assert (
+        '"$(cat /root/at-run/deployed-digest)" timeout -k 10 200 /app/.venv/bin/python'
+        in script
+    )
     assert 200 + 10 < step["timeout_sec"] < 300
