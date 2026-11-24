@@ -46,6 +46,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.symbol import to_db_symbol
+from app.core.tool_deadline import remaining_tool_budget_s
 from app.services.screener_pick_log import (
     ScreenerPickRow,
     _as_int,
@@ -77,6 +78,11 @@ _LABEL_PRICE = re.compile(r"^\$?([0-9][0-9,]*(?:\.[0-9]+)?)(?:원)?$")
 # The MCP tool deadline is 120s; the optional insert gets far less so a stalled
 # database can never eat the deadline of a screen that already succeeded.
 WRITE_TIMEOUT_SECONDS = 10.0
+# Inside a bounded tool call the write may use at most what remains of that call's
+# deadline, minus this margin for returning the result. Below the minimum the write
+# is skipped and the untagged result is returned (hk 5763).
+WRITE_DEADLINE_MARGIN_SECONDS = 2.0
+MIN_WRITE_BUDGET_SECONDS = 1.0
 
 WriteRows = Callable[[Sequence[ScreenerPickRow]], Awaitable[None]]
 
@@ -511,6 +517,21 @@ def extract_snapshot_rows(
     return rows
 
 
+def _write_budget_s() -> float | None:
+    """Seconds the optional write may use, or ``None`` when it must be skipped.
+
+    Outside a bounded tool call the fixed ``WRITE_TIMEOUT_SECONDS`` applies. Inside
+    one, the write is bounded by the call's remaining deadline minus the margin, so
+    a screen that finishes late cannot be pushed past its deadline by the write.
+    """
+
+    remaining = remaining_tool_budget_s()
+    if remaining is None:
+        return WRITE_TIMEOUT_SECONDS
+    budget = min(WRITE_TIMEOUT_SECONDS, remaining - WRITE_DEADLINE_MARGIN_SECONDS)
+    return budget if budget >= MIN_WRITE_BUDGET_SECONDS else None
+
+
 async def _write_and_tag(
     result: Mapping[str, Any],
     rows: list[ScreenerPickRow],
@@ -519,11 +540,15 @@ async def _write_and_tag(
 ) -> dict[str, Any] | None:
     if not rows:
         return None
+    budget = _write_budget_s()
+    if budget is None:
+        # Too little of the tool deadline is left to write safely: skip the
+        # optional write and let the caller return the untagged result.
+        logger.info("screener pick log write skipped: tool deadline nearly reached")
+        return None
     # Observer timeout -> TimeoutError -> the callers' fail-open path returns the
     # untagged result. Caller cancellation is not an Exception and still propagates.
-    await asyncio.wait_for(
-        (write_rows or _default_write)(rows), timeout=WRITE_TIMEOUT_SECONDS
-    )
+    await asyncio.wait_for((write_rows or _default_write)(rows), timeout=budget)
     return {**result, "pick_log_call_id": str(call_id)}
 
 

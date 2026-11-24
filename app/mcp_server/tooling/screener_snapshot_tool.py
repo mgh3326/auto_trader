@@ -30,6 +30,7 @@ makes that call now.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,6 +38,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+# hk 5763: a NaN or infinite market-cap bound makes the comparison meaningless, so
+# rows it drops carry this closed reason rather than below/above_max_market_cap.
+REASON_INVALID_MARKET_CAP_BOUND = "invalid_market_cap_bound"
 
 
 class _HeldResolver:
@@ -203,6 +208,12 @@ def _filter_min_market_cap_with_warning(
 ) -> tuple[list[dict[str, Any]], int]:
     kept: list[dict[str, Any]] = []
     missing_count = 0
+    # A NaN/infinite bound does not establish "below the minimum" for any row.
+    below_reason = (
+        "below_min_market_cap"
+        if math.isfinite(min_val)
+        else REASON_INVALID_MARKET_CAP_BOUND
+    )
     for row in rows:
         raw = row.get("marketCapValue")
         if raw is None:
@@ -214,7 +225,7 @@ def _filter_min_market_cap_with_warning(
             if float(raw) >= min_val:
                 kept.append(row)
             elif dropped is not None:
-                dropped.append((row, "below_min_market_cap"))
+                dropped.append((row, below_reason))
         except (TypeError, ValueError):
             missing_count += 1
             if dropped is not None:
@@ -499,10 +510,16 @@ async def _build_snapshot_page(
             )
     if max_market_cap_eok is not None:
         max_val = float(max_market_cap_eok) * 100_000_000
+        # A NaN/infinite bound does not establish "above the maximum" for any row.
+        above_reason = (
+            "above_max_market_cap"
+            if math.isfinite(max_val)
+            else REASON_INVALID_MARKET_CAP_BOUND
+        )
         merged_results = _drop_rows(
             merged_results,
             lambda r: not ((r.get("marketCapValue") or 0) <= max_val),
-            "above_max_market_cap",
+            above_reason,
             dropped_rows,
         )
 
