@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from app.core.market import market_key
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.services.retro_v1.envelope import RetroReadError
 
 
@@ -42,6 +42,18 @@ def normalize_symbol(symbol: str, market: MarketInfo) -> str:
     """DB symbol form (``app/core/symbol.py`` only; no string replacement here)."""
     text = symbol.strip().upper()
     return to_db_symbol(text) if market.key == "us" else text
+
+
+def symbol_for_market(symbol: str, market: str | None) -> str:
+    """Explicit ``market=crypto``: a bare base symbol (``SAHARA``) becomes the Upbit key.
+
+    Uses ``app/core/symbol.py::to_upbit_symbol`` (``KRW-`` prefix on a symbol
+    without ``-``). Without ``market`` the symbol is returned unchanged, so
+    inference stays as it was.
+    """
+    if market is not None and market_key(market) == "crypto":
+        return to_upbit_symbol(symbol)
+    return symbol
 
 
 def infer_market(symbol: str) -> MarketInfo:
