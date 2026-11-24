@@ -123,6 +123,7 @@ tests/scripts/test_build_market_valuation_cli_gates.py
 tests/scripts/test_correct_journal_exit_fields_cli.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_dagu_futures_minutes_dags.py
+tests/scripts/test_dagu_intraday_movers_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
 tests/scripts/test_dagu_session_minutes_dags.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
@@ -223,6 +224,8 @@ tests/services/funding_advisory/test_migration.py
 tests/services/instrument_health/test_instrument_health_service.py
 tests/services/invalid_sample_eligibility/test_pnl_eligibility_wiring.py
 tests/services/invalid_sample_eligibility/test_static_boundaries.py
+tests/services/invest_momentum_events/test_intraday.py
+tests/services/invest_momentum_events/test_intraday_db.py
 tests/services/invest_view_model/buy_plan/test_computation.py
 tests/services/invest_view_model/buy_plan/test_service.py
 tests/services/invest_view_model/test_watch_panel_service.py
@@ -308,6 +311,7 @@ tests/services/research_candles/test_futures_session_segment.py
 tests/services/research_candles/test_session_coverage.py
 tests/services/research_candles/test_session_minutes_collector.py
 tests/services/research_candles/test_session_minutes_db.py
+tests/services/research_candles/test_session_minutes_earlier_page.py
 tests/services/research_candles/test_session_minutes_targets.py
 tests/services/research_candles/test_session_segment.py
 tests/services/screener_evidence/test_scoring.py

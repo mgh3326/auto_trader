@@ -67,7 +67,7 @@ async def run_naver_momentum_build(
         async with AsyncSessionLocal() as session:
             repo = InvestMomentumEventSnapshotsRepository(session)
             for row in payloads.momentum:
-                await repo.upsert_momentum(row)
+                await repo.insert_momentum(row)
             for row in payloads.themes:
                 await repo.upsert_theme(row)
             await session.commit()

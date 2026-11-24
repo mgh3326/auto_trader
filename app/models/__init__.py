@@ -54,6 +54,7 @@ from .invalid_sample_eligibility import (
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from .invest_kr_fundamentals_snapshot import InvestKrFundamentalsSnapshot
 from .invest_momentum_event_snapshot import (
+    InvestMomentumEventRun,
     InvestMomentumEventSnapshot,
     InvestThemeEventSnapshot,
     InvestThemeEventSnapshotStock,
@@ -324,6 +325,7 @@ __all__ = [
     "InvestCryptoScreenerSnapshot",
     "InvestKrFundamentalsSnapshot",
     "InvestScreenerSnapshot",
+    "InvestMomentumEventRun",
     "InvestMomentumEventSnapshot",
     "InvestThemeEventSnapshot",
     "InvestThemeEventSnapshotStock",

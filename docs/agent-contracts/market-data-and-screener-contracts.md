@@ -25,6 +25,7 @@
 - KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
 - Upbit KRW 15분 봉 장중 신호 사전등록·과거 재생 (hk 6035)
 - 세션 분봉 타임라인 — research 분봉 수집·커버리지 진단 (hk 6145)
+- 장중 급등·급락 관측 로그 (hk 6154)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 
 ## 기준 원문 계약
@@ -745,6 +746,19 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
 - **진단**: `scripts/diagnose_session_coverage.py --market kr|us --date D [--symbols …]` — 읽기 전용 트랜잭션(`SET TRANSACTION READ ONLY`), 8초 `statement_timeout`, SELECT 뿐. 종목 × venue × session_segment 별 `rows`/`expected_minutes`(그 시각에 이미 닫힌 분)/`missing_minutes`/`retrieved_at − (time_utc + 1분)` p50·p95. `batch_id` 가 `%backfill%` 또는 `promote-%` 인 행(최초 수신이 아님)은 제외한다. 계산은 `session_coverage.py`(순수).
 - **범위 밖**: 선물, `market_timeline` 이벤트, retro/v1, 급등 귀속, DART·뉴스 시각, KRX 애프터 적격 목록 갱신, 주문·승인·정책 경로, DAG 등록, 과거 백필.
 - **DAG 사본**: `deploy/dagu/at-session-minutes/`(KR 월–금 08:00–20:10 KST 5분, US 월–금 04:00–20:10 ET 5분 — KST 로 환산하면 서머타임에 따라 17:00/18:00–09:10/10:10). **테스트**: `tests/services/research_candles/test_session_{segment,minutes_collector,minutes_targets,coverage,minutes_db}.py`, `tests/test_hk6145_session_minutes_migration_db.py`(DB 는 CI), `tests/scripts/test_dagu_session_minutes_dags.py`. 런북 `docs/runbooks/session-minutes.md`.
+
+### 장중 급등·급락 관측 로그 (hk 6154)
+
+잠들어 있던 ROB-222 순위 스냅샷(`invest_momentum_event_snapshots`)을 **삽입 전용 관측 로그**로 되살린다. 🔴 주문·승인·정책 경로와 무관하고, 스케줄러 등록은 없다(하드룰 6: DAG 는 `deploy/dagu/at-intraday-movers/` 사본, 등록은 설계 세션). 1단계 = KRX 단독. NXT(2단계)·미국(3단계)·테마 이벤트(`upsert_theme`)는 범위 밖이다. 런북 `docs/runbooks/intraday-movers.md`.
+
+- **삽입 전용**: `InvestMomentumEventSnapshotsRepository.insert_momentum` 은 `ON CONFLICT DO NOTHING` 이다(전 이름 `upsert_momentum` 은 덮어썼다). 같은 `(surface, snapshot_at, trade_type, market_type, order_type, symbol)` 재삽입은 값·행 수를 바꾸지 않는다. 기존 읽기(`query_service`/`coverage_service`/`list_*`) 출력 형태는 그대로다(행이 덮이지 않을 뿐). 🔴 하락(`down`) 행은 `list_candidate_signals`(조기 포착 후보 점수)에서 제외한다(`NON_CANDIDATE_ORDER_TYPES`) — 최신 스냅샷 선택·이전 순위·점수 모두. 하락 종목이 후보로 오르거나 하락만 있는 최신 스냅샷이 이전 후보를 가리지 않게 한다.
+- **면**: `stock:KRX:ALL:{up,down,priceTop}` = 상승·하락·거래대금. 하락 순위는 네이버 `orderType=down` 이다(2026-11-24 공개 GET 확인: HTTP 200, 같은 응답 모양, 음수 `prevChangeRate`; `low`/`lowTop`/`downTop`/`fall` 은 HTTP 400). 픽스처 `tests/fixtures/naver_stock/`.
+- **상태 표 `invest_momentum_event_runs`** (마이그레이션 `20261124_hk6154_momentum_runs`, 추가형, `at_app` SELECT·INSERT 조건부 GRANT): (`run_id`, `surface`) 당 한 행, `status ∈ ok|empty|error` + 닫힌 `reason`(`empty`=`no_rows`; `error`= `http_4xx|http_5xx|timeout|transport|bad_response|unparseable|unexpected`), `row_count`. DB CHECK 가 조합을 강제한다. 🔴 `error`/`empty` 는 순위 행을 쓰지 않고, 예외 문자열은 저장하지 않는다. 한 면의 순위 행과 상태 행은 한 트랜잭션이며 상태 행을 먼저 넣고 이미 있으면(같은 `snapshot_at` 재실행) 그 면은 아무것도 쓰지 않는다. `run_id` 는 `snapshot_at` 에서 결정적으로 유도한다.
+- **세션 가드**: KRX 정규장 `[09:00, 15:30)` KST AND XKRX 거래일(`is_trading_session`, fail-closed)일 때만 가져오고 쓴다. 아니면 `outside_session` 으로 끝난다. 쓰기는 CLI `--dry-run` 이 아니고 `INVEST_MOMENTUM_EVENTS_COMMIT_ENABLED`(기본 false, 이 PR 은 켜지 않는다)가 true 일 때만 일어난다.
+- **최초 포착**: `intraday.first_captures(session, trading_date, market="kr")` 는 읽기 시점 계산(새 표 없음)이다. 종목별 그날 가장 이른 `snapshot_at` 의 면·순위·등락률·거래대금, 동률은 순위→order_type→trade_type→market_type 순. 후속(hk 6171 retro 타임라인)이 읽는 평범한 읽기 함수다.
+- **6145 연동**: 수집 대상 출처 `intraday_movers`(KR 전용, 최초 포착 종목)가 `TARGET_ORIGIN_ORDER` 끝(pick log 다음)에 있어 상한에서 가장 먼저 잘린다. 조회 실패는 다른 출처처럼 `error_details` 에 보고되고 실행은 계속된다. 🔴 KIS `inquire_minute_chart` 는 `n=200` 이어도 호출당 약 30봉만 주므로, 오늘 분봉 행이 없는 새 종목은 `end_time`(`FID_INPUT_HOUR_1`, `HHMMSS`) 커서로 한 페이지를 더 읽어 합친다(`backfill_symbols`/`backfill_pages`). `end_time` 은 `inquire_minute_chart` 의 추가 선택 인자(기본 동작 불변)다. 추가 페이지 실패는 첫 페이지를 지우지 않는다.
+- **금지**: 이 경로가 `review.screener_pick_log` 에 쓰는 것(하드룰 13), 주문·원장·승인·브로커 변경 모듈 import(정적 테스트), 스케줄러 등록, 상태 없는 빈 순위를 성공으로 기록하는 것.
+- **테스트**: `tests/services/invest_momentum_events/test_intraday.py`(순수), `test_intraday_db.py`(CI DB), `tests/services/research_candles/test_session_minutes_{targets,earlier_page}.py`, `tests/scripts/test_dagu_intraday_movers_dag.py`.
 
 ### 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 

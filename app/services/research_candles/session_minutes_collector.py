@@ -73,7 +73,12 @@ class KisMinuteReader(Protocol):
     """The only KIS surface the collector may touch (all read-only)."""
 
     async def inquire_minute_chart(
-        self, code: str, market: str = "J", time_unit: int = 1, n: int = 200
+        self,
+        code: str,
+        market: str = "J",
+        time_unit: int = 1,
+        n: int = 200,
+        end_time: str | None = None,
     ) -> pd.DataFrame: ...
 
     async def inquire_overseas_minute_chart(
@@ -350,13 +355,15 @@ def parse_symbol_list(market: Market, raw: str | None) -> list[str]:
     return sorted({s for s in symbols if s})
 
 
-#: Highest priority first. holdings > fixed list > snapshot rank > pick log (hk 6145).
+#: Highest priority first. holdings > fixed list > snapshot rank > pick log >
+#: intraday movers (hk 6145, hk 6154).
 TARGET_ORIGIN_ORDER = (
     "kis_holdings",
     "manual_holdings",
     "fixed_list",
     "screener_snapshot",
     "screener_pick_log",
+    "intraday_movers",
 )
 DEFAULT_SCREENER_TOP_N = 20
 DEFAULT_MAX_SYMBOLS = 150
@@ -368,6 +375,9 @@ class TargetSet:
     by_origin: dict[str, int]
     errors: list[dict[str, str]] = field(default_factory=list)
     truncated: dict[str, int] = field(default_factory=dict)
+    #: KR symbols first seen as intraday movers that have no minute row yet today:
+    #: they get one extra, earlier KIS page (hk 6154). Subset of ``symbols``.
+    backfill: list[str] = field(default_factory=list)
 
 
 def select_with_cap(
@@ -481,7 +491,8 @@ async def build_targets(
     snapshot_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     presets_fn: Callable[[str], Sequence[Any]] | None = None,
 ) -> TargetSet:
-    """Holdings (KIS + manual) > fixed list > screener snapshot top N > pick log.
+    """Holdings (KIS + manual) > fixed list > screener snapshot top N > pick log
+    > today's first-capture intraday movers (KR only, hk 6154).
 
     Over ``max_symbols`` the lower tiers are cut first and the number cut per
     origin is reported in ``truncated``.
@@ -551,14 +562,57 @@ async def build_targets(
             {"origin": "screener_pick_log", "error_class": type(exc).__name__}
         )
 
+    if market == "kr":
+        try:
+            from app.services.invest_momentum_events.intraday import first_captures
+
+            captures = await first_captures(
+                session, now.astimezone(_KST).date(), market="kr"
+            )
+            add("intraday_movers", (c.symbol for c in captures))
+        except Exception as exc:  # noqa: BLE001 - other origins still count
+            await session.rollback()
+            errors.append(
+                {"origin": "intraday_movers", "error_class": type(exc).__name__}
+            )
+
     tiers = [(origin, found.get(origin, [])) for origin in TARGET_ORIGIN_ORDER]
     symbols, truncated = select_with_cap(tiers, max_symbols)
+    backfill: list[str] = []
+    kept = set(symbols)
+    mover_symbols = [s for s in found.get("intraday_movers", []) if s in kept]
+    if mover_symbols:
+        try:
+            have = await load_symbols_with_rows_today(session, mover_symbols, now)
+            backfill = sorted(set(mover_symbols) - have)
+        except Exception as exc:  # noqa: BLE001 - no backfill, the run continues
+            await session.rollback()
+            errors.append(
+                {"origin": "intraday_movers", "error_class": type(exc).__name__}
+            )
     return TargetSet(
         symbols=sorted(symbols),
         by_origin={origin: len(values) for origin, values in found.items() if values},
         errors=errors,
         truncated=truncated,
+        backfill=backfill,
     )
+
+
+async def load_symbols_with_rows_today(
+    session: AsyncSession, symbols: Sequence[str], now: datetime
+) -> set[str]:
+    """KR symbols that already have at least one minute row for today's KST date."""
+    if not symbols:
+        return set()
+    rows = await session.execute(
+        text(
+            f"SELECT DISTINCT symbol FROM {KR_TABLE} "
+            "WHERE symbol = ANY(:symbols) AND session_date_kst = :day"
+        ),
+        {"symbols": list(symbols), "day": now.astimezone(_KST).date()},
+    )
+    return {str(value) for value in rows.scalars().all()}
 
 
 async def load_nxt_eligible(session: AsyncSession, symbols: Sequence[str]) -> set[str]:
@@ -602,6 +656,44 @@ def new_batch_id(market: Market, now: datetime) -> str:
     return f"{BATCH_PREFIX}-{market}-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
 
 
+async def _with_earlier_page(
+    kis: KisMinuteReader, frame: pd.DataFrame, *, symbol: str, venue: str
+) -> tuple[pd.DataFrame, int]:
+    """Append ONE earlier KIS page to ``frame`` for a newly seen mover (hk 6154).
+
+    KIS returns about 30 bars per call whatever ``n`` is, so a symbol first seen
+    mid-session would only get the last ~30 minutes. The earlier page is read
+    with the hour cursor (``FID_INPUT_HOUR_1`` = the earliest bar's time in the
+    first page); an overlapping bar is harmless (same key, ``DO NOTHING``).
+    Nothing is requested when the first page is empty or already starts at the
+    venue's first minute. A failing earlier read raises; the caller keeps the
+    first page and reports the error, so the newest page is never lost.
+
+    Returns ``(combined_frame, pages_read)``.
+    """
+    if frame is None or frame.empty:
+        return frame, 0
+    stamps = pd.to_datetime(frame["datetime"], errors="coerce").dropna()
+    if stamps.empty:
+        return frame, 0
+    earliest = stamps.min()
+    first_minute = _KR_DAY_FIRST_MINUTE.get(venue)
+    if first_minute is not None and earliest.time() <= first_minute:
+        return frame, 0
+    older = await kis.inquire_minute_chart(
+        symbol,
+        market=KR_VENUE_MARKET_CODE[venue],
+        time_unit=1,
+        n=200,
+        end_time=earliest.strftime("%H%M%S"),
+    )
+    if older is None or older.empty:
+        return frame, 1
+    combined = pd.concat([older, frame], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["datetime"], keep="last")
+    return combined.sort_values("datetime").reset_index(drop=True), 1
+
+
 async def collect(
     *,
     market: Market,
@@ -615,10 +707,13 @@ async def collect(
     batch_id: str | None = None,
     dry_run: bool = False,
     prior_errors: Sequence[Mapping[str, str]] = (),
+    backfill_symbols: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Read, filter to closed bars, write. ``writer`` is unused when ``dry_run``."""
     batch = batch_id or new_batch_id(market, clock())
     nxt = set(nxt_eligible)
+    backfill = set(backfill_symbols) if market == "kr" else set()
+    backfill_pages = 0
     exchanges = us_exchanges or {}
     inserted = already_present = skipped_forming = skipped_invalid = 0
     null_value = would_write = 0
@@ -643,6 +738,22 @@ async def collect(
                 frame = await kis.inquire_minute_chart(
                     symbol, market=KR_VENUE_MARKET_CODE[venue], time_unit=1, n=200
                 )
+                if symbol in backfill:
+                    try:
+                        frame, extra = await _with_earlier_page(
+                            kis, frame, symbol=symbol, venue=venue
+                        )
+                        backfill_pages += extra
+                        reads += extra
+                    except Exception as exc:  # noqa: BLE001 - keep the first page
+                        errors.append(
+                            {
+                                "symbol": symbol,
+                                "venue": venue,
+                                "origin": "intraday_movers",
+                                "error_class": type(exc).__name__,
+                            }
+                        )
             else:
                 page = await kis.inquire_overseas_minute_chart(
                     symbol, exchange_code=venue, n=120
@@ -685,6 +796,8 @@ async def collect(
         "dry_run": dry_run,
         "symbols": len(symbols),
         "reads": reads,
+        "backfill_symbols": len(backfill),
+        "backfill_pages": backfill_pages,
         "inserted": inserted,
         "already_present": already_present,
         "skipped_forming": skipped_forming,
@@ -709,6 +822,7 @@ __all__ = [
     "collect",
     "is_closed",
     "load_nxt_eligible",
+    "load_symbols_with_rows_today",
     "new_batch_id",
     "normalize_symbol",
     "parse_symbol_list",

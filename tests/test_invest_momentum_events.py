@@ -148,7 +148,9 @@ async def test_builder_skips_unsupported_naver_surface_without_aborting():
 
 
 @pytest.mark.asyncio
-async def test_repository_upserts_momentum_and_theme_idempotently(db_session):
+async def test_repository_inserts_momentum_once_and_upserts_theme_idempotently(
+    db_session,
+):
     repo = InvestMomentumEventSnapshotsRepository(db_session)
     momentum = MomentumEventUpsert(
         snapshot_at=SNAPSHOT_AT,
@@ -163,9 +165,12 @@ async def test_repository_upserts_momentum_and_theme_idempotently(db_session):
         price=Decimal("78500"),
         change_rate=Decimal("1.55"),
     )
-    await repo.upsert_momentum(momentum)
-    await repo.upsert_momentum(
-        momentum.model_copy(update={"rank": 2, "price": Decimal("78600")})
+    assert await repo.insert_momentum(momentum) is True
+    assert (
+        await repo.insert_momentum(
+            momentum.model_copy(update={"rank": 2, "price": Decimal("78600")})
+        )
+        is False
     )
 
     theme = ThemeEventUpsert(
@@ -199,8 +204,9 @@ async def test_repository_upserts_momentum_and_theme_idempotently(db_session):
         .all()
     )
     assert len(momentum_rows) == 1
-    assert momentum_rows[0].rank == 2
-    assert momentum_rows[0].price == Decimal("78600.000000")
+    # hk 6154: momentum rows are insert-only, a re-sent snapshot never overwrites
+    assert momentum_rows[0].rank == 1
+    assert momentum_rows[0].price == Decimal("78500.000000")
 
     theme_rows = (
         (
@@ -256,7 +262,7 @@ async def test_coverage_reports_unsupported_missing_and_fresh(db_session):
     assert missing.dataState == "missing"
 
     repo = InvestMomentumEventSnapshotsRepository(db_session)
-    await repo.upsert_momentum(
+    await repo.insert_momentum(
         MomentumEventUpsert(
             snapshot_at=coverage_snapshot_at,
             trading_date=coverage_date,
@@ -316,11 +322,11 @@ async def test_repository_scores_momentum_candidates_with_cross_surface_rank_del
         price=Decimal("12000"),
         change_rate=Decimal("4.5"),
     )
-    await repo.upsert_momentum(base)
-    await repo.upsert_momentum(
+    await repo.insert_momentum(base)
+    await repo.insert_momentum(
         base.model_copy(update={"snapshot_at": latest_snapshot_at, "rank": 3})
     )
-    await repo.upsert_momentum(
+    await repo.insert_momentum(
         base.model_copy(
             update={
                 "snapshot_at": latest_snapshot_at,
@@ -331,7 +337,7 @@ async def test_repository_scores_momentum_candidates_with_cross_surface_rank_del
             }
         )
     )
-    await repo.upsert_momentum(
+    await repo.insert_momentum(
         base.model_copy(
             update={
                 "snapshot_at": latest_snapshot_at,
