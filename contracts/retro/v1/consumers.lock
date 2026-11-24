@@ -4,7 +4,7 @@
     {
       "name": "factortrail",
       "repo_url": "https://github.com/mgh3326/factortrail",
-      "commit": "a58d4749f2319c2061e47e1cd94877113575d311",
+      "commit": "03c381509c2b932fe8341e12f2ba15c28acf594c",
       "go_version": "1.27",
       "contract_lock_path": "contracts.lock.json",
       "client_package": "internal/providers/autotrader"
