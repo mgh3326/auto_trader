@@ -1,10 +1,10 @@
 # Dagu batch2 제안 복사본
 
-아래 네 DAG 파일은 **저장소에서 등록되지 않는 복사본**이다. Dagu 호스트에 설치하는 일은 머지 후 별도 운영 절차에서 한다. 모든 DAG는 `host: pi` 워커, 배포 이미지 digest, `/root/at-secrets/.env.api`를 사용한다.
+아래 다섯 DAG 파일은 **저장소에서 등록되지 않는 복사본**이다. Dagu 호스트에 설치하는 일은 머지 후 별도 운영 절차에서 한다. 모든 DAG는 `host: pi` 워커, 배포 이미지 digest, `/root/at-secrets/.env.api`를 사용한다.
 
 ## 호스트 복사 순서
 
-1. 기존 TaskIQ `at-scheduler`가 중지되어 있고 `candles.daily.*.sync` 및 `order_proposal.night_sweep` cron이 실행되지 않는지 확인한다. 아직 실행 중이면 먼저 중지해 TaskIQ와 Dagu가 같은 작업을 겹쳐 실행하지 않게 한다.
+1. 기존 TaskIQ `at-scheduler`가 중지되어 있고 `candles.daily.*.sync`, `order_proposal.night_sweep`, `market_valuation_snapshots.kr_scheduled` cron이 실행되지 않는지 확인한다. 아직 실행 중이면 먼저 중지해 TaskIQ와 Dagu가 같은 작업을 겹쳐 실행하지 않게 한다.
 2. 확인 후에만 해당 DAG를 Dagu 호스트에 복사하고 검증한다. 이 저장소/PR은 복사나 등록을 수행하지 않는다.
 
 | DAG | 스케줄 (KST) | 스케줄 (UTC) | 진입점 |
@@ -13,6 +13,9 @@
 | `at-batch2-daily-candles-us` | 화–토 07:00 | 월–금 22:00 | `scripts.sync_daily_candles --market us` |
 | `at-batch2-daily-candles-crypto` | 매일 09:00 | 매일 00:00 | `scripts.sync_daily_candles --market crypto` |
 | `at-batch2-order-proposal-night-sweep` | 월–금 16:30 및 07:00 | 월–금 07:30 및 일–목 22:00 | `scripts.order_proposal_night_sweep` |
+| `at-batch2-kr-valuation` | 월–금 16:30 | 월–금 07:30 | `scripts.build_market_valuation_snapshots --market kr --all --skip-non-session --commit-from-settings` |
+
+`at-batch2-kr-valuation`은 XKRX 비거래일이면 `{"status": "skipped_holiday"}`를 출력하고 성공 코드로 끝나며 빌드를 하지 않는다. 커밋 여부는 컨테이너 안의 `MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED`(설정 `market_valuation_snapshots_commit_enabled`)가 정한다. 값이 거짓이면 dry-run으로 끝난다. 커밋 시 기존 coverage guard(`--commit`과 같은 경로)가 적용되며, 부분 빌드는 종료 코드 2로 차단된다.
 
 일봉 스크립트는 `--market kr|us|crypto`를 받고 job 결과를 JSON으로 출력한다. `run_daily_candles_sync`에는 날짜나 lookback 인자가 없어 `--date`/별도 backfill 옵션은 제공하지 않는다. 2026-11-18 보충 여부는 job 자체 lookback 범위에 따른다.
 

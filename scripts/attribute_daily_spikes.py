@@ -40,8 +40,8 @@ from app.services.spike_attribution.forecast_tag import (
     prereg_skipped_reason,
 )
 from app.services.spike_attribution.materials import (
+    DAILY_DATE_TZ_BY_MARKET,
     DAILY_TABLE_BY_MARKET,
-    SESSION_TZ_BY_MARKET,
     load_daily_bars,
     load_spike_materials,
 )
@@ -74,7 +74,7 @@ async def _prefilter_symbols(
     """
 
     table = DAILY_TABLE_BY_MARKET[market]
-    tzname = str(SESSION_TZ_BY_MARKET[market])
+    tzname = str(DAILY_DATE_TZ_BY_MARKET[market])
     stmt = sa.text(
         f"""
         WITH d AS (

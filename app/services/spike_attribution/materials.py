@@ -41,9 +41,14 @@ from app.services.spike_attribution.contract import (
 _KST = ZoneInfo("Asia/Seoul")
 
 DAILY_TABLE_BY_MARKET: dict[str, str] = {"kr": "kr_candles_1d", "us": "us_candles_1d"}
-SESSION_TZ_BY_MARKET: dict[str, ZoneInfo] = {
+# The calendar date a stored daily row is labelled with. Daily rows are written
+# at 00:00 UTC of their session date (KR: 09:00 KST, same day; US: the ingestors
+# store the UTC midnight of the session date, Alpaca IEX at 05:00 UTC). Reading
+# a US row in New York time moved every 00:00Z bar back one session, so the
+# date is the UTC calendar date of the stored timestamp. KR is unchanged.
+DAILY_DATE_TZ_BY_MARKET: dict[str, ZoneInfo] = {
     "kr": _KST,
-    "us": ZoneInfo("America/New_York"),
+    "us": ZoneInfo("UTC"),
 }
 
 
@@ -134,6 +139,19 @@ def _localize(naive: dt.datetime | None, clock: FeedClock) -> dt.datetime | None
     return naive.replace(tzinfo=clock.tz)
 
 
+def daily_session_date(market: str, stored_at: dt.datetime) -> dt.date:
+    """Session date labelled by a stored daily-row timestamp.
+
+    Pure. The same timezone the SQL ``WHERE`` uses, so the window and the label
+    cannot disagree. An 00:00Z row and a 05:00Z row of one US session both give
+    that session's date.
+    """
+
+    if stored_at.tzinfo is None:
+        raise ValueError("daily row timestamp must be timezone-aware")
+    return stored_at.astimezone(DAILY_DATE_TZ_BY_MARKET[market]).date()
+
+
 async def load_daily_bars(
     db: AsyncSession,
     *,
@@ -147,11 +165,10 @@ async def load_daily_bars(
     table = DAILY_TABLE_BY_MARKET.get(market)
     if table is None:
         raise ValueError(f"unsupported market: {market!r}")
-    tzname = str(SESSION_TZ_BY_MARKET[market])
+    tzname = str(DAILY_DATE_TZ_BY_MARKET[market])
     stmt = sa.text(
         f"""
-        SELECT (time AT TIME ZONE :tz)::date AS session_date,
-               open, high, low, close, volume
+        SELECT time, open, high, low, close, volume
         FROM {table}
         WHERE symbol = :symbol
           AND (time AT TIME ZONE :tz)::date BETWEEN :start AND :end
@@ -161,17 +178,35 @@ async def load_daily_bars(
     rows = await db.execute(
         stmt, {"tz": tzname, "symbol": symbol, "start": start, "end": end}
     )
-    return [
-        DailyBar(
+    # One bar per session date. A US symbol can hold a 00:00Z row (KIS, Yahoo,
+    # Toss) and a 05:00Z row (Alpaca IEX) for the same session, which both map
+    # to one date. The rule: keep the earliest stored timestamp, the 00:00Z
+    # convention the consolidated writers use. Two rows with the same timestamp
+    # (for example two exchanges) are ambiguous, so the symbol fails closed.
+    kept: dict[dt.date, tuple[dt.datetime, DailyBar]] = {}
+    for row in rows:
+        session = daily_session_date(market, row.time)
+        bar = DailyBar(
             symbol=symbol,
-            session_date=row.session_date,
+            session_date=session,
             open=Decimal(str(row.open)),
             high=Decimal(str(row.high)),
             low=Decimal(str(row.low)),
             close=Decimal(str(row.close)),
             volume=Decimal(str(row.volume if row.volume is not None else 0)),
         )
-        for row in rows
+        held = kept.get(session)
+        if held is None:
+            kept[session] = (row.time, bar)
+        elif held[0] == row.time:
+            raise ValueError(
+                f"{symbol}: ambiguous duplicate daily rows at {row.time.isoformat()}"
+            )
+        elif row.time < held[0]:
+            kept[session] = (row.time, bar)
+        # Otherwise the held row is the earlier one and the later row is dropped.
+    return [
+        bar for _, bar in sorted(kept.values(), key=lambda item: item[1].session_date)
     ]
 
 
@@ -541,12 +576,13 @@ async def load_spike_materials(db: AsyncSession, event: SpikeEvent) -> SpikeMate
 
 
 __all__ = [
+    "DAILY_DATE_TZ_BY_MARKET",
     "DAILY_TABLE_BY_MARKET",
     "EXTERNALLY_JUDGED_STATUSES",
     "FEED_CLOCKS",
     "JUDGMENT_BY_STATUS",
-    "SESSION_TZ_BY_MARKET",
     "FeedClock",
+    "daily_session_date",
     "feed_clock",
     "load_daily_bars",
     "load_spike_materials",
