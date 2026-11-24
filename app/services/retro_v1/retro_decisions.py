@@ -880,6 +880,21 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
     side: Literal["buy", "sell"] | None = (
         decision.side if decision.side in ("buy", "sell") else None
     )
+    # hk 6040: historical declined rows carry a placeholder buy side and a rung
+    # 0 with no limit, quantity or notional; new ones store side NULL. Neither
+    # recorded a side, so report none instead of a buy that was never decided.
+    side_reason: str | None = None
+    if decision.decision_kind == "declined":
+        placeholder = "decision_rungs" not in data.incomplete and any(
+            r.rung_index == 0
+            and r.planned_quantity is None
+            and r.planned_notional is None
+            and r.limit_price is None
+            for r in rungs
+        )
+        if side is None or (side == "buy" and placeholder):
+            side = None
+            side_reason = "side_not_recorded"
     if side is None:
         risk_amount = None
         risk_reason: str | None = "not_applicable"
@@ -990,7 +1005,14 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
         order_count = None
         order_count_reason = "attempts_unavailable"
 
-    buy_fills = [f for f in fills if f.side == "buy"]
+    is_sell = side == "sell"
+    # A sell decision's own fills are reported apart (sell_*); the buy-only
+    # entry fields below never mix them in.
+    buy_fills = [] if is_sell else [f for f in fills if f.side == "buy"]
+    sell_fills = [f for f in fills if f.side == "sell"] if is_sell else []
+    sell_quantity: Decimal | None = None
+    sell_avg: Decimal | None = None
+    sell_reason: str | None = None
     # Closing fills pair FIFO over the instrument's in-effect ledger fills —
     # they routinely belong to a different decision than the entry (§ R
     # multiple), so the exit input is not restricted to this decision's orders.
@@ -1014,7 +1036,36 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
                 break
             exit_fills.append(fill)
             remaining -= Decimal(str(fill.filled_qty))
-    if fills_known and buy_fills:
+    if is_sell:
+        filled_quantity = None
+        entry_avg = None
+        time_basis = None
+        fill_reason = "sell_decision"
+        if not fills_known:
+            sell_reason = "attempts_unavailable"
+        elif sell_fills:
+            sell_quantity = sum(
+                (Decimal(str(f.filled_qty)) for f in sell_fills), Decimal(0)
+            )
+            sell_by_order: dict[Any, list[Any]] = defaultdict(list)
+            for f in sell_fills:
+                sell_by_order[order_identity(f)].append(f)
+            sell_notional = Decimal(0)
+            sell_notional_ok = True
+            for order_rows in sell_by_order.values():
+                part = _order_entry_notional(order_rows)
+                if part is None:
+                    sell_notional_ok = False
+                    break
+                sell_notional += part
+            if sell_notional_ok and sell_quantity > 0:
+                sell_avg = sell_notional / sell_quantity
+            else:
+                sell_reason = "missing_notional"
+        else:
+            sell_quantity = Decimal(0) if orders else None
+            sell_reason = "no_fills" if orders else "no_linked_order"
+    elif fills_known and buy_fills:
         filled_quantity = sum(
             (Decimal(str(f.filled_qty)) for f in buy_fills), Decimal(0)
         )
@@ -1214,7 +1265,7 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
         "decided_by": safe_code(decision.decided_by, fallback=None),
         "market": info.key if info else None,
         "symbol": decision.symbol,
-        "side": safe_code(decision.side, fallback=None),
+        "side": side,
         "strategy": safe_code(decision.strategy, fallback=None),
         "candidate_ref": candidate_ref,
         "candidate_link_basis": decision.candidate_link_basis
@@ -1258,6 +1309,14 @@ def _row(decision: Any, data: DecisionData, as_of: datetime) -> dict[str, Any]:
         "r_multiple_reason": r_multiple_reason,
         "basis": "inference",
     }
+    # Optional keys (hk 6040): present only when they apply, so every other
+    # row keeps its exact previous bytes.
+    if side_reason is not None:
+        row["side_reason"] = side_reason
+    if is_sell:
+        row["sell_filled_quantity"] = dec(sell_quantity)
+        row["sell_avg_price"] = dec(sell_avg)
+        row["sell_fill_reason"] = sell_reason
     return row
 
 
@@ -1305,6 +1364,8 @@ def _hints(row: dict[str, Any]) -> dict[str, str]:
             "retrospective_link_basis",
             "order_states",
             "filled_quantity",
+            "sell_filled_quantity",
+            "sell_avg_price",
         }:
             hints[name] = "missing_data"
         elif name in {"order_count"}:
