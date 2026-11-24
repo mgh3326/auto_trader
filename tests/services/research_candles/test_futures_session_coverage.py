@@ -64,14 +64,14 @@ def test_coverage_counts_missing_minutes_and_latency() -> None:
 
 
 def test_kr_and_us_reports_are_unchanged_by_the_futures_branch() -> None:
-    report = coverage_report(
-        [], market="kr", session_date=DAY, as_of=_utc("10:00")
-    )
+    report = coverage_report([], market="kr", session_date=DAY, as_of=_utc("10:00"))
     assert report["venues_expected"] == ["KRX", "NTX"]
     assert report["night_collection"] is None
 
 
-def test_diagnose_cli_accepts_the_futures_market_and_selects_the_futures_table() -> None:
+def test_diagnose_cli_accepts_the_futures_market_and_selects_the_futures_table() -> (
+    None
+):
     from scripts import diagnose_session_coverage as cli
 
     args = cli._parse_args(["--market", "futures", "--date", "2026-11-24"])

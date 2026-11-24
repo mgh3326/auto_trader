@@ -26,9 +26,9 @@ from app.services.brokers.kis.futures_quotes import (
 #: The only KISClient methods this view may call.
 ALLOWED_TARGET_METHODS = frozenset(
     {
-        "futures_quote_master",
-        "futures_quote_price",
-        "futures_quote_minutes",
+        "quote_futures_master",
+        "quote_futures_price",
+        "quote_futures_minutes",
         "close",
     }
 )
@@ -52,10 +52,10 @@ class FuturesQuotesView:
         raise AttributeError(name)
 
     async def master(self) -> list[dict[str, str]]:
-        return await self._target.futures_quote_master()
+        return await self._target.quote_futures_master()
 
     async def price(self, symbol: str) -> dict[str, Any]:
-        return await self._target.futures_quote_price(symbol)
+        return await self._target.quote_futures_price(symbol)
 
     async def minute_bars(
         self,
@@ -66,7 +66,7 @@ class FuturesQuotesView:
         until_hour: str = DAY_START_CURSOR,
     ) -> list[dict[str, Any]]:
         """Raw KST-day minute rows (ascending). ``session="night"`` is unsupported."""
-        return await self._target.futures_quote_minutes(
+        return await self._target.quote_futures_minutes(
             symbol, session=session, day=day, until_hour=until_hour
         )
 

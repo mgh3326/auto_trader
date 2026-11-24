@@ -258,9 +258,7 @@ async def collect(
     today = clock().astimezone(_KST).date()
     try:
         master = await view.master()
-        contracts, unresolved = resolve_front_next(
-            master, today, CLOSED_QUOTE_PRODUCTS
-        )
+        contracts, unresolved = resolve_front_next(master, today, CLOSED_QUOTE_PRODUCTS)
     except Exception as exc:  # noqa: BLE001 - reported, nonzero exit
         logger.warning("futures master read failed error=%s", type(exc).__name__)
         errors.append({"stage": "master", "error_class": type(exc).__name__})
@@ -270,9 +268,7 @@ async def collect(
     for contract in contracts:
         observed_before = clock()
         try:
-            rows = await view.minute_bars(
-                contract.short_code, session="day", day=today
-            )
+            rows = await view.minute_bars(contract.short_code, session="day", day=today)
             reads += 1
             parsed = bars_from_rows(
                 rows, contract=contract, observed_before=observed_before

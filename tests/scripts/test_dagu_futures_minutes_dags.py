@@ -53,7 +53,7 @@ def test_readme_says_copies_not_registered_and_lists_both_dags() -> None:
     readme = (ROOT / "README.md").read_text()
     assert "등록되지 않는 복사본" in readme
     assert "등록하지 않는다" in readme
-    assert "night: \"unsupported\"" in readme
+    assert 'night: "unsupported"' in readme
     for name in EXPECTED:
         assert name.removesuffix(".yaml") in readme
     assert {p.name for p in ROOT.glob("*.yaml")} == set(EXPECTED)

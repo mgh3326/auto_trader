@@ -71,7 +71,9 @@ class ResolvedContract:
     yymm: str
     last_trade_date: date
     rank: int  # 0 = front, 1 = next (among contracts not expired on the as-of date)
-    listed_months: tuple[str, ...]  # every master month of the product (roll_state input)
+    listed_months: tuple[
+        str, ...
+    ]  # every master month of the product (roll_state input)
 
 
 def last_trade_date_for(contract_month: str) -> date:

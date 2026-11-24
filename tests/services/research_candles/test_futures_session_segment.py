@@ -63,7 +63,9 @@ def test_night_bar_carries_the_next_trading_day_across_midnight() -> None:
 
 def test_friday_night_belongs_to_monday() -> None:
     assert futures_session_date(_kst(FRI, "19:00")) == date(*MON)
-    assert futures_session_date(_kst(SAT, "02:00")) == date(*MON)  # still Friday's night
+    assert futures_session_date(_kst(SAT, "02:00")) == date(
+        *MON
+    )  # still Friday's night
     assert session_segment_of("futures", "KRX", _kst(SAT, "02:00")) == "FUT_NIGHT"
 
 

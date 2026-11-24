@@ -156,7 +156,12 @@ def test_outside_the_session_window_is_stored_unknown_with_null_date() -> None:
 def test_invalid_rows_are_counted_not_stored_and_duplicates_collapse() -> None:
     bad_price = _row("100000")
     bad_price["futs_prpr"] = ""
-    rows = [bad_price, {"stck_bsop_date": "x", "stck_cntg_hour": "y"}, _row("100100"), _row("100100")]
+    rows = [
+        bad_price,
+        {"stck_bsop_date": "x", "stck_cntg_hour": "y"},
+        _row("100100"),
+        _row("100100"),
+    ]
     result = fc.bars_from_rows(rows, contract=contract(), observed_before=at("11:00"))
     assert len(result.bars) == 1
     assert result.skipped_invalid == 2
@@ -192,7 +197,9 @@ def test_rerun_inserts_zero_and_keeps_the_first_retrieved_at() -> None:
     writer = MemoryWriter()
     first = at("10:05")
     later = first + timedelta(minutes=5)
-    asyncio.run(fc.collect(view=view, writer=writer, clock=lambda: first, batch_id="b1"))
+    asyncio.run(
+        fc.collect(view=view, writer=writer, clock=lambda: first, batch_id="b1")
+    )
     second = asyncio.run(
         fc.collect(view=view, writer=writer, clock=lambda: later, batch_id="b2")
     )
@@ -237,7 +244,9 @@ def test_master_failure_and_unresolved_products_are_errors() -> None:
             raise ValueError("bad master")
 
     report = asyncio.run(
-        fc.collect(view=BrokenMaster([]), writer=MemoryWriter(), clock=lambda: at("10:05"))
+        fc.collect(
+            view=BrokenMaster([]), writer=MemoryWriter(), clock=lambda: at("10:05")
+        )
     )
     assert report["errors"] == 1 and report["products_resolved"] == 0
 

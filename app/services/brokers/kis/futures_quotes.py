@@ -26,7 +26,7 @@ the bar start (the collector assumes start, the convention of the other KIS minu
 charts, and drops bars that could still be forming).
 
 Hard boundary: only ``/quotations/`` paths and the two TR ids above are reachable
-from here. No ``/trading/`` path, no order TR, no account number. Gate:
+from here. No account/order endpoint prefix, no order TR, no account number. Gate:
 ``KIS_FUTURES_QUOTES_ENABLED`` exactly ``"true"`` (default off), separate from
 ``KIS_FUTURES_READ_ENABLED``, checked before the token lookup and again after it.
 Live host only (the account-less quote endpoints use the real app key namespace).
@@ -68,7 +68,6 @@ class FuturesQuotesGateOff(RuntimeError):
 def gate_check() -> None:
     if os.environ.get(GATE_ENV) != "true":
         raise FuturesQuotesGateOff(f"{GATE_ENV}이 true가 아닙니다")
-
 
 
 def _symbol(symbol: str) -> str:
@@ -171,7 +170,10 @@ class FuturesQuotes:
             fresh = 0
             hours: list[str] = []
             for row in rows:
-                key = (str(row.get("stck_bsop_date", "")), str(row.get("stck_cntg_hour", "")))
+                key = (
+                    str(row.get("stck_bsop_date", "")),
+                    str(row.get("stck_cntg_hour", "")),
+                )
                 if not (key[0] and key[1]):
                     raise RuntimeError("KIS 선물 분봉 행의 시각을 읽을 수 없습니다")
                 if key[0] == date_text:

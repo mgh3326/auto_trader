@@ -83,9 +83,10 @@ def test_short_code_that_disagrees_with_the_name_is_dropped() -> None:
     assert c.resolve_front_next(rows, TUE, (c.MINI_KOSPI200_FUTURES,))[0] == []
 
 
-def test_conflicting_duplicate_month_is_dropped_fail_closed() -> None:
-    rows = [_row("B", "A05612", "미니F 202612"), _row("B", "A05712", "미니F 202612")]
-    assert c.resolve_front_next(rows, TUE, (c.MINI_KOSPI200_FUTURES,))[0] == []
+def test_identical_duplicate_master_rows_resolve_once() -> None:
+    rows = [_row("B", "A05612", "미니F 202612"), _row("B", "A05612", "미니F 202612")]
+    contracts, _ = c.resolve_front_next(rows, TUE, (c.MINI_KOSPI200_FUTURES,))
+    assert [x.symbol for x in contracts] == ["MF200.2612"]
 
 
 def test_last_trade_date_inside_and_outside_the_known_calendar() -> None:

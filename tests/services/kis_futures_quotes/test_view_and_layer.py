@@ -174,7 +174,9 @@ def test_minute_bars_stops_when_a_page_adds_nothing(monkeypatch) -> None:
     monkeypatch.setenv(layer.GATE_ENV, "true")
     same = {"rt_cd": "0", "output1": {}, "output2": [_row("100000")]}
     parent = Parent([same, same])
-    rows = run(layer.FuturesQuotes(parent).minute_bars("A05612", day=date(2026, 11, 24)))
+    rows = run(
+        layer.FuturesQuotes(parent).minute_bars("A05612", day=date(2026, 11, 24))
+    )
     assert len(rows) == 1
 
 
@@ -234,15 +236,15 @@ def test_view_forwards_only_to_the_allowlisted_client_methods() -> None:
     calls: list[str] = []
 
     class Target:
-        async def futures_quote_master(self):
+        async def quote_futures_master(self):
             calls.append("master")
             return []
 
-        async def futures_quote_price(self, symbol):
+        async def quote_futures_price(self, symbol):
             calls.append("price")
             return {}
 
-        async def futures_quote_minutes(self, symbol, *, session, day, until_hour):
+        async def quote_futures_minutes(self, symbol, *, session, day, until_hour):
             calls.append(f"minutes:{session}")
             return []
 
@@ -340,8 +342,21 @@ def test_view_calls_only_allowlisted_target_methods() -> None:
     }
     assert called == set(view_module.ALLOWED_TARGET_METHODS)
     client = (ROOT / "app/services/brokers/kis/client.py").read_text()
-    body = client[client.index("async def futures_quote_master") :]
+    body = client[client.index("async def quote_futures_master") :]
     body = body[: body.index("@staticmethod")]
     assert "FuturesRead" not in body and "futures_orders" not in body
-    for name in ("futures_quote_master", "futures_quote_price", "futures_quote_minutes"):
+    for name in (
+        "quote_futures_master",
+        "quote_futures_price",
+        "quote_futures_minutes",
+    ):
         assert f"async def {name}" in body
+
+
+def test_the_older_read_view_cannot_reach_the_quote_methods() -> None:
+    from app.services.kis_futures_read.view import ALLOWED_METHODS
+
+    assert not {n for n in ALLOWED_METHODS if "quote" in n}
+    assert not set(view_module.ALLOWED_TARGET_METHODS) - {"close"} & set(
+        ALLOWED_METHODS
+    )
