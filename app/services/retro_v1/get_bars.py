@@ -72,7 +72,28 @@ def bar_row(bar: daily_bars.Bar, market: MarketInfo) -> Row:
         # Bars are stored provider data, not a broker fill or order readback.
         "basis": "inference",
     }
+    if bar.minute is not None:
+        _add_minute_fields(row, bar.minute)
     return row, hints
+
+
+def _add_minute_fields(row: dict[str, Any], minute: daily_bars.MinuteExtras) -> None:
+    """Optional research-table fields of a kr/us 1m bar (omitted, never null).
+
+    A value the table stored as NULL (KR: no proven per-bar value) is never
+    reported as 0: the key is absent and ``value_reason`` says why. The receipt
+    time is only a first receipt for non-backfill batches.
+    """
+    if minute.session_segment is not None:
+        row["session_segment"] = minute.session_segment
+    if minute.value is not None:
+        row["value"] = dec(minute.value)
+    else:
+        row["value_reason"] = "unavailable"
+    if minute.first_received_at is not None:
+        row["first_received_at"] = iso(minute.first_received_at)
+    else:
+        row["first_received_reason"] = "unavailable"
 
 
 async def read_get_bars(
@@ -129,6 +150,21 @@ async def read_get_bars(
                 unknowns.note("data", "incomplete_evidence")
             elif ok:
                 total = len(bars)
+            if ok and daily_bars.has_minute_extras(market_info, tf):
+
+                async def coverage() -> datetime | None:
+                    return await daily_bars.earliest_minute_time(
+                        session, market_info, normalized
+                    )
+
+                earliest, covered = await guarded(
+                    session, unknowns, "data", coverage, None
+                )
+                # The research minute tables only start where the collector did
+                # and hold a capped symbol set: a symbol it never stored, or a
+                # window starting before its first bar, is not an empty success.
+                if covered and (earliest is None or lo < earliest):
+                    unknowns.note("data", "missing_data")
 
     rows = [bar_row(bar, market_info) for bar in bars]
     data_as_of = max((bar.time for bar in bars), default=None)
