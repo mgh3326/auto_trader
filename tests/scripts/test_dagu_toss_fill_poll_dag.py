@@ -33,19 +33,20 @@ def test_dag_commits_with_job_scoped_flag_and_never_overlaps() -> None:
     assert "-m scripts.toss_fill_reconcile_poller --commit || rc=$?" in script
     assert "TOSS_FILL_POLL_MARKET_GATE_ENABLED" not in script
     # Overlap is prevented by the container name, not by Dagu's timeout: a
-    # running container makes the step skip, and docker refuses a second
-    # container with the same name. A booking pass must never be cut short
-    # (per-row booking commits in separate steps), so Dagu's timeout signal is
-    # not proxied and the in-container timeout is only a hung-process backstop.
+    # previous container still present makes the step fail without starting a
+    # pass, and docker refuses a second container with the same name. A
+    # booking pass is never signalled (per-row booking commits in separate
+    # steps): no in-container timeout, and Dagu's timeout is not proxied.
     lines = script.splitlines()
     guard = next(i for i, line in enumerate(lines) if "docker ps -aq" in line)
     run = next(i for i, line in enumerate(lines) if "docker run" in line)
     assert guard < run
     assert "--filter name=at-toss-fill-poll" in lines[guard]
-    assert "exit 0" in lines[guard]
+    assert "status=previous_pass_still_running" in lines[guard]
+    assert "exit 1" in lines[guard]
     assert "--sig-proxy=false --name at-toss-fill-poll " in script
     assert (
-        '"$(cat /root/at-run/deployed-digest)" timeout -k 60 3600 '
-        "/app/.venv/bin/python" in script
+        '"$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m '
+        "scripts.toss_fill_reconcile_poller --commit" in script
     )
-    assert step["timeout_sec"] > 3600 + 60
+    assert "timeout " not in lines[run]
