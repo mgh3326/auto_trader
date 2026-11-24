@@ -132,6 +132,19 @@ scan itself is always both-market, matching the existing TaskIQ poller).
 - Exit `1` only when an unhandled exception occurs (`status: "error"` with
   `error.type` / `error.message`); nothing is swallowed.
 
+## Scheduled run on pi (hk 6277, 2026-11-25)
+
+The operator answered yes to `decision-request/2026-11-24/at-toss-fill-poll`
+(question 1). `deploy/dagu/at-reconcile/at-toss-fill-poll.yaml` runs
+`--commit` every 5 minutes on the pi worker over the union of the KR and US
+windows. The script's market gate still decides whether a pass calls Toss.
+`TOSS_FILL_POLL_ENABLED=true` is set only on that job's `docker run -e`; the
+shared `.env.api` is unchanged. `max_active_runs: 1` and a 240 s timeout keep
+two passes from overlapping. The OCI Dagu copy is the registered one; the
+repo file is its copy. To stop the poller, suspend the DAG on OCI.
+
+The launchd section below is superseded by this job and kept for history.
+
 ## Future: launchd promotion (not applied by this issue)
 
 This issue ships the runner + docs only. Registering a recurring schedule is

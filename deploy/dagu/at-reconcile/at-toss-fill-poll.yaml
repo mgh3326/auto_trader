@@ -1,0 +1,30 @@
+# 등록 대상(hk 6277, 운영자 결정 hk:doc decision-request/2026-11-24/at-toss-fill-poll 질문 1 = 예, 2026-11-25).
+# Toss 는 브로커 websocket 이 없어 체결은 이 폴러만 execution_ledger·trades·저널에 부기한다. at-scheduler 은퇴로 TaskIQ
+# toss_live.poll_fills_periodic(ROB-757)이 멈춘 2026-11-18 이후의 공백을 메운다. 커널은 같다(discover + toss_reconcile_orders_impl).
+# 활성화 플래그는 이 잡의 docker run -e 에만 있다. 공유 .env.api 는 바꾸지 않는다(docker 는 -e 를 --env-file 보다 우선한다).
+# 스크립트가 시장 게이트(KRX 09:00–20:00 KST 또는 미국 프리·정규·애프터)를 스스로 보고, 밖이면 skipped 로 브로커 호출 없이 끝난다.
+# 스케줄은 그 합집합을 덮는다: 월 09:00 KST 부터 토 10:55 KST(미국 애프터 20:00 ET 종료) 까지 5분 간격.
+# 🔴 동시 실행 금지: 두 reconcile 패스가 겹치면 이중 부기 가능성이 있다(runbook toss-fill-reconcile-poller). max_active_runs: 1 이고
+# timeout 이 간격보다 짧다. at-terminal-reconcile 의 toss 단계는 terminal_only 라 체결을 부기하지 않는다.
+# 종료 코드: 0 = disabled·skipped·preview·ran, 1 = 처리되지 않은 예외(단계 실패).
+description: "Toss fill-to-ledger reconcile poller (discover + reconcile, books confirmed fills)"
+schedule:
+  - "CRON_TZ=Asia/Seoul */5 9-23 * * 1"
+  - "CRON_TZ=Asia/Seoul */5 * * * 2-5"
+  - "CRON_TZ=Asia/Seoul */5 0-10 * * 6"
+max_active_runs: 1
+hist_retention_days: 14
+worker_selector:
+  host: pi
+steps:
+  - name: poll
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e TOSS_FILL_POLL_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.toss_fill_reconcile_poller --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 240
+handler_on:
+  success:
+    command: 'logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=success"'
+  failure:
+    command: 'logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=failure"'
