@@ -142,3 +142,37 @@ async def test_external_cancellation_propagates() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await mw.on_call_tool(_ctx("tool"), call_next)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handler_sees_the_call_deadline_and_it_is_reset_after() -> None:
+    from app.core.tool_deadline import remaining_tool_budget_s
+
+    mw = ToolTimeoutMiddleware(default_timeout_s=5.0)
+    seen: dict[str, float | None] = {}
+
+    async def call_next(ctx):
+        seen["remaining"] = remaining_tool_budget_s()
+        return "ok"
+
+    assert await mw.on_call_tool(_ctx("bounded"), call_next) == "ok"
+    remaining = seen["remaining"]
+    assert remaining is not None and 4.0 < remaining <= 5.0
+    assert remaining_tool_budget_s() is None  # not leaked past the call
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_exempt_tool_publishes_no_deadline() -> None:
+    from app.core.tool_deadline import remaining_tool_budget_s
+
+    mw = ToolTimeoutMiddleware(default_timeout_s=5.0, overrides={"exempt": 0.0})
+    seen: dict[str, float | None] = {}
+
+    async def call_next(ctx):
+        seen["remaining"] = remaining_tool_budget_s()
+        return "ok"
+
+    await mw.on_call_tool(_ctx("exempt"), call_next)
+    assert seen["remaining"] is None

@@ -146,8 +146,8 @@ KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다
 - **행**: 반환된 후보마다 1행(`admission='admitted'`, `admission_reason='returned_to_session'`, `selection_seq` = 반환 목록 안 1-based 위치(offset 포함),
   `rank` = `screen_stocks`는 반환 순서, snapshot은 도구의 rank — 다중 preset 병합 행은 첫 매칭 preset에만 rank가 있고 나머지 preset 행은 null).
   도구 자신이 이미 아는 제거는 `not_admitted` + 닫힌 사유: `halted_suspect`(screen_stocks, `meta.halted_suspect_excluded`),
-  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`(snapshot; `exclude_held`는
-  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
+  `exclude_symbols`·`exclude_watched`·`below_min_market_cap`·`market_cap_missing`·`above_max_market_cap`·`invalid_market_cap_bound`(snapshot; `exclude_held`는
+  snapshot이 fail-closed로 거부하므로 행이 생기지 않는다). `invalid_market_cap_bound`(hk 5763)는 `min_market_cap`/`max_market_cap_eok`가 NaN 또는 무한대일 때 그 경계로 빠진 행의 사유다. 비교가 정의되지 않으므로 `below_min_market_cap`/`above_max_market_cap`으로 표시하지 않는다. 페이지 내용은 바뀌지 않는다. 반환 페이지 밖의 행은 세션이 보지 못했으므로 기록하지 않는다(`call_context.pagination`에 총수만).
   `screen_stocks_enrich`의 만성 실패 제외·`isHeld`는 이 변경 범위 밖이며 enrich는 기록하지 않는다. 시장은 kr/us만 기록한다(kospi/kosdaq/konex/all → kr, crypto 미기록).
 - **source**: `screen_stocks` / `screen_stocks_snapshot:<preset>`(다중 preset 스윕에서도 (call, source, symbol) 유일키 유지). `family`는 `screen_stocks_live`/`screener_snapshot`.
   US 심볼은 DB 형식(`BRK.B`, `app/core/symbol.py`)으로 저장해 `decision_evidence`의 candidate ref(`call_id`+정규 심볼)가 그대로 해석된다.
@@ -161,7 +161,7 @@ KR/US 라이브 세션은 fanout이 아니라 이 두 도구로 후보를 본다
   🔴 `decision_evidence`는 후보 ref 없는 같은 KST 날짜 매수 place에서 `admitted` 행을 `inference`로 연결하므로, 세션이 반환받은 후보는 이제 그 추론 대상이 된다.
 - **스냅샷 provenance**: 병합 행의 표시 가격은 첫 매칭 preset의 것이므로, 그 가격을 싣는 모든 행의 `data_asof`/`fetched_at`도 첫 매칭 preset 기준이다
   (`source_params.price_provenance_preset`). 행 자신의 preset freshness는 `source_params.matched_preset_freshness`에 따로 둔다.
-- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다.
+- **쓰기 예산**: 기록은 `WRITE_TIMEOUT_SECONDS`(10초)로 제한된다 — MCP 도구 데드라인(120초) 안에서 이미 성공한 스크리닝을 DB 지연이 잡아먹지 못한다. 도구 호출 안에서는(hk 5763) 기록 예산이 `min(10초, 남은 도구 데드라인 − 2초)`로 줄어든다. 남은 예산이 1초 미만이면 기록을 시작하지 않고 태그 없는 결과를 그대로 반환한다. 남은 데드라인은 `app/core/tool_deadline.py`가 `ToolTimeoutMiddleware`의 호출별 데드라인에서 읽으며, 도구 호출 밖(데드라인 없음)에서는 기존 10초다. 호출자 취소는 그대로 전파된다.
   초과하면 태그 없는 원 응답을 돌려주고, 호출자 취소는 그대로 전파된다. `raw_row`/`gate_features`/`call_context`는 `JSONB(none_as_null=True)`라
   파이썬 None이 JSON `null`이 아니라 SQL NULL로 저장된다(`*_object` CHECK는 SQL NULL 또는 객체만 허용).
 - **fanout 규칙은 그대로**: `funnel-a1` A-record(소스 top-10 전수·admission·`dropped_preselection`)는 `discover_buy_candidates_fanout` 전용이고 이 두 도구는 위 규칙을 따른다.

@@ -658,3 +658,198 @@ async def test_non_finite_max_market_cap_keeps_the_old_empty_page(
     )
     # `cap <= NaN` is false for every row, so the original filter dropped them all.
     assert out["results"] == []
+
+
+# --- hk 5763: write budget inside a bounded tool call -------------------------
+
+
+def test_write_budget_is_the_fixed_timeout_outside_a_tool_call() -> None:
+    assert mod._write_budget_s() == mod.WRITE_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_write_budget_is_capped_by_the_remaining_tool_deadline() -> None:
+    import asyncio
+
+    from app.core.tool_deadline import reset_tool_deadline, set_tool_deadline
+
+    loop = asyncio.get_running_loop()
+    token = set_tool_deadline(loop.time() + 6.0)
+    try:
+        # 6 s left minus the 2 s margin is 4 s, below the 10 s fixed bound.
+        assert mod._write_budget_s() == pytest.approx(4.0, abs=0.1)
+        # 2.5 s left leaves 0.5 s after the margin, below the 1 s minimum: skip.
+        reset_tool_deadline(token)
+        token = set_tool_deadline(loop.time() + 2.5)
+        assert mod._write_budget_s() is None
+    finally:
+        reset_tool_deadline(token)
+
+
+@pytest.mark.asyncio
+async def test_screening_near_the_deadline_skips_the_write_and_returns_untagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.core.tool_deadline import reset_tool_deadline, set_tool_deadline
+
+    calls: list[Any] = []
+
+    async def sink(rows: Any) -> None:
+        calls.append(rows)
+
+    loop = asyncio.get_running_loop()
+    token = set_tool_deadline(loop.time() + 1.0)
+    try:
+        result = _screen_result()
+        out = await mod.record_screen_stocks_picks(
+            result, request={"market": "kr"}, enabled=True, write_rows=sink
+        )
+    finally:
+        reset_tool_deadline(token)
+    assert out is result  # untagged, byte-identical to the recorder-off path
+    assert calls == []  # the write never started
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_write_is_bounded_by_the_remaining_tool_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    from app.core.tool_deadline import reset_tool_deadline, set_tool_deadline
+
+    started = asyncio.Event()
+
+    async def stall(_rows: Any) -> None:
+        started.set()
+        await asyncio.sleep(30)
+
+    loop = asyncio.get_running_loop()
+    remaining = 4.0
+    token = set_tool_deadline(loop.time() + remaining)
+    began = time.monotonic()
+    try:
+        payload = _snapshot_payload()
+        out = await mod.record_snapshot_picks(
+            payload,
+            request={"market": "us"},
+            observation=_OBSERVATION,
+            enabled=True,
+            write_rows=stall,
+        )
+    finally:
+        reset_tool_deadline(token)
+    assert started.is_set()  # the write did start, within its budget
+    assert out is payload  # then timed out and fell open to the untagged result
+    assert time.monotonic() - began < remaining  # returned before the deadline
+
+
+@pytest.mark.asyncio
+async def test_handler_returns_untagged_not_deadline_error_when_screening_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End to end through the real middleware: screening takes 1.5 s of a 3 s call,
+    # the pick-log write must not run past the call's deadline.
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware
+
+    writes: list[Any] = []
+
+    async def stall(rows: Any) -> None:
+        writes.append(rows)
+        await asyncio.sleep(30)
+
+    result = _screen_result()
+
+    async def handler(ctx: Any) -> Any:
+        await asyncio.sleep(1.5)  # screening
+        return await mod.record_screen_stocks_picks(
+            result, request={"market": "kr"}, enabled=True, write_rows=stall
+        )
+
+    # A name with no elevated budget, so the 3 s default is the deadline in force
+    # (``screen_stocks`` itself has a 120 s elevated budget).
+    mw = ToolTimeoutMiddleware(default_timeout_s=3.0)
+    ctx = SimpleNamespace(message=SimpleNamespace(name="fixture_screen"))
+    out = await asyncio.wait_for(mw.on_call_tool(ctx, handler), timeout=10)
+    assert out is result
+    assert writes == []  # about 1.5 s left: too little for the write, so skipped
+
+
+@pytest.mark.asyncio
+async def test_non_finite_market_cap_bounds_get_their_own_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import screener_snapshot_tool as tool
+
+    async def fake_build(**_: Any) -> Any:
+        return SimpleNamespace(
+            model_dump=lambda mode="json": {
+                "results": [
+                    {"rank": 1, "symbol": "AAA", "market": "us", "marketCapValue": 5.0},
+                    {
+                        "rank": 2,
+                        "symbol": "BBB",
+                        "market": "us",
+                        "marketCapValue": None,
+                    },
+                ],
+                "warnings": [],
+            }
+        )
+
+    class _Ctx:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        fake_build,
+    )
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _Ctx())
+
+    nan = float("nan")
+    # NaN max: every row drops, none is "above" the bound; a missing cap too.
+    sink: dict[str, Any] = {}
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="p", market="us", max_market_cap_eok=nan, observation_sink=sink
+    )
+    assert out["results"] == []
+    assert [(r["symbol"], why) for r, why in sink["dropped_rows"]] == [
+        ("AAA", "invalid_market_cap_bound"),
+        ("BBB", "invalid_market_cap_bound"),
+    ]
+
+    # NaN min: rows with a cap drop with the invalid reason; a missing cap keeps
+    # its own reason.
+    sink = {}
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="p", market="us", min_market_cap=nan, observation_sink=sink
+    )
+    assert out["results"] == []
+    assert [(r["symbol"], why) for r, why in sink["dropped_rows"]] == [
+        ("AAA", "invalid_market_cap_bound"),
+        ("BBB", "market_cap_missing"),
+    ]
+
+    # Infinite max is a comparison that always holds for a finite cap: page and
+    # labels are unchanged (nothing is dropped by the bound).
+    sink = {}
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="p",
+        market="us",
+        max_market_cap_eok=float("inf"),
+        observation_sink=sink,
+    )
+    assert [r["symbol"] for r in out["results"]] == ["AAA", "BBB"]
+    assert all(why != "invalid_market_cap_bound" for _, why in sink["dropped_rows"])
