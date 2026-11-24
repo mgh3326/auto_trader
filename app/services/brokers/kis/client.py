@@ -342,9 +342,10 @@ class KISClient(BaseKISClient):
         time_unit: int = 1,
         n: int = 200,
         end_date: pd.Timestamp | None = None,
+        end_time: str | None = None,
     ) -> pd.DataFrame:
         return await self._market_data.inquire_minute_chart(
-            code, market, time_unit, n, end_date
+            code, market, time_unit, n, end_date, end_time
         )
 
     async def fetch_minute_candles(

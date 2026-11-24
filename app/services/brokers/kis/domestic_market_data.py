@@ -786,14 +786,21 @@ class DomesticMarketDataMixin(MarketDataBase):
         time_unit: int = 1,
         n: int = 200,
         end_date: datetime.date | None = None,
+        end_time: str | None = None,
     ) -> pd.DataFrame:
         """
         KIS 분봉 데이터 조회
         컬럼: datetime, date, time, open, high, low, close, volume, value
+
+        ``end_time`` (``HHMMSS``)은 ``FID_INPUT_HOUR_1`` 커서다. 생략하면 현재 시각이며
+        호출당 약 30봉만 돌려주므로, 더 이전 페이지는 직전 페이지의 가장 이른 봉 시각을
+        ``end_time`` 으로 다시 호출한다 (hk 6154).
         """
         # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 알려진 이슈가 있음
         now = now_kst()
-        current_time = now.strftime("%H%M%S")
+        if end_time is not None and not (len(end_time) == 6 and end_time.isdigit()):
+            raise ValueError("end_time must be HHMMSS")
+        current_time = end_time or now.strftime("%H%M%S")
         input_date = (end_date or now.date()).strftime("%Y%m%d")
 
         params = {

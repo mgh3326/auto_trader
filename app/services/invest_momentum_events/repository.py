@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
@@ -8,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invest_momentum_event_snapshot import (
+    InvestMomentumEventRun,
     InvestMomentumEventSnapshot,
     InvestThemeEventSnapshot,
     InvestThemeEventSnapshotStock,
@@ -50,29 +52,51 @@ class InvestMomentumEventSnapshotsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def upsert_momentum(self, payload: MomentumEventUpsert) -> None:
+    async def insert_momentum(self, payload: MomentumEventUpsert) -> bool:
+        """Insert one ranking row; an existing key is left untouched (hk 6154).
+
+        Ranking snapshots are observations: re-running the same ``snapshot_at``
+        must neither overwrite nor refresh a stored row. Returns ``True`` only
+        when a row was inserted.
+        """
         values = payload.model_dump()
-        stmt = insert(InvestMomentumEventSnapshot).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_invest_momentum_event_snapshots_surface_params_symbol_at",
-            set_={
-                **{
-                    k: stmt.excluded[k]
-                    for k in values
-                    if k
-                    not in {
-                        "surface",
-                        "snapshot_at",
-                        "trade_type",
-                        "market_type",
-                        "order_type",
-                        "symbol",
-                    }
-                },
-                "updated_at": func.now(),
-            },
+        stmt = (
+            insert(InvestMomentumEventSnapshot)
+            .values(**values)
+            .on_conflict_do_nothing(
+                constraint="uq_invest_momentum_event_snapshots_surface_params_symbol_at"
+            )
         )
-        await self._session.execute(stmt)
+        result = await self._session.execute(stmt)
+        return (getattr(result, "rowcount", 0) or 0) > 0
+
+    async def insert_run_status(
+        self,
+        *,
+        run_id: uuid.UUID,
+        snapshot_at: dt.datetime,
+        trading_date: dt.date,
+        surface: str,
+        status: str,
+        reason: str | None,
+        row_count: int,
+    ) -> bool:
+        """Insert the (run, surface) status row; ``False`` when it already exists."""
+        stmt = (
+            insert(InvestMomentumEventRun)
+            .values(
+                run_id=run_id,
+                snapshot_at=snapshot_at,
+                trading_date=trading_date,
+                surface=surface,
+                status=status,
+                reason=reason,
+                row_count=row_count,
+            )
+            .on_conflict_do_nothing(constraint="uq_invest_momentum_event_runs_run_surface")
+        )
+        result = await self._session.execute(stmt)
+        return (getattr(result, "rowcount", 0) or 0) > 0
 
     async def upsert_theme(self, payload: ThemeEventUpsert) -> int | None:
         values = payload.model_dump(exclude={"stocks"})

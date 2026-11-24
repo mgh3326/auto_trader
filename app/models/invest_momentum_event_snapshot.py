@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -17,7 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -222,4 +223,57 @@ class InvestThemeEventSnapshotStock(Base):
     theme_snapshot: Mapped[InvestThemeEventSnapshot] = relationship(
         "InvestThemeEventSnapshot",
         back_populates="stocks",
+    )
+
+
+#: Closed reason vocabulary of a failed ranking fetch (hk 6154). Never an
+#: exception message: only the class of failure.
+RUN_ERROR_REASONS = (
+    "http_4xx",
+    "http_5xx",
+    "timeout",
+    "transport",
+    "bad_response",
+    "unparseable",
+    "unexpected",
+)
+RUN_EMPTY_REASON = "no_rows"
+
+
+class InvestMomentumEventRun(Base):
+    """One status row per (run, surface): ok / empty / error (hk 6154).
+
+    Written in the same transaction as that surface's ranking rows, insert-only.
+    ``error`` never has ranking rows; ``empty`` is a ranking that came back with
+    zero rows; ``ok`` has ``row_count`` > 0 rows.
+    """
+
+    __tablename__ = "invest_momentum_event_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "surface", name="uq_invest_momentum_event_runs_run_surface"
+        ),
+        CheckConstraint(
+            "(status = 'ok' AND reason IS NULL AND row_count > 0)"
+            " OR (status = 'empty' AND reason = 'no_rows' AND row_count = 0)"
+            " OR (status = 'error' AND row_count = 0 AND reason IN ("
+            + ", ".join(f"'{r}'" for r in RUN_ERROR_REASONS)
+            + "))",
+            name="ck_invest_momentum_event_runs_status_reason",
+        ),
+        Index("ix_invest_momentum_event_runs_date_snapshot", "trading_date", "snapshot_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    trading_date: Mapped[date] = mapped_column(Date, nullable=False)
+    surface: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

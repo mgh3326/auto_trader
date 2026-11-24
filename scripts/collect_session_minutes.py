@@ -13,10 +13,12 @@ is written to ``public.*_candles_1m``. Not scheduled by this repository.
 Targets (default), in priority order: KIS + manual holdings > fixed list
 (``SESSION_MINUTES_FIXED_SYMBOLS_{KR,US}``) > top ``SESSION_MINUTES_SCREENER_TOP_N``
 (default 20) of every available screener-snapshot preset (DB-only, no pick log
-write) > today's admitted ``review.screener_pick_log`` symbols. The union is
+write) > today's admitted ``review.screener_pick_log`` symbols > (KR) today's first-capture
+intraday movers (hk 6154). The union is
 capped at ``SESSION_MINUTES_MAX_SYMBOLS_{KR,US}`` (default 150); lower tiers are
 cut first and the cut counts are in ``targets_truncated``.
-``--symbols`` replaces that union for a targeted run.
+``--symbols`` replaces that union for a targeted run. KR movers with no minute row yet
+today get one extra, earlier KIS page (hour cursor; KIS returns ~30 bars per call).
 
 Output: one JSON object (inserted / already_present / skipped_forming / errors).
 Exit 0 = clean, 1 = at least one error, 2 = usage.
@@ -102,6 +104,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             unresolved_symbols=unresolved,
             dry_run=args.dry_run,
             prior_errors=targets.errors,
+            backfill_symbols=targets.backfill,
         )
     report["targets_by_origin"] = targets.by_origin
     report["targets_truncated"] = targets.truncated

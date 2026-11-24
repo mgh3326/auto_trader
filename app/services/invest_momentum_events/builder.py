@@ -75,6 +75,36 @@ async def _fetch_or_skip(
         return None
 
 
+def momentum_upsert_from_row(
+    row: Any,
+    *,
+    snapshot_at: dt.datetime,
+    trading_date: dt.date,
+    trade_type: str,
+    market_type: str,
+    order_type: str,
+) -> MomentumEventUpsert:
+    """One parsed Naver stock row -> snapshot payload (shared with hk 6154)."""
+    return MomentumEventUpsert(
+        snapshot_at=snapshot_at,
+        trading_date=trading_date,
+        surface="domestic_market_stock_default",
+        trade_type=trade_type,
+        market_type=market_type,
+        order_type=order_type,
+        rank=row.rank or 0,
+        symbol=row.symbol,
+        name=row.name,
+        price=row.price,
+        change_amount=row.change_amount,
+        change_rate=row.change_rate,
+        volume=row.volume,
+        trade_value=row.trade_value,
+        market_cap=row.market_cap,
+        raw_payload=row.raw_payload,
+    )
+
+
 async def build_payloads_from_naver(
     fetcher: NaverMomentumFetcher,
     *,
@@ -114,23 +144,13 @@ async def build_payloads_from_naver(
                 warnings.extend(parsed.warnings)
                 for row in parsed.rows:
                     momentum.append(
-                        MomentumEventUpsert(
+                        momentum_upsert_from_row(
+                            row,
                             snapshot_at=snapshot,
                             trading_date=trading_date,
-                            surface="domestic_market_stock_default",
                             trade_type=trade_type,
                             market_type=market_type,
                             order_type=order_type,
-                            rank=row.rank or 0,
-                            symbol=row.symbol,
-                            name=row.name,
-                            price=row.price,
-                            change_amount=row.change_amount,
-                            change_rate=row.change_rate,
-                            volume=row.volume,
-                            trade_value=row.trade_value,
-                            market_cap=row.market_cap,
-                            raw_payload=row.raw_payload,
                         )
                     )
                 counts[f"stock:{trade_type}:{market_type}:{order_type}"] += len(
