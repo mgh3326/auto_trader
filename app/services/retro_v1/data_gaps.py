@@ -85,8 +85,10 @@ CRYPTO_TVL_PROVIDER: Final = "defillama"
 #: Latest bar time per table. One ``MAX`` over the whole table, not per symbol:
 #: the question is whether the market has bars for its last session at all.
 _LATEST_BAR_SQL: Final = {
-    "candles_1m.kr": "SELECT MAX(time) AS latest FROM public.kr_candles_1m",
-    "candles_1m.us": "SELECT MAX(time) AS latest FROM public.us_candles_1m",
+    # 1m freshness reads the hk 6145 research tables (bar start ``time_utc``); the
+    # public 1m serving tables have no writer any more.
+    "candles_1m.kr": "SELECT MAX(time_utc) AS latest FROM research.kr_candles_1m",
+    "candles_1m.us": "SELECT MAX(time_utc) AS latest FROM research.us_candles_1m",
     "candles_1d.kr": "SELECT MAX(time) AS latest FROM public.kr_candles_1d",
     "candles_1d.us": "SELECT MAX(time) AS latest FROM public.us_candles_1d",
     "candles_1d.crypto": (
