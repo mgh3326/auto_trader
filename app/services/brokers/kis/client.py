@@ -210,6 +210,25 @@ class KISClient(BaseKISClient):
 
         return await FuturesRead(self).master()
 
+    async def futures_quote_master(self) -> list[dict[str, str]]:
+        from .futures_quotes import FuturesQuotes
+
+        return await FuturesQuotes(self).master()
+
+    async def futures_quote_price(self, symbol: str) -> dict[str, Any]:
+        from .futures_quotes import FuturesQuotes
+
+        return await FuturesQuotes(self).price(symbol)
+
+    async def futures_quote_minutes(
+        self, symbol: str, *, session: str = "day", day: Any, until_hour: str = "160000"
+    ) -> list[dict[str, Any]]:
+        from .futures_quotes import FuturesQuotes
+
+        return await FuturesQuotes(self).minute_bars(
+            symbol, session=session, day=day, until_hour=until_hour
+        )
+
     @staticmethod
     def _aggregate_intraday_to_hour(df: pd.DataFrame) -> pd.DataFrame:
         return _aggregate_minute_candles_frame(df, 60, include_partial=True)
