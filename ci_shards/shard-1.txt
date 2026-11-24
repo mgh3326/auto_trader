@@ -123,6 +123,7 @@ tests/scripts/test_build_market_valuation_cli_gates.py
 tests/scripts/test_correct_journal_exit_fields_cli.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
+tests/scripts/test_dagu_session_minutes_dags.py
 tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py
 tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
@@ -297,6 +298,11 @@ tests/services/research/test_rob944_campaign_controller.py
 tests/services/research/test_rob974_r2_launcher.py
 tests/services/research/test_rob984_cp8_actual_integration.py
 tests/services/research_candles/test_dart_minute_trigger.py
+tests/services/research_candles/test_session_coverage.py
+tests/services/research_candles/test_session_minutes_collector.py
+tests/services/research_candles/test_session_minutes_db.py
+tests/services/research_candles/test_session_minutes_targets.py
+tests/services/research_candles/test_session_segment.py
 tests/services/screener_evidence/test_scoring.py
 tests/services/social_sentiment_probe/test_cli.py
 tests/services/spike_attribution/test_judgment_status.py
@@ -401,6 +407,7 @@ tests/test_forexfactory_calendar_flow_unscheduled.py
 tests/test_get_ohlcv_day_db_first.py
 tests/test_hermes_client.py
 tests/test_hermes_context_payload_intraday.py
+tests/test_hk6145_session_minutes_migration_db.py
 tests/test_import_contracts.py
 tests/test_integration.py
 tests/test_intraday_order_review_tasks.py

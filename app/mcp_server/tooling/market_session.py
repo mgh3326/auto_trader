@@ -39,6 +39,8 @@ _UTC = ZoneInfo("UTC")
 _ET = ZoneInfo("America/New_York")
 _US_PRE_OPEN = _time(4, 0)
 _US_AFTER_CLOSE = _time(20, 0)
+# hk 6145: public name for the 20:00 ET extended-session close / trading-day rollover.
+US_EXTENDED_CLOSE_ET = _US_AFTER_CLOSE
 
 # XKRX regular session opens at 09:00 KST.
 _KR_OPEN = _time(9, 0)

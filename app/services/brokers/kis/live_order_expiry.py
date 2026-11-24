@@ -55,6 +55,14 @@ _NXT_AFTER_OPEN = datetime.time(hour=16, minute=0)
 KRX_AFTER_OPEN_KST = datetime.time(hour=16, minute=0)
 KRX_AFTER_CLOSE_KST = datetime.time(hour=20, minute=0)
 
+# hk 6145: public names for the window edges above so other readers (session
+# minute labelling) share these values instead of re-typing them. Same objects,
+# no behavior change for the classifier in this module.
+KR_PREMARKET_OPEN_KST = _PREMARKET_OPEN
+KR_PREMARKET_CLOSE_KST = _PREMARKET_CLOSE
+KR_REGULAR_OPEN_KST = _REGULAR_OPEN
+KR_REGULAR_CLOSE_KST = _REGULAR_CLOSE
+
 SESSION_PREMARKET = "premarket"
 SESSION_REGULAR = "regular"
 SESSION_NXT_AFTER = "nxt_after"

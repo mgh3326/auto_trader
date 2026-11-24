@@ -1,0 +1,24 @@
+# US 세션 분봉 수집: 월–금 04:00–20:10 ET(프리·정규·애프터) 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# KST 로는 여름(EDT) 17:00–09:10, 겨울(EST) 18:00–10:10 이다. KST 고정 창은 여름 프리장 첫 1시간을 놓치므로 ET 기준으로 쓴다.
+# 닫힌 1분봉만 research.us_candles_1m 에 삽입 전용으로 쓴다(public 표는 건드리지 않는다).
+# 등록은 hk 6145 머지와 research 마이그레이션(20261124_hk6145_session_minutes) 적용 뒤 설계 세션이 한다.
+description: "US session minute bars (pre, regular, post) into research.us_candles_1m"
+schedule:
+  - "CRON_TZ=America/New_York */5 4-19 * * 1-5"
+  - "CRON_TZ=America/New_York 0,5,10 20 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_session_minutes --market us || rc=$?
+      exit "$rc"
+    timeout_sec: 240
+handler_on:
+  success:
+    command: 'logger -t at-dagu-session-minutes "dag=at-session-minutes-us status=success"'
+  failure:
+    command: 'logger -t at-dagu-session-minutes "dag=at-session-minutes-us status=failure"'
