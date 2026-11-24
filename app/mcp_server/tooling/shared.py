@@ -6,10 +6,12 @@ import datetime
 import logging
 import math
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.core.market import market_instrument_type
 from app.core.symbol import to_db_symbol
+from app.core.upbit_tick import upbit_krw_tick
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
@@ -288,6 +290,32 @@ def to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+#: Markets whose prices snap to the Upbit KRW order tick. Every other market
+#: (equity_kr, equity_us, None) keeps the historical two-decimal rounding.
+_TICK_PRICED_MARKETS = frozenset({"crypto"})
+
+
+def round_price_for_market(value: float, market_type: str | None) -> float:
+    """Round a price to the precision its instrument actually trades at.
+
+    Crypto (Upbit KRW) prices snap to the Upbit order tick
+    (``app.core.upbit_tick``), so sub-0.01 coins such as KRW-XEC keep distinct
+    levels instead of collapsing to 0.0/0.01. KR and US keep ``round(value, 2)``,
+    which is already at or finer than their tick. ``None`` means the equity
+    path. Percentages and indicator values (RSI, ADX, distance_pct) must keep
+    their own 2-decimal rounding and must not use this helper.
+    """
+    if market_type not in _TICK_PRICED_MARKETS:
+        return round(value, 2)
+    price = float(value)
+    if not math.isfinite(price) or price <= 0:
+        return price
+    exact = Decimal(repr(price))
+    tick = upbit_krw_tick(exact)
+    snapped = (exact / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
+    return float(snapped)
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,9 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 import app.services.kis_ohlcv_cache as kis_ohlcv_cache
 from app.mcp_server.tooling.shared import (
+    round_price_for_market,
+)
+from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.mcp_server.tooling.shared import (
@@ -559,7 +562,10 @@ def _calculate_atr(
 
 
 def _calculate_pivot(
-    high: pd.Series, low: pd.Series, close: pd.Series
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    market_type: str | None = None,
 ) -> dict[str, float | None]:
     if len(close) < 2:
         return {
@@ -584,14 +590,17 @@ def _calculate_pivot(
     s2 = p - (prev_high - prev_low)
     s3 = prev_low - 2 * (prev_high - p)
 
+    def _price(level: float) -> float:
+        return round_price_for_market(level, market_type)
+
     return {
-        "p": round(p, 2),
-        "r1": round(r1, 2),
-        "r2": round(r2, 2),
-        "r3": round(r3, 2),
-        "s1": round(s1, 2),
-        "s2": round(s2, 2),
-        "s3": round(s3, 2),
+        "p": _price(p),
+        "r1": _price(r1),
+        "r2": _price(r2),
+        "r3": _price(r3),
+        "s1": _price(s1),
+        "s2": _price(s2),
+        "s3": _price(s3),
     }
 
 
@@ -718,12 +727,14 @@ def _calculate_obv(
     }
 
 
-def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, Any]:
+def _calculate_fibonacci(
+    df: pd.DataFrame, current_price: float, market_type: str | None = None
+) -> dict[str, Any]:
     high = df["high"].astype(float)
     low = df["low"].astype(float)
 
-    swing_high_price = round(float(high.max()), 2)
-    swing_low_price = round(float(low.min()), 2)
+    swing_high_price = round_price_for_market(float(high.max()), market_type)
+    swing_low_price = round_price_for_market(float(low.min()), market_type)
     swing_high_pos = int(high.values.argmax())
     swing_low_pos = int(low.values.argmin())
 
@@ -743,16 +754,18 @@ def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, An
     if swing_high_pos > swing_low_pos:
         trend = "retracement_from_high"
         levels = {
-            str(lvl): round(
-                swing_high_price - lvl * (swing_high_price - swing_low_price), 2
+            str(lvl): round_price_for_market(
+                swing_high_price - lvl * (swing_high_price - swing_low_price),
+                market_type,
             )
             for lvl in FIBONACCI_LEVELS
         }
     else:
         trend = "bounce_from_low"
         levels = {
-            str(lvl): round(
-                swing_low_price + lvl * (swing_high_price - swing_low_price), 2
+            str(lvl): round_price_for_market(
+                swing_low_price + lvl * (swing_high_price - swing_low_price),
+                market_type,
             )
             for lvl in FIBONACCI_LEVELS
         }
@@ -778,7 +791,9 @@ def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, An
 
 
 def _compute_indicators(
-    df: pd.DataFrame, indicators: list[IndicatorType]
+    df: pd.DataFrame,
+    indicators: list[IndicatorType],
+    market_type: str | None = None,
 ) -> dict[str, dict[str, IndicatorScalar]]:
     results: dict[str, dict[str, IndicatorScalar]] = {}
 
@@ -815,7 +830,7 @@ def _compute_indicators(
                 results["atr"] = {str(DEFAULT_ATR_PERIOD): None}
         elif indicator == "pivot":
             if high is not None and low is not None:
-                results["pivot"] = _calculate_pivot(high, low, close)
+                results["pivot"] = _calculate_pivot(high, low, close, market_type)
         elif indicator == "adx":
             if high is not None and low is not None:
                 results["adx"] = _calculate_adx(high, low, close)
@@ -848,6 +863,7 @@ def _format_fibonacci_source(level_key: str) -> str:
 def _cluster_price_levels(
     levels: list[tuple[float, str]],
     tolerance_pct: float = 0.02,
+    market_type: str | None = None,
 ) -> list[dict[str, Any]]:
     if not levels:
         return []
@@ -892,7 +908,7 @@ def _cluster_price_levels(
             strength = "weak"
         clustered.append(
             {
-                "price": round(sum(prices) / len(prices), 2),
+                "price": round_price_for_market(sum(prices) / len(prices), market_type),
                 "strength": strength,
                 "sources": level_sources,
             }

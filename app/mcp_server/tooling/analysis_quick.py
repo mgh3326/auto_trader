@@ -132,11 +132,11 @@ def _empty_projection(symbol: str, market_type: str) -> dict[str, Any]:
 
 
 def _build_support_resistance(
-    frame: pd.DataFrame, current_price: float
+    frame: pd.DataFrame, current_price: float, market_type: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if current_price <= 0:
         return [], []
-    fib = _calculate_fibonacci(frame, current_price)
+    fib = _calculate_fibonacci(frame, current_price, market_type)
     # Same level inputs as the standalone get_support_resistance tool
     # (fibonacci + 20-bin volume profile + bollinger), computed from the frame
     # that is already loaded. A frame without usable volume only drops the
@@ -152,7 +152,9 @@ def _build_support_resistance(
     levels = _collect_support_resistance_price_levels(
         fib, volume_profile, _compute_indicators(frame, ["bollinger"])
     )
-    clustered = _cluster_price_levels(levels, tolerance_pct=0.02)
+    clustered = _cluster_price_levels(
+        levels, tolerance_pct=0.02, market_type=market_type
+    )
     return _split_support_resistance_levels(clustered, current_price)
 
 
@@ -216,7 +218,9 @@ def _project_symbol(symbol: str, market_type: str, rows: list[Any]) -> dict[str,
         indicators = _compute_indicators(frame, ["rsi"])
         result["rsi_14"] = (indicators.get("rsi") or {}).get("14")
         sr_frame = frame.tail(QUICK_SUPPORT_RESISTANCE_COUNT)
-        supports, resistances = _build_support_resistance(sr_frame, current_price)
+        supports, resistances = _build_support_resistance(
+            sr_frame, current_price, market_type
+        )
         result["supports"] = supports[:3]
         result["resistances"] = resistances[:3]
     except (KeyError, TypeError, ValueError, ZeroDivisionError):

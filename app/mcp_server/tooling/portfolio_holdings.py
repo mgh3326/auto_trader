@@ -1359,7 +1359,7 @@ async def _get_indicators_impl(
                 current_price = live
                 current_price_source = "yahoo_live"
 
-        indicator_results = _compute_indicators(df, indicators)
+        indicator_results = _compute_indicators(df, indicators, market_type)
 
         if market_type == "crypto" and any(
             str(ind).strip().lower() == "rsi" for ind in indicators
