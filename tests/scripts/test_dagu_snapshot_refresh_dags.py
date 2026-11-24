@@ -140,7 +140,16 @@ def _data_plane_slot(name: str) -> tuple[int, set[int]]:
 
 
 def _candle_slot(name: str) -> tuple[int, set[int]]:
-    return _utc_slot(yaml.safe_load((CANDLES_DIR / name).read_text())["schedule"])
+    """UTC slot of the candle sync's 16:30 KST run.
+
+    The KR candle DAG lists a second, Asia/Seoul entry for the next morning's
+    settled-bar run; only the CRON_TZ=UTC entry is the same-day run compared here.
+    """
+    schedules = yaml.safe_load((CANDLES_DIR / name).read_text())["schedule"]
+    if isinstance(schedules, str):
+        schedules = [schedules]
+    (utc,) = [entry for entry in schedules if entry.startswith(UTC_PREFIX)]
+    return _utc_slot(utc)
 
 
 def _parse_command(command: str) -> tuple[str, str, str | None]:
