@@ -20,6 +20,7 @@ from tests.services.retro_v1.support import (
     ns,
     operational_error,
     pick,
+    proposal,
     validate,
 )
 
@@ -666,3 +667,26 @@ async def test_invalid_parameters_are_refused_before_any_statement(
 
 def test_the_fixture_fill_instant_is_the_one_the_chain_reports() -> None:
     assert FILL_AT == datetime(2026, 1, 5, 2, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_prose_void_reason_falls_back_to_the_proposal_lifecycle_code() -> None:
+    prose = proposal(
+        10,
+        "005930",
+        datetime(2026, 1, 5, 1, 0, tzinfo=UTC),
+        lifecycle_state="cancelled",
+        void_reason="operator said: no thanks!",
+    )
+    session = timeline_session(
+        **{
+            "FROM review.order_proposals ": [prose],
+            "FROM review.order_proposal_rungs": [],
+            "FROM review.execution_ledger": [],
+            "FROM review.kis_live_order_ledger": [],
+        }
+    )
+    response = await read_retro_timeline(session, date=DAY, market="kr")
+    row = next(r for r in response["data"] if r["symbol"] == "005930")
+    assert (row["state"], row["reason"]) == ("proposed_unfilled", "proposal_cancelled")
+    assert row["events"][-1]["reason"] is None

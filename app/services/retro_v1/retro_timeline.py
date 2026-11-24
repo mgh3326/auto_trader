@@ -281,6 +281,10 @@ def _chain_events(
                 unknowns.note(f"source.{source}_events", "incomplete_evidence")
                 continue
             reason = row.get("block_reason") or row.get("reason")
+            # The chain collapses prose to "unclassified"; that is not a reason,
+            # so the documented ``proposal_<lifecycle>`` fallback must apply.
+            if reason == "unclassified":
+                reason = None
             out.append(
                 (
                     _key(str(row["symbol"]), market),
