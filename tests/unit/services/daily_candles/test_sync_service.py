@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pandas as pd
 import pytest
 
+from app.core.timezone import KST
 from app.services.daily_candles.repository import MarketKey
 from app.services.daily_candles.sync_service import (
     DailyCandleSyncService,
@@ -785,3 +787,157 @@ async def test_statement_level_dbapi_error_stays_symbol_local() -> None:
     assert result["status"] == "partial"
     assert result["failed_symbols"] == [{"symbol": "A", "error_class": "DBAPIError"}]
     assert result["rows_upserted"] == 1
+
+
+def _kr_three_day_frame() -> pd.DataFrame:
+    """KIS/Toss-shaped frame: 11-20 and 11-23 are settled; 11-24 is the trading day."""
+    return pd.DataFrame(
+        [
+            {
+                "date": day,
+                "open": 1,
+                "high": 2,
+                "low": 1,
+                "close": 2,
+                "volume": 10,
+                "value": 20,
+            }
+            for day in ("2026-11-20", "2026-11-23", "2026-11-24")
+        ]
+    )
+
+
+def _kst_clock(*, year: int, month: int, day: int, hour: int, minute: int):
+    """A fixed injected run clock, as the KST calendar date of that instant."""
+    instant = datetime(year, month, day, hour, minute, tzinfo=KST)
+    return lambda: instant.date()
+
+
+def _upserted_bar_dates(repo) -> list[str]:
+    rows = repo.upsert_rows.await_args.kwargs["rows"]
+    return sorted(r.time_utc.astimezone(KST).date().isoformat() for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_kr_kis_run_at_1630_kst_keeps_only_settled_past_bars():
+    """16:30 KST on 11-24: the 11-24 bar is still trading, so it is not written."""
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(return_value=_kr_three_day_frame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        kst_today=_kst_clock(year=2026, month=11, day=24, hour=16, minute=30),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        horizon_bars=3,
+    )
+
+    assert _upserted_bar_dates(repo) == ["2026-11-20", "2026-11-23"]
+    assert result.rows_upserted == 2
+    assert result.in_progress_dropped == 1
+
+
+@pytest.mark.asyncio
+async def test_kr_kis_next_morning_run_upserts_all_three_days():
+    """07:10 KST on 11-25: 11-24 is settled, so all three bars are written."""
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(return_value=_kr_three_day_frame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        kst_today=_kst_clock(year=2026, month=11, day=25, hour=7, minute=10),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        horizon_bars=3,
+    )
+
+    assert _upserted_bar_dates(repo) == ["2026-11-20", "2026-11-23", "2026-11-24"]
+    assert result.rows_upserted == 3
+    assert result.in_progress_dropped == 0
+
+
+@pytest.mark.asyncio
+async def test_kr_toss_fallback_at_1630_kst_keeps_only_settled_past_bars():
+    """KIS returns nothing, so the Toss rows are the ones that must be filtered."""
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(return_value=pd.DataFrame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        toss_kr_fetcher=AsyncMock(return_value=_kr_three_day_frame()),
+        kst_today=_kst_clock(year=2026, month=11, day=24, hour=16, minute=30),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        horizon_bars=3,
+    )
+
+    assert result.fallback_used is True
+    assert _upserted_bar_dates(repo) == ["2026-11-20", "2026-11-23"]
+    assert {r.source for r in repo.upsert_rows.await_args.kwargs["rows"]} == {"toss"}
+
+
+@pytest.mark.asyncio
+async def test_kr_toss_fallback_next_morning_run_upserts_all_three_days():
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(return_value=pd.DataFrame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        toss_kr_fetcher=AsyncMock(return_value=_kr_three_day_frame()),
+        kst_today=_kst_clock(year=2026, month=11, day=25, hour=7, minute=10),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        horizon_bars=3,
+    )
+
+    assert result.fallback_used is True
+    assert _upserted_bar_dates(repo) == ["2026-11-20", "2026-11-23", "2026-11-24"]
+
+
+@pytest.mark.asyncio
+async def test_kr_run_logs_dropped_in_progress_count_once_per_run(caplog):
+    repo = _repo_with_session()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(return_value=_kr_three_day_frame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        kst_today=_kst_clock(year=2026, month=11, day=24, hour=16, minute=30),
+    )
+    svc._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+            SyncTarget(market=MarketKey.KR, symbol="000660", partition="KRX"),
+        ]
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="app.services.daily_candles.sync_service"
+    ):
+        result = await svc.sync_market_universe(market="kr", horizon_bars=3)
+
+    assert result["rows_upserted"] == 4
+    dropped_logs = [
+        record
+        for record in caplog.records
+        if "KR daily sync: dropped" in record.getMessage()
+    ]
+    assert len(dropped_logs) == 1
+    assert "dropped 2 in-progress bar(s)" in dropped_logs[0].getMessage()

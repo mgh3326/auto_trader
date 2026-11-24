@@ -9,7 +9,10 @@ ROOT = Path(__file__).resolve().parents[2]
 DAG_DIR = ROOT / "deploy/dagu/at-batch2"
 DAGS = {
     "at-batch2-daily-candles-kr": (
-        "CRON_TZ=UTC 30 7 * * 1-5",
+        [
+            "CRON_TZ=UTC 30 7 * * 1-5",
+            "CRON_TZ=Asia/Seoul 10 7 * * 2-6",
+        ],
         "scripts.sync_daily_candles --market kr",
     ),
     "at-batch2-daily-candles-us": (

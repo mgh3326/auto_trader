@@ -16,6 +16,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -24,6 +25,7 @@ from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.core.symbol import to_db_symbol, to_upbit_symbol
+from app.core.timezone import KST, today_kst
 from app.services.daily_candles.converters import frame_to_rows
 from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
@@ -55,12 +57,34 @@ def _is_job_wide_database_failure(exc: BaseException) -> bool:
     return isinstance(exc, DBAPIError) and exc.connection_invalidated
 
 
+def _drop_bars_not_yet_final(
+    rows: list[DailyCandleRow], *, run_date: date
+) -> tuple[list[DailyCandleRow], int]:
+    """Drop KR rows whose KST bar date is not earlier than the run's KST date.
+
+    A KST trading day is still trading on its own date. A bar reported for that
+    date is the price at the moment of the run (after-market 16:00-20:00 KST
+    included), not the settled close. Day D is final only from the next KST
+    calendar day, so a run on D keeps only bars dated before D.
+    """
+    kept: list[DailyCandleRow] = []
+    for row in rows:
+        bar_time = row.time_utc
+        if bar_time.tzinfo is None:
+            bar_time = bar_time.replace(tzinfo=UTC)
+        if bar_time.astimezone(KST).date() >= run_date:
+            continue
+        kept.append(row)
+    return kept, len(rows) - len(kept)
+
+
 @dataclass(frozen=True, slots=True)
 class SyncOneResult:
     target: SyncTarget
     rows_upserted: int
     fallback_used: bool
     skipped_reason: str | None = None
+    in_progress_dropped: int = 0
 
 
 KISKrFetcher = Callable[..., Awaitable["pd.DataFrame"]]
@@ -87,6 +111,7 @@ class DailyCandleSyncService:
         us_holdings_loader: UsHoldingsLoader | None = None,
         upbit_holdings_loader: Callable[[], Awaitable[set[str]]] | None = None,
         close_callbacks: list[Callable[[], object]] | None = None,
+        kst_today: Callable[[], date] | None = None,
     ) -> None:
         self._repository = repository
         self._kis_kr = kis_kr_fetcher
@@ -98,6 +123,10 @@ class DailyCandleSyncService:
         self._us_holdings_loader = us_holdings_loader
         self._upbit_holdings_loader = upbit_holdings_loader
         self._close_callbacks = close_callbacks or []
+        self._kst_today = kst_today
+
+    def _run_date(self) -> date:
+        return self._kst_today() if self._kst_today is not None else today_kst()
 
     async def close(self) -> None:
         """Release resources owned by the default service factory."""
@@ -149,10 +178,16 @@ class DailyCandleSyncService:
                 source="toss",
             )
             fallback_used = True
+        rows, in_progress_dropped = _drop_bars_not_yet_final(
+            rows, run_date=self._run_date()
+        )
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
         await self._commit_or_rollback()
         return SyncOneResult(
-            target=target, rows_upserted=upserted, fallback_used=fallback_used
+            target=target,
+            rows_upserted=upserted,
+            fallback_used=fallback_used,
+            in_progress_dropped=in_progress_dropped,
         )
 
     async def _sync_us(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
@@ -261,6 +296,7 @@ class DailyCandleSyncService:
         rows_total = 0
         fallback_count = 0
         skipped = 0
+        in_progress_dropped = 0
         failed_symbols: list[dict[str, str]] = []
         for target in targets:
             try:
@@ -290,10 +326,16 @@ class DailyCandleSyncService:
                 )
                 continue
             rows_total += result.rows_upserted
+            in_progress_dropped += result.in_progress_dropped
             if result.fallback_used:
                 fallback_count += 1
             if result.skipped_reason:
                 skipped += 1
+        if market == "kr":
+            logger.info(
+                "KR daily sync: dropped %d in-progress bar(s) dated on or after the run's KST date",
+                in_progress_dropped,
+            )
         failed_count = len(failed_symbols)
         status = (
             "failed"

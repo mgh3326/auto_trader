@@ -1,8 +1,11 @@
-# 16:30 KST 월–금 일봉 동기화. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 16:30 KST 월–금 일봉 동기화와 익일 07:10 KST 화–토 정산 동기화. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
 # 등록 전 기존 TaskIQ at-scheduler가 중지되었는지 확인해 중복 실행을 막는다.
-# 스케줄은 UTC(07:30)로 표기한다. 실패는 journal 한 줄로 남긴다.
+# 16:30 실행은 아직 거래 중인 당일 봉을 쓰지 않는다(KST 당일 봉 제외). 익일 07:10 실행이 전일 정산 봉을 쓴다.
+# 스케줄은 UTC(07:30)로 표기하며, 두 번째 항목은 Asia/Seoul로 표기한다. 실패는 journal 한 줄로 남긴다.
 description: "daily candle sync for KR"
-schedule: "CRON_TZ=UTC 30 7 * * 1-5"
+schedule:
+  - "CRON_TZ=UTC 30 7 * * 1-5"
+  - "CRON_TZ=Asia/Seoul 10 7 * * 2-6"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
