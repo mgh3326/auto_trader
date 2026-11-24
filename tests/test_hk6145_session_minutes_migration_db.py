@@ -95,6 +95,10 @@ def test_every_kr_table_statement_tolerates_a_missing_table(step: str) -> None:
     assert touching
     for sql in touching:
         assert "to_regclass('research.kr_candles_1m') IS NOT NULL" in sql, sql[:200]
+        # plpgsql plans a whole IF condition at once: the existence check and the
+        # query on the table must be in different (nested) statements.
+        assert "IS NOT NULL AND" not in sql, sql[:200]
+        assert "AND EXISTS (SELECT 1 FROM research.kr_candles_1m" not in sql
 
 
 @pytest.mark.unit

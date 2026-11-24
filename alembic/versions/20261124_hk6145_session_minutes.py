@@ -259,20 +259,24 @@ def downgrade() -> None:
                     'cannot drop research.us_candles_1m: rows exist (first-receipt times would be lost)'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            IF to_regclass('research.kr_candles_1m') IS NOT NULL AND EXISTS (
-                SELECT 1 FROM research.kr_candles_1m
-                WHERE session_segment = 'KRX_AFTER' LIMIT 1
-            ) THEN
-                RAISE EXCEPTION
-                    'cannot narrow session_segment: KRX_AFTER rows exist'
-                    USING ERRCODE = 'restrict_violation';
-            END IF;
-            IF to_regclass('research.kr_candles_1m') IS NOT NULL AND EXISTS (
-                SELECT 1 FROM research.kr_candles_1m WHERE value IS NULL LIMIT 1
-            ) THEN
-                RAISE EXCEPTION
-                    'cannot restore NOT NULL: rows with NULL value exist'
-                    USING ERRCODE = 'restrict_violation';
+            -- Nested IF: plpgsql plans a whole IF condition at once, so a missing
+            -- table must never appear in the same condition as its existence check.
+            IF to_regclass('research.kr_candles_1m') IS NOT NULL THEN
+                IF EXISTS (
+                    SELECT 1 FROM research.kr_candles_1m
+                    WHERE session_segment = 'KRX_AFTER' LIMIT 1
+                ) THEN
+                    RAISE EXCEPTION
+                        'cannot narrow session_segment: KRX_AFTER rows exist'
+                        USING ERRCODE = 'restrict_violation';
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM research.kr_candles_1m WHERE value IS NULL LIMIT 1
+                ) THEN
+                    RAISE EXCEPTION
+                        'cannot restore NOT NULL: rows with NULL value exist'
+                        USING ERRCODE = 'restrict_violation';
+                END IF;
             END IF;
         END
         $$
