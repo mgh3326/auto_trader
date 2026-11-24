@@ -21,6 +21,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from sentry_sdk.consts import SPANSTATUS
 
+from app.core.tool_deadline import reset_tool_deadline, set_tool_deadline
 from app.mcp_server.env_utils import DEFAULT_MCP_TOOL_TIMEOUT_S
 
 if TYPE_CHECKING:
@@ -131,7 +132,13 @@ class ToolTimeoutMiddleware(Middleware):
         cm = asyncio.timeout(budget)
         try:
             async with cm:
-                return await call_next(context)
+                # Publish this call's deadline so optional work inside the handler
+                # (e.g. the screener pick-log write) can bound itself by it.
+                deadline_token = set_tool_deadline(cm.when())
+                try:
+                    return await call_next(context)
+                finally:
+                    reset_tool_deadline(deadline_token)
         except TimeoutError:
             if not cm.expired():
                 # The tool raised its OWN TimeoutError before the budget elapsed —
