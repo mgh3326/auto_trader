@@ -84,6 +84,20 @@ def test_kr_check_is_added_not_valid_and_cagg_grants_are_guarded() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("step", ["upgrade", "downgrade"])
+def test_every_kr_table_statement_tolerates_a_missing_table(step: str) -> None:
+    """A database stamped past 20260803 (CI chain tests) has no research.kr_candles_1m."""
+    migration = _load(MIGRATION_PATH, f"hk6145_kr_guard_{step}")
+    captured: list[str] = []
+    migration.op = SimpleNamespace(execute=lambda sql: captured.append(str(sql)))
+    getattr(migration, step)()
+    touching = [sql for sql in captured if "research.kr_candles_1m" in sql]
+    assert touching
+    for sql in touching:
+        assert "to_regclass('research.kr_candles_1m') IS NOT NULL" in sql, sql[:200]
+
+
+@pytest.mark.unit
 def test_revision_chain_and_length() -> None:
     migration = _load(MIGRATION_PATH, "hk6145_chain")
     assert migration.down_revision == "20261122_hk6026_market_event"

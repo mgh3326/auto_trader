@@ -93,22 +93,46 @@ def _cagg_sql(view_name: str, interval: str) -> str:
     """
 
 
+def _if_kr_table(*statements: str) -> str:
+    """DO block that runs ``statements`` only if research.kr_candles_1m exists.
+
+    Production has the table (migration 20260803); a scratch database that was
+    stamped past it (CI chain tests) does not, and must not fail here.
+    """
+    body = "\n".join(f"EXECUTE $kr${statement}$kr$;" for statement in statements)
+    return f"""
+        DO $$
+        BEGIN
+            IF to_regclass('research.kr_candles_1m') IS NOT NULL THEN
+                {body}
+            END IF;
+        END
+        $$
+        """
+
+
 def _set_kr_segment_check(values: Sequence[str]) -> None:
     # NOT VALID: no chunk scan while ACCESS EXCLUSIVE is held (the table is the
     # no-retention deep-history hypertable, a promotion target). New and updated
     # rows are checked immediately. Existing rows already satisfy the old CHECK,
     # which is a subset of the widened one, and the downgrade guard proves there
     # is no KRX_AFTER row before narrowing, so no VALIDATE revision is needed.
-    op.execute(f"ALTER TABLE research.kr_candles_1m DROP CONSTRAINT {KR_CHECK}")
     op.execute(
-        f"ALTER TABLE research.kr_candles_1m ADD CONSTRAINT {KR_CHECK} "
-        f"CHECK (session_segment IN ({_quoted(values)})) NOT VALID"
+        _if_kr_table(
+            f"ALTER TABLE research.kr_candles_1m DROP CONSTRAINT IF EXISTS {KR_CHECK}",
+            f"ALTER TABLE research.kr_candles_1m ADD CONSTRAINT {KR_CHECK} "
+            f"CHECK (session_segment IN ({_quoted(values)})) NOT VALID",
+        )
     )
 
 
 def upgrade() -> None:
     _set_kr_segment_check(KR_SEGMENTS_NEW)
-    op.execute("ALTER TABLE research.kr_candles_1m ALTER COLUMN value DROP NOT NULL")
+    op.execute(
+        _if_kr_table(
+            "ALTER TABLE research.kr_candles_1m ALTER COLUMN value DROP NOT NULL"
+        )
+    )
 
     op.execute("CREATE SCHEMA IF NOT EXISTS research")
     op.execute(
@@ -192,6 +216,17 @@ def upgrade() -> None:
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
                 GRANT USAGE ON SCHEMA research TO at_app;
                 GRANT SELECT, INSERT ON research.us_candles_1m TO at_app;
+            END IF;
+        END
+        $$
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF to_regclass('research.kr_candles_1m') IS NOT NULL
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') THEN
                 GRANT SELECT, INSERT ON research.kr_candles_1m TO at_app;
             END IF;
         END
@@ -224,7 +259,7 @@ def downgrade() -> None:
                     'cannot drop research.us_candles_1m: rows exist (first-receipt times would be lost)'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            IF EXISTS (
+            IF to_regclass('research.kr_candles_1m') IS NOT NULL AND EXISTS (
                 SELECT 1 FROM research.kr_candles_1m
                 WHERE session_segment = 'KRX_AFTER' LIMIT 1
             ) THEN
@@ -232,7 +267,7 @@ def downgrade() -> None:
                     'cannot narrow session_segment: KRX_AFTER rows exist'
                     USING ERRCODE = 'restrict_violation';
             END IF;
-            IF EXISTS (
+            IF to_regclass('research.kr_candles_1m') IS NOT NULL AND EXISTS (
                 SELECT 1 FROM research.kr_candles_1m WHERE value IS NULL LIMIT 1
             ) THEN
                 RAISE EXCEPTION
@@ -246,5 +281,9 @@ def downgrade() -> None:
     for view_name, _ in US_CAGG_SPECS:
         op.execute(f"DROP MATERIALIZED VIEW IF EXISTS research.{view_name}")
     op.execute("DROP TABLE research.us_candles_1m")
-    op.execute("ALTER TABLE research.kr_candles_1m ALTER COLUMN value SET NOT NULL")
+    op.execute(
+        _if_kr_table(
+            "ALTER TABLE research.kr_candles_1m ALTER COLUMN value SET NOT NULL"
+        )
+    )
     _set_kr_segment_check(KR_SEGMENTS_OLD)
