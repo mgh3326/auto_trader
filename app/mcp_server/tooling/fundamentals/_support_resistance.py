@@ -22,6 +22,9 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
+from app.mcp_server.tooling.shared import (
+    round_price_for_market,
+)
 
 
 async def get_support_resistance_impl(
@@ -53,16 +56,16 @@ async def get_support_resistance_impl(
             if col not in df.columns:
                 raise ValueError(f"Missing required column: {col}")
 
-        current_price = round(float(df["close"].iloc[-1]), 2)
+        current_price = round_price_for_market(float(df["close"].iloc[-1]), market_type)
         current_price_source = "ohlcv_close"
         if market_type == "equity_us":
             # ROB-365 bug 1: position levels against the live intraday price,
             # not the previous daily close (levels themselves stay historical).
             live = await fetch_us_live_last_price(normalized_symbol)
             if live is not None:
-                current_price = round(live, 2)
+                current_price = round_price_for_market(live, market_type)
                 current_price_source = "yahoo_live"
-        fib_result = _calculate_fibonacci(df, current_price)
+        fib_result = _calculate_fibonacci(df, current_price, market_type)
         fib_result["symbol"] = normalized_symbol
 
         volume_result = _calculate_volume_profile(df, bins=20)
@@ -80,7 +83,9 @@ async def get_support_resistance_impl(
             fib_result, volume_result, indicator_result
         )
 
-        clustered_levels = _cluster_price_levels(price_levels, tolerance_pct=0.02)
+        clustered_levels = _cluster_price_levels(
+            price_levels, tolerance_pct=0.02, market_type=market_type
+        )
         supports, resistances = _split_support_resistance_levels(
             clustered_levels,
             current_price,
@@ -88,7 +93,7 @@ async def get_support_resistance_impl(
 
         result: dict[str, Any] = {
             "symbol": normalized_symbol,
-            "current_price": round(current_price, 2),
+            "current_price": round_price_for_market(current_price, market_type),
             "supports": supports,
             "resistances": resistances,
         }

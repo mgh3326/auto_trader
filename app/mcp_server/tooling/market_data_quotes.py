@@ -1692,7 +1692,7 @@ async def _get_indicators_impl(
                 current_price = live
                 current_price_source = "yahoo_live"
 
-        indicator_results = _compute_indicators(df, normalized_indicators)
+        indicator_results = _compute_indicators(df, normalized_indicators, market_type)
 
         if market_type == "crypto" and "rsi" in normalized_indicators:
             realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)

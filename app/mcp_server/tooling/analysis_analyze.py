@@ -51,6 +51,7 @@ from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
+from app.mcp_server.tooling.shared import round_price_for_market
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 from app.services.halt_detection import (
     HALTED_SUSPECT_DATA_STATE,
@@ -694,7 +695,7 @@ def _recompute_intraday_support_resistance(
     supports, resistances = _split_support_resistance_levels(recomputed, live_price)
     sr["supports"] = supports
     sr["resistances"] = resistances
-    sr["distance_basis_price"] = round(live_price, 2)
+    sr["distance_basis_price"] = round_price_for_market(live_price, market_type)
     sr["distance_basis"] = "live_quote"
 
 
