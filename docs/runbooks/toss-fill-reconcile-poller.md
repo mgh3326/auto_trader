@@ -92,7 +92,8 @@ TOSS_FILL_POLL_ENABLED=true uv run python -m scripts.toss_fill_reconcile_poller 
 ```
 
 > ⚠️ **동시 실행 금지**: ROB-757 TaskIQ 폴러 스케줄이 armed(워커+스케줄러 가동
-> 중)일 때 `--commit`을 돌리지 말 것. dedupe는 delta 기반이라 **직렬** 재실행만
+> 중)일 때 `--commit`을 돌리지 말 것. Dagu 잡 `at-toss-fill-poll`(hk 6277)도 같다 —
+> 먼저 OCI 에서 잡을 일시정지하고 진행 중 실행이 끝난 뒤 돌리고, 끝나면 재개한다. dedupe는 delta 기반이라 **직렬** 재실행만
 > 보호한다 — 두 reconcile 패스가 겹치면(둘 다 `already=0`을 읽은 뒤 커밋)
 > 이중 부기 가능성이 있다(`update_reconcile_outcome`에 row lock 없음). 수동
 > reps 기간엔 TaskIQ 폴러가 off인 것을 먼저 확인하라.
@@ -142,6 +143,12 @@ windows. The script's market gate still decides whether a pass calls Toss.
 shared `.env.api` is unchanged. `max_active_runs: 1` and a 240 s timeout keep
 two passes from overlapping. The OCI Dagu copy is the registered one; the
 repo file is its copy. To stop the poller, suspend the DAG on OCI.
+
+`max_active_runs` does not cover a separately started CLI process. Before any
+manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll` on OCI and
+wait until its current run, if any, has finished. A run finishes within its
+240 s timeout. Then run the manual pass and resume the DAG. The same rule
+applies to a manual `toss_reconcile_orders(dry_run=False)` call.
 
 The launchd section below is superseded by this job and kept for history.
 
