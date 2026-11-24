@@ -143,14 +143,18 @@ windows. The script's market gate still decides whether a pass calls Toss.
 shared `.env.api` is unchanged. The OCI Dagu copy is the registered one; the
 repo file is its copy. To stop the poller, suspend the DAG on OCI.
 
-Overlap is prevented by the container, not by Dagu. Dagu's `timeout_sec`
-(240 s) only stops the docker client, so a killed client can leave the
-container running. Two things bound the container itself:
+Overlap is prevented by the container name, not by Dagu. Each pass runs in a
+container named `at-toss-fill-poll`. If one is still there, the step logs
+`status=skipped_previous_pass_running` and exits 0; a race between that check
+and the start is caught by docker refusing a second container with the same
+name (exit 125, the step fails).
 
-- It is named `at-toss-fill-poll`. While a container with that name exists,
-  docker refuses to start another one (exit 125, the DAG step fails).
-- The poller runs under `timeout -k 10 200` inside the container, so it gets
-  TERM at 200 s and KILL at 210 s even if the client is gone.
+A booking pass is never cut short on purpose. Booking one row commits in
+separate steps (fill save, then journal/FIFO, then the progress update), so a
+pass killed in between can book the same delta again on the next pass.
+`--sig-proxy=false` keeps Dagu's timeout signal away from the container, and
+the in-container `timeout -k 60 3600` only cleans up a hung process (a normal
+pass takes tens of seconds). A deadline checked between rows is hk 6288.
 
 Before any manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll`
 on OCI. Check that `docker ps --filter name=at-toss-fill-poll` on pi is empty.

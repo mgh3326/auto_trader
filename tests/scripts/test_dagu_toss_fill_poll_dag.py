@@ -32,12 +32,20 @@ def test_dag_commits_with_job_scoped_flag_and_never_overlaps() -> None:
     assert "--env-file /root/at-secrets/.env.api" in script
     assert "-m scripts.toss_fill_reconcile_poller --commit || rc=$?" in script
     assert "TOSS_FILL_POLL_MARKET_GATE_ENABLED" not in script
-    # Overlap is prevented by the container, not by Dagu's timeout (which
-    # only stops the docker client): a fixed name makes docker refuse a second
-    # container, and timeout inside the container ends the poller itself.
-    assert "--name at-toss-fill-poll " in script
+    # Overlap is prevented by the container name, not by Dagu's timeout: a
+    # running container makes the step skip, and docker refuses a second
+    # container with the same name. A booking pass must never be cut short
+    # (per-row booking commits in separate steps), so Dagu's timeout signal is
+    # not proxied and the in-container timeout is only a hung-process backstop.
+    lines = script.splitlines()
+    guard = next(i for i, line in enumerate(lines) if "docker ps -aq" in line)
+    run = next(i for i, line in enumerate(lines) if "docker run" in line)
+    assert guard < run
+    assert "--filter name=at-toss-fill-poll" in lines[guard]
+    assert "exit 0" in lines[guard]
+    assert "--sig-proxy=false --name at-toss-fill-poll " in script
     assert (
-        '"$(cat /root/at-run/deployed-digest)" timeout -k 10 200 /app/.venv/bin/python'
-        in script
+        '"$(cat /root/at-run/deployed-digest)" timeout -k 60 3600 '
+        "/app/.venv/bin/python" in script
     )
-    assert 200 + 10 < step["timeout_sec"] < 300
+    assert step["timeout_sec"] > 3600 + 60
