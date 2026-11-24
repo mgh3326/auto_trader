@@ -621,7 +621,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     _patch_runtime_attr(
         monkeypatch,
         "_calculate_fibonacci",
-        lambda df, current_price: {
+        lambda df, current_price, market_type=None: {
             "swing_high": {"price": 120.0, "date": "2026-02-01"},
             "swing_low": {"price": 80.0, "date": "2026-01-01"},
             "trend": "retracement_from_high",
@@ -644,7 +644,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     _patch_runtime_attr(
         monkeypatch,
         "_compute_indicators",
-        lambda df, indicators: {
+        lambda df, indicators, market_type=None: {
             "bollinger": {"upper": 111.0, "middle": 100.0, "lower": 90.0}
         },
     )

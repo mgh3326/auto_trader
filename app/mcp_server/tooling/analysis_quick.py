@@ -132,7 +132,7 @@ def _empty_projection(symbol: str, market_type: str) -> dict[str, Any]:
 
 
 def _build_support_resistance(
-    frame: pd.DataFrame, current_price: float, market_type: str
+    frame: pd.DataFrame, current_price: float, market_type: str | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if current_price <= 0:
         return [], []
