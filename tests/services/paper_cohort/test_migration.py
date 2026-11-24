@@ -428,6 +428,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             )
             await connection.execute(text("DROP TABLE review.strategy_sleeve_versions"))
             await connection.execute(text("DROP TABLE review.strategy_sleeves"))
+            # hk 6154 momentum run-status table is later than the boundary too.
+            await connection.execute(text("DROP TABLE invest_momentum_event_runs"))
             # hk 4702 trend state tables are later too (intents reference signals).
             await connection.execute(text("DROP TABLE review.binance_trend_intents"))
             await connection.execute(text("DROP TABLE review.binance_trend_signals"))
