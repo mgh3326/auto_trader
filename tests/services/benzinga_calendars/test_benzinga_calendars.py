@@ -221,8 +221,14 @@ class _FakeHTTP:
     async def __aexit__(self, *exc_info):
         return False
 
-    async def get(self, url, params=None):
-        self.requests.append({"url": url, "params": dict(params or {})})
+    async def get(self, url, params=None, headers=None):
+        self.requests.append(
+            {
+                "url": url,
+                "params": dict(params or {}),
+                "headers": dict(headers or {}),
+            }
+        )
         return self._responses.pop(0)
 
 
@@ -253,6 +259,7 @@ async def test_client_sends_token_in_query_and_returns_rows():
     assert request["params"]["token"] == "secret-key-value"
     assert request["params"]["parameters[date_from]"] == "2026-10-01"
     assert request["params"]["pagesize"] == 1000
+    assert request["headers"]["Accept"] == "application/json"
     assert "secret-key-value" not in request["url"]
 
 
