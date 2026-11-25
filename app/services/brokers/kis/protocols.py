@@ -41,7 +41,7 @@ class KISClientProtocol(Protocol):
         """Ensure valid access token is available."""
         ...
 
-    async def _fetch_token(self) -> tuple[str, int]:
+    async def _fetch_token(self) -> tuple[str, int, str | None]:
         """Fetch new OAuth2 token from KIS API."""
         ...
 

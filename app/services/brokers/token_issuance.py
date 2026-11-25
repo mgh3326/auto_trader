@@ -35,6 +35,18 @@ class TokenIssuanceUnavailable(RuntimeError):
     """gatewayd could not prove that it accepted a token-ensure request."""
 
 
+class KISTokenIssuanceRateLimitedError(RuntimeError):
+    """KIS rejected OAuth issuance because its once-per-minute limit was hit."""
+
+    code = "EGW00133"
+    retry_after_seconds = 60
+
+    def __init__(self) -> None:
+        super().__init__(
+            "KIS token issuance limited (EGW00133); retry after 60 seconds"
+        )
+
+
 class TokenIssuanceCacheOnlyUnavailable(TokenIssuanceUnavailable):
     """``cache_only`` refused to issue: no usable cached token, or a re-issue was requested.
 

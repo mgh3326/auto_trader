@@ -94,6 +94,32 @@ class DomesticMarketDataMixin(MarketDataBase):
 
     # ── Ranking ──
 
+    async def ksd_dividends(
+        self, from_date: str, to_date: str, *, symbol: str = "", high_gb: str = ""
+    ) -> list[dict[str, Any]]:
+        """Read KSD dividend rows for a real KIS account (one response only)."""
+        if getattr(self._parent, "_is_mock_client", False):
+            raise RuntimeError(
+                "KSD dividend calendar is available for real accounts only"
+            )
+        response = await self._request_with_token_retry(
+            tr_id=constants.KSD_DIVIDEND_TR,
+            url=self._kis_url(constants.KSD_DIVIDEND_URL),
+            params={
+                "CTS": "",
+                "GB1": "0",
+                "F_DT": from_date,
+                "T_DT": to_date,
+                "SHT_CD": symbol,
+                "HIGH_GB": high_gb,
+            },
+            api_name="ksd_dividends",
+        )
+        rows = response.get("output1", [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise RuntimeError("Malformed KIS KSD dividend response")
+        return rows
+
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_VOLUME_TR,

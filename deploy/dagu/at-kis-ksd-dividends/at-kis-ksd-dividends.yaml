@@ -1,0 +1,6 @@
+# 제안 복사본: 등록되지 않음. 일정 수집은 운영자 판단 후 수동 CLI로 실행한다.
+# KIS KSD API는 실계좌 읽기 전용이며 이 파일은 스케줄 등록이 아니다.
+description: "KIS KSD 배당 일정 수집 제안 (미등록)"
+steps:
+  - name: manual-example
+    command: docker run --rm --init --network host --workdir /app "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_kis_ksd_dividends --from-date 2026-01-01 --to-date 2026-01-31 --dry-run
