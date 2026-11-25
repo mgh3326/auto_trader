@@ -175,11 +175,6 @@ tests/services/brokers/binance/futures_demo/test_execution_client_leverage.py
 tests/services/brokers/binance/futures_demo/test_execution_client_order_test.py
 tests/services/brokers/binance/futures_demo/test_execution_client_position.py
 tests/services/brokers/binance/futures_demo/test_signing.py
-tests/services/brokers/binance/h5/test_execution_contract.py
-tests/services/brokers/binance/h5/test_history_executor.py
-tests/services/brokers/binance/h5/test_last_tick.py
-tests/services/brokers/binance/h5/test_single_asset_margin_gate.py
-tests/services/brokers/binance/h5/test_single_asset_margin_mutants.py
 tests/services/brokers/binance/spot_demo/test_canonical_credentials.py
 tests/services/brokers/binance/spot_demo/test_close_sizing.py
 tests/services/brokers/binance/spot_demo/test_d2_r8_authority_registration.py
@@ -334,7 +329,6 @@ tests/services/test_alpaca_paper_roundtrip_report_service.py
 tests/services/test_benzinga_news.py
 tests/services/test_candidate_screening_service.py
 tests/services/test_downside_watch_service.py
-tests/services/test_fill_handoff_bundle_shadow.py
 tests/services/test_investment_snapshots_roundtrip.py
 tests/services/test_journal_exit_correction.py
 tests/services/test_journal_exit_correction_db.py

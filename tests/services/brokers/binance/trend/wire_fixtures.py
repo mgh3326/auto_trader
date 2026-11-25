@@ -6,8 +6,7 @@ arrive as strings stay strings, ``true`` stays a boolean, absent fields stay
 absent). Nothing here is a live capture: the shapes follow the documented
 examples at the URLs below, adapted to MARKET/one-way (``positionSide: BOTH``)
 and to the symbols this lane trades. Existing repo expectations that agree with
-them: tests/services/brokers/binance/futures_demo/test_execution_client_*.py
-and tests/services/brokers/binance/h5/test_single_asset_margin_gate.py.
+them: tests/services/brokers/binance/futures_demo/test_execution_client_*.py.
 
 Docs (USDS-M Futures REST):
 - New Order        https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api

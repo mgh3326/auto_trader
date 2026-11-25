@@ -54,7 +54,6 @@ FORBIDDEN_IMPORT_PREFIXES = [
     "app.services.execution_ledger.fill_ingest",
     "app.services.fill_enrichment",
     "app.services.fill_notification",
-    "app.services.fill_event_handoff",
     "app.monitoring.trade_notifier",
     "app.services.support_reserve_net_consumer",
     "app.services.toss_manual_activity",

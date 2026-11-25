@@ -16,6 +16,9 @@ from app.mcp_server.tooling.screening.enrichment import (
 )
 from app.mcp_server.tooling.screening.halt_filter import exclude_halt_suspect_rows
 from app.mcp_server.tooling.screening.kr import _screen_kr_with_fallback
+from app.mcp_server.tooling.screening.trading_flag_filter import (
+    exclude_trading_flag_rows,
+)
 from app.mcp_server.tooling.screening.us import _screen_us_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -292,6 +295,10 @@ async def screen_stocks_unified(
     # daily series has gone inert must not reach a ranking. Exclusions are
     # reported in meta.halted_suspect_excluded, never dropped silently.
     response = await exclude_halt_suspect_rows(response, market=normalized_market)
+
+    # hk 6503 — KR 관리·투자경고·위험·정리매매·거래정지 exclusion, reported in
+    # meta.trading_flag_excluded. 투자주의 is a label only. Unknown is kept.
+    response = await exclude_trading_flag_rows(response, market=normalized_market)
 
     filters_applied = response.get("filters_applied")
     normalized_filters_applied = (

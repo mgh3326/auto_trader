@@ -27,7 +27,6 @@ PROTECTED_EXISTING_SURFACES = (
     ROOT / "app/services/order_proposals/service.py",
     ROOT / "app/mcp_server/tooling/order_execution.py",
     ROOT / "app/mcp_server/tooling/order_proposal_tools.py",
-    ROOT / "app/services/fill_event_handoff/service.py",
     ROOT / "app/services/watch_trigger_repricing/chain_spawner.py",
     ROOT / "app/services/watch_trigger_repricing/proposal_chain.py",
 )

@@ -40,4 +40,4 @@ def test_file_name_matches_revision() -> None:
 
 
 def test_revises_the_current_head() -> None:
-    assert _module_strings()["down_revision"] == "20261125_hk6036_upbit_shadow"
+    assert _module_strings()["down_revision"] == "20261125_hk6503_kr_trading_flags"

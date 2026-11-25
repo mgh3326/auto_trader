@@ -50,7 +50,7 @@ def _kst_date(ts: datetime) -> str:
 class ShadowKickGate:
     """Would-be suppression arithmetic: cap 2/day + 60-minute cooldown.
 
-    Mirrors #906 ``_gated_kick`` (fill_event_handoff/service.py): the
+    Mirrors the retired #906 fill-handoff ``_gated_kick`` (removed in hk 6457): the
     daily cap is keyed by (market, KST day) and resets at KST midnight,
     while the cooldown is a single per-market timestamp that carries
     across midnight.  State lives in-process but re-seeds from committed

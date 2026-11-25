@@ -272,8 +272,8 @@ only one of them is safe to act on.
 
 The writer stops at `submitted`; the three D2 roots were later moved to
 `filled`. `filled` is a blocking root state, so the roots keep the shared
-Binance Demo ledger's open-root count at 3 and the H5 truth gate's
-`demo_ledger_no_open_roots` check fails on them. Hand SQL is not an option, and
+Binance Demo ledger's open-root count at 3. (The H5 truth gate that checked
+that count, `demo_ledger_no_open_roots`, was retired in hk 6457.) Hand SQL is not an option, and
 nothing in sections 1–7 moves a filled remediation root on. This section is
 that step.
 
@@ -311,7 +311,7 @@ credential, or nothing is read.
 
 Operator commands on the pi host (preview first; ids from the desk's #1122 note). Set
 `image` and `env_file` exactly as in
-[binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md) §2. The
+the retired H5 playbook (hk 6457) §2. The
 Spot Demo flag goes on this one-off container only, never into the env file:
 
 ```bash
@@ -327,9 +327,8 @@ three ids. Running the commit a second time prints `"status": "noop"`. The
 database URL is read from the one named variable and never printed. The Spot
 Demo credentials resolve through the existing `BINANCE_SPOT_DEMO_API_*` /
 `BINANCE_DEMO_API_*` pair; if they are not the sealed D2 account the tool exits
-1 before any read. Rerun the H5 truth gate afterwards (playbook §4);
-`demo_ledger_no_open_roots` should read `open_roots=0`. The gate itself is
-unchanged and stays strict.
+1 before any read. Afterwards the shared ledger's open-root count should read 0; the retired H5
+truth gate used to report it as `demo_ledger_no_open_roots`.
 
 Known limit: Binance documents a bounded order-query retention. If a root's
 order is no longer queryable, the read answers not found and the batch is
