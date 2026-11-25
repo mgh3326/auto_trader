@@ -9,6 +9,8 @@ BASE = BASE_URL  # Alias for backward compatibility
 # ============================================================================
 
 # Domestic Stock - Price & Volume
+KSD_DIVIDEND_URL = "/uapi/domestic-stock/v1/ksdinfo/dividend"
+KSD_DIVIDEND_TR = "HHKDB669102C0"
 DOMESTIC_VOLUME_URL = "/uapi/domestic-stock/v1/quotations/volume-rank"
 DOMESTIC_VOLUME_TR = "FHPST01710000"  # 실전 전용
 

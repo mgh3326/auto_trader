@@ -238,6 +238,14 @@ class KISClient(BaseKISClient):
     ) -> list[dict[str, Any]]:
         return await self._market_data.volume_rank(market, limit)
 
+    async def ksd_dividends(
+        self, from_date: str, to_date: str, *, symbol: str = "", high_gb: str = ""
+    ) -> list[dict[str, Any]]:
+        """Read KSD dividend calendar rows; only the live client supports this API."""
+        return await self._market_data.ksd_dividends(
+            from_date, to_date, symbol=symbol, high_gb=high_gb
+        )
+
     async def market_cap_rank(
         self, market: str = "J", limit: int = 30
     ) -> list[dict[str, Any]]:

@@ -7,6 +7,7 @@
 - KR/US Category Normalization & Lazy Fill (ROB-512)
 - Market Events Ingestion Foundation (ROB-128)
 - Benzinga calendar ingestion (hk 6513)
+- KIS KSD dividend calendar (hk 6583)
 - Research Reports Integration (ROB-140)
 - Invest Screener US Activation (ROB-204)
 - Screener pick log (prospective bakeoff)
@@ -1003,3 +1004,27 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - `captured_at`은 수집기의 UTC 관측 시각이다. 해당 시각의 첫 캡처를 단일 트랜잭션으로 기록하고 재전송의 삽입 건수는 모두 0이다. 상승·하락 스냅샷은 각각 `us:benzinga_pro:<session>:<side>`에 기록하며 각 방향에 run을 하나 남긴다. 빈 배열은 `empty/no_rows`, 행이 있는 배열은 `ok`다. 쓰기 실패는 캡처 전체를 롤백한다. `no_session_price`는 `order_type=excluded`와 원본 사유로 남긴다.
 - 속보는 `market_events`에 `source=benzinga_pro`, `category=breaking_news`로 기록한다. 제공자 ID 단위로 최초 행을 유지하며 `first_received_at`은 캡처 시각이다. 이 캡처의 DB 행이 있으면 마이그레이션 다운그레이드가 중단된다.
 - `SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED`(기본 false)는 US 분봉 수집 대상 승격에만 적용된다. 켜면 제외 행을 뺀 Benzinga Pro movers가 기존 점수 규칙에 들어간다.
+
+### KIS KSD 배당 일정 (hk 6583)
+
+`KISClient.ksd_dividends` 는 국내주식 읽기 전용 실계좌 메서드다. 경로는
+`/uapi/domestic-stock/v1/ksdinfo/dividend`, TR 은 `HHKDB669102C0`이며 기존
+KIS 토큰 인증 클라이언트만 사용한다. 공식 query 필드 `CTS`, `GB1`, `F_DT`,
+`T_DT`, `SHT_CD`, `HIGH_GB` 를 보내고, 모의 클라이언트는 요청 전에 거부한다.
+응답의 `tr_cont` 페이지 연결은 사용하지 않는다.
+
+`fetch_ksd_dividend_window` 는 100행 이상인 응답의 날짜 구간을 반으로 나눠
+재조회한다. 하루 구간도 100행이면 받은 행을 유지하고 해당 구간을 가능한
+절단으로 반환하므로 호출자가 경고해야 한다. `normalize_ksd_dividend_row` 는
+`record_date` 를 이벤트 날짜로, `divi_pay_dt` 를 보존된 지급일로,
+`per_sto_divi_amt` 를 float 변환 없는 정확한 Decimal `dps` 로 저장한다.
+이벤트는 `category=dividend`, `market=kr`, `source=kis_ksd` 이며
+`first_received_at` 을 보존한다. 모든 DB 쓰기는 `MarketEventsRepository` 를
+통한다.
+
+수동 실행은 `python -m scripts.ingest_kis_ksd_dividends --from-date YYYY-MM-DD
+--to-date YYYY-MM-DD [--dry-run]` 이다. 드라이런은 조회·정규화만 하고 DB 에
+접근하지 않는다. `deploy/dagu/at-kis-ksd-dividends/` 는 미등록 복사본이며 이
+작업은 스케줄러 등록을 추가하지 않는다. US 배당과 주문·계좌 API 는 범위 밖이다.
+공식 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
+[KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).

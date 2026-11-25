@@ -58,6 +58,7 @@ SOURCES: frozenset[str] = frozenset(
         "tradingview",
         "benzinga",
         "benzinga_pro",
+        "kis_ksd",
     }
 )
 
