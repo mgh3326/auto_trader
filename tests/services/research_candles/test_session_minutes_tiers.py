@@ -362,3 +362,10 @@ def test_settings_defaults_are_the_benchmarks_and_the_tier_budgets() -> None:
     assert fields["SESSION_MINUTES_BUDGET_INTRADAY"].default == 40
     assert fields["SESSION_MINUTES_BUDGET_SCREENER"].default == 60
     assert fields["SESSION_MINUTES_MAX_SYMBOLS_KR"].default == 150
+
+
+def test_collector_cli_module_imports_and_keeps_its_arguments() -> None:
+    from scripts import collect_session_minutes as cli
+
+    args = cli._parse_args(["--market", "kr", "--dry-run"])
+    assert args.market == "kr" and args.dry_run is True and args.symbols is None
