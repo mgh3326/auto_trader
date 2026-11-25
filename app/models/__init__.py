@@ -39,6 +39,7 @@ from .execution_mandates import (
 )
 from .fill_watch_context_outcome import FillWatchContextOutcome
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+from .fnguide import FnguideReport, FnguideSnapshot, FnguideValue
 from .funding_advisory import (
     ExternalCashDeclaration,
     FundingAdvisory,
@@ -52,7 +53,6 @@ from .invalid_sample_eligibility import (
     SampleEligibilityDecision,
 )
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
-from .fnguide import FnguideReport, FnguideSnapshot, FnguideValue
 from .invest_kr_fundamentals_snapshot import InvestKrFundamentalsSnapshot
 from .invest_momentum_event_snapshot import (
     InvestMomentumEventRun,
