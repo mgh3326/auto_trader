@@ -64,3 +64,71 @@ NTX 표지는 NXT 공식 시간을 따른다(출처: nextrade.co.kr 거래시스
 - US `session_date` 는 ET 거래일(20:00 ET 롤오버)이라 KST 달력일과 다를 수 있다.
 - `research.us_candles_1m` 의 연속 집계(5m/15m/30m/1h)는 timescaledb 가 있는 DB 에서만 만들어진다. 갱신은 운영자가 명시적으로 한다(자동 refresh 정책 없음).
 - 이 기능은 주문·승인·정책 경로와 무관하다. 스케줄러·systemd 등록을 저장소가 하지 않는다.
+
+## 5. Go↔Python 분봉 전환 비교 (hk 6345)
+
+설계 `docs/design/6321-go-quote-collector.md` §6(side-by-side replay). Go `market-tap` 이 쓴
+JSONL 과 research 분봉 표를 `(time_utc, symbol, venue)` 로 맞춰 **읽기만** 한다.
+
+```bash
+uv run python -m scripts.compare_go_py_minutes --market kr --date 2026-11-24 \
+  --go-jsonl /var/lib/fillwire/market-tap/bars.jsonl [--symbols 005930 000660]
+```
+
+- 종료 코드: `0` PASS, `3` BLOCK, `4` INCONCLUSIVE(비교 근거 없음), `1` Python 읽기 실패,
+  `2` 사용법·Go 파일 오류. 출력 JSON 은 `verdict`, `inconclusive_reasons`, `blocking`,
+  `listed`, `cutover`(전환 표), `failure_code_map`.
+- Python 쪽은 세션 수집기가 쓴 행(`batch_id` 가 `session-minutes-` 로 시작)만 비교한다. 같은
+  표에 들어오는 Go ingest 행(hk 6343)과 promotion·backfill 행은 제외하고 `py_rows_excluded_non_collector`
+  로 센다. 이 규칙은 관례다. ingest 가 호출자 제공 `batch_id` 를 받으므로 `session-minutes-` 를 고른
+  호출자의 행은 통과한다. 그 경우는 이 CLI 가 잡지 못한다.
+- INCONCLUSIVE 는 다음 중 하나일 때다: 한쪽 행이 0개, 겹치는 봉이 0개, 요청 종목이 양쪽 어디에도
+  없음. 0 행을 "세션이 모두 덮였다"로 읽으면 안 된다. 이 결과는 PASS 와 같은 근거로 쓰지 않는다.
+- SELECT 만 쓴다(`research.kr_candles_1m` 또는 `research.us_candles_1m`). `READ ONLY` 트랜잭션,
+  `statement_timeout 8s`. 쓰기·등록·브로커 호출 없음. 정적 테스트
+  `tests/scripts/test_compare_go_py_minutes.py` 가 이를 고정한다.
+- Go JSONL 은 `--date` 의 거래일과 `--market` 의 venue(KR `KRX`·`NTX`, US `NASD`·`NYSE`·`AMEX`)만 비교한다.
+
+**판정(운영자 2026-11-25 완화 기준)**
+
+| 항목 | 막는가 | 규칙 |
+|---|---|---|
+| 통째로 없는 종목 (양방향) | 막음 | 한쪽에만 있는 종목 |
+| 통째로 없는 세션 (양방향) | 막음 | 한쪽에만 있는 (종목, venue, 거래일) |
+| 세션별 행 수 | 아님(목록) | `\|go-py\| <= max(2 봉, 큰 쪽의 2% 올림)` |
+| 닫힌 봉 OHLCV 일치 | 아님(목록) | 겹치는 키의 open·high·low·close·volume 비교. 불일치는 키를 목록에 남김 |
+| value 차이 | 아님(목록) | 한쪽만 NULL 이거나 값이 다름 |
+| 수신 지연 차이 | 아님 | Go JSONL 에 수신 시각이 없어 `unavailable`. 아래 참고 |
+| 부분 결손 | 아님(목록) | 한쪽에만 있는 행(통째로 빠진 세션 안의 행은 세지 않음) |
+
+🔴 **판정 해석 두 가지는 운영자 확인이 필요하다**: ① 양방향 차단(Python 에만 있는 세션도 막는다.
+"같은 종목·세션 커버"가 PASS 조건이라 방향을 뺐다). ② 닫힌 봉 OHLCV 표본 불일치는 목록만
+남기고 PASS 를 바꾸지 않는다(한 봉 불일치는 PASS 와 목록 기록이 수락 기준). 표본 불일치를 막는
+규칙으로 바꾸려면 운영자 결정이 먼저다.
+
+**수신 지연**: Go 행의 직렬화 키는 `time_utc, session_date, symbol, venue, session_segment, source,
+open, high, low, close, volume, value` 뿐이다(`internal/marketminute/row.go`). 수신 시각을 JSONL 에
+넣으면 Python 골든 바이트 계약이 바뀌므로, 이 PR 은 지연을 계산하지 않는다. 전환 기준 ④(최초 수신
+p95)는 Go 쪽 수신 시각이 생기기 전까지 측정할 수 없다.
+
+**실패 코드 매핑** (`FAILURE_CODE_MAP`, 테스트가 표를 고정): Go 가 내는 실패 코드를 hk 6299 진단 어휘
+`fetch_error`·`no_trades_reported`·`cut_by_budget`·`not_selected` 에 맞춘다. 어휘에 없는 코드는 `None`
+(`feed_gap`·`unsupported`)으로 두고 이유를 적는다. `rate_limited`·`circuit_open` 은 `fetch_error`로
+접고 코드는 Go 실행 보고에 남긴다. Go 실행 보고(실패 클래스)는 JSONL 에 없으므로 이 CLI 는 표를 싣기만 한다.
+
+| Go 코드 | hk 6299 어휘 | 비고 |
+|---|---|---|
+| `rate_limited` | `fetch_error` | 429·EGW00201 |
+| `circuit_open` | `fetch_error` | 회로 열림 |
+| `budget_cut` | `cut_by_budget` | 구독 슬롯·예산 부족 |
+| `feed_gap` | 없음 | 갭 구간. 0행 사유가 아님 |
+| `no_trades` | `no_trades_reported` | 정상 응답, 거래 없음 |
+| `fetch_error` | `fetch_error` | 그 밖의 오류 |
+| `unsupported` | 없음 | 소스가 세션·TR 을 제공하지 않음 |
+
+**PASS 의 뜻은 좁다**: 이 CLI 의 PASS 는 "한쪽에 있고 다른 쪽에 통째로 없는 종목·(종목, venue, 거래일)
+세션이 없다"는 뜻뿐이다. 설계 §6 전환 기준 ①–⑤ 중 어느 것도 증명하지 않는다. 기준 ①(OHLCV 100%)은
+`listed` 의 `ohlcv_mismatch` 가, ②(결측 0)은 `listed` 의 `partial_gap_keys_*` 가, ④(최초 수신 p95)는
+`latency` 가 `unavailable` 이라 측정되지 않는다. ③·⑤(429·회로, KIS 429)는 이 CLI 가 보지 않는다.
+따라서 PASS 한 번으로 Python 수집을 멈추지 않는다. 기준은 여러 거래일 실행과 `listed` 값을 함께 본 뒤
+운영자가 판단한다. 전환 표의 `ok`/`listed` 는 기준 충족 표시가 아니다.
