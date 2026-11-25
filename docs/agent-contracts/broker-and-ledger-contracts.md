@@ -28,6 +28,7 @@
 - KIS Live Order Fill-Evidence Gate (ROB-395)
 - KIS live 일별 주문 조회 — 하루 전 종목 (hk 3717)
 - KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
+- KIS OAuth expiry and issuance cooldown (hk 6583)
 - 7-D stale blocker night sweep + KIS expired[inference] (#1112)
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 - Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
@@ -36,6 +37,21 @@
 - 토스증권 Open API (ROB-529)
 
 ## 기준 원문 계약
+
+### KIS OAuth expiry and issuance cooldown (hk 6583)
+
+Self-issued KIS OAuth token cache expiry is the earlier of `now + expires_in` and
+`access_token_token_expired`. The latter is parsed only as `YYYY-MM-DD HH:MM:SS`
+and interpreted as `Asia/Seoul`; missing or invalid values retain the relative
+`expires_in` expiry. This behavior is limited to the existing self-issued
+`RedisTokenManager` path. gatewayd and other issuance modes are unchanged.
+
+KIS `msg_cd=EGW00133` is `KISTokenIssuanceRateLimitedError`, not a credential
+failure. It is surfaced without an internal retry; the self-issued Redis token
+manager records a 60-second issuance cooldown so subsequent refresh callers do
+not send another OAuth request during that minute. The cooldown expires and
+allows a later attempt. Official references: [KIS token expiry sample](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/auth/auth_token/chk_auth_token.py)
+and [KIS auth helpers](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/kis_auth.py).
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
