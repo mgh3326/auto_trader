@@ -132,4 +132,87 @@ def test_no_session_in_page_raises() -> None:
     ],
 )
 def test_us_session(utc: dt.datetime, expected: str | None) -> None:
-    assert cap.us_session(utc) == expected
+    assert cap.us_session(utc, is_trading_day=lambda d: True) == expected
+
+
+def test_holiday_is_outside_session() -> None:
+    # Thanksgiving 2026-11-26, 10:00 ET: weekday but not an XNYS session.
+    thanksgiving = dt.datetime(2026, 11, 26, 15, 0, tzinfo=dt.UTC)
+    assert cap.us_session(thanksgiving, is_trading_day=lambda d: False) is None
+
+
+def test_missing_block_or_instruments_is_an_error() -> None:
+    run_js, _ = _fake({"DESC": {"rows": []}})  # ASC block missing
+    out = cap.capture(
+        session="us_pre", volume_floor=1, pages=1, run_js=run_js, now=lambda: FIXED
+    )
+    assert out["errors"] == {"down": "missing_block"}
+    js = cap.build_js(
+        change_field="changePercent", volume_field="dayVolume", volume_floor=1, pages=1
+    )
+    assert "no_instruments_array" in js and "j.instruments||[]" not in js
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://example.com/x", "ftp://h/x", "https://user:pw@h/x", "https:///x", ""],
+)
+def test_validate_rejects_unsafe_urls(url: str) -> None:
+    with pytest.raises(cap.IngestConfigError):
+        cap.validate_ingest(url, "tok", "X-H")
+
+
+def test_validate_accepts_https_and_loopback_http() -> None:
+    cap.validate_ingest("https://at.example/trading/api/x", "tok", "X-H")
+    cap.validate_ingest("http://127.0.0.1:8000/x", "tok", "X-H")
+
+
+def test_bad_token_error_never_contains_the_value() -> None:
+    secret = "s3cr3t-value"
+    with pytest.raises(cap.IngestConfigError) as info:
+        cap.validate_ingest("https://h/x", secret + "\n", "X-H")
+    assert secret not in str(info.value)
+    assert "BENZINGA_PRO_INGEST_TOKEN" in str(info.value)
+
+
+def test_redirects_are_not_followed() -> None:
+    handler = cap._NoRedirect()
+    assert (
+        handler.redirect_request(None, None, 302, "Found", {}, "https://evil/") is None
+    )
+
+
+def test_main_does_not_post_a_failed_side(tmp_path, monkeypatch) -> None:
+    calls = {"post": 0}
+    monkeypatch.setenv("BENZINGA_PRO_INGEST_URL", "https://h/x")
+    monkeypatch.setenv("BENZINGA_PRO_INGEST_TOKEN", "tok")
+    monkeypatch.setattr(
+        cap,
+        "capture",
+        lambda **kw: {
+            "payload": {
+                "captured_at": "2026-11-25T14:00:00Z",
+                "movers": {"up": [], "down": []},
+            },
+            "errors": {"up": 429},
+        },
+    )
+    monkeypatch.setattr(
+        cap, "post", lambda *a, **k: calls.__setitem__("post", calls["post"] + 1)
+    )
+    rc = cap.main(["--session", "us_pre", "--out-dir", str(tmp_path)])
+    assert rc == 1 and calls["post"] == 0
+    line = json.loads((tmp_path / "benzinga-pro-2026-11-25.jsonl").read_text())
+    assert line["errors"] == {"up": 429}
+
+
+def test_main_checks_ingest_config_before_capture(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("BENZINGA_PRO_INGEST_URL", raising=False)
+    monkeypatch.delenv("BENZINGA_PRO_INGEST_TOKEN", raising=False)
+
+    def boom(**kw):
+        raise AssertionError("capture must not run")
+
+    monkeypatch.setattr(cap, "capture", boom)
+    assert cap.main(["--session", "us_pre", "--out-dir", str(tmp_path)]) == 2
+    assert not list(tmp_path.iterdir())

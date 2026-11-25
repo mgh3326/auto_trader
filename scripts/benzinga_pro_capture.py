@@ -5,6 +5,10 @@ Benzinga Pro trial session (decisions hk:doc
 decision/2026-11-25/at-benzinga-pro-session-use and
 decision/2026-11-25/at-benzinga-pro-capture-and-trading-use).
 
+Fail-closed rules (PR #2595 review): no capture outside XNYS trading days, no
+POST of a failed or partial side, no redirects on the ingest POST, and the token
+only goes to https (or loopback http) without userinfo.
+
 The scanner request runs *inside* the logged-in page through ``aside repl``. The
 in-page JavaScript reads the session key from the page's own resource timings,
 uses it for the fetch, and returns only the scanner rows. The key never leaves
@@ -36,6 +40,8 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
@@ -59,13 +65,25 @@ SESSION_FIELDS = {
 RunJs = Callable[[str, int], str]
 
 
-def us_session(now_utc: dt.datetime) -> str | None:
-    """US equity session for ``now_utc`` by the ET clock (weekday only).
+def _is_xnys_session(day: dt.date) -> bool:
+    """XNYS trading day, fail-closed (the shared AT calendar never raises)."""
+    from app.services.market_events.session_calendar import is_trading_session
 
-    Holidays are not modelled; the scanner then simply returns stale values.
+    return is_trading_session("us", day)
+
+
+def us_session(
+    now_utc: dt.datetime,
+    *,
+    is_trading_day: Callable[[dt.date], bool] = _is_xnys_session,
+) -> str | None:
+    """US equity session for ``now_utc`` by the ET clock on XNYS trading days.
+
+    Weekends, market holidays and days the calendar cannot confirm return
+    ``None`` (fail-closed): on those days the scanner only serves stale values.
     """
     et = now_utc.astimezone(ET)
-    if et.weekday() >= 5:
+    if et.weekday() >= 5 or not is_trading_day(et.date()):
         return None
     minutes = et.hour * 60 + et.minute
     if 4 * 60 <= minutes < 9 * 60 + 30:
@@ -109,8 +127,10 @@ def build_js(
         "+'&offset='+(pg*a.pageSize)+'&sortField='+a.sortField+'&sortDir='+dir;"
         "const res=await fetch(u);"
         "if(!res.ok){err=res.status;break;}"
-        "const j=await res.json();total=j.totalInstruments;"
-        "const ins=j.instruments||[];rows=rows.concat(ins);"
+        "const j=await res.json();"
+        "if(!j||!Array.isArray(j.instruments)){err='no_instruments_array';break;}"
+        "total=j.totalInstruments;"
+        "const ins=j.instruments;rows=rows.concat(ins);"
         "if(ins.length<a.pageSize)break;}"
         "out[dir]={total:total,error:err,rows:rows};}"
         "return out;"
@@ -197,8 +217,11 @@ def capture(
     movers = {}
     errors = {}
     for side, direction in (("up", "DESC"), ("down", "ASC")):
-        block = result.get(direction) or {}
-        if block.get("error") is not None:
+        block = result.get(direction)
+        if not isinstance(block, dict) or not isinstance(block.get("rows"), list):
+            errors[side] = "missing_block"
+            block = {}
+        elif block.get("error") is not None:
             errors[side] = block["error"]
         movers[side] = to_rows(
             block.get("rows") or [],
@@ -222,9 +245,52 @@ def capture(
     return {"payload": payload, "errors": errors}
 
 
+class IngestConfigError(ValueError):
+    """Ingest configuration is unusable. The message names env vars only."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Any 3xx becomes an HTTPError, so the token is never re-sent elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def validate_ingest(url: str, token: str, header: str) -> None:
+    """Fail before any request. Errors name the env var, never its value."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise IngestConfigError("BENZINGA_PRO_INGEST_URL must not carry userinfo")
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and host:
+        pass
+    elif parsed.scheme == "http" and host in _LOOPBACK_HOSTS:
+        pass
+    else:
+        raise IngestConfigError(
+            "BENZINGA_PRO_INGEST_URL must be https, or http to a loopback host"
+        )
+    if (
+        not token
+        or token != token.strip()
+        or any(ord(c) < 33 or ord(c) > 126 for c in token)
+    ):
+        raise IngestConfigError(
+            "BENZINGA_PRO_INGEST_TOKEN is empty or has whitespace/control/non-ASCII characters"
+        )
+    if not header or any(ord(c) < 33 or ord(c) > 126 or c == ":" for c in header):
+        raise IngestConfigError(
+            "BENZINGA_PRO_INGEST_TOKEN_HEADER is not a valid header name"
+        )
+
+
 def post(
     payload: dict, *, url: str, token: str, header: str, timeout: int = 30
 ) -> dict:
+    validate_ingest(url, token, header)
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         url,
@@ -232,8 +298,25 @@ def post(
         method="POST",
         headers={"Content-Type": "application/json", header: token},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed operator URL
-        return json.loads(resp.read() or b"{}")
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310 - validated URL
+            return json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        name = type(exc).__name__
+        raise RuntimeError(f"ingest request failed: {name}") from None
+    raise RuntimeError(f"ingest request failed: HTTP {status}") from None
+
+
+def ingest_env() -> tuple[str, str, str]:
+    url = os.environ.get("BENZINGA_PRO_INGEST_URL", "")
+    token = os.environ.get("BENZINGA_PRO_INGEST_TOKEN", "")
+    header = os.environ.get(
+        "BENZINGA_PRO_INGEST_TOKEN_HEADER", "X-Benzinga-Pro-Ingest-Token"
+    )
+    return url, token, header
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -256,12 +339,36 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "outside_session"}))
         return 0
 
+    # Preconditions before opening the browser: a missing or malformed ingest
+    # config must not capture, write JSONL or reach the session.
+    url, token, header = ingest_env()
+    if not args.dry_run:
+        missing = [
+            n
+            for n, v in (
+                ("BENZINGA_PRO_INGEST_URL", url),
+                ("BENZINGA_PRO_INGEST_TOKEN", token),
+            )
+            if not v
+        ]
+        if missing:
+            print(json.dumps({"status": "not_posted", "missing_env": missing}))
+            return 2
+        try:
+            validate_ingest(url, token, header)
+        except IngestConfigError as exc:
+            print(json.dumps({"status": "not_posted", "config_error": str(exc)}))
+            return 2
+
     result = capture(session=session, volume_floor=args.volume_floor, pages=args.pages)
     payload = result["payload"]
+    errors = result["errors"]
     args.out_dir.mkdir(parents=True, exist_ok=True)
     day = payload["captured_at"][:10]
+    # The local record keeps the failure; a failed or partial side is never
+    # sent to AT, where an empty or truncated list would read as "no movers".
     with (args.out_dir / f"benzinga-pro-{day}.jsonl").open("a") as fh:
-        fh.write(json.dumps(payload) + "\n")
+        fh.write(json.dumps({"payload": payload, "errors": errors}) + "\n")
 
     summary = {
         "status": "dry_run" if args.dry_run else "posted",
@@ -275,29 +382,23 @@ def main(argv: list[str] | None = None) -> int:
             for r in payload["movers"][side]
             if r["excluded_reason"]
         ),
-        "errors": result["errors"],
+        "errors": errors,
     }
-    if not args.dry_run:
-        url = os.environ.get("BENZINGA_PRO_INGEST_URL", "")
-        token = os.environ.get("BENZINGA_PRO_INGEST_TOKEN", "")
-        header = os.environ.get(
-            "BENZINGA_PRO_INGEST_TOKEN_HEADER", "X-Benzinga-Pro-Ingest-Token"
-        )
-        if not url or not token:
+    if errors:
+        if not args.dry_run:
             summary["status"] = "not_posted"
-            summary["missing_env"] = [
-                n
-                for n, v in (
-                    ("BENZINGA_PRO_INGEST_URL", url),
-                    ("BENZINGA_PRO_INGEST_TOKEN", token),
-                )
-                if not v
-            ]
+        print(json.dumps(summary))
+        return 1
+    if not args.dry_run:
+        try:
+            summary["ingest"] = post(payload, url=url, token=token, header=header)
+        except (IngestConfigError, RuntimeError) as exc:
+            summary["status"] = "post_failed"
+            summary["post_error"] = str(exc)
             print(json.dumps(summary))
-            return 2
-        summary["ingest"] = post(payload, url=url, token=token, header=header)
+            return 1
     print(json.dumps(summary))
-    return 1 if result["errors"] else 0
+    return 0
 
 
 if __name__ == "__main__":
