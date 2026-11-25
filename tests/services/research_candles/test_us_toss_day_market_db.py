@@ -129,13 +129,15 @@ async def test_replay_of_the_same_toss_bars_inserts_zero_and_keeps_first_receipt
         rows = (
             await conn.execute(
                 text(
-                    "SELECT venue, source, session_segment, retrieved_at, value "
+                    "SELECT time_utc, venue, source, session_segment, retrieved_at, value "
                     "FROM research.us_candles_1m WHERE symbol = 'NVDA'"
                 )
             )
         ).all()
         assert len(rows) == 1
-        venue, source, segment, retrieved_at, value = rows[0]
+        # Toss 15:10 KST end timestamp -> stored bar START 15:09 KST
+        stored_start, venue, source, segment, retrieved_at, value = rows[0]
+        assert stored_start == datetime.fromisoformat("2026-11-25T15:09:00+09:00")
         assert (venue, source, segment, value) == (
             "TOSS_INTEGRATED",
             "TOSS",
