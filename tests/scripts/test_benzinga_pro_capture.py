@@ -121,6 +121,16 @@ def test_no_session_in_page_raises() -> None:
         )
 
 
+def _regular(day: dt.date, close_hour: int = 16):
+    et = cap.ET
+    return (
+        dt.datetime(day.year, day.month, day.day, 9, 30, tzinfo=et).astimezone(dt.UTC),
+        dt.datetime(day.year, day.month, day.day, close_hour, 0, tzinfo=et).astimezone(
+            dt.UTC
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("utc", "expected"),
     [
@@ -132,13 +142,29 @@ def test_no_session_in_page_raises() -> None:
     ],
 )
 def test_us_session(utc: dt.datetime, expected: str | None) -> None:
-    assert cap.us_session(utc, is_trading_day=lambda d: True) == expected
+    def bounds(day):
+        return None if day.weekday() >= 5 else _regular(day)
+
+    assert cap.us_session(utc, session_bounds=bounds) == expected
 
 
 def test_holiday_is_outside_session() -> None:
     # Thanksgiving 2026-11-26, 10:00 ET: weekday but not an XNYS session.
     thanksgiving = dt.datetime(2026, 11, 26, 15, 0, tzinfo=dt.UTC)
-    assert cap.us_session(thanksgiving, is_trading_day=lambda d: False) is None
+    assert cap.us_session(thanksgiving, session_bounds=lambda d: None) is None
+
+
+def test_early_close_day_ends_regular_at_real_close() -> None:
+    # 2026-11-27 closes 13:00 ET: 14:00 ET is post-market, 17:30 ET is outside.
+    def bounds(day):
+        return _regular(day, close_hour=13)
+
+    at_1400 = dt.datetime(2026, 11, 27, 19, 0, tzinfo=dt.UTC)
+    at_1730 = dt.datetime(2026, 11, 27, 22, 30, tzinfo=dt.UTC)
+    at_1200 = dt.datetime(2026, 11, 27, 17, 0, tzinfo=dt.UTC)
+    assert cap.us_session(at_1200, session_bounds=bounds) == "us_regular"
+    assert cap.us_session(at_1400, session_bounds=bounds) == "us_post"
+    assert cap.us_session(at_1730, session_bounds=bounds) is None
 
 
 def test_missing_block_or_instruments_is_an_error() -> None:

@@ -65,32 +65,44 @@ SESSION_FIELDS = {
 RunJs = Callable[[str, int], str]
 
 
-def _is_xnys_session(day: dt.date) -> bool:
-    """XNYS trading day, fail-closed (the shared AT calendar never raises)."""
-    from app.services.market_events.session_calendar import is_trading_session
+SessionBounds = Callable[[dt.date], "tuple[dt.datetime, dt.datetime] | None"]
 
-    return is_trading_session("us", day)
+
+def _xnys_bounds(day: dt.date) -> tuple[dt.datetime, dt.datetime] | None:
+    """XNYS regular (open, close) in UTC, honouring early closes; fail-closed."""
+    from app.services.market_events.session_calendar import regular_session_bounds
+
+    return regular_session_bounds("us", day)
 
 
 def us_session(
     now_utc: dt.datetime,
     *,
-    is_trading_day: Callable[[dt.date], bool] = _is_xnys_session,
+    session_bounds: SessionBounds = _xnys_bounds,
 ) -> str | None:
-    """US equity session for ``now_utc`` by the ET clock on XNYS trading days.
+    """US equity session for ``now_utc`` on XNYS trading days.
 
-    Weekends, market holidays and days the calendar cannot confirm return
-    ``None`` (fail-closed): on those days the scanner only serves stale values.
+    The regular session comes from the exchange calendar, so early-close days
+    (e.g. 13:00 ET the day after Thanksgiving) end the regular session at the
+    real close. Pre-market starts 04:00 ET; post-market ends 20:00 ET, or 17:00
+    ET on an early-close day. Weekends, holidays and days the calendar cannot
+    confirm return ``None`` (fail-closed).
     """
     et = now_utc.astimezone(ET)
-    if et.weekday() >= 5 or not is_trading_day(et.date()):
+    bounds = session_bounds(et.date())
+    if bounds is None:
         return None
-    minutes = et.hour * 60 + et.minute
-    if 4 * 60 <= minutes < 9 * 60 + 30:
+    open_et, close_et = (b.astimezone(ET) for b in bounds)
+    pre_start = et.replace(hour=4, minute=0, second=0, microsecond=0)
+    early_close = (close_et.hour, close_et.minute) < (16, 0)
+    post_end = et.replace(
+        hour=17 if early_close else 20, minute=0, second=0, microsecond=0
+    )
+    if pre_start <= et < open_et:
         return "us_pre"
-    if 9 * 60 + 30 <= minutes < 16 * 60:
+    if open_et <= et < close_et:
         return "us_regular"
-    if 16 * 60 <= minutes < 20 * 60:
+    if close_et <= et < post_end:
         return "us_post"
     return None
 
