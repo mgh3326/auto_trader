@@ -12,6 +12,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
+from app.services.brokers.toss.errors import (
+    TossApiResponseError,
+    TossErrorEnvelope,
+    TossRateLimitError,
+)
+from app.services.brokers.toss.market_calendar import parse_us_market_calendar
 from app.services.research_candles import session_minutes_collector as sc
 
 pytestmark = pytest.mark.unit
@@ -71,6 +77,40 @@ class RecordingWriter:
             1 for b in bars if (b.symbol, b.venue, b.time_utc) in self.present
         )
         return len(bars) - already, already
+
+
+class FakeToss:
+    def __init__(self, failures: dict[str, BaseException] | None = None):
+        self.failures = failures or {}
+        self.calls: list[str] = []
+
+    async def collect_minute_candles(self, symbol, **kwargs):
+        self.calls.append(symbol)
+        if symbol in self.failures:
+            raise self.failures[symbol]
+        return []
+
+
+def _toss_error(code: str, status_code: int) -> TossApiResponseError:
+    error_type = TossRateLimitError if status_code == 429 else TossApiResponseError
+    return error_type(
+        TossErrorEnvelope(request_id=None, code=code, message="provider detail"),
+        status_code=status_code,
+    )
+
+
+def _us_calendar():
+    return parse_us_market_calendar(
+        {
+            "today": {
+                "date": "2026-11-24",
+                "dayMarket": {
+                    "startTime": "2026-11-24T20:00:00+09:00",
+                    "endTime": "2026-11-24T23:00:00+09:00",
+                },
+            }
+        }
+    )
 
 
 def _clock(value: datetime):
@@ -442,6 +482,110 @@ async def test_one_failing_symbol_does_not_stop_the_run_and_does_not_leak_messag
         {"symbol": "005930", "venue": "KRX", "error_class": "RuntimeError"}
     ]
     assert "secret" not in str(report)
+
+
+@pytest.mark.asyncio
+async def test_toss_stock_not_found_is_reported_as_not_listed_and_cli_succeeds(
+    monkeypatch, capsys
+) -> None:
+    import scripts.collect_session_minutes as cli
+
+    toss = FakeToss({"ALDF": _toss_error("stock-not-found", 404)})
+    report = await sc.collect(
+        market="us",
+        symbols=["ALDF", "SPY"],
+        kis=FakeKis(),
+        writer=RecordingWriter(),
+        us_exchanges={},
+        clock=_clock(NOW),
+        toss=toss,
+        us_calendar=_us_calendar(),
+    )
+
+    assert report["errors"] == 0
+    assert report["error_details"] == []
+    assert report["toss_not_listed"] == {"count": 1, "symbols": ["ALDF"]}
+    assert toss.calls == ["ALDF", "SPY"]
+
+    monkeypatch.setattr(cli.asyncio, "run", lambda coro: (coro.close(), report)[1])
+    assert cli.main(["--market", "us"]) == 0
+    assert '"errors": 0' in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    [("other-error", 404), ("", 404), ("rate-limited", 429), ("provider-error", 500)],
+)
+async def test_toss_other_api_errors_remain_errors(code: str, status_code: int) -> None:
+    toss = FakeToss({"BAD": _toss_error(code, status_code)})
+    report = await sc.collect(
+        market="us",
+        symbols=["BAD", "SPY"],
+        kis=FakeKis(),
+        writer=RecordingWriter(),
+        clock=_clock(NOW),
+        toss=toss,
+        us_calendar=_us_calendar(),
+    )
+    assert report["errors"] == 1
+    assert report["error_details"] == [
+        {
+            "symbol": "BAD",
+            "venue": "TOSS_INTEGRATED",
+            "error_class": "TossRateLimitError"
+            if status_code == 429
+            else "TossApiResponseError",
+        }
+    ]
+    assert report["toss_not_listed"] == {"count": 0, "symbols": []}
+
+
+@pytest.mark.asyncio
+async def test_toss_not_listed_and_real_errors_are_reported_separately() -> None:
+    toss = FakeToss(
+        {
+            "ALDF": _toss_error("stock-not-found", 404),
+            "BAD": _toss_error("other-error", 404),
+        }
+    )
+    report = await sc.collect(
+        market="us",
+        symbols=["ALDF", "BAD", "SPY"],
+        kis=FakeKis(),
+        writer=RecordingWriter(),
+        clock=_clock(NOW),
+        toss=toss,
+        us_calendar=_us_calendar(),
+    )
+    assert report["errors"] == 1
+    assert report["error_details"] == [
+        {
+            "symbol": "BAD",
+            "venue": "TOSS_INTEGRATED",
+            "error_class": "TossApiResponseError",
+        }
+    ]
+    assert report["toss_not_listed"] == {"count": 1, "symbols": ["ALDF"]}
+
+
+@pytest.mark.asyncio
+async def test_non_toss_exception_remains_an_error() -> None:
+    toss = FakeToss({"BAD": RuntimeError("provider detail")})
+    report = await sc.collect(
+        market="us",
+        symbols=["BAD", "SPY"],
+        kis=FakeKis(),
+        writer=RecordingWriter(),
+        clock=_clock(NOW),
+        toss=toss,
+        us_calendar=_us_calendar(),
+    )
+    assert report["errors"] == 1
+    assert report["error_details"] == [
+        {"symbol": "BAD", "venue": "TOSS_INTEGRATED", "error_class": "RuntimeError"}
+    ]
+    assert report["toss_not_listed"] == {"count": 0, "symbols": []}
 
 
 @pytest.mark.asyncio
