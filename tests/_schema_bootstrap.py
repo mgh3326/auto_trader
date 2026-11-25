@@ -201,7 +201,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v78 (hk 6154): public.invest_momentum_event_runs is a new ORM table (create_all
 # builds it with its CHECK/UNIQUE; no mirrored ALTER needed). Production migration:
 # 20261124_hk6154_momentum_runs.
-SCHEMA_BOOTSTRAP_VERSION = 78
+# v79 (hk 6508): public.fnguide_snapshots / fnguide_values / fnguide_reports are new ORM
+# tables (create_all builds them with their UNIQUE/CHECK constraints; no mirrored ALTER
+# needed). Production migration: 20261125_hk6508_fnguide.
+SCHEMA_BOOTSTRAP_VERSION = 79
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
