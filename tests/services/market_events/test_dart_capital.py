@@ -178,8 +178,8 @@ async def test_empty_detail_leaves_filing_and_refused_credentials_fail_run(
         assert repo.upsert_event_with_values.await_args.args[1] == []
         db.rollback.assert_not_awaited()
     else:
-        repo.upsert_event_with_values.assert_not_awaited()
-        db.rollback.assert_awaited_once()
+        repo.upsert_event_with_values.assert_awaited_once()
+        db.rollback.assert_not_awaited()
         assert result.error == "OpenDART detail status 011"
 
 
@@ -336,3 +336,133 @@ async def test_query_projection_preserves_precision_reason_and_legacy_bytes():
             "reason": "not_disclosed",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_detail_error_keeps_base_and_later_filing(monkeypatch):
+    transport = Mock(side_effect=[b'{"status":"800"}', response(CB)])
+    monkeypatch.setattr(dart_capital, "_get_bytes", transport)
+    repo, db = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    later = {**FILING, "rcept_no": "20261124000002"}
+    transport.side_effect = [
+        b'{"status":"800"}',
+        response(CB).replace(RECEIPT.encode(), later["rcept_no"].encode()),
+    ]
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db,
+        date(2026, 11, 24),
+        fetch_rows=AsyncMock(return_value=[FILING, later]),
+        enrich_capital=True,
+    )
+    assert result.status == "failed"
+    assert result.event_count == 2
+    db.rollback.assert_not_awaited()
+    first, second = repo.upsert_event_with_values.await_args_list
+    assert first.args[0]["source_event_id"] == RECEIPT and first.args[1] == []
+    assert second.args[0]["source_event_id"] == later["rcept_no"] and second.args[1]
+    repo.mark_partition_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registry_down", "expected"), [(False, "succeeded"), (True, "failed")]
+)
+async def test_unavailable_detail_preserves_existing_values(
+    monkeypatch, registry_down, expected
+):
+    transport = Mock(return_value=b'{"status":"013"}')
+    monkeypatch.setattr(dart_capital, "_get_bytes", transport)
+    row = dict(FILING)
+    if registry_down:
+        row.pop("corp_code")
+    repo = AsyncMock()
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        AsyncMock(),
+        date(2026, 11, 24),
+        fetch_rows=AsyncMock(return_value=[row]),
+        load_corp_registry=AsyncMock(return_value=None),
+        enrich_capital=True,
+    )
+    assert result.status == expected
+    call = repo.upsert_event_with_values.await_args
+    assert call.args[1] == []
+    assert not call.kwargs.get("replace_values", False)
+    assert transport.call_count == int(not registry_down)
+
+
+@pytest.mark.asyncio
+async def test_document_xml_retries_020_and_treats_014_as_empty(monkeypatch):
+    transport = Mock(
+        side_effect=[
+            b"<result><status>020</status></result>",
+            b"<result><status>014</status></result>",
+        ]
+    )
+    delay = AsyncMock()
+    monkeypatch.setattr(dart_capital, "_get_bytes", transport)
+    monkeypatch.setattr(dart_capital.asyncio, "sleep", delay)
+    assert await dart_capital._request("document.xml", rcept_no=RECEIPT) is None
+    delay.assert_awaited_once_with(1)
+    assert transport.call_count == 2
+
+
+@pytest.mark.parametrize("relation", ["자회사", "종속회사"])
+def test_subsidiary_dividend_is_not_attributed_to_parent(relation):
+    assert (
+        dart_capital.capital_endpoint(f"현금ㆍ현물배당결정 ({relation}의 주요경영사항)")
+        is None
+    )
+
+
+def test_sentry_scrubs_opendart_query_and_named_credential():
+    from app.monitoring.sentry import _before_breadcrumb, _before_send_transaction
+
+    fake_key = "fixture-dart-key"
+    query = f"corp_code={CORP}&crtfc_key={fake_key}"
+    crumb = _before_breadcrumb(
+        {"category": "httplib", "data": {"http.query": query}}, {}
+    )
+    transaction = _before_send_transaction(
+        {"spans": [{"data": {"http.query": query, "crtfc_key": fake_key}}]}, {}
+    )
+    assert fake_key not in json.dumps([crumb, transaction])
+    assert CORP in json.dumps([crumb, transaction])
+
+
+def test_dart_migration_is_single_head_and_guards_existing_values():
+    from io import StringIO
+
+    from alembic.config import Config
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    rev = script.get_revision("20261125_hk6582_dart_capital")
+    assert rev is not None
+    assert rev.down_revision == "20261125_hk6579_benzinga_pro"
+    assert script.get_current_head() == rev.revision
+    output = StringIO()
+    ctx = MigrationContext.configure(
+        dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}
+    )
+    with Operations.context(ctx):
+        rev.module.downgrade()
+    sql = output.getvalue()
+    assert sql.index("LOCK TABLE") < sql.index("value_details IS NOT NULL")
+    assert sql.index("RAISE EXCEPTION") < sql.index("DROP COLUMN value_details")
+
+
+def test_dart_suite_is_in_exactly_one_ci_shard():
+    from pathlib import Path
+
+    name = "tests/services/market_events/test_dart_capital.py"
+    assert (
+        sum(
+            manifest.read_text().splitlines().count(name)
+            for manifest in Path("ci_shards").glob("shard-*.txt")
+        )
+        == 1
+    )

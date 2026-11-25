@@ -101,7 +101,7 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   [기업개황 `acc_mt`](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019002)를 따른다.
 - HTTP 200의 본문 상태 `013/014`는 정상 빈 결과다. `020`은 1초·2초 백오프 후 재시도하고,
   `010/011/012/901`(인증 거절), `800`(서비스 불가), `021/100`(요청 제약/인자 오류)은 유형별 실패다.
-  상세 조회 실패는 해당 파티션을 실패 처리한다.
+  상세 조회 실패는 목록 행과 확보한 값을 저장한 뒤 해당 파티션을 실패 처리한다. 빈 상세 응답은 이전 수치를 보존한다.
 - 기존 시장 이벤트 조회의 `values`에 구조화 수치가 포함되고 MCP `get_disclosures(include_values=True)`는
   저장된 수치를 접수번호별로 조회한다. MCP 기본 응답은 기존과 동일하다.
 

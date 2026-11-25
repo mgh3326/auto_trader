@@ -89,6 +89,11 @@ _ERRORS = {
 def capital_endpoint(title: str) -> str | None:
     cleaned = re.sub(r"\s+|\[[^\]]*\]", "", title).replace("·", "ㆍ").replace("･", "ㆍ")
     cleaned = cleaned.removeprefix("주요사항보고서(")
+    if any(
+        marker in cleaned
+        for marker in ("자회사의주요경영사항", "종속회사의주요경영사항")
+    ):
+        return None
     return next(
         (
             endpoint
@@ -124,11 +129,12 @@ def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
     api_key = settings.opendart_api_key
     if not api_key:
         raise DartCredentialError("OpenDART API key is missing")
-    # http.client does not log the query URL, and does not follow redirects.
+    # http.client does not follow redirects. The Sentry scrubber covers crtfc_key.
     connection = HTTPSConnection("opendart.fss.or.kr", timeout=15)
     try:
-        query = urlencode({"crtfc_key": api_key, **params})
-        connection.request("GET", f"/api/{endpoint}?{query}")
+        connection.request(
+            "GET", f"/api/{endpoint}?" + urlencode({"crtfc_key": api_key, **params})
+        )
         response = connection.getresponse()
         if response.status != 200:
             raise DartUnavailableError(f"OpenDART HTTP {response.status}")
@@ -142,18 +148,27 @@ def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
         connection.close()
 
 
+def _parse_xml(body: bytes) -> etree._Element:
+    return etree.fromstring(
+        body, parser=etree.XMLParser(resolve_entities=False, no_network=True)
+    )
+
+
 async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | None:
     for attempt in range(3):
         body = await asyncio.to_thread(_get_bytes, endpoint, params)
-        if endpoint == "document.xml" and body.startswith(b"PK\x03\x04"):
-            return body
         try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeError):
+            if endpoint == "document.xml":
+                if body.startswith(b"PK\x03\x04"):
+                    return body
+                status = _parse_xml(body).findtext("status")
+            else:
+                payload = json.loads(body)
+                status = payload.get("status") if isinstance(payload, dict) else None
+                if status == "000":
+                    return payload
+        except (ValueError, etree.XMLSyntaxError):
             raise DartDetailError("OpenDART detail response is malformed") from None
-        status = payload.get("status") if isinstance(payload, dict) else None
-        if status == "000":
-            return payload
         if status in ("013", "014"):
             return None
         if status == "020" and attempt < 2:
@@ -312,10 +327,7 @@ def _dividend_record_date(
                 return None
             if archive.getinfo(name).file_size > _MAX_BODY:
                 raise DartDetailError("OpenDART filing XML exceeds size limit")
-            root = etree.fromstring(
-                archive.read(name),
-                parser=etree.XMLParser(resolve_entities=False, no_network=True),
-            )
+            root = _parse_xml(archive.read(name))
     except DartDetailError:
         raise
     except (BadZipFile, etree.XMLSyntaxError, RuntimeError):
@@ -347,14 +359,16 @@ async def enrich_capital_event(
     endpoint: str,
     row: Mapping[str, Any],
     event: dict[str, Any],
-    registry: Mapping[str, list[dict[str, str]]],
+    registry: Mapping[str, list[dict[str, str]]] | None,
     fiscal_months: dict[str, str | None],
 ) -> list[dict[str, Any]]:
     receipt = event["source_event_id"]
     receipt_day = _date(receipt[:8])
     if not re.fullmatch(r"[0-9]{14}", receipt) or receipt_day is None:
         return []
-    code = _corp_code(row, event, registry)
+    code = _corp_code(row, event, registry or {})
+    if code is None and registry is None and event["company_name"]:
+        raise DartDetailError("OpenDART corporate registry is unavailable")
     if endpoint == "document":
         body = await _request("document.xml", rcept_no=receipt)
         title = re.sub(r"\s+", "", event["title"])

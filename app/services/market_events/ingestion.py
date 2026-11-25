@@ -314,6 +314,8 @@ async def ingest_kr_disclosures_for_date(
     it again. Dates before `today` keep the fail-closed zero-filings guard.
     """
     from app.services.market_events.dart_capital import (
+        DartCredentialError,
+        DartDetailError,
         capital_endpoint,
         enrich_capital_event,
     )
@@ -363,6 +365,8 @@ async def ingest_kr_disclosures_for_date(
                 logger.warning("DART corp registry unavailable")
         upserted = 0
         fiscal_months: dict[str, str | None] = {}
+        detail_error: DartDetailError | None = None
+        credential_refused = False
         for row, endpoint in zip(rows, endpoints, strict=True):
             try:
                 event_dict, value_dicts = normalize_dart_disclosure_row(
@@ -371,16 +375,34 @@ async def ingest_kr_disclosures_for_date(
             except ValueError as exc:
                 logger.warning("skipping unparseable dart row: %s (%s)", row, exc)
                 continue
-            if endpoint:
-                value_dicts = await enrich_capital_event(
-                    endpoint, row, event_dict, corp_registry or {}, fiscal_months
-                )
-                await repo.upsert_event_with_values(
-                    event_dict, value_dicts, replace_values=True
-                )
-            else:
-                await repo.upsert_event_with_values(event_dict, value_dicts)
+            if endpoint and not credential_refused:
+                try:
+                    value_dicts = await enrich_capital_event(
+                        endpoint, row, event_dict, corp_registry, fiscal_months
+                    )
+                except DartDetailError as exc:
+                    credential_refused = isinstance(exc, DartCredentialError)
+                    if detail_error is None or credential_refused:
+                        detail_error = exc
+                    logger.warning(
+                        "DART detail lookup failed for receipt %s: %s",
+                        event_dict["source_event_id"],
+                        exc,
+                    )
+            await repo.upsert_event_with_values(event_dict, value_dicts)
             upserted += 1
+
+        if detail_error is not None:
+            await repo.mark_partition_failed(partition, error=str(detail_error))
+            return IngestionRunResult(
+                source=source,
+                category=partition_category,
+                market=market,
+                partition_date=target_date,
+                status="failed",
+                event_count=upserted,
+                error=str(detail_error),
+            )
 
         day_incomplete = not rows and target_date >= (today or today_kst())
         if _require_legitimate_dart_zero(
