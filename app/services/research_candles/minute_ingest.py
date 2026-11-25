@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -40,6 +41,14 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import parse_futures_contract_symbol
+from app.services.kis_futures_quotes.contracts import (
+    CLOSED_QUOTE_PRODUCTS,
+)
+from app.services.kis_futures_quotes.contracts import (
+    roll_state as roll_state_of,
+)
+from app.services.research_candles.futures_minutes_collector import FuturesBar
 from app.services.research_candles.session_minutes_collector import (
     KisMinuteReader,
     MinuteBar,
@@ -50,13 +59,21 @@ from app.services.research_candles.session_minutes_collector import (
     targets_report,
 )
 from app.services.research_candles.session_segment import (
+    futures_session_date,
     session_segment_of,
     us_session_date,
 )
 
-Market = Literal["kr", "us"]
+#: Stock markets (``research.kr_candles_1m`` / ``research.us_candles_1m``).
+StockMarket = Literal["kr", "us"]
+#: Every market the ingest surface accepts. ``futures`` lands in
+#: ``research.kr_futures_candles_1m`` (hk 6148 contract, hk 6424 POST).
+Market = Literal["kr", "us", "futures"]
 
 _KR = ZoneInfo("Asia/Seoul")
+
+#: Closed futures product codes (KOSPI200 futures, mini KOSPI200 futures).
+_FUTURES_PRODUCT_CODES = frozenset(product.code for product in CLOSED_QUOTE_PRODUCTS)
 
 #: A receipt claim this much ahead of the server clock is refused as future
 #: (transport clock skew only). A late claim is only bounded by the bar start.
@@ -74,12 +91,16 @@ MIN_BAR_START = datetime(2000, 1, 1, tzinfo=UTC)
 SOURCES_BY_MARKET: dict[str, frozenset[str]] = {
     "kr": frozenset({"KIWOOM", "KIS", "TOSS", "UNKNOWN"}),
     "us": frozenset({"KIS", "TOSS", "YAHOO", "UNKNOWN"}),
+    # research.kr_futures_candles_1m CHECK (hk 6148 migration).
+    "futures": frozenset({"KIS", "UNKNOWN"}),
 }
 
-#: Closed ``venue`` vocabulary per market (table CHECKs).
+#: Closed ``venue`` vocabulary per market (table CHECKs). Futures has no venue
+#: column: its one KRX derivatives venue is the only value it accepts.
 VENUES_BY_MARKET: dict[str, frozenset[str]] = {
     "kr": frozenset({"KRX", "NTX"}),
     "us": frozenset({"NASD", "NYSE", "AMEX"}),
+    "futures": frozenset({"KRX"}),
 }
 
 #: A producer-supplied ``batch_id`` (diagnostic provenance): bounded, ASCII,
@@ -102,6 +123,16 @@ REASON_INCONSISTENT_OHLC = "inconsistent_ohlc"
 REASON_INVALID_VOLUME = "invalid_volume"
 REASON_INVALID_VALUE = "invalid_value"
 REASON_VALUE_REQUIRED = "value_required"
+# Futures only (hk 6424). A field the market does not carry, or a value the
+# server derives differently from the producer's claim.
+REASON_FIELD_NOT_APPLICABLE = "field_not_applicable"
+REASON_MASTER_UNAVAILABLE = "master_unavailable"
+REASON_ROLL_STATE_UNVERIFIABLE = "roll_state_unverifiable"
+REASON_PRODUCT_MISMATCH = "product_mismatch"
+REASON_CONTRACT_MONTH_MISMATCH = "contract_month_mismatch"
+REASON_ROLL_STATE_MISMATCH = "roll_state_mismatch"
+REASON_SESSION_SEGMENT_MISMATCH = "session_segment_mismatch"
+REASON_SESSION_DATE_MISMATCH = "session_date_mismatch"
 
 REASONS: frozenset[str] = frozenset(
     {
@@ -119,6 +150,14 @@ REASONS: frozenset[str] = frozenset(
         REASON_INVALID_VOLUME,
         REASON_INVALID_VALUE,
         REASON_VALUE_REQUIRED,
+        REASON_FIELD_NOT_APPLICABLE,
+        REASON_MASTER_UNAVAILABLE,
+        REASON_ROLL_STATE_UNVERIFIABLE,
+        REASON_PRODUCT_MISMATCH,
+        REASON_CONTRACT_MONTH_MISMATCH,
+        REASON_ROLL_STATE_MISMATCH,
+        REASON_SESSION_SEGMENT_MISMATCH,
+        REASON_SESSION_DATE_MISMATCH,
     }
 )
 
@@ -127,7 +166,7 @@ REASONS: frozenset[str] = frozenset(
 class BarDecision:
     """One item's outcome: the row to write, or the reason it is refused."""
 
-    bar: MinuteBar | None = None
+    bar: MinuteBar | FuturesBar | None = None
     retrieved_at: datetime | None = None
     reason: str | None = None
 
@@ -154,9 +193,97 @@ def build_batch_id(market: Market, now: datetime) -> str:
     return f"{BATCH_PREFIX}-{market}-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
 
 
+def _check_start(time_utc: object) -> tuple[datetime | None, str | None]:
+    start = _valid_datetime(time_utc)
+    if start is None:
+        return None, REASON_BAR_TIME_INVALID
+    if start.second or start.microsecond:
+        return None, REASON_BAR_TIME_NOT_MINUTE_ALIGNED
+    if start < MIN_BAR_START:
+        return None, REASON_BAR_TIME_INVALID
+    return start, None
+
+
+def _check_receipt(
+    received_at: object, start: datetime, now: datetime
+) -> tuple[datetime | None, str | None]:
+    received = _valid_datetime(received_at)
+    if received is None:
+        return None, REASON_RECEIVED_AT_INVALID
+    if received > now + MAX_CLOCK_SKEW:
+        return None, REASON_RECEIVED_AT_IN_FUTURE
+    if received < start:
+        return None, REASON_RECEIVED_AT_BEFORE_BAR
+    return received, None
+
+
+def _check_closed(start: datetime, received: datetime, now: datetime) -> str | None:
+    # Only a closed bar may be stored: ``is_closed`` is the collector's own rule
+    # (``start + 1 min + 10 s <= observed``), and ``min`` keeps a claimed
+    # receipt from closing a bar earlier than the server clock allows. A
+    # forming bar would be a permanent partial row (insert-only, no UPDATE).
+    if not is_closed(start, min(received, now)):
+        return REASON_BAR_NOT_CLOSED
+    return None
+
+
+def _check_ohlcv(
+    open_price: object,
+    high_price: object,
+    low_price: object,
+    close_price: object,
+    volume: object,
+) -> tuple[tuple[Decimal, Decimal, Decimal, Decimal, Decimal] | None, str | None]:
+    o = _finite(open_price)
+    h = _finite(high_price)
+    lo = _finite(low_price)
+    c = _finite(close_price)
+    if o is None or h is None or lo is None or c is None:
+        return None, REASON_INVALID_PRICE
+    if o <= 0 or h <= 0 or lo <= 0 or c <= 0:
+        return None, REASON_INVALID_PRICE
+    if h < max(o, c, lo) or lo > min(o, c):
+        return None, REASON_INCONSISTENT_OHLC
+    traded = _finite(volume)
+    if traded is None or traded < 0:
+        return None, REASON_INVALID_VOLUME
+    return (o, h, lo, c, traded), None
+
+
+@dataclass(frozen=True, slots=True)
+class _FuturesIdentity:
+    symbol: str  # canonical DB symbol ``<PRODUCT>.<YYMM>``
+    product: str
+    contract_month: str  # ``YYYY-MM`` (roll_state input)
+    yymm: str  # the stored ``contract_month`` column
+
+
+def _futures_identity(symbol: object) -> _FuturesIdentity | None:
+    """Only the canonical symbol of a closed product is a futures contract.
+
+    ``parse_futures_contract_symbol`` rebuilds the symbol and refuses anything
+    that is not byte-identical, so a lower-case or padded symbol is not guessed
+    into a contract.
+    """
+    if not isinstance(symbol, str):
+        return None
+    try:
+        product, contract_month = parse_futures_contract_symbol(symbol)
+    except ValueError:
+        return None
+    if product not in _FUTURES_PRODUCT_CODES:
+        return None
+    return _FuturesIdentity(
+        symbol=symbol,
+        product=product,
+        contract_month=contract_month,
+        yymm=symbol.partition(".")[2],
+    )
+
+
 def decide_bar(
     *,
-    market: Market,
+    market: StockMarket,
     symbol: object,
     venue: object,
     time_utc: object,
@@ -170,7 +297,7 @@ def decide_bar(
     source: object,
     now: datetime,
 ) -> BarDecision:
-    """Validate one posted bar and derive the server-owned fields.
+    """Validate one posted kr/us bar and derive the server-owned fields.
 
     ``now`` is the server clock read once per request; a claim beyond it (plus
     ``MAX_CLOCK_SKEW``) is refused rather than stored.
@@ -187,42 +314,22 @@ def decide_bar(
     if normalized is None:
         return BarDecision(reason=REASON_INVALID_SYMBOL)
 
-    start = _valid_datetime(time_utc)
+    start, reason = _check_start(time_utc)
     if start is None:
-        return BarDecision(reason=REASON_BAR_TIME_INVALID)
-    if start.second or start.microsecond:
-        return BarDecision(reason=REASON_BAR_TIME_NOT_MINUTE_ALIGNED)
-    if start < MIN_BAR_START:
-        return BarDecision(reason=REASON_BAR_TIME_INVALID)
+        return BarDecision(reason=reason)
 
-    received = _valid_datetime(received_at)
+    received, reason = _check_receipt(received_at, start, now)
     if received is None:
-        return BarDecision(reason=REASON_RECEIVED_AT_INVALID)
-    if received > now + MAX_CLOCK_SKEW:
-        return BarDecision(reason=REASON_RECEIVED_AT_IN_FUTURE)
-    if received < start:
-        return BarDecision(reason=REASON_RECEIVED_AT_BEFORE_BAR)
-    # Only a closed bar may be stored: ``is_closed`` is the collector's own rule
-    # (``start + 1 min + 10 s <= observed``), and ``min`` keeps a claimed
-    # receipt from closing a bar earlier than the server clock allows. A
-    # forming bar would be a permanent partial row (insert-only, no UPDATE).
-    if not is_closed(start, min(received, now)):
-        return BarDecision(reason=REASON_BAR_NOT_CLOSED)
+        return BarDecision(reason=reason)
 
-    o = _finite(open_price)
-    h = _finite(high_price)
-    lo = _finite(low_price)
-    c = _finite(close_price)
-    if o is None or h is None or lo is None or c is None:
-        return BarDecision(reason=REASON_INVALID_PRICE)
-    if o <= 0 or h <= 0 or lo <= 0 or c <= 0:
-        return BarDecision(reason=REASON_INVALID_PRICE)
-    if h < max(o, c, lo) or lo > min(o, c):
-        return BarDecision(reason=REASON_INCONSISTENT_OHLC)
+    closed_reason = _check_closed(start, received, now)
+    if closed_reason is not None:
+        return BarDecision(reason=closed_reason)
 
-    traded = _finite(volume)
-    if traded is None or traded < 0:
-        return BarDecision(reason=REASON_INVALID_VOLUME)
+    ohlcv, reason = _check_ohlcv(open_price, high_price, low_price, close_price, volume)
+    if ohlcv is None:
+        return BarDecision(reason=reason)
+    o, h, lo, c, traded = ohlcv
 
     if value is None:
         if market == "us":
@@ -255,6 +362,121 @@ def decide_bar(
             close=c,
             volume=traded,
             value=traded_value,
+        ),
+        retrieved_at=received,
+    )
+
+
+def decide_futures_bar(
+    *,
+    symbol: object,
+    venue: object,
+    time_utc: object,
+    open_price: object,
+    high_price: object,
+    low_price: object,
+    close_price: object,
+    volume: object,
+    value: object,
+    received_at: object,
+    source: object,
+    product: object,
+    contract_month: object,
+    roll_state: object,
+    session_segment: object,
+    session_date: object,
+    listing: Mapping[str, tuple[str, ...]] | None,
+    now: datetime,
+) -> BarDecision:
+    """Validate one futures bar and recompute every derived field server-side.
+
+    ``product``, ``contract_month``, ``roll_state``, ``session_segment`` and
+    ``session_date`` are optional on the wire. The server derives each one from
+    the symbol and the bar start with the Python rules that the collector uses,
+    and a sent value that disagrees is refused with its own closed reason: the
+    server never adopts the producer's derivation.
+
+    ``listing`` is the master's ``product -> listed YYYY-MM`` map (``None`` when
+    the master could not be read). ``roll_state`` depends on which earlier months
+    are still live, so without a listing the bar is refused, never stored with a
+    guessed state.
+    """
+    label = str(source or "").strip().upper()
+    if label not in SOURCES_BY_MARKET["futures"]:
+        return BarDecision(reason=REASON_UNKNOWN_SOURCE)
+
+    venue_code = str(venue or "").strip().upper()
+    if venue_code not in VENUES_BY_MARKET["futures"]:
+        return BarDecision(reason=REASON_UNKNOWN_VENUE)
+
+    identity = _futures_identity(symbol)
+    if identity is None:
+        return BarDecision(reason=REASON_INVALID_SYMBOL)
+
+    start, reason = _check_start(time_utc)
+    if start is None:
+        return BarDecision(reason=reason)
+
+    received, reason = _check_receipt(received_at, start, now)
+    if received is None:
+        return BarDecision(reason=reason)
+
+    closed_reason = _check_closed(start, received, now)
+    if closed_reason is not None:
+        return BarDecision(reason=closed_reason)
+
+    ohlcv, reason = _check_ohlcv(open_price, high_price, low_price, close_price, volume)
+    if ohlcv is None:
+        return BarDecision(reason=reason)
+    o, h, lo, c, traded = ohlcv
+
+    if value is not None:
+        # The futures table has no value column; a sent value would be dropped.
+        return BarDecision(reason=REASON_FIELD_NOT_APPLICABLE)
+
+    try:
+        trading_date = futures_session_date(start)
+        on_date = trading_date or start.astimezone(_KR).date()
+        segment = session_segment_of("futures", venue_code, start)
+    except (OverflowError, ValueError):
+        return BarDecision(reason=REASON_BAR_TIME_INVALID)
+
+    if listing is None:
+        return BarDecision(reason=REASON_MASTER_UNAVAILABLE)
+    listed = listing.get(identity.product)
+    if listed is None:
+        return BarDecision(reason=REASON_ROLL_STATE_UNVERIFIABLE)
+    try:
+        derived_roll = roll_state_of(identity.contract_month, on_date, list(listed))
+    except ValueError:
+        return BarDecision(reason=REASON_ROLL_STATE_UNVERIFIABLE)
+
+    if product is not None and product != identity.product:
+        return BarDecision(reason=REASON_PRODUCT_MISMATCH)
+    if contract_month is not None and contract_month != identity.yymm:
+        return BarDecision(reason=REASON_CONTRACT_MONTH_MISMATCH)
+    if roll_state is not None and roll_state != derived_roll:
+        return BarDecision(reason=REASON_ROLL_STATE_MISMATCH)
+    if session_segment is not None and session_segment != segment:
+        return BarDecision(reason=REASON_SESSION_SEGMENT_MISMATCH)
+    if session_date is not None and session_date != trading_date:
+        return BarDecision(reason=REASON_SESSION_DATE_MISMATCH)
+
+    return BarDecision(
+        bar=FuturesBar(
+            time_utc=start,
+            symbol=identity.symbol,
+            product=identity.product,
+            contract_month=identity.yymm,
+            roll_state=derived_roll,
+            session_segment=segment,
+            session_date=trading_date,
+            source=label,
+            open=o,
+            high=h,
+            low=lo,
+            close=c,
+            volume=traded,
         ),
         retrieved_at=received,
     )
@@ -312,4 +534,5 @@ __all__ = [
     "build_batch_id",
     "build_targets_payload",
     "decide_bar",
+    "decide_futures_bar",
 ]

@@ -9,7 +9,7 @@ server — not the producer — owns ``session_segment``, ``session_date``,
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -22,14 +22,16 @@ from app.services.research_candles.minute_ingest import BATCH_ID_PATTERN
 #: 1,000 covers a restart overlap without letting one request grow unbounded.
 MAX_INGEST_BARS = 1000
 
-IngestMarket = Literal["kr", "us"]
+IngestMarket = Literal["kr", "us", "futures"]
 IngestItemStatus = Literal["inserted", "already_present", "rejected"]
 
 
 class ResearchMinuteBarItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    #: KR/US: the ticker. Futures: the canonical ``<PRODUCT>.<YYMM>`` symbol.
     symbol: str
+    #: KR/US: ``KRX``/``NTX``, ``NASD``/``NYSE``/``AMEX``. Futures: ``KRX``.
     venue: str
     #: Bar START in UTC (KIS labels a bar by its start).
     time_utc: datetime
@@ -39,11 +41,33 @@ class ResearchMinuteBarItem(BaseModel):
     close: Decimal
     volume: Decimal
     #: KR: per-minute value, optional (NULL when unproven). US: required.
+    #: Futures: must be absent (the futures table has no value column).
     value: Decimal | None = None
     #: The collector's actual clock when it received the response.
     received_at: datetime
     #: Closed vocabulary per market (see ``minute_ingest.SOURCES_BY_MARKET``).
     source: str
+    #: Futures only, all optional. The server recomputes each from the symbol and
+    #: the bar start; a sent value that disagrees is refused per item. KR/US
+    #: items must not carry any of them.
+    product: str | None = None
+    #: ``YYMM`` as stored in ``contract_month`` (not ``YYYY-MM``).
+    contract_month: str | None = None
+    roll_state: str | None = None
+    session_segment: str | None = None
+    session_date: date | None = None
+
+    def futures_fields_sent(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.product,
+                self.contract_month,
+                self.roll_state,
+                self.session_segment,
+                self.session_date,
+            )
+        )
 
 
 class ResearchMinutesIngestRequest(BaseModel):

@@ -307,11 +307,13 @@ tests/services/research/test_rob944_campaign_controller.py
 tests/services/research/test_rob974_r2_launcher.py
 tests/services/research/test_rob984_cp8_actual_integration.py
 tests/services/research_candles/test_dart_minute_trigger.py
+tests/services/research_candles/test_futures_listing.py
 tests/services/research_candles/test_futures_minutes_collector.py
 tests/services/research_candles/test_futures_minutes_db.py
 tests/services/research_candles/test_futures_session_coverage.py
 tests/services/research_candles/test_futures_session_segment.py
 tests/services/research_candles/test_minute_ingest.py
+tests/services/research_candles/test_minute_ingest_futures.py
 tests/services/research_candles/test_session_coverage.py
 tests/services/research_candles/test_session_minutes_collector.py
 tests/services/research_candles/test_session_minutes_db.py
