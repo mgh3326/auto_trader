@@ -1,0 +1,33 @@
+{
+  "ratings": [
+    {
+      "action_company": "Maintains",
+      "action_pt": "Lowers",
+      "adjusted_pt_current": "260.00",
+      "adjusted_pt_prior": "300.00",
+      "analyst": "Jefferies",
+      "analyst_id": "57fe0358ac6af40001334e62",
+      "analyst_name": "Brent Thill",
+      "currency": "USD",
+      "cusip": "001176213",
+      "date": "2026-01-05",
+      "exchange": "NASDAQ",
+      "id": "695c16678f047b0001fee512",
+      "importance": 3,
+      "isin": "IL0011762130",
+      "name": "Monday.Com",
+      "notes": "",
+      "pt_current": "260.0000",
+      "pt_pct_change": "-13.33",
+      "pt_prior": "300.00",
+      "rating_current": "Buy",
+      "rating_prior": "Buy",
+      "ticker": "MNDY",
+      "time": "14:52:07",
+      "updated": 1767642765,
+      "url": "https://www.benzinga.com/quote/MNDY/analyst-ratings",
+      "url_calendar": "https://www.benzinga.com/quote/MNDY/analyst-ratings",
+      "url_news": "https://www.benzinga.com/stock-articles/MNDY/analyst-ratings"
+    }
+  ]
+}

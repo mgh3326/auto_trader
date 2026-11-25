@@ -20,9 +20,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.market_events import (
     MarketEvent,
     MarketEventIngestionPartition,
+    MarketEventRevision,
     MarketEventValue,
 )
 from app.services.alpaca_paper_ledger_service import _redact_sensitive_keys
+
+
+def value_keys(values: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
+    """``(metric_name, period)`` pairs a provider record currently holds."""
+    return {
+        (str(value["metric_name"]), value.get("period"))
+        for value in values
+        if value.get("metric_name")
+    }
 
 
 class MarketEventsRepository:
@@ -33,6 +43,8 @@ class MarketEventsRepository:
         self,
         event_data: dict[str, Any],
         values: list[dict[str, Any]],
+        *,
+        replace_values: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
         if payload.get("raw_payload_json") is not None:
@@ -56,12 +68,38 @@ class MarketEventsRepository:
                 "source_url",
                 "raw_payload_json",
                 "fetched_at",
+                "provider_created_at",
+                "provider_created_raw",
+                "provider_updated_at",
+                "provider_updated_raw",
             )
             if k in payload
         }
+        # ``first_received_at`` is our first observation of this record and is
+        # deliberately absent from the update set (hk 6513): a later ingest of
+        # the same row must not rewrite it.
         update_columns["updated_at"] = func.now()
 
         if payload.get("source_event_id"):
+            # Provider-keyed rows are identified by ``source_event_id``, not by
+            # the natural key, so a revision may legitimately move the event
+            # date (earnings dates, conference-call and ex-dividend dates are
+            # revised) or the symbol/fiscal fields. Those columns therefore
+            # belong to the update set — otherwise the current row keeps a
+            # superseded date while the revision log records the new one.
+            # Natural-key rows cannot move them: the natural key *is*
+            # (symbol, event_date, fiscal_year, fiscal_quarter).
+            #
+            # A *None* value never clears a stored one (hk 6513 r2): writers
+            # resolve these fields best-effort, e.g. DART falls back to
+            # ``symbol=None`` when the corp-code registry read fails
+            # (``symbol_resolution_reason='registry_unavailable'``) and the day
+            # is re-upserted by the next DAG run. Treating that None as "now
+            # unknown, clear it" would erase evidence the earlier run proved.
+            for column in ("event_date", "symbol", "fiscal_year", "fiscal_quarter"):
+                value = payload.get(column)
+                if value is not None:
+                    update_columns[column] = value
             stmt = (
                 pg_insert(MarketEvent.__table__)
                 .values(**payload)
@@ -87,6 +125,13 @@ class MarketEventsRepository:
                 event.updated_at = datetime.now(UTC)
                 await self.db.flush()
             event_id = event.id
+
+        if replace_values:
+            # The caller holds the provider's complete current record for this
+            # event, so a value it no longer reports is superseded, not
+            # additive: a revision that moves the fiscal period must not leave
+            # the old period's rows beside the new one (hk 6513 r6).
+            await self._drop_superseded_values(event_id, values)
 
         for value in values:
             await self._upsert_value(event_id, value)
@@ -149,6 +194,112 @@ class MarketEventsRepository:
                     setattr(existing, key, value_)
             existing.updated_at = datetime.now(UTC)
         await self.db.flush()
+
+    async def _drop_superseded_values(
+        self, event_id: int, values: list[dict[str, Any]]
+    ) -> None:
+        """Delete value rows the incoming record no longer reports (hk 6513 r6).
+
+        Used only for writers whose payload is the provider's complete current
+        record (Benzinga calendar rows): a revision that changes the fiscal
+        period would otherwise leave the superseded period's values beside the
+        new ones, and a reader that takes the first matching metric could serve
+        the stale number.
+        """
+        keep = value_keys(values)
+        existing = (
+            (
+                await self.db.execute(
+                    select(MarketEventValue).where(
+                        MarketEventValue.event_id == event_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in existing:
+            if (row.metric_name, row.period) not in keep:
+                await self.db.delete(row)
+        await self.db.flush()
+
+    # -- provider revisions (hk 6513) ---------------------------------------
+
+    async def latest_revision(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        source_event_id: str,
+    ) -> MarketEventRevision | None:
+        stmt = (
+            select(MarketEventRevision)
+            .where(
+                MarketEventRevision.source == source,
+                MarketEventRevision.category == category,
+                MarketEventRevision.market == market,
+                MarketEventRevision.source_event_id == source_event_id,
+            )
+            .order_by(MarketEventRevision.revision_seq.desc())
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def append_revision(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        source_event_id: str,
+        content_hash: str,
+        observed_at: datetime,
+        provider_created_at: datetime | None = None,
+        provider_updated_at: datetime | None = None,
+        raw_payload_json: dict[str, Any] | None = None,
+    ) -> bool:
+        """Append one provider revision; return False when the write lost a race.
+
+        Only the sequence number is unique, so the same content may be appended
+        again after an intervening version (A → B → A is three revisions and the
+        newest row must describe A). ``ON CONFLICT DO NOTHING`` covers a
+        concurrent writer taking the same sequence number; a False result means
+        this observation was *not* recorded and the caller must not update the
+        current row as if it had been.
+        """
+        latest = await self.latest_revision(
+            source=source,
+            category=category,
+            market=market,
+            source_event_id=source_event_id,
+        )
+        next_seq = 1 if latest is None else latest.revision_seq + 1
+        payload: dict[str, Any] = {
+            "source": source,
+            "category": category,
+            "market": market,
+            "source_event_id": source_event_id,
+            "revision_seq": next_seq,
+            "content_hash": content_hash,
+            "provider_created_at": provider_created_at,
+            "provider_updated_at": provider_updated_at,
+            "observed_at": observed_at,
+            "raw_payload_json": (
+                _redact_sensitive_keys(raw_payload_json)
+                if raw_payload_json is not None
+                else None
+            ),
+        }
+        stmt = (
+            pg_insert(MarketEventRevision.__table__)
+            .values(**payload)
+            .on_conflict_do_nothing()
+            .returning(MarketEventRevision.__table__.c.id)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.flush()
+        return result.scalar_one_or_none() is not None
 
     # -- partition state ----------------------------------------------------
 

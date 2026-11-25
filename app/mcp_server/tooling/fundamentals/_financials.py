@@ -37,6 +37,7 @@ from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
 from app.models.market_events import MarketEventIngestionPartition
+from app.services.benzinga_http import calendars_enabled as benzinga_calendars_enabled
 from app.services.market_events.freshness_service import _ensure_aware, _is_stale
 from app.services.market_events.query_service import MarketEventsQueryService
 
@@ -417,6 +418,116 @@ async def _fetch_earnings_calendar_market_events_us(
     }
 
 
+# hk 6513 r6 — ``hour`` is the provider code vocabulary the earnings context
+# consumer maps (``bmo``/``amc``/``dmh``); our own closed ``time_hint`` stays in
+# ``time_hint``. A row whose ``hour`` held ``after_close`` skipped the consumer's
+# mapping and reported its release timing as unknown.
+_TIME_HINT_TO_HOUR = {
+    "before_open": "bmo",
+    "after_close": "amc",
+    "during_market": "dmh",
+    "unknown": "unknown",
+}
+
+
+async def _merge_benzinga_earnings(
+    payload: dict[str, Any],
+    start: datetime.date,
+    end: datetime.date,
+    symbol: str | None,
+) -> dict[str, Any]:
+    """Union stored Benzinga earnings rows into a successful Finnhub payload.
+
+    Applies only when the Benzinga calendar gate is exactly ``"true"`` and the
+    window holds at least one stored ``source="benzinga"`` earnings row that
+    Finnhub does not already cover for the same (symbol, date). Every other
+    case returns the Finnhub payload unchanged, so a gate-off or empty store
+    reads byte-identically to before this union existed.
+
+    Union rule (explicit, also in the contract text): Finnhub stays
+    authoritative for any (symbol, date) it reports — a Benzinga row is never
+    added on top of a Finnhub one — and Benzinga only adds rows Finnhub does
+    not cover, each labelled ``source="benzinga"``. Fail-soft: a store read
+    failure leaves the Finnhub answer untouched.
+    """
+    if not benzinga_calendars_enabled():
+        return payload
+
+    normalized_symbol = to_db_symbol(symbol.strip()).upper() if symbol else None
+    try:
+        async with AsyncSessionLocal() as db:
+            svc = MarketEventsQueryService(db)
+            response = await svc.list_for_range(
+                start,
+                end,
+                category="earnings",
+                market="us",
+                source="benzinga",
+                symbol=normalized_symbol,
+            )
+    except Exception:
+        logger.warning(
+            "benzinga earnings union read failed; serving Finnhub rows only",
+            exc_info=True,
+        )
+        return payload
+
+    if not response.events:
+        return payload
+
+    rows = list(payload.get("earnings") or [])
+    covered: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("symbol") or not row.get("date"):
+            continue
+        covered.add(
+            (to_db_symbol(str(row["symbol"]).strip()).upper(), str(row["date"]))
+        )
+    added = 0
+    for event in response.events:
+        key = (event.symbol, event.event_date.isoformat())
+        if key in covered:
+            continue
+        rows.append(
+            {
+                "symbol": event.symbol,
+                "company_name": event.company_name,
+                "date": event.event_date.isoformat(),
+                "hour": _TIME_HINT_TO_HOUR.get(event.time_hint or "unknown", "unknown"),
+                "time_hint": event.time_hint or "unknown",
+                "eps_estimate": _metric_value(event, "eps", "forecast"),
+                "eps_actual": _metric_value(event, "eps", "actual"),
+                "revenue_estimate": _metric_value(event, "revenue", "forecast"),
+                "revenue_actual": _metric_value(event, "revenue", "actual"),
+                "quarter": event.fiscal_quarter,
+                "year": event.fiscal_year,
+                "status": event.status,
+                "source": event.source,
+                "source_event_id": event.source_event_id,
+                "source_url": event.source_url,
+                "title": event.title,
+            }
+        )
+        covered.add(key)
+        added += 1
+
+    if not added:
+        return payload
+
+    out = dict(payload)
+    out["earnings"] = rows
+    out["count"] = len(rows)
+    out["sources"] = sorted(
+        {"finnhub", "benzinga"}
+        | {row.get("source") for row in rows if row.get("source")}
+    )
+    out["benzinga_union"] = {
+        "added_rows": added,
+        "rule": "finnhub_wins_on_co_observed_symbol_date",
+    }
+    return out
+
+
 def _mark_us_earnings_fallback(
     fallback: dict[str, Any],
     exc: Exception,
@@ -465,7 +576,7 @@ async def handle_get_earnings_calendar(
     start, end = _normalize_calendar_date_window(from_date, to_date)
 
     try:
-        return await _fetch_earnings_calendar_finnhub(
+        payload = await _fetch_earnings_calendar_finnhub(
             symbol,
             start.isoformat(),
             end.isoformat(),
@@ -504,3 +615,4 @@ async def handle_get_earnings_calendar(
         payload["fallback_source"] = "market_events"
         payload["fallback_status"] = "unavailable" if fallback is None else "empty"
         return payload
+    return await _merge_benzinga_earnings(payload, start, end, symbol)

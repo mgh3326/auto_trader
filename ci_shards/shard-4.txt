@@ -384,6 +384,7 @@ tests/test_analyze_stock_batch_cache.py
 tests/test_auth_security.py
 tests/test_auth_web_router.py
 tests/test_auto_execute_guard.py
+tests/test_benzinga_calendars_cli.py
 tests/test_build_financial_fundamentals_cli.py
 tests/test_catalyst_query_service.py
 tests/test_cio_quality_gate_e2e.py

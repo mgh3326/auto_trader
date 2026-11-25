@@ -163,6 +163,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
     target_url_text = target_url.render_as_string(hide_password=False)
     engine = create_async_engine(target_url_text)
     try:
+        import app.models.market_events  # noqa: F401
+
         async with engine.begin() as connection:
             for schema in ("paper", "research", "review"):
                 await connection.execute(
@@ -452,6 +454,20 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 await connection.execute(
                     text(f"ALTER TABLE upbit_symbol_universe DROP COLUMN {column}")
                 )
+            # hk 6513 provider-evidence columns on market_events and the provider
+            # revision log are later than the stamped boundary and already in
+            # Base.metadata; drop them so the migration adds them back.
+            for column in (
+                "provider_created_at",
+                "provider_created_raw",
+                "provider_updated_at",
+                "provider_updated_raw",
+                "first_received_at",
+            ):
+                await connection.execute(
+                    text(f"ALTER TABLE market_events DROP COLUMN {column}")
+                )
+            await connection.execute(text("DROP TABLE market_event_revisions"))
             # hk 6510 columns and index on the momentum snapshot table are later
             # than the stamped boundary and already in Base.metadata; drop them
             # so the migration adds them back.

@@ -21,6 +21,12 @@ CATEGORIES: frozenset[str] = frozenset(
         "policy_regulation",
         "lockup_expiry",
         "index_rebalance",
+        # hk 6513: Benzinga calendar 확장 (추가형 — 기존 값 불변)
+        "analyst_rating",
+        "guidance",
+        "dividend",
+        "short_interest",
+        "wiim",
     }
 )
 
@@ -49,6 +55,7 @@ SOURCES: frozenset[str] = frozenset(
         "forexfactory",
         "wisefn",
         "tradingview",
+        "benzinga",
     }
 )
 

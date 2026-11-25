@@ -1,0 +1,42 @@
+[
+  {
+    "id": 36444586,
+    "author": "Benzinga Insights",
+    "created": "Mon, 01 Jan 2024 13:35:14 -0400",
+    "updated": "Mon, 01 Jan 2024 13:35:15 -0400",
+    "title": "10 Information Technology Stocks With Whale Alerts In Today's Session",
+    "teaser": "",
+    "body": "",
+    "url": "https://www.benzinga.com/markets/options/24/01/36444586/10-information-technology-stocks-with-whale-alerts-in-todays-session",
+    "channels": [
+      {
+        "name": "WIIM"
+      }
+    ],
+    "stocks": [
+      {
+        "name": "AAPL",
+        "cusip": "037833100",
+        "isin": "US0378331005",
+        "exchange": "NASDAQ"
+      },
+      {
+        "name": "CLSK",
+        "cusip": "18452B209",
+        "isin": "US18452B2097",
+        "exchange": "NASDAQ"
+      },
+      {
+        "name": "NVDA",
+        "cusip": "67066G104",
+        "isin": "US67066G1040",
+        "exchange": "NASDAQ"
+      }
+    ],
+    "tags": [
+      {
+        "name": "BZI-AUOA"
+      }
+    ]
+  }
+]

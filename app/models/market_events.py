@@ -14,6 +14,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    CheckConstraint,
     Date,
     ForeignKey,
     Index,
@@ -99,6 +100,19 @@ class MarketEvent(Base):
 
     raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
 
+    # hk 6513 — provider evidence timestamps kept as given plus aware UTC, and
+    # our own first-observation clock. ``first_received_at`` is written on
+    # insert only; a later ingest of the same record never rewrites it.
+    provider_created_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    provider_created_raw: Mapped[str | None] = mapped_column(Text)
+    provider_updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    provider_updated_raw: Mapped[str | None] = mapped_column(Text)
+    first_received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
     fetched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
@@ -148,6 +162,73 @@ class MarketEventValue(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class MarketEventRevision(Base):
+    """Append-only provider revision log for market_events (hk 6513).
+
+    A provider record that comes back changed (same ``source_event_id``, new
+    ``updated`` or different values) is stored as a new revision row instead of
+    silently overwriting the previous state. The current state stays in
+    ``market_events``; this table keeps every distinct provider version with
+    the payload it arrived as.
+
+    Uniqueness is by (source, category, market, source_event_id, revision_seq)
+    only: the same provider content may legitimately reappear after a different
+    version (A → B → A), and that third observation is a real revision that the
+    newest-row rule must see. Re-ingesting an *unchanged* payload inserts
+    nothing because the caller compares against the newest revision's
+    ``content_hash`` before appending.
+    """
+
+    __tablename__ = "market_event_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source",
+            "category",
+            "market",
+            "source_event_id",
+            "revision_seq",
+            name="uq_market_event_revisions_seq",
+        ),
+        Index(
+            "ix_market_event_revisions_key",
+            "source",
+            "category",
+            "market",
+            "source_event_id",
+        ),
+        CheckConstraint(
+            "source_event_id <> ''",
+            name="ck_market_event_revisions_source_event_id_not_empty",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    source_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    revision_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    provider_created_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    provider_updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+
+    raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
 
 

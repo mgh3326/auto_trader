@@ -1,0 +1,29 @@
+{
+  "dividends": [
+    {
+      "confirmed": false,
+      "currency": "USD",
+      "cusip": "33740U620",
+      "date": "2026-12-31",
+      "dividend": "0.1636",
+      "dividend_prior": "0.1636",
+      "dividend_type": "Cash",
+      "dividend_yield": "",
+      "end_regular_dividend": false,
+      "ex_dividend_date": "2027-01-04",
+      "exchange": "BATS",
+      "frequency": 12,
+      "id": "6958d4d893cde40001ee2606",
+      "importance": 1,
+      "isin": "US33740U6203",
+      "name": "First Trust Exchange-Traded Fund VIII FT Vest U.S. Equity Buffer & Premium Income ETF - March",
+      "notes": "",
+      "payable_date": "2027-01-05",
+      "period": "JAN",
+      "record_date": "2027-01-04",
+      "ticker": "XIMR",
+      "updated": 1767429336,
+      "year": 2027
+    }
+  ]
+}

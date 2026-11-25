@@ -6,6 +6,7 @@
 
 - KR/US Category Normalization & Lazy Fill (ROB-512)
 - Market Events Ingestion Foundation (ROB-128)
+- Benzinga calendar ingestion (hk 6513)
 - Research Reports Integration (ROB-140)
 - Invest Screener US Activation (ROB-204)
 - Screener pick log (prospective bakeoff)
@@ -80,6 +81,113 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 없으면 `registry_unavailable`을 `raw_payload_json.symbol_resolution_reason`에 기록하고 `symbol`은 `null`로 둔다.
 퍼지 매칭은 하지 않으며 `corp_code`는 심볼로 대체하지 않는다. 행에 기존 `stock_code`가 있으면 기존 정규화 동작을
 유지한다. 레지스트리 실패는 공시 수집을 실패시키지 않는다.
+
+### Benzinga calendar ingestion (hk 6513)
+
+운영자 결정 `hk:doc decision/2026-11-25/at-benzinga-trial-front-use`: 체험 요금제 기간에는 Benzinga 캘린더를 결정
+흐름 앞단에서 쓰고, 체험 종료 전에 자체 소스로 대체할 수 있도록 원본 증거를 남긴다.
+
+- **표면**: `app/services/benzinga_http.py`(공유 HTTP·시각 헬퍼 — hk 6511 이 바꾸는 `app/services/benzinga_news.py`
+  는 건드리지 않는다), `app/services/benzinga_calendars/`(`spec`·`client`·`normalizers`·`ingestion`·`compare`),
+  CLI `scripts/ingest_benzinga_calendars.py`. 행은 `market_events` 에 `source="benzinga"`, `market="us"` 로
+  들어가며 쓰기는 `MarketEventsRepository` 하나뿐이다(직접 SQL 금지).
+- **게이트**: `BENZINGA_CALENDARS_ENABLED` 가 정확히 `"true"`(기본 false)이고 키는 env `BENZINGA_API_KEY` 에서만
+  읽는다. 인증은 query 파라미터 `token=<key>` 뿐이다(헤더 토큰은 401 — 2026-11-25 실호출 확인). 게이트가 꺼져
+  있으면 CLI 는 **네트워크 호출·DB 접근·키 읽기 전에 exit 2** 다. 키 값은 로그·에러·저장 payload 어디에도 남지
+  않는다(`redact_token`).
+- **카테고리 → 엔드포인트**(필드 이름은 아래 문서의 응답 예시 그대로):
+  | category | endpoint | 문서 |
+  |---|---|---|
+  | earnings | `GET /api/v2.1/calendar/earnings` → `earnings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-earnings |
+  | analyst_rating | `GET /api/v2.1/calendar/ratings` → `ratings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ratings |
+  | guidance | `GET /api/v2.1/calendar/guidance` → `guidance[]` | https://docs.benzinga.com/api-reference/calendar-api/get-guidance |
+  | dividend | `GET /api/v2.2/calendar/dividends` → `dividends[]` | https://docs.benzinga.com/api-reference/calendar-api/get-dividends |
+  | economic | `GET /api/v2.1/calendar/economics` → `economics[]` | https://docs.benzinga.com/api-reference/calendar-api/get-economics |
+  | conference | `GET /api/v2.1/calendar/conference-calls` → `conference[]` | https://docs.benzinga.com/api-reference/calendar-api/get-conference-calls |
+  | short_interest | `GET /api/v1/shortinterest` → `shortInterestData{}` | https://docs.benzinga.com/api-reference/market-data/get-short-interest-data |
+  | wiim | `GET /api/v2/news?channels=WIIM` → 배열 | https://docs.benzinga.com/api-reference/news-api/wiims/get-wiims |
+
+  캘린더 계열은 `page`/`pagesize` + `parameters[date_from]`/`parameters[date_to]`(선택 `parameters[tickers]`),
+  short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
+  `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
+  `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 읽기 종료는
+  `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
+  캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한
+  (기본 20)에 닿았는데 그 페이지가 비어 있지 않으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
+  **빈 결과의 정본은 제공자 문서의 404 다**: Benzinga 캘린더·WIIM 문서는 행이 없는 답을
+  `HTTP 404` + `{"ok": false, "errors": [{"code": "no_data_found", …}]}` 로 적는다. 그래서 **정확히 그 404**
+  (모든 `errors[].code` 가 `no_data_found`)만 **빈 페이지**로 읽는다 — 0페이지면 빈 날(파티션 `succeeded`,
+  `event_count=0`), 데이터 뒤 페이지면 읽기 종료(모은 행 유지)다. 그 밖의 non-200(5xx·429·그 밖의 4xx)·본문
+  불일치와 **200 + `ok=false`** 는 실패다: 200 봉투를 빈 날로 읽으면 파티션이 `succeeded` 가 된다. 읽기를 끝내는
+  나머지 형태는 오류 플래그 없는 `{"earnings": []}` 다. 마지막 페이지 다음 요청이 200 빈 배열인지 이 404 인지는
+  `[unverified]` 이며 클라이언트는 둘 다 받는다 — DAG 등록 전에 설계 세션이 실호출 1회로 확인한다.
+- **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
+  꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
+- **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,
+  `SOURCES` 에 `benzinga`. 컨퍼런스콜은 기존 `conference`, 경제지표는 기존 `economic`(미국 행만)을 쓴다.
+  기존 값은 그대로이고 `market_events` 에 category/source CHECK 는 없다(코드가 정본).
+- **시각 계약**: `first_received_at` 은 **우리 시계의 최초 관측**이며 재수집이 덮어쓰지 않는다(리포지토리
+  갱신 열에서 제외). 제공자 시각은 `provider_created_at`/`provider_updated_at`(aware UTC)과
+  `provider_created_raw`/`provider_updated_raw`(받은 그대로)로 함께 남긴다. 캘린더 계열 `updated` 는 Unix
+  seconds, WIIM `created`/`updated` 는 RFC 2822(`-0400`)다. 해석 불가는 `null` 이며 0 으로 채우지 않는다.
+  WIIM 의 `event_date`(파티션 날짜)는 제공자 오프셋대로 `America/New_York` 날짜다 — 20:00 ET 이후 기사는
+  UTC 로는 다음 날이지만 ET 로는 같은 날이며, 그 시간대가 WIIM 의 주 모집단이다.
+- **revision**: `market_event_revisions`(append-only, UPDATE/DELETE/TRUNCATE 는 **모든 역할**에 대해 트리거가
+  거부). 레코드의 정규화 payload 해시가 최신 revision 과 같으면 아무것도 쓰지 않고(값·`first_received_at`·
+  `updated_at` 불변), 다르면 새 revision 행을 추가한 뒤 현재 `market_events` 행을 갱신한다 — **덮어써서
+  이전 상태를 잃지 않는다**. 유일키는 `(source, category, market, source_event_id, revision_seq)` **하나뿐**이다:
+  A→B→A 처럼 같은 내용이 다시 관측되면 그대로 세 번째 revision 이고, 최신 행이 항상 최신 관측을 설명한다.
+  `append_revision` 이 False(동시 writer 가 같은 seq 를 가져감)면 현재 행을 갱신하지 않고 파티션을 실패로
+  남긴다. `source_event_id` 로 식별되는 행은 개정으로 **`event_date`·`symbol`·`fiscal_year`·`fiscal_quarter`
+  가 움직일 수 있으므로** 갱신 열에 포함된다(자연키 행은 그 값들이 키 자체라 불변). 다만 `None` 은 저장된
+  값을 지우지 않는다 — 해석 실패는 "이제 모른다"가 아니라 그 실행이 증명하지 못한 것이다.
+  `market_event_values` 도 **제공자 행이 그 레코드의 현재 전체 상태**라는 규칙을 따른다
+  (`replace_values=True`, Benzinga 경로만): 개정이 회계 기간을 옮기면 이전 기간의 값 행은 남기지 않고
+  지운다(`period` 가 값 키의 일부라 그대로 두면 같은 지표의 옛 값이 새 값 옆에 남아 first-match 리더가
+  낡은 값을 낸다). 다른 writer 의 기존 upsert 동작은 바뀌지 않는다.
+- **raw payload**: `raw_payload_json` 은 2,000자 넘는 문자열을 절단하고(`…(truncated)`) 리포지토리에서
+  redaction 을 거친다. 대체 비교에 필요한 증거는 남기되 무한 blob 은 남기지 않는다.
+- **리더(union/prefer 규칙 명시)**: `get_earnings_calendar` US 성공 응답은 Finnhub 행에 **저장된 Benzinga
+  earnings 행을 union** 한다. 적용 조건은 (a) 게이트 on, (b) 창 안에 저장된 `source="benzinga"` earnings 행이
+  존재, (c) 그 (symbol, date) 를 Finnhub 이 보고하지 않을 때뿐이다. 즉 **Finnhub 이 이긴다** — 같은
+  (symbol, date) 에 Benzinga 행을 겹쳐 넣지 않는다. 추가 행은 `source="benzinga"` 로 표시되고, 최상위에
+  `sources`·`benzinga_union`(added_rows·rule)이 붙는다. 위 조건이 하나라도 없거나 저장소 읽기가 실패하면
+  Finnhub payload 는 **바이트 동일**하게 그대로 나간다(게이트 off golden, fail-soft). Finnhub 실패 시의
+  ROB-1384 fail-closed 계약(저장분 degraded 폴백·`earnings_lookup_failed`)은 변경 없고, 그 폴백 행은 이미
+  `source` 별로 라벨링된다. market events 읽기 표면(`/trading/api/market-events/...`)도 `source` 필드로
+  벤징가 행을 그대로 노출한다. 추가 행의 `hour` 는 소비자(`earnings_context._TIMING_MAP`)가 매핑하는
+  **제공자 코드**(`bmo`/`amc`/`dmh`, 판단 불가는 `unknown`)이고 우리 닫힌 값은 `time_hint` 에 그대로 남는다 —
+  `hour` 에 `after_close` 같은 닫힌 값을 넣으면 소비자가 시점을 unknown 으로 읽는다.
+- **파티션·재실행**: `(benzinga, category, us, date)` 파티션. `--force` 없이는 `succeeded` 파티션을 건너뛰므로,
+  개정을 잡아야 하는 날짜는 **매 실행 `--force` 로 다시 받는다**(같은 payload 는 payload 해시 비교로 0행).
+  fetch 실패는 그 창의 처리 대상 파티션 전부를 `failed` 로 남긴 뒤 예외를 다시 올린다. 개정으로
+  `event_date` 가 움직이면 새 날짜 파티션에 기록되고 이전 날짜 파티션에는 그 행이 없다(파티션은 그 날짜에
+  관측된 행의 수를 센다). **`--symbols` 로 좁힌 읽기는 파티션을 완료시키지 않는다** — 그 부분집합만 덮으므로
+  파티션은 `pending` 으로 남고(이미 완료된 파티션을 `pending` 으로 내리지는 않는다) 다음 전체 읽기가 그 날을
+  다시 받는다. AAPL 전용 읽기가 `succeeded` 를 찍으면 이후 MSFT 전용·전체 읽기가 fetch 전에 건너뛰어
+  결손이 영구화된다. `first_received_at` 은 **fetch 가 돌아온 뒤**의 시계다(요청 시각이 아니다).
+- **CLI**: `scripts/ingest_benzinga_calendars.py` — `--category`(콤마/반복, 필수), `--date` 또는
+  `--from-date/--to-date`, `--symbols`(short_interest 필수, 그 밖에는 선택 필터), `--commit`(없으면 dry-run,
+  네트워크 0), `--force`(succeeded 파티션 재수집 — 개정 포착에 필요), `--max-pages`,
+  `--compare-earnings`(읽기 전용, 게이트는 동일하게 적용).
+- **비교 도우미**: `app/services/benzinga_calendars/compare.py::compare_earnings` — Finnhub 대비 coverage
+  (심볼 공통/한쪽만, 항목 한쪽만)와 **양쪽이 모두 관측한 항목에 대해서만** 시간대 일치/불일치/unknown 을 낸다.
+  대체 판정용 읽기이며 어떤 정책·게이트도 바꾸지 않는다.
+- **DAG 사본**: `deploy/dagu/at-benzinga-calendars/`(장전 1회, 장중 30분). 둘 다 스케줄이
+  `America/New_York` 이므로 **날짜도 `TZ=America/New_York date +%F`** 로 계산한다(KST 날짜는 10:00 ET 이후
+  하루 앞서고, Benzinga 캘린더의 `date` 도 미국 날짜다). 개정을 잡기 위해 두 DAG 모두 `--force` 를 준다 —
+  없으면 장전이 오늘 파티션을 `succeeded` 로 만들어 장중 틱이 fetch 전에 건너뛴다. **등록되지 않았다** —
+  등록은 설계 세션 몫이고, `short_interest` 는 symbols 필수라 DAG 에 넣지 않는다(수동 CLI). 그래서
+  `market_events/expected_sources` 의 `EXPECTED_SOURCES` 에도 넣지 않았다 — 스케줄이 없는데 기대 소스로 두면
+  신선도·`data_gaps` 가 매일 누락을 보고한다. DAG 를 등록할 때 같은 PR 에서 함께 정한다.
+- **마이그레이션** `20261125_hk6513_benzinga`: 추가형. `market_events` 에 5개 nullable 열과
+  `market_event_revisions` 표를 더하고 `at_app` 에 조건부 GRANT(SELECT·INSERT, 시퀀스 USAGE·SELECT)를 준다.
+  downgrade 는 revision 행이나 provider 증거 열이 채워진 `market_events` 행이 있으면 거부한다.
+- **범위 밖**: 뉴스(hk 6511·후속), Benzinga Pro 웹 엔드포인트, short interest 의 기본 symbol 목록 자동 결정,
+  스케줄 등록, 주문 경로.
+- **테스트**: `tests/services/benzinga_calendars/`(픽스처 정규화·idempotency·revision·client 계약·비교),
+  `tests/mcp_server/test_benzinga_earnings_union.py`(union·게이트 off golden), `tests/test_benzinga_calendars_cli.py`,
+  DB 왕복 `tests/services/benzinga_calendars/test_ingestion_db.py`(CI).
 
 ### Research Reports Integration (ROB-140)
 
