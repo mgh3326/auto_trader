@@ -29,7 +29,7 @@ PAGES: tuple[str, ...] = ("Consensus", "Invest", "Finance")
 RAW_EMBEDDED_MAX_BYTES = 131_072
 
 _TITLE_RE = re.compile(r"<title>(.*?)</title>", re.S | re.I)
-_NAME_RE = re.compile(r"(.+?)\((\d{6})\)")
+_NAME_RE = re.compile(r"(.+?)\(([0-9]{6})\)")
 # The lookbehind anchors each key to the start of its identifier. Without it the
 # pattern restarts at every letter of a long alphanumeric run (quadratic time).
 _HEADER_FIRST_RE = re.compile(
@@ -41,10 +41,10 @@ _DATA_FIRST_RE = re.compile(
 _ACC_OBJ_RE = re.compile(r'\{[^{}]*"ACC_NM"\s*:\s*"[^"]+"[^{}]*\}')
 _REPORT_OBJ_RE = re.compile(r'\{[^{}]*"RPT_TITLE"\s*:[^{}]*\}')
 _BETWEEN_MEMBERS_RE = re.compile(r"\s*,\s*")
-_DECIMAL_RE = re.compile(r"-?\d+(?:\.\d+)?")
-_INT_RE = re.compile(r"-?\d+")
-_DATE_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
-_VAL_KEY_RE = re.compile(r"VAL(\d+)")
+_DECIMAL_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+_INT_RE = re.compile(r"-?[0-9]+")
+_DATE_RE = re.compile(r"([0-9]{4})/([0-9]{2})/([0-9]{2})")
+_VAL_KEY_RE = re.compile(r"VAL([0-9]+)")
 _MISSING_TOKENS = frozenset({"", "-", "--", "N/A", "n/a", "NA"})
 
 #: Row identity priority for chart rows (the first present, non-empty string wins).

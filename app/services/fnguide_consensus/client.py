@@ -26,7 +26,7 @@ BASE_URL = f"https://{ALLOWED_HOST}/CompanyInfo/{{page}}?cmp_cd={{code}}"
 USER_AGENT = "at-research-collector/1.0"
 MAX_CONCURRENCY = 2
 MAX_RESPONSE_BYTES = 2_000_000
-_CODE_RE = re.compile(r"\d{6}")
+_CODE_RE = re.compile(r"[0-9]{6}")
 
 _FETCH_KINDS = frozenset(
     {

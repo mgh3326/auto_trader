@@ -13,8 +13,10 @@ steps:
     script: |
       rc=0
       docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_fnguide_consensus --commit --concurrency 2 --interval 1.0 || rc=$?
+      if [ "$rc" -eq 3 ]; then logger -t at-dagu-fnguide-consensus "dag=at-fnguide-consensus step=collect status=attention" || true; exit 0; fi
       exit "$rc"
-    timeout_sec: 3300
+    # Full run: about 2,600 symbols x 3 pages at one request per second is roughly 2.2 hours.
+    timeout_sec: 10800
 handler_on:
   success:
     command: 'logger -t at-dagu-fnguide-consensus "dag=at-fnguide-consensus status=success"'

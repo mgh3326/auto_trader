@@ -125,6 +125,8 @@ def test_invest_chart_rows_keep_qualifiers_and_strip_thousands_separators() -> N
         ("12%", (None, "unparsable")),
         (True, (None, "unparsable")),
         (12.5, (None, "unparsable")),
+        ("１２３", (None, "unparsable")),
+        ("٣٤", (None, "unparsable")),
     ],
 )
 def test_to_exact_decimal(raw, expected) -> None:

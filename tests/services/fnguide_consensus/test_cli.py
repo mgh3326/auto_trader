@@ -64,17 +64,22 @@ def test_dry_run_with_explicit_symbols_writes_nothing_and_reports(
     assert report["failures"] == []
 
 
-def test_failed_page_is_reported_by_kind_and_status_and_exits_one(
-    capsys, mock_transport
-) -> None:
+def test_isolated_page_failure_is_attention_not_failure(capsys, mock_transport) -> None:
     code, report = _run(capsys, ["--symbols", "028300", "--pages", "Consensus,Invest"])
 
-    assert code == 1
+    assert code == 3
     assert report["failures"] == [
         {"symbol": "028300", "page": "Invest", "kind": "http_4xx", "http_status": 404}
     ]
     parsed = {(p["symbol"], p["page"]): p for p in report["parsed"]}
     assert parsed[("028300", "Consensus")]["reason"] == "all_consensus_values_null"
+
+
+def test_nothing_parsed_is_a_failure(capsys, mock_transport) -> None:
+    code, report = _run(capsys, ["--symbols", "028300", "--pages", "Invest"])
+
+    assert code == 1
+    assert report["totals"]["parsed_pages"] == 0
 
 
 def test_bad_symbol_is_a_usage_error(capsys) -> None:

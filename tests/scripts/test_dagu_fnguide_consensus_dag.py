@@ -25,7 +25,9 @@ def test_dag_runs_once_after_the_kr_close_on_pi() -> None:
     assert '"$(cat /root/at-run/deployed-digest)"' in script
     assert "--env-file /root/at-secrets/.env.api" in script
     assert "--rm --init" in script
-    assert step["timeout_sec"] < 3600
+    # A full run is about 3 pages x ~2,600 symbols at one request per second (about 2.2 h).
+    assert step["timeout_sec"] >= 9000
+    assert "-eq 3" in script and "status=attention" in script
 
 
 def test_header_and_readme_say_not_registered() -> None:

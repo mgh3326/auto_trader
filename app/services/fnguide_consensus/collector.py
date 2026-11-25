@@ -1,17 +1,19 @@
 """Fetch and parse orchestration for the FnGuide collector (hk 6508).
 
-No database access here: the caller loads the universe and commits the writes.
-A failed fetch or a rejected page is returned as a :class:`PageFailure` with a
-closed kind; the failure is reported, never stored, so a later rerun the same day
-can still fill it.
+No database access here: the caller supplies ``on_parsed`` to persist each page as
+soon as it completes. Pages are not retained, so memory stays bounded and a run
+cut short keeps every page already written. A failed fetch or a rejected page is a
+:class:`PageFailure` with a closed kind and is never stored, so a later same-day
+rerun can still fill it.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 from app.services.fnguide_consensus.client import FetchError, FnguideClient
 from app.services.fnguide_consensus.parser import (
@@ -20,6 +22,8 @@ from app.services.fnguide_consensus.parser import (
     ParsedPage,
     parse_page,
 )
+
+PageSink = Callable[[ParsedPage], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -32,8 +36,24 @@ class PageFailure:
 
 @dataclass
 class CollectResult:
-    pages: list[ParsedPage] = field(default_factory=list)
+    summaries: list[dict[str, Any]] = field(default_factory=list)
     failures: list[PageFailure] = field(default_factory=list)
+
+
+def summarize_page(parsed: ParsedPage) -> dict[str, Any]:
+    return {
+        "symbol": parsed.symbol,
+        "page": parsed.page,
+        "company_name": parsed.company_name,
+        "status": parsed.status,
+        "reason": parsed.reason,
+        "value_rows": parsed.value_count,
+        "report_rows": parsed.report_count,
+        "skipped_items": parsed.skipped_items,
+        "unparsed_blocks": parsed.unparsed_blocks,
+        "duplicate_keys": parsed.duplicate_keys,
+        "raw_reason": parsed.raw_reason,
+    }
 
 
 def validate_pages(pages: Iterable[str]) -> tuple[str, ...]:
@@ -55,6 +75,8 @@ async def _collect_one(
         return PageFailure(
             symbol=symbol, page=page, kind=error.kind, http_status=error.status
         )
+    except Exception:  # noqa: BLE001 - one bad page must not abort the run; kind only
+        return PageFailure(symbol=symbol, page=page, kind="unexpected")
     try:
         return parse_page(
             fetched.text,
@@ -75,15 +97,26 @@ async def collect_pages(
     symbols: Iterable[str],
     pages: tuple[str, ...],
     observed_date: date,
+    on_parsed: PageSink | None = None,
 ) -> CollectResult:
-    jobs = [(symbol, page) for symbol in symbols for page in pages]
-    results = await asyncio.gather(
-        *(_collect_one(client, symbol, page, observed_date) for symbol, page in jobs)
-    )
-    collected = CollectResult()
-    for outcome in results:
-        if isinstance(outcome, PageFailure):
-            collected.failures.append(outcome)
-        else:
-            collected.pages.append(outcome)
-    return collected
+    """Fetch and parse every (symbol, page); ``on_parsed`` persists each page as it completes."""
+    tasks = [
+        asyncio.ensure_future(_collect_one(client, symbol, page, observed_date))
+        for symbol in symbols
+        for page in pages
+    ]
+    result = CollectResult()
+    try:
+        for finished in asyncio.as_completed(tasks):
+            outcome = await finished
+            if isinstance(outcome, PageFailure):
+                result.failures.append(outcome)
+                continue
+            result.summaries.append(summarize_page(outcome))
+            if on_parsed is not None:
+                await on_parsed(outcome)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+    return result
