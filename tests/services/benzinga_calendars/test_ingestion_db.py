@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models.market_events import (
     MarketEvent,
@@ -175,3 +175,56 @@ async def test_revised_event_date_moves_the_current_row(db_session):
         "2026-10-29",
         "2026-10-31",
     ]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_revision_log_rejects_update_and_delete(db_session):
+    """Append-only is a DB property, not just a missing grant."""
+    await _ingest(db_session, [EARNINGS_ROW])
+    await db_session.commit()
+
+    with pytest.raises(Exception) as updated:
+        await db_session.execute(
+            text("UPDATE market_event_revisions SET revision_seq = 99")
+        )
+    await db_session.rollback()
+    assert "append-only" in str(updated.value)
+
+    with pytest.raises(Exception) as deleted:
+        await db_session.execute(text("DELETE FROM market_event_revisions"))
+    await db_session.rollback()
+    assert "append-only" in str(deleted.value)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_revision_log_records_a_revert_as_a_third_revision(db_session):
+    """A → B → A is three revisions, and the newest one describes A.
+
+    With a content_hash unique key the third observation could not be written,
+    so the newest revision said B while the row held A.
+    """
+    await _ingest(db_session, [EARNINGS_ROW], day=date(2026, 10, 29))
+    changed = {**EARNINGS_ROW, "updated": 1766187099, "eps": "2.25"}
+    await _ingest(db_session, [changed], day=date(2026, 10, 29))
+    await _ingest(db_session, [EARNINGS_ROW], day=date(2026, 10, 29))
+
+    revisions = (
+        (
+            await db_session.execute(
+                select(MarketEventRevision).order_by(MarketEventRevision.revision_seq)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [row.revision_seq for row in revisions] == [1, 2, 3]
+    assert revisions[-1].raw_payload_json["eps"] == "2.18"
+
+    row = (
+        await db_session.execute(
+            select(MarketEvent).where(MarketEvent.source == "benzinga")
+        )
+    ).scalar_one()
+    assert row.raw_payload_json["eps"] == "2.18"
