@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.services.kr_trading_flags import vocabulary as v
@@ -39,11 +40,37 @@ EXCLUSION_REASON_CODE: dict[tuple[str, str], str] = {
 }
 
 
+#: A stored observation older than this is treated as unknown and reported.
+#: Four days covers a weekend plus a holiday. The intraday overlay refreshes every
+#: 10 minutes in KRX hours, but it does not list every halted name, so an
+#: unrefreshed KIS-sourced row must not exclude a symbol forever.
+FLAG_MAX_AGE = timedelta(hours=96)
+
+
+def kr_row_symbol(row: Mapping[str, Any]) -> str | None:
+    """The six-character KR short code of a screener row, or ``None``.
+
+    The legacy KR path carries ``code`` as an ISIN (KR7005930003) and the short
+    code in ``short_code``. A generic key order that prefers ``code`` would look
+    up ISINs, find nothing, and let flagged names through. So prefer ``symbol``,
+    then ``short_code``, and accept ``code`` only when it is itself six characters.
+    """
+    for key in ("symbol", "short_code", "code"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip().upper()
+        if len(text) == 6 and text.isalnum():
+            return text
+    return None
+
+
 @dataclass
 class GateOutcome:
     kept: list[dict[str, Any]] = field(default_factory=list)
     excluded: list[dict[str, Any]] = field(default_factory=list)
     labelled_rows: int = 0
+    stale: list[dict[str, Any]] = field(default_factory=list)
 
 
 def evidence_of(record: FlagRecord) -> dict[str, Any]:
@@ -66,16 +93,31 @@ def apply_trading_flag_gate(
     *,
     symbol_of: Callable[[Mapping[str, Any]], str | None],
     records: Mapping[str, Mapping[str, FlagRecord]],
+    now: datetime | None = None,
+    max_age: timedelta | None = None,
 ) -> GateOutcome:
     """Split ``rows`` into kept and excluded, and label 투자주의 rows.
 
     ``records`` is ``{symbol: {category: FlagRecord}}``. A symbol or category
-    missing from it is unknown and does not exclude.
+    missing from it is unknown and does not exclude. When ``now`` and ``max_age``
+    are given, a record observed longer ago than ``max_age`` is also unknown, and
+    it is listed in ``outcome.stale`` so the staleness is reported, not silent.
     """
     outcome = GateOutcome()
     for row in rows:
         symbol = symbol_of(row)
-        flags = records.get(symbol, {}) if symbol else {}
+        flags = dict(records.get(symbol, {})) if symbol else {}
+        if now is not None and max_age is not None and symbol:
+            for category, record in list(flags.items()):
+                if now - record.observed_at > max_age:
+                    outcome.stale.append(
+                        {
+                            "symbol": symbol,
+                            "category": category,
+                            "observed_at": record.observed_at.isoformat(),
+                        }
+                    )
+                    del flags[category]
 
         reasons = []
         for category, record in sorted(flags.items()):

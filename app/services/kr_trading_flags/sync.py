@@ -34,6 +34,30 @@ _KOSPI_ZIP = "kospi_code.mst.zip"
 _KOSDAQ_ZIP = "kosdaq_code.mst.zip"
 
 
+#: A category where most KIS rows fail to map means the layout is wrong, not the
+#: market. Refuse the write rather than store a wall of ``unmapped``.
+MOSTLY_UNMAPPED_MIN_ROWS = 20
+MOSTLY_UNMAPPED_SHARE = 0.5
+
+
+class MostlyUnmappedError(RuntimeError):
+    """A KIS category is mostly unmapped; nothing may be written."""
+
+
+def refuse_if_mostly_unmapped(observations: list[v.FlagObservation]) -> None:
+    by_category: dict[str, list[v.FlagObservation]] = {}
+    for obs in observations:
+        by_category.setdefault(obs.category, []).append(obs)
+    for category, rows in sorted(by_category.items()):
+        if len(rows) < MOSTLY_UNMAPPED_MIN_ROWS:
+            continue
+        unmapped = sum(1 for o in rows if o.state == v.STATE_UNMAPPED)
+        if unmapped / len(rows) > MOSTLY_UNMAPPED_SHARE:
+            raise MostlyUnmappedError(
+                f"refusing KIS master write: {category} unmapped {unmapped}/{len(rows)}"
+            )
+
+
 def _summarize(
     observations: list[v.FlagObservation],
     *,
@@ -83,6 +107,7 @@ async def sync_kis_master_flags(*, dry_run: bool, now: datetime) -> dict[str, An
                 continue
             observations.extend(row)
 
+    refuse_if_mostly_unmapped(observations)
     write = None if dry_run else await _write(observations, now)
     return _summarize(
         observations,

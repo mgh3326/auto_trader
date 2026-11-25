@@ -131,3 +131,74 @@ def test_input_rows_are_not_mutated() -> None:
     }
     apply_trading_flag_gate(rows, symbol_of=_sym, records=records)
     assert "trading_flag_labels" not in rows[0]
+
+
+def test_legacy_kr_row_is_resolved_by_short_code_not_isin() -> None:
+    """Review finding (high): the legacy KR path carries ISIN in ``code``."""
+    from app.services.kr_trading_flags.gate import kr_row_symbol
+
+    legacy = {"code": "KR7005930003", "short_code": "005930", "name": "삼성전자"}
+    assert kr_row_symbol(legacy) == "005930"
+    records = {
+        "005930": {
+            v.CATEGORY_MANAGEMENT: _rec(v.CATEGORY_MANAGEMENT, "designated", raw="1")
+        }
+    }
+    out = apply_trading_flag_gate([legacy], symbol_of=kr_row_symbol, records=records)
+    assert out.kept == []
+    assert out.excluded[0]["symbol"] == "005930"
+
+
+def test_isin_only_row_resolves_to_none_so_it_is_unknown_not_matched() -> None:
+    from app.services.kr_trading_flags.gate import kr_row_symbol
+
+    assert kr_row_symbol({"code": "KR7005930003"}) is None
+    assert kr_row_symbol({"code": "005930"}) == "005930"
+
+
+def test_stale_record_is_unknown_and_reported_not_excluded() -> None:
+    from datetime import timedelta
+
+    old = FlagRecord(
+        category=v.CATEGORY_TRADING_HALT,
+        state="halted",
+        raw_code="Y",
+        reason_code=None,
+        effective_date=None,
+        source=v.SOURCE_KIS_MASTER,
+        observed_at=OBSERVED - timedelta(days=10),
+    )
+    records = {"666666": {v.CATEGORY_TRADING_HALT: old}}
+    out = apply_trading_flag_gate(
+        _rows("666666"),
+        symbol_of=_sym,
+        records=records,
+        now=OBSERVED,
+        max_age=timedelta(hours=96),
+    )
+    assert out.excluded == []
+    assert [row["code"] for row in out.kept] == ["666666"]
+    assert out.stale == [
+        {
+            "symbol": "666666",
+            "category": v.CATEGORY_TRADING_HALT,
+            "observed_at": old.observed_at.isoformat(),
+        }
+    ]
+
+
+def test_fresh_record_still_excludes_when_bound_is_given() -> None:
+    from datetime import timedelta
+
+    records = {
+        "777777": {v.CATEGORY_TRADING_HALT: _rec(v.CATEGORY_TRADING_HALT, "halted")}
+    }
+    out = apply_trading_flag_gate(
+        _rows("777777"),
+        symbol_of=_sym,
+        records=records,
+        now=OBSERVED,
+        max_age=timedelta(hours=96),
+    )
+    assert out.kept == []
+    assert out.stale == []

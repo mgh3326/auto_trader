@@ -3,13 +3,13 @@
 Layout source (public spec, read for this change):
   github.com/koreainvestment/open-trading-api
   stocks_info/kis_kospi_code_mst.py, stocks_info/kis_kosdaq_code_mst.py
-Each row is ``head + tail``. The tail is the last 228 (KOSPI) or 222 (KOSDAQ)
-characters and is read with the fixed-width field table in that spec. Offsets
-below are counted from the start of the tail, as the spec's ``read_fwf`` does.
-
-The spec's widths sum to 227 / 221, one byte short of the tail length the
-existing universe parser uses (228 / 222). The trailing byte is unused by the
-spec, so the flag offsets are unaffected.
+The spec slices ``row[-228:]`` / ``row[-222:]`` from file lines that still end
+in ``\n``, so the data tail is the last 227 (KOSPI) / 221 (KOSDAQ) characters
+of a newline-stripped line, exactly the sum of the spec's field widths. The
+universe downloader strips the newline, so this parser must use 227 / 221. Using
+228 / 222 pulls one head character into the tail and reads every flag one
+column early (review finding on PR #2584). Offsets below are counted from the
+start of the tail, as the spec's ``read_fwf`` does.
 
 [unverified] The spec documents field names and widths, not the sample values.
 The code values used here (``Y``/``N`` for 거래정지·정리매매·관리종목, and
@@ -26,8 +26,8 @@ from dataclasses import dataclass
 
 from app.services.kr_trading_flags import vocabulary as v
 
-KOSPI_TAIL_LENGTH = 228
-KOSDAQ_TAIL_LENGTH = 222
+KOSPI_TAIL_LENGTH = 227
+KOSDAQ_TAIL_LENGTH = 221
 
 
 @dataclass(frozen=True)

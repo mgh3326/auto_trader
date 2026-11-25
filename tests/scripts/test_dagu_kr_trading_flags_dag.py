@@ -1,4 +1,4 @@
-"""hk 6503: static checks of the KR trading flags Dagu DAG copy (not registered)."""
+"""hk 6503: static checks of the KR trading flags Dagu DAG copies (not registered)."""
 
 from __future__ import annotations
 
@@ -27,12 +27,23 @@ def test_intraday_overlay_runs_every_ten_minutes_in_krx_hours() -> None:
     assert step["timeout_sec"] < 300
 
 
-def test_header_and_readme_say_not_registered() -> None:
-    header = (ROOT / "at-kr-trading-flags-intraday.yaml").read_text().splitlines()[0]
-    assert "Dagu 복사본" in header
-    assert "등록한다" in header or "등록하지" in header
+def test_daily_baseline_runs_weekday_morning_with_kis_master() -> None:
+    doc = yaml.safe_load((ROOT / "at-kr-trading-flags-daily.yaml").read_text())
+    assert doc["schedule"] == ["CRON_TZ=Asia/Seoul 0 7 * * 1-5"]
+    assert doc["max_active_runs"] == 1
+    (step,) = doc["steps"]
+    assert "-m scripts.sync_kr_trading_flags --source kis-master" in step["script"]
+    assert "--dry-run" not in step["script"]
+
+
+def test_headers_and_readme_say_not_registered() -> None:
+    for name in ("at-kr-trading-flags-intraday.yaml", "at-kr-trading-flags-daily.yaml"):
+        header = (ROOT / name).read_text().splitlines()[0]
+        assert "Dagu 복사본" in header
+        assert "저장소가 등록하지 않는다" in header
     readme = (ROOT / "README.md").read_text()
     assert "등록되지 않음" in readme
     assert {p.name for p in ROOT.glob("*.yaml")} == {
-        "at-kr-trading-flags-intraday.yaml"
+        "at-kr-trading-flags-intraday.yaml",
+        "at-kr-trading-flags-daily.yaml",
     }

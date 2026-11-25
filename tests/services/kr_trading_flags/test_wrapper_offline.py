@@ -95,3 +95,31 @@ async def test_store_failure_fails_open_and_keeps_every_row(
     assert out["meta"]["trading_flags_check_skipped"] == "ConnectionError"
     assert "trading_flag_excluded" not in out["meta"]
     assert "warnings" not in out
+
+
+@pytest.mark.asyncio
+async def test_legacy_isin_row_is_looked_up_by_short_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    async def _load(_db, symbols):
+        seen.extend(symbols)
+        return {
+            "005930": {
+                v.CATEGORY_MANAGEMENT: _record(v.CATEGORY_MANAGEMENT, "designated")
+            }
+        }
+
+    monkeypatch.setattr(tff, "AsyncSessionLocal", _fake_session)
+    monkeypatch.setattr(tff, "load_flag_records", _load)
+    response = {
+        "results": [{"code": "KR7005930003", "short_code": "005930"}],
+        "total_count": 1,
+        "returned_count": 1,
+        "meta": {},
+    }
+    out = await tff.exclude_trading_flag_rows(response, market="kr")
+    assert seen == ["005930"]
+    assert out["results"] == []
+    assert out["meta"]["trading_flag_excluded"][0]["symbol"] == "005930"

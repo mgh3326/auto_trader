@@ -13,11 +13,15 @@ Unknown symbols (no stored row) are kept too.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.tooling.screening.enrichment import _streak_symbol
-from app.services.kr_trading_flags.gate import apply_trading_flag_gate
+from app.services.kr_trading_flags.gate import (
+    FLAG_MAX_AGE,
+    apply_trading_flag_gate,
+    kr_row_symbol,
+)
 from app.services.kr_trading_flags.store import load_flag_records
 
 logger = logging.getLogger(__name__)
@@ -40,7 +44,7 @@ async def exclude_trading_flag_rows(
     if not rows:
         return response
 
-    symbols = [s for s in (_streak_symbol(row) for row in rows) if s]
+    symbols = [s for s in (kr_row_symbol(row) for row in rows) if s]
     meta_extra: dict[str, Any] = {}
     try:
         async with AsyncSessionLocal() as db:
@@ -50,8 +54,19 @@ async def exclude_trading_flag_rows(
         records = {}
         meta_extra["trading_flags_check_skipped"] = type(exc).__name__
 
-    outcome = apply_trading_flag_gate(rows, symbol_of=_streak_symbol, records=records)
-    if not outcome.excluded and not outcome.labelled_rows and not meta_extra:
+    outcome = apply_trading_flag_gate(
+        rows,
+        symbol_of=kr_row_symbol,
+        records=records,
+        now=datetime.now(UTC),
+        max_age=FLAG_MAX_AGE,
+    )
+    if (
+        not outcome.excluded
+        and not outcome.labelled_rows
+        and not outcome.stale
+        and not meta_extra
+    ):
         return response
 
     dropped = len(rows) - len(outcome.kept)
@@ -64,6 +79,8 @@ async def exclude_trading_flag_rows(
     meta = dict(response.get("meta") or {})
     if outcome.excluded:
         meta["trading_flag_excluded"] = outcome.excluded
+    if outcome.stale:
+        meta["trading_flags_stale"] = outcome.stale
     meta.update(meta_extra)
     updated = {
         **response,
