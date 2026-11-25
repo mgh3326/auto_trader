@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -345,6 +346,8 @@ async def test_intraday_movers_query_failure_is_reported_and_the_run_continues(
 
 @pytest.mark.asyncio
 async def test_us_targets_query_us_intraday_movers_only(monkeypatch) -> None:
+    # hk 6510 / hk 6554: the US run reads the US mover rows of today (market='us'),
+    # never the KR captures, and scores them; the symbol it reads is promoted.
     import app.services.manual_holdings_service as manual_module
 
     class _Manual:
@@ -355,16 +358,24 @@ async def test_us_targets_query_us_intraday_movers_only(monkeypatch) -> None:
             return []
 
     monkeypatch.setattr(manual_module, "ManualHoldingsService", _Manual)
-    calls: list[tuple[str, object]] = []
-
-    async def _captures(session, trading_date, market="kr"):
-        calls.append((market, trading_date))
-        return [_mover("DELL")]
-
     from app.services.invest_momentum_events import intraday as movers
 
-    monkeypatch.setattr(movers, "first_captures", _captures)
-    session = _RecordingSession([], mover_rows=[_mover("000700")])
+    seen: list[tuple[str, object]] = []
+    real_rows = movers.us_mover_rows_today
+
+    async def _rows(session, trading_date):
+        seen.append(("us", trading_date))
+        return await real_rows(session, trading_date)
+
+    monkeypatch.setattr(movers, "us_mover_rows_today", _rows)
+    us_row = SimpleNamespace(
+        symbol="000700",
+        snapshot_at=NOW,
+        rank=1,
+        trade_value=None,
+        asset_type="common_stock",
+    )
+    session = _RecordingSession([], mover_rows=[us_row])
     targets = await sc.build_targets(
         market="us",
         session=session,  # type: ignore[arg-type]
@@ -375,7 +386,6 @@ async def test_us_targets_query_us_intraday_movers_only(monkeypatch) -> None:
         snapshot_fn=FakeSnapshot({}),
         presets_fn=lambda market: [],
     )
-    # hk 6510: the US run reads its own captures (market='us'), never the KR ones.
+    assert seen == [("us", NOW.astimezone(ZoneInfo("America/New_York")).date())]
     assert targets.by_origin["intraday_movers"] == 1
-    assert "DELL" in targets.symbols
-    assert calls and calls[0][0] == "us"
+    assert "000700" in targets.symbols
