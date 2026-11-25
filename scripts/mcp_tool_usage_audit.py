@@ -56,10 +56,10 @@ class LaneSpec:
     server_names: tuple[str, ...] = ()
 
 
-# The two server mappings below are evidenced by the KR-B1 runner's NCP
-# deployment (the fable workbench lane was retired by ROB-1436).  Sentry spans
-# have no profile or lane tag, so all other lanes intentionally receive no
-# guessed server attribution until an endpoint->profile inventory is supplied.
+# Sentry spans have no profile or lane tag, so a lane receives no guessed
+# server attribution until an endpoint->profile inventory is supplied.  The two
+# lanes that had an evidenced server mapping are gone: fable workbench
+# (ROB-1436) and krb1-cycle with the full kiwoom profile (hk 6456).
 LANE_SPECS: tuple[LaneSpec, ...] = (
     LaneSpec("kr", ("default",), ("CLAUDE.md", "live/CLAUDE.md", "prompts/kr-*.md")),
     LaneSpec("us", ("default",), ("CLAUDE.md", "live/CLAUDE.md", "prompts/us-*.md")),
@@ -73,26 +73,13 @@ LANE_SPECS: tuple[LaneSpec, ...] = (
     ),
     LaneSpec(
         "orch-mock",
-        ("hermes-paper-kis", "kiwoom", "us-paper"),
+        ("hermes-paper-kis", "us-paper"),
         ("CLAUDE.md", "mock/CLAUDE.md", "prompts/mock-*.md"),
     ),
     LaneSpec(
         "claude-mock",
-        ("hermes-paper-kis", "kiwoom", "us-paper"),
+        ("hermes-paper-kis", "us-paper"),
         ("CLAUDE.md", "mock/CLAUDE.md", "prompts/mock-*.md"),
-    ),
-    LaneSpec(
-        "krb1-cycle",
-        ("kiwoom",),
-        (
-            "CLAUDE.md",
-            "mock/CLAUDE.md",
-            "prompts/krb1-cycle.md",
-            "runners/krb1_headless.py",
-            "runners/cycle_runner.py",
-            "operator_contract.yaml",
-        ),
-        ("vm-naver-20260820095006",),
     ),
     LaneSpec("shadow-crypto", ("default",), ()),
     LaneSpec(
@@ -755,7 +742,7 @@ def render_markdown(
             "",
             "## Lane allowlist draft and derivation design",
             "",
-            "Each `lane-allowlists.draft/<lane>.txt` line is `tool<TAB>basis`; basis is exact prompt token, explicitly mapped Sentry server evidence, or both. `server_name` does not carry an MCP profile/lane tag, so only KR-B1 (NCP) and fable workbench (Mac readonly) have Sentry attribution in this draft; all other lanes deliberately avoid guessed attribution.",
+            "Each `lane-allowlists.draft/<lane>.txt` line is `tool<TAB>basis`; basis is exact prompt token, explicitly mapped Sentry server evidence, or both. `server_name` does not carry an MCP profile/lane tag, so no lane declares a Sentry server mapping; lanes deliberately avoid guessed attribution.",
             "",
             "| Lane | Profiles | Draft tools |",
             "|---|---|---:|",
