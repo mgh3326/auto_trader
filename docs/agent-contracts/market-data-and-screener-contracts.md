@@ -648,6 +648,10 @@ CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성�
 - 런북: `research/stock_selection/README.md`, 보고서:
   `research/experiments/reports/rob-1474-stock-selection.md`.
 
+### KR get_quote 장전 응답 (hk 6300)
+
+`get_quote`의 KR 응답은 KRX 정규장 개장(09:00 KST) 전(`data_state: premarket_unavailable`)에 전일 이월 봉을 쓴다. 이때 `open`/`high`/`low`는 `krx_ohlcv_basis: "carried_previous_close"`로 표시하고 `volume`/`value`는 `null`로 둔다(0 체결 수로 읽지 않는다). NXT 호가를 가격으로 쓰는 것은 `nxt_tradable: true`인 종목뿐이며, 그 경우 `nxt_trade_state: "no_trade_observed"`를 남긴다. 그 밖의 종목은 `price_usable: false`다. 날짜만 있는 `price_as_of`(KST 자정, 일봉 날짜)는 장전 경로에서 fresh가 아니며 `price_as_of_kind: "date_only"`와 `price_unavailable_reason: "date_only_price_asof"`를 준다. 정규장 KR 응답의 형태는 바뀌지 않았다. 이 필드를 읽는 앱 내부 소비자는 `order_preflight`(`price_freshness`가 `fresh`가 아니면 거부, 키움 모의 경로 `kiwoom_mock_place`·`orders_kiwoom_variants`가 공급)와 `auto_approve_price_fallback`(`is_stale_price`·`data_state`)이다.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.

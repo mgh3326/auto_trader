@@ -125,6 +125,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - NXT price selection order is `expected_price` (`price_source: "nxt_expected_price"`), then best bid/ask mid (`"nxt_mid"`), then a single available best ask or bid (`"nxt_best_ask"` / `"nxt_best_bid"`).
   - A successful NXT overlay returns `data_state: "fresh"`, `regular_session_data_state` with the KRX classifier value, and venue diagnostics (`venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`) when KIS supplies them.
   - If the NXT orderbook is empty or unavailable, `get_quote` keeps the ROB-464 stale-session behavior: KRX daily `price`, `data_state` from `kr_market_data_state()`, and no NXT diagnostic fields.
+  - Before the KRX open (`data_state: "premarket_unavailable"`, hk 6300) the KIS daily row for today is the prior session carried over. Its `open`/`high`/`low` are marked `krx_ohlcv_basis: "carried_previous_close"`, and `volume`/`value` are `null`, never a zero trade count.
+  - Before the open, the NXT orderbook is consulted only for symbols whose `nxt_tradable` is `true`. An overlaid quote adds `nxt_trade_state: "no_trade_observed"` (the price is an orderbook price, no NXT trade is observed). Any other symbol returns `price_usable: false`.
+  - Before the open `price_as_of_kind` is `time`, `date_only` (a KST midnight daily-candle date, never fresh, `price_unavailable_reason: "date_only_price_asof"`), or `none`. Unusable premarket quotes carry `price_unavailable_reason: "premarket_unavailable"`. Regular-session KR quotes do not carry these fields.
   - KR NXT overlay honors Toss market-calendar partial-session closures when the Toss API is enabled; otherwise it falls back to XKRX session days and the corrected NXT windows.
 - `get_fx_rate(pair="USDKRW")`
   - Read-only spot FX quote for exchange-timing and US-market cash conversion decisions.
