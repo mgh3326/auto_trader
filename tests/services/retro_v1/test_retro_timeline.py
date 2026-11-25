@@ -393,9 +393,7 @@ async def test_observation_run_counts_are_scoped_to_the_kr_surface_prefix() -> N
     await read_retro_timeline(session, date=DAY, market="kr")
     runs_sql = [s for s in session.statements if "invest_momentum_event_runs" in s]
     assert runs_sql
-    assert all(
-        "invest_momentum_event_runs.surface LIKE" in sql for sql in runs_sql
-    )
+    assert all("invest_momentum_event_runs.surface LIKE" in sql for sql in runs_sql)
     # the KR surface prefix is the filter value: a 'us:<source>:<session>:<side>'
     # row cannot match it.
     from app.services.retro_v1 import retro_timeline
