@@ -871,12 +871,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # triggers are mirrored here (non-ORM DDL).
     "ALTER TABLE market_events "
     "ADD COLUMN IF NOT EXISTS provider_created_at TIMESTAMPTZ",
-    "ALTER TABLE market_events "
-    "ADD COLUMN IF NOT EXISTS provider_created_raw TEXT",
+    "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS provider_created_raw TEXT",
     "ALTER TABLE market_events "
     "ADD COLUMN IF NOT EXISTS provider_updated_at TIMESTAMPTZ",
-    "ALTER TABLE market_events "
-    "ADD COLUMN IF NOT EXISTS provider_updated_raw TEXT",
+    "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS provider_updated_raw TEXT",
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS first_received_at TIMESTAMPTZ",
     """
     CREATE OR REPLACE FUNCTION public.market_event_revisions_reject_mutation()
