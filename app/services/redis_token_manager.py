@@ -317,7 +317,7 @@ class RedisTokenManager:
 
         async def raise_if_rate_limited() -> None:
             redis_client = await self._get_redis_client()
-            if await redis_client.get(cooldown_key):
+            if await redis_client.get(cooldown_key) == "1":
                 raise KISTokenIssuanceRateLimitedError()
 
         # 먼저 기존 토큰 확인 (여러 번 체크)
@@ -380,11 +380,14 @@ class RedisTokenManager:
             access_token, expires_in, *absolute_expiry = fetched
 
             # Redis에 저장
-            await self.save_token(
-                access_token,
-                expires_in,
-                absolute_expiry=absolute_expiry[0] if absolute_expiry else None,
-            )
+            if absolute_expiry:
+                await self.save_token(
+                    access_token,
+                    expires_in,
+                    absolute_expiry=absolute_expiry[0],
+                )
+            else:
+                await self.save_token(access_token, expires_in)
             logging.info("KIS 토큰 발급 및 저장 완료")
 
             return access_token
