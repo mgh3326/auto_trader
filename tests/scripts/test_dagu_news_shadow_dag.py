@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2] / "deploy" / "dagu" / "at-news-shadow
 
 def test_dag_schedule_entrypoint_and_pattern() -> None:
     doc = yaml.safe_load((ROOT / "at-news-shadow.yaml").read_text())
-    assert doc["schedule"] == ["CRON_TZ=America/New_York */30 9-16 * * 1-5"]
+    assert doc["schedule"] == ["CRON_TZ=America/New_York */30 4-19 * * 1-5"]
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
     # The gate must reach the container: DAG-level `env:` only sets the host
@@ -30,6 +30,8 @@ def test_dag_schedule_entrypoint_and_pattern() -> None:
     assert "--out-dir /out" in script
     assert '"$(cat /root/at-run/deployed-digest)"' in script
     assert "--env-file /root/at-secrets/.env.api" in script
+    # The Benzinga key lives in its own job env file (decision at-benzinga-trial-front-use).
+    assert "--env-file /root/at-secrets/.env.benzinga" in script
     assert "--rm --init" in script
     assert "BENZINGA_API_KEY" not in script  # key comes from the job env file
     assert step["timeout_sec"] < 1800  # shorter than the 30 minute cadence
