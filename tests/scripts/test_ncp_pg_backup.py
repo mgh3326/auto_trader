@@ -147,8 +147,12 @@ def test_missing_required_environment_fails_closed(tmp_path: Path) -> None:
 
 
 def test_systemd_contract_uses_secret_env_daily_kst_and_optional_healthcheck() -> None:
-    service = (REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.service").read_text()
-    timer = (REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.timer").read_text()
+    service = (
+        REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.service"
+    ).read_text()
+    timer = (
+        REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.timer"
+    ).read_text()
     script = BACKUP.read_text()
 
     assert "EnvironmentFile=/root/at-secrets/.env.pg-backup" in service
