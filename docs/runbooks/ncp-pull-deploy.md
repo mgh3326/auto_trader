@@ -1,5 +1,9 @@
 # NCP GHCR pull deployment
 
+> **은퇴 (hk 6456, 2026-11-25).** ncp 호스트와 이 문서의
+> `scripts/deploy-ncp-pull.sh`는 없다. 아래는 기록이며 실행 절차가 아니다.
+> 현재 배포는 `docs/runbooks/pi-shiftgate-deploy.md`를 따른다.
+
 The NCP host deploys a previously built image; it does not build from a source
 checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag. API is blue/green:
 `at-api-blue` on loopback `:8001` and `at-api-green` on loopback `:8002`; private

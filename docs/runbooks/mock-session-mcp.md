@@ -20,8 +20,8 @@ Claude가 종료되면 child와 임시 config도 함께 종료·삭제하는 실
 
 과거 `MOCK_MCP_PROFILE=kiwoom`을 env로만 넘긴 mock spawn은 client가 전역
 `.mcp.json`의 full HTTP server를 계속 사용할 수 있었다. env 존재만으로 MCP profile
-적용을 추론하면 안 된다. `kiwoom` profile 자체도 KR 8개와 US 7개를 함께 등록하므로
-KR-only 세션에 사용하지 않는다.
+적용을 추론하면 안 된다. 그 전체 `kiwoom` profile(KR 8개와 US 7개)은 hk 6456에
+은퇴해 이제 미지 프로필이다.
 
 ## Repo-owned launcher seam
 

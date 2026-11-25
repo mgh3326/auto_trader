@@ -1,13 +1,9 @@
 # Kiwoom Mock Order Smoke
 
-> **MCP_PROFILE (ROB-488)**: `kiwoom_mock_*` 도구는 더 이상 default MCP surface에
-> 등록되지 않는다. MCP 도구로 smoke를 수행하려면 `MCP_PROFILE=kiwoom`으로 서버를
-> 띄운 세션에서 호출해야 한다 (CLI smoke 스크립트는 프로파일과 무관).
->
-> **ROB-1159 — KR 전용 세션은 `MCP_PROFILE=kiwoom_kr`을 쓴다.** `kiwoom`은 US
-> `kiwoom_mock_us_*` namespace(mutation 4개 포함)까지 무게이트로 등록한다.
-> `kiwoom_kr`은 KR 8개 도구만 등록하며 KR 주문 경로 동작은 완전히 동일하다.
-> `docs/runbooks/kiwoom-kr-mcp.md` 참고.
+> **MCP_PROFILE**: MCP 도구로 smoke를 수행하려면 `MCP_PROFILE=kiwoom_kr`
+> 세션(ROB-1159, KR 8개 도구만 등록)이나, `KIWOOM_MOCK_ENABLED=true`인 DEFAULT
+> 세션에서 호출한다 (CLI smoke 스크립트는 프로파일과 무관). 예전 전체 Kiwoom
+> 프로필은 hk 6456에 은퇴했다. `docs/runbooks/kiwoom-kr-mcp.md` 참고.
 
 ROB-319. Operator-safe smoke for the Kiwoom **mock-investment** (모의투자) order
 lifecycle: submit → order history → modify (if supported) → cancel → reconcile.
@@ -188,8 +184,8 @@ stays deferred). To pick a conservative buy limit well below market that will
   `sell_tp`/`dmst_stex_tp`)가 모두 빠져 있었다(→ `return_code 2` 구조). 지금은 위
   표의 7필드를 보내며 optional 3필드는 공식 Request Example대로 빈 문자열로
   **명시 전송**한다(키 생략 ≠ 빈 문자열; 문서에 등가라는 기재 없음).
-  - 신규 read 도구 `kiwoom_mock_get_order_detail` — `MCP_PROFILE=kiwoom` 및
-    ROB-1159의 KR 전용 `MCP_PROFILE=kiwoom_kr`에만 등록된다.
+  - 신규 read 도구 `kiwoom_mock_get_order_detail` — `KIWOOM_MOCK_ENABLED=true`인
+    DEFAULT 및 ROB-1159의 KR 전용 `MCP_PROFILE=kiwoom_kr`에만 등록된다.
     그 밖의 제한 profile에는 노출하지 않는다(`account_read`/`tradingcodex_execution`은
     ROB-1436에서 은퇴).
   - `scope` → 공식 `qry_tp`: `all`=1(주문순) · `all_reverse`=2(역순) ·

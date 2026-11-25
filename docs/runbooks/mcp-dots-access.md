@@ -79,12 +79,11 @@ tunnel route without the Access application forwards to the origin with no edge 
    - `MCP_CF_ACCESS_ALLOWED_EMAILS` — the operator email (comma separated for more; no wildcard)
 
    `MCP_AUTH_TOKEN` must be non-empty; otherwise, or if only some of the three are set or a
-   value is malformed, the DEFAULT unit **refuses to start**. The fixed-profile units (kiwoom,
-   h3-*) read the same env file but ignore these variables and stay bearer-only. Then
-   forward-deploy as usual (`scripts/deploy-ncp-pull.sh`, exact-SHA CI gate): the script passes
-   the env file to every MCP container, starts the new DEFAULT color first and waits for its
-   `/health` before switching HAProxy, so a refused boot fails the deploy with the old color
-   still serving.
+   value is malformed, the DEFAULT unit **refuses to start**. Non-DEFAULT profiles that read the
+   same env file ignore these variables and stay bearer-only. Then forward-deploy as usual
+   (`deploy/shiftgate/pi/deploy.sh`, exact-SHA CI gate; the NCP script was retired by hk 6456):
+   the new DEFAULT color must pass `/health` before HAProxy switches, so a refused boot fails the
+   deploy with the old color still serving.
 4. Reload the dots connector with URL `https://at-mcp.robinco.dev/mcp` (OAuth).
 
 ## 3. Verify (after step 3 or 4)

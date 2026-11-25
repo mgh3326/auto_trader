@@ -1,11 +1,13 @@
 """Context-scoped refusal of credential-backed live broker clients (#1257).
 
-A closed-world MCP profile that must never use a live broker credential (the
-h3-us-paper profile) runs each tool body inside :func:`broker_credentials_blocked`.
-While that context is active, the KIS, Toss and authenticated Upbit clients
-refuse before any token lookup or network send: constructing a KIS or Toss
-client, ensuring a KIS token, dispatching a KIS request, sending a Toss request
-or an authenticated Upbit request all raise :class:`BrokerCredentialsBlocked`.
+A closed-world surface that must never use a live broker credential runs its
+tool bodies inside :func:`broker_credentials_blocked`. Its only activator, the
+H3-US paper MCP profile, was retired by hk 6456; the client checks stay so a
+future surface can use them. While that context is active, the KIS, Toss and
+authenticated Upbit clients refuse before any token lookup or network send:
+constructing a KIS or Toss client, ensuring a KIS token, dispatching a KIS
+request, sending a Toss request or an authenticated Upbit request all raise
+:class:`BrokerCredentialsBlocked`.
 
 Outside the context nothing changes: the check is one ContextVar read. Code
 that already falls back on a broker failure (US quotes to Yahoo, US daily

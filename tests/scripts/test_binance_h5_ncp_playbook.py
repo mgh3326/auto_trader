@@ -63,6 +63,22 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO_ROOT / "docs/runbooks/binance-h5-ncp-manual-playbook.md"
+# Containers the retired NCP deploy managed (hk 6456 removed the script and its
+# fixed MCP units); the playbook's container names must not collide with them.
+NCP_DEPLOY_UNITS = frozenset(
+    {
+        "at-api",
+        "at-api-blue",
+        "at-api-green",
+        "at-worker",
+        "at-worker-new",
+        "at-scheduler",
+        "at-upbit-ws",
+        "at-kis-ws",
+        "at-mcp-blue",
+        "at-mcp-green",
+    }
+)
 DEMO, FUTURES, ALERT = (
     "BINANCE_H5_DEMO_ENABLED",
     "BINANCE_FUTURES_DEMO_ENABLED",
@@ -197,8 +213,6 @@ def read_facts() -> dict:
     report = asyncio.run(
         run_truth_gate(client=_Client(), state=_State(), ledger=_Ledger())
     )
-    deploy = (REPO_ROOT / "scripts/deploy-ncp-pull.sh").read_text()
-    (units,) = re.findall(r"declare -a APP_CONTAINERS=\(([^)]*)\)", deploy)
     handoff = (REPO_ROOT / "docs/runbooks/fill-event-handoff.md").read_text()
     pull = (REPO_ROOT / "docs/runbooks/ncp-pull-deploy.md").read_text()
     return {
@@ -209,7 +223,7 @@ def read_facts() -> dict:
             sort_keys=True,
         ),
         "check_names": [c.name for c in report.checks],
-        "units": set(units.split()),
+        "units": set(NCP_DEPLOY_UNITS),
         "env_file": re.search(r"--env-file (/root/at-secrets/\.env\.api)", handoff)[1],
         "digest_file": re.search(r"(/root/at-run/deployed-digest)\b", pull)[1],
         "kinds": {k.value for k in AlertKind} - {AlertKind.TEST.value},

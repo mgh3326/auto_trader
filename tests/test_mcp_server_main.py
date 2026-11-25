@@ -61,11 +61,9 @@ def _load_main_module(
     auth_token: str = "",
     paper_execution: bool = False,
     paper_execution_enabled: bool = False,
-    kiwoom: bool = False,
     kiwoom_kr: bool = False,
     unrelated_profile: bool = False,
     kiwoom_mock_us_enabled: bool = False,
-    live_profile: str | None = None,
     real_profile_guard: bool = False,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
@@ -147,24 +145,10 @@ def _load_main_module(
     paper_execution_profile = _FakeProfileMember("paper_execution")
     alpaca_paper_clean_profile = _FakeProfileMember("alpaca-paper-clean")
     default_profile = _FakeProfileMember("default")
-    kiwoom_profile = _FakeProfileMember("kiwoom")
     kiwoom_kr_profile = _FakeProfileMember("kiwoom_kr")
     unrelated_profile_member = _FakeProfileMember("crypto")
-    h3_crypto_paper_profile = _FakeProfileMember("h3-crypto-paper")
-    h3_us_paper_profile = _FakeProfileMember("h3-us-paper")
-    live_profiles = {
-        member.value: member
-        for member in (
-            h3_crypto_paper_profile,
-            h3_us_paper_profile,
-        )
-    }
-    if live_profile is not None:
-        resolved_profile = live_profiles[live_profile]
-    elif paper_execution:
+    if paper_execution:
         resolved_profile = paper_execution_profile
-    elif kiwoom:
-        resolved_profile = kiwoom_profile
     elif kiwoom_kr:
         resolved_profile = kiwoom_kr_profile
     elif unrelated_profile:
@@ -176,10 +160,7 @@ def _load_main_module(
         PAPER_EXECUTION=paper_execution_profile,
         ALPACA_PAPER_CLEAN=alpaca_paper_clean_profile,
         DEFAULT=default_profile,
-        KIWOOM=kiwoom_profile,
         KIWOOM_KR=kiwoom_kr_profile,
-        H3_CRYPTO_PAPER=h3_crypto_paper_profile,
-        H3_US_PAPER=h3_us_paper_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -432,21 +413,6 @@ class TestMcpServerMain:
         mcp.run.assert_called_once_with(transport="stdio")
         capture_exception.assert_not_called()
 
-    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
-    def test_kiwoom_network_profile_requires_auth_at_import(
-        self, monkeypatch: pytest.MonkeyPatch, transport: str
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", transport)
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match="MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN",
-        ):
-            _load_main_module(monkeypatch, kiwoom=True)
-
-        assert _FakeFastMCP.init_count == 0
-
     def test_default_network_profile_with_us_mutation_gate_requires_auth(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -460,25 +426,6 @@ class TestMcpServerMain:
             _load_main_module(monkeypatch, kiwoom_mock_us_enabled=True)
 
         assert _FakeFastMCP.init_count == 0
-
-    def test_kiwoom_network_profile_accepts_auth_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "sse")
-        module, _, _ = _load_main_module(
-            monkeypatch,
-            auth_token="kiwoom-token",
-            kiwoom=True,
-        )
-        assert module._mcp_profile.value == "kiwoom"
-
-    def test_kiwoom_stdio_local_path_may_run_without_auth(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "stdio")
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-        module, _, _ = _load_main_module(monkeypatch, kiwoom=True)
-        assert module._mcp_profile.value == "kiwoom"
 
     @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
     def test_kiwoom_kr_network_profile_requires_auth_at_import(
@@ -507,6 +454,17 @@ class TestMcpServerMain:
             auth_token="kiwoom-kr-token",
             kiwoom_kr=True,
         )
+        assert module._mcp_profile.value == "kiwoom_kr"
+        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
+        register_all_tools.assert_called_once()
+        assert register_all_tools.call_args.kwargs["profile"].value == "kiwoom_kr"
+
+    def test_kiwoom_kr_stdio_local_path_may_run_without_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "stdio")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        module, _, _ = _load_main_module(monkeypatch, kiwoom_kr=True)
         assert module._mcp_profile.value == "kiwoom_kr"
 
     def test_kiwoom_kr_profile_requires_complete_mock_config(
@@ -563,66 +521,6 @@ class TestMcpServerMain:
         ):
             _load_main_module(monkeypatch, auth_token="kiwoom-kr-token", kiwoom_kr=True)
 
-    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
-    def test_h3_crypto_paper_network_profile_requires_auth_at_import(
-        self, monkeypatch: pytest.MonkeyPatch, transport: str
-    ) -> None:
-        # #1171: the H3 paper pilot surface carries paper order mutations; a
-        # tokenless network boot fails before FastMCP exists.
-        monkeypatch.setenv("MCP_TYPE", transport)
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match="MCP_PROFILE=h3-crypto-paper requires non-empty MCP_AUTH_TOKEN",
-        ):
-            _load_main_module(monkeypatch, live_profile="h3-crypto-paper")
-
-        assert _FakeFastMCP.init_count == 0
-
-    def test_h3_crypto_paper_network_profile_accepts_auth_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "streamable-http")
-        module, _, _ = _load_main_module(
-            monkeypatch, auth_token="h3-token", live_profile="h3-crypto-paper"
-        )
-        assert module._mcp_profile.value == "h3-crypto-paper"
-        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
-        register_all_tools.assert_called_once()
-        assert register_all_tools.call_args.kwargs["profile"].value == (
-            "h3-crypto-paper"
-        )
-
-    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
-    def test_h3_us_paper_network_profile_requires_auth_at_import(
-        self, monkeypatch: pytest.MonkeyPatch, transport: str
-    ) -> None:
-        # #1257: the H3-US paper pilot surface carries Alpaca paper orders; a
-        # tokenless network boot fails before FastMCP exists.
-        monkeypatch.setenv("MCP_TYPE", transport)
-        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-
-        with pytest.raises(
-            RuntimeError,
-            match="MCP_PROFILE=h3-us-paper requires non-empty MCP_AUTH_TOKEN",
-        ):
-            _load_main_module(monkeypatch, live_profile="h3-us-paper")
-
-        assert _FakeFastMCP.init_count == 0
-
-    def test_h3_us_paper_network_profile_accepts_auth_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "streamable-http")
-        module, _, _ = _load_main_module(
-            monkeypatch, auth_token="h3-us-token", live_profile="h3-us-paper"
-        )
-        assert module._mcp_profile.value == "h3-us-paper"
-        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
-        register_all_tools.assert_called_once()
-        assert register_all_tools.call_args.kwargs["profile"].value == "h3-us-paper"
-
     def test_default_gate_off_and_unrelated_network_profiles_remain_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -672,7 +570,22 @@ def test_blank_profile_refuses_before_any_tool_registers(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("profile", ["default", "h3-crypto-paper", " kiwoom "])
+@pytest.mark.parametrize("profile", ["kiwoom", "h3-crypto-paper", "h3-us-paper"])
+@pytest.mark.parametrize("mcp_type", ["streamable-http", "sse", "stdio"])
+def test_profile_retired_by_hk6456_refuses_to_start_as_unknown(
+    monkeypatch: pytest.MonkeyPatch, profile: str, mcp_type: str
+) -> None:
+    monkeypatch.setenv("MCP_PROFILE", profile)
+    monkeypatch.setenv("MCP_TYPE", mcp_type)
+    with pytest.raises(ValueError, match=f"Unknown MCP_PROFILE '{profile}'"):
+        _load_main_module(monkeypatch, auth_token="tok", real_profile_guard=True)
+    assert _FakeFastMCP.init_count == 0
+    register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
+    register_all_tools.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profile", ["default", "crypto", " kiwoom_kr "])
 def test_explicit_profile_passes_the_guard(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:

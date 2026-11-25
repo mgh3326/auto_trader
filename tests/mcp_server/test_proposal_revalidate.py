@@ -515,9 +515,9 @@ def test_proposal_revalidate_profile_registration_follows_list_capability(
     assert list_profiles
     # ROB-1436 retired the live-* profiles, the only ones that carried
     # order_proposal_list without proposal_revalidate; the invariant now holds
-    # on every profile.
+    # on every profile. hk 6456 retired the full "kiwoom" profile (8 -> 7).
     assert revalidate_profiles == list_profiles
-    assert len(revalidate_profiles) == 8
+    assert len(revalidate_profiles) == 7
     assert void_profiles <= list_profiles
     assert revalidate_profiles <= quote_profiles
 

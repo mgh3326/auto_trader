@@ -1,8 +1,8 @@
 """Defer heavy third-party imports in low-traffic MCP processes (ROB-1436).
 
-Every MCP unit is its own Python process, and the tooling package imports
+Every MCP server is its own Python process, and the tooling package imports
 pandas, numpy, yfinance and the market-calendar libraries at module level. On
-the low-traffic closed-world units (kiwoom, h3-*) that costs about 100 MB of
+the low-traffic closed-world profile (kiwoom_kr) that costs about 100 MB of
 resident memory per process before any tool is called.
 
 ``install_lazy_imports`` puts a placeholder module in ``sys.modules`` for each
@@ -47,16 +47,8 @@ LAZY_MODULES: tuple[str, ...] = (
     "finnhub",
 )
 
-# Low-traffic units (Sentry tools/call, 30 days: kiwoom 365, h3-crypto-paper
-# 1,168, h3-us-paper 281, against 11,732 on DEFAULT).
-LAZY_IMPORT_PROFILES: frozenset[McpProfile] = frozenset(
-    {
-        McpProfile.KIWOOM,
-        McpProfile.KIWOOM_KR,
-        McpProfile.H3_CRYPTO_PAPER,
-        McpProfile.H3_US_PAPER,
-    }
-)
+# Low-traffic profile; DEFAULT and every other profile stay eager.
+LAZY_IMPORT_PROFILES: frozenset[McpProfile] = frozenset({McpProfile.KIWOOM_KR})
 
 _LOAD_LOCK = threading.RLock()
 

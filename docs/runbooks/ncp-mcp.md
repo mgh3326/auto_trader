@@ -1,5 +1,9 @@
 # NCP MCP blue/green deployment
 
+> **은퇴 (hk 6456, 2026-11-25).** ncp 호스트, 배포 스크립트, 이 문서의 고정
+> MCP 유닛(8772·8776·8777)과 그 프로필은 없다. 아래는 기록이며 실행 절차가
+> 아니다. 현재 배포는 `docs/runbooks/pi-shiftgate-deploy.md`를 따른다.
+
 This runbook deploys the five NCP MCP server instances behind a private HAProxy
 listener. It does not perform the client cutover: changing .mcp.json, restarting
 consumer sessions, retiring the Mac services, and changing Cloudflare routes are

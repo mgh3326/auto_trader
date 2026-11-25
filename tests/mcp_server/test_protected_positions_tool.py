@@ -73,7 +73,6 @@ def test_read_tool_is_present_only_on_reviewed_read_profiles(
         McpProfile.CRYPTO,
         McpProfile.DB_PAPER,
         McpProfile.HERMES_PAPER_KIS,
-        McpProfile.KIWOOM,
         McpProfile.KIWOOM_KR,
         McpProfile.US_PAPER,
     ):

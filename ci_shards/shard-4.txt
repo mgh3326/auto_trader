@@ -35,7 +35,6 @@ tests/mcp_server/test_lazy_imports.py
 tests/mcp_server/test_operating_briefing_krx_after_health.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_operating_briefing_phase_spans.py
-tests/mcp_server/test_route_request_paper_surface.py
 tests/mcp_server/test_sector_concentration.py
 tests/mcp_server/test_trading_policy_tool.py
 tests/mcp_server/tooling/test_crypto_live_routing.py
@@ -108,9 +107,6 @@ tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_binance_h5_runner_alerts.py
 tests/scripts/test_binance_h5_scripts_mutants.py
 tests/scripts/test_compare_go_py_minutes.py
-tests/scripts/test_deploy_ncp_pull_h3_us_paper.py
-tests/scripts/test_deploy_ncp_pull_install_paths.py
-tests/scripts/test_deploy_ncp_pull_retired_units.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_execution_mandates_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py

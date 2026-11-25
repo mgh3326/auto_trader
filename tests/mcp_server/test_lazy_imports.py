@@ -112,12 +112,7 @@ def test_other_profiles_stay_eager(profile: McpProfile) -> None:
 
 
 def test_lazy_profiles_are_the_low_traffic_units() -> None:
-    assert lazy_imports.LAZY_IMPORT_PROFILES == {
-        McpProfile.KIWOOM,
-        McpProfile.KIWOOM_KR,
-        McpProfile.H3_CRYPTO_PAPER,
-        McpProfile.H3_US_PAPER,
-    }
+    assert lazy_imports.LAZY_IMPORT_PROFILES == {McpProfile.KIWOOM_KR}
     assert McpProfile.DEFAULT not in lazy_imports.LAZY_IMPORT_PROFILES
 
 
@@ -140,7 +135,7 @@ _BOOT_CHILD = textwrap.dedent(
 
             return register(args[0]) if args and callable(args[0]) else register
 
-    lazy_imports.install_lazy_imports(McpProfile.KIWOOM)
+    lazy_imports.install_lazy_imports(McpProfile.KIWOOM_KR)
     from app.mcp_server.tooling import register_all_tools
 
     counts = {}
@@ -206,7 +201,7 @@ def test_importing_the_real_server_module_keeps_heavy_packages_deferred() -> Non
         cwd=REPO_ROOT,
         env={
             **_child_env(),
-            "MCP_PROFILE": "h3-us-paper",
+            "MCP_PROFILE": "kiwoom_kr",
             "MCP_AUTH_TOKEN": "rob1436-placeholder",
         },
         capture_output=True,

@@ -1254,7 +1254,7 @@ class OperatingBriefingResponse(BaseModel):
     success: Literal[True] = True
     market: MarketLiteral
     # #1171 — "db_simulated" is the briefing-only DB paper scope that the
-    # h3-crypto-paper profile pins (no live account or broker order read).
+    # briefing reads without any live account or broker order read.
     account_scope: AccountScopeLiteral | Literal["db_simulated"]
     as_of: datetime
     staleness: dict[str, Any]

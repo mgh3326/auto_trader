@@ -21,7 +21,7 @@ from app.services.brokers.credential_firewall import (
 
 pytestmark = pytest.mark.unit
 
-OWNER = "h3-us-paper"
+OWNER = "closed-paper-surface"
 
 
 class _Recorder:
@@ -47,7 +47,7 @@ def test_context_sets_and_resets_the_owner() -> None:
     assert broker_credentials_blocked_by() is None
     with broker_credentials_blocked(OWNER):
         assert broker_credentials_blocked_by() == OWNER
-        with pytest.raises(BrokerCredentialsBlocked, match="h3-us-paper: X"):
+        with pytest.raises(BrokerCredentialsBlocked, match=f"{OWNER}: X"):
             assert_broker_credentials_allowed("X")
     assert broker_credentials_blocked_by() is None
     assert_broker_credentials_allowed("X")
