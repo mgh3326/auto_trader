@@ -302,6 +302,11 @@ async def test_short_interest_requires_symbols_before_any_request():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_error_envelope_fails_closed():
+    """A 200 body carrying ``ok=false`` stays a failure.
+
+    Only the documented **404** no-data answer is an empty page; the same code
+    inside a 200 body is not that answer.
+    """
     from app.services.benzinga_http import BenzingaContractError
 
     client, _ = _client(
@@ -944,3 +949,101 @@ async def test_ingestion_replaces_the_superseded_value_set():
         skip_succeeded=False,
     )
     assert repo.events[0]["replace_values"] is True
+
+
+# -- documented "no data" answer --------------------------------------------
+
+_NO_DATA_404 = {
+    "ok": False,
+    "errors": [
+        {
+            "code": "no_data_found",
+            "id": "not_found",
+            "value": "No data found for the specified parameters",
+        }
+    ],
+}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_documented_no_data_404_on_page_zero_is_an_empty_window():
+    """Benzinga answers "no rows" with 404 + no_data_found; that is not a failure.
+
+    Failing it would fail every quiet day (no WIIM at the first tick, no
+    conference calls) and, under ``--force``, flip succeeded partitions to
+    failed.
+    """
+    client, http = _client([_FakeResponse(_NO_DATA_404, status_code=404)])
+    rows = await client.fetch(
+        "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+    )
+    assert rows == []
+    assert len(http.requests) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_documented_no_data_404_after_data_ends_the_read():
+    """The same answer on the page past the last one keeps the collected rows."""
+    rows = ROWS_BY_CATEGORY["earnings"]
+    client, http = _client(
+        [
+            _FakeResponse({"earnings": rows}),
+            _FakeResponse(_NO_DATA_404, status_code=404),
+        ]
+    )
+    fetched = await client.fetch(
+        "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+    )
+    assert fetched == rows
+    assert len(http.requests) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ok": False, "errors": [{"code": "invalid_token"}]},
+        {"ok": False, "errors": [{"code": "no_data_found"}, {"code": "other"}]},
+        {"ok": True, "errors": []},
+        {"message": "not found"},
+        ["not", "an", "object"],
+    ],
+)
+async def test_other_404_bodies_stay_failures(payload):
+    from app.services.benzinga_http import BenzingaHTTPError
+
+    client, _ = _client([_FakeResponse(payload, status_code=404)])
+    with pytest.raises(BenzingaHTTPError):
+        await client.fetch(
+            "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_window_is_a_succeeded_partition_with_zero_rows():
+    """An empty window is a completed read, not a failed one."""
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    repo = FakeRepo()
+    day = date(2026, 10, 29)
+    results = await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        client=FakeClient({"earnings": []}),
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+    assert [(result.status, result.event_count) for result in results] == [
+        ("succeeded", 0)
+    ]
+    assert repo.partitions[("earnings", day)].status == "succeeded"
+    assert repo.partitions[("earnings", day)].event_count == 0

@@ -72,6 +72,18 @@ class BenzingaHTTPError(Exception):
         self.status_code = status_code
 
 
+class BenzingaNoData(BenzingaHTTPError):
+    """The documented "no data" answer: HTTP 404 with ``no_data_found``.
+
+    Benzinga documents an empty result set as 404 with
+    ``{"ok": false, "errors": [{"code": "no_data_found", ...}]}`` — for the
+    calendar endpoints as well as WIIM. That answer is an *empty page*, not a
+    failed read: treating it as an error would fail every window that has no
+    rows yet (and, under ``--force``, flip already-succeeded partitions to
+    failed). Every other non-200 answer stays :class:`BenzingaHTTPError`.
+    """
+
+
 class BenzingaContractError(Exception):
     """The 2xx body is not the documented shape for this endpoint."""
 
@@ -100,6 +112,31 @@ def read_api_key() -> str:
             f"{API_KEY_ENV} is not set; refusing to contact Benzinga"
         )
     return key.strip()
+
+
+NO_DATA_ERROR_CODE = "no_data_found"
+
+
+def is_no_data_body(payload: Any) -> bool:
+    """True for the documented no-data envelope (pure, closed shape).
+
+    ``ok`` must be exactly ``False`` and every ``errors[]`` entry must be an
+    object whose ``code`` is exactly ``no_data_found``; anything else — another
+    code, a mixed list, a malformed entry — is not the documented empty answer
+    and must stay a failure. The message text is never inspected.
+    """
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return False
+    errors = payload.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    for entry in errors:
+        if not isinstance(entry, dict):
+            return False
+        code = entry.get("code")
+        if not isinstance(code, str) or code.strip().lower() != NO_DATA_ERROR_CODE:
+            return False
+    return True
 
 
 def redact_token(text: str) -> str:
@@ -191,6 +228,18 @@ async def fetch_json(
 
     status = response.status_code
     if status != 200:
+        if status == 404:
+            # Only the documented closed envelope is an empty page. The body is
+            # parsed for its error codes and never echoed; the key lives in the
+            # query string and cannot appear here.
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            if is_no_data_body(body):
+                raise BenzingaNoData(
+                    f"benzinga no data (HTTP 404, path {path})", status_code=404
+                ) from None
         raise BenzingaHTTPError(
             f"benzinga HTTP {status} (path {path})", status_code=status
         )
@@ -220,10 +269,12 @@ __all__ = [
     "BenzingaContractError",
     "BenzingaGateOff",
     "BenzingaHTTPError",
+    "BenzingaNoData",
     "BenzingaPaginationCapExceeded",
     "BenzingaTransportError",
     "calendars_enabled",
     "fetch_json",
+    "is_no_data_body",
     "new_http_client",
     "parse_provider_time",
     "parse_unix_timestamp",

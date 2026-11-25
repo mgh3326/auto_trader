@@ -114,8 +114,13 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
   캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한
   (기본 20)에 닿았는데 그 페이지가 비어 있지 않으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
-  `ok=false` 는 **row key 가 함께 있어도** 실패다: `{"ok": false, "earnings": []}` 를 빈 날로 읽으면 파티션이
-  `succeeded` 가 된다. 읽기를 끝내는 것은 오류 플래그 없는 `{"earnings": []}` 뿐이다.
+  **빈 결과의 정본은 제공자 문서의 404 다**: Benzinga 캘린더·WIIM 문서는 행이 없는 답을
+  `HTTP 404` + `{"ok": false, "errors": [{"code": "no_data_found", …}]}` 로 적는다. 그래서 **정확히 그 404**
+  (모든 `errors[].code` 가 `no_data_found`)만 **빈 페이지**로 읽는다 — 0페이지면 빈 날(파티션 `succeeded`,
+  `event_count=0`), 데이터 뒤 페이지면 읽기 종료(모은 행 유지)다. 그 밖의 non-200(5xx·429·그 밖의 4xx)·본문
+  불일치와 **200 + `ok=false`** 는 실패다: 200 봉투를 빈 날로 읽으면 파티션이 `succeeded` 가 된다. 읽기를 끝내는
+  나머지 형태는 오류 플래그 없는 `{"earnings": []}` 다. 마지막 페이지 다음 요청이 200 빈 배열인지 이 404 인지는
+  `[unverified]` 이며 클라이언트는 둘 다 받는다 — DAG 등록 전에 설계 세션이 실호출 1회로 확인한다.
 - **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
   꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
 - **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,

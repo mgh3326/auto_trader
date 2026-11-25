@@ -9,6 +9,11 @@ Completeness: the page-number pager exposes no total or next-page flag, so the
 read ends on an **empty page**, never on "shorter than requested". A provider
 that silently caps ``pagesize`` below the requested value is therefore still
 read to exhaustion instead of being mistaken for a complete single page.
+"Empty" is either a 200 body with an empty row list or the documented no-data
+answer (HTTP 404 whose body is ``ok=false`` with every ``errors[].code`` equal
+to ``no_data_found``) — that answer is how Benzinga reports a window with no
+rows, so failing it would fail every quiet day. Any other non-200 status or
+200 ``ok=false`` body stays a failure.
 
 Safety: the caller must pass :func:`app.services.benzinga_http.
 require_calendars_enabled` before constructing this client; the client itself
@@ -25,6 +30,7 @@ from app.services.benzinga_calendars.spec import CalendarEndpoint, endpoint_for
 from app.services.benzinga_http import (
     DEFAULT_TIMEOUT_S,
     BenzingaContractError,
+    BenzingaNoData,
     BenzingaPaginationCapExceeded,
     fetch_json,
 )
@@ -96,6 +102,12 @@ def extract_rows(endpoint: CalendarEndpoint, payload: Any) -> list[dict[str, Any
     ``{"ok": false, "earnings": []}`` is an error, not an empty day, and
     reading it as complete would mark the partition succeeded. Only a valid
     ``{"earnings": []}`` terminates a read.
+
+    The provider's *documented* empty answer is different: HTTP 404 with
+    ``ok=false`` and every ``errors[].code`` equal to ``no_data_found``. It
+    never reaches this function — :func:`fetch_json` raises
+    :class:`app.services.benzinga_http.BenzingaNoData` and the pager reads it
+    as an empty page.
     """
     if isinstance(payload, dict) and payload.get("ok") is False:
         raise BenzingaContractError(
@@ -181,12 +193,19 @@ class BenzingaCalendarClient:
                 symbols=symbols,
             )
             params["token"] = self._api_key
-            payload = await fetch_json(
-                endpoint.path,
-                params,
-                timeout_s=self._timeout_s,
-                client_factory=self._client_factory,
-            )
+            try:
+                payload = await fetch_json(
+                    endpoint.path,
+                    params,
+                    timeout_s=self._timeout_s,
+                    client_factory=self._client_factory,
+                )
+            except BenzingaNoData:
+                # The documented empty answer (HTTP 404 + ``no_data_found``) is
+                # an empty page: page 0 makes it an empty window and a later
+                # page ends the read with the rows already collected. Every
+                # other non-200 answer still raises.
+                return collected
             rows = extract_rows(endpoint, payload)
             if not rows:
                 # A page-number pager has no independent "total" signal, so an
