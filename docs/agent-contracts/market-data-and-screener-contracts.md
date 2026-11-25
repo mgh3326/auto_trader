@@ -29,6 +29,7 @@
 - research 분봉 HTTP ingest·대상 읽기 (hk 6343)
 - 장중 급등·급락 관측 로그 (hk 6154)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
+- FnGuide 컨센서스·추정치·투자지표 일별 스냅샷 (hk 6508)
 
 ## 기준 원문 계약
 
@@ -816,3 +817,17 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 ### Go↔Python 분봉 전환 비교 (hk 6345)
 
 `scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 비교할 근거가 없으면(한쪽 0행, 겹치는 봉 0개, 요청 종목이 양쪽에 없음) PASS 가 아니라 `INCONCLUSIVE`(종료 코드 4)다. Python 쪽은 세션 수집기 행(`batch_id` 접두어 `session-minutes-`)만 본다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
+
+### FnGuide 컨센서스·추정치·투자지표 일별 스냅샷 (hk 6508)
+
+운영자 결정 `decision/2026-11-25/at-public-scraping-fnguide`에 따라 로그인 없이 열리는 FnGuide 공개 CompanyInfo 페이지를 읽는다. 🔴 확인 사실(2026-11-25): `comp.fnguide.com/CompanyInfo/*`는 `wcomp.fnguide.com`으로 302를 보내며, 두 호스트의 `robots.txt`는 `User-agent: *` 전면 `Disallow: /`이다. 이 수집기는 robots 준수를 구현하지 않는다. 운영자가 스크래핑을 승인했고 이 승인은 이 수집기에만 적용된다. 승인 범위를 넓히거나 robots 정책을 바꾸려면 새 결정이 필요하다.
+
+- **소스**: `https://wcomp.fnguide.com/CompanyInfo/{Consensus|Invest|Finance}?cmp_cd=<6자리>`만 허용한다(호스트·스킴·포트는 요청 전에 검사하고 `follow_redirects=False`, 3xx는 기록만 하고 따르지 않는다). `www.fnguide.com`(SPA, 로그인)은 쓰지 않는다. 요청은 동시 2개 이하, 전체 약 1초 간격, 일반 User-Agent `at-research-collector/1.0`. 재시도는 timeout·transport·5xx에만 제한 횟수로 한다. 4xx는 즉시 기록한다.
+- **파싱**: 페이지가 내장한 JSON만 읽는다 — `key: {"header":[…],"data":[…]}` 차트 블록(`header`/`data` 는 같은 객체의 인접 멤버여야 한다), 평면 `{"ACC_NM":…}` 컨센서스 행, `{"RPT_TITLE":…}` 리포트. 숫자는 페이지 원문 문자열을 유지하고(`parse_float=str`), 검증된 정확한 10진 문자열만 값으로 쓴다(쉼표 제거). 빈 값·`-`는 `missing`, 해석 불가는 `unparsable`로 NULL과 사유를 남기며 0으로 채우지 않는다. 페이지 제목의 종목 코드가 요청 코드와 다르면 `code_mismatch`, 로그인·없는 페이지는 `login_or_missing`으로 저장하지 않는다.
+- **헤더 라벨**: `headers`는 각 차트의 헤더를 페이지가 준 텍스트 그대로 담고, `fnguide_values.column_label`은 그 라벨을 쓴다. 컨센서스 `VAL1`의 라벨은 페이지가 `당기순이익`이라고 준다(값과 맞지 않는 페이지 표기이며 재해석하지 않는다). `VAL2`–`VAL5`는 `1개월전`·`3개월전`·`6개월전`·`1년전`이다.
+- **저장**: 단일 writer `app/services/fnguide_consensus/writer.py`만 INSERT 한다. `fnguide_snapshots`는 `(symbol, page, observed_date)` 자연키 `ON CONFLICT DO NOTHING`이고, 같은 날 재실행은 스냅샷이 이미 있으면 자식 행을 쓰지 않아 0행이다. `fnguide_values`는 `(snapshot, section, item_name, item_code, item_qualifier, column_key)`, `fnguide_reports`는 `(symbol, observed_date, report_hash)`가 자연키다. 가져오기 실패(요청 단위 오류)는 저장하지 않고 CLI 보고에만 닫힌 종류와 HTTP 상태로 남긴다. 그래야 같은 날 재실행이 채울 수 있다. 원문 본문은 저장하지 않는다. 원시 내장 JSON은 직렬화 128KiB 이하일 때만 `raw_embedded`에 저장하고, 넘으면 `raw_reason='over_bound'`다.
+- **사유**: 파싱은 됐지만 값이 없으면 `status='no_values'`와 닫힌 사유(`no_embedded_blocks`·`no_consensus_rows`·`all_consensus_values_null`·`no_values_present`)를 준다. 컨센서스 값이 전부 비었지만 다른 차트 값이 있으면 `status='parsed'`이고 `reason='all_consensus_values_null'`이다. 028300이 이 경우이며 목표주가·투자의견 행을 만들지 않는다.
+- **읽기 함수**: `app/services/fnguide_consensus/query.py::read_latest_consensus(session, symbol)`은 최신 컨센서스 스냅샷과 목표주가·EPS의 리비전(현재 `VAL1` 대 `VAL2`–`VAL5`, 그리고 직전 저장일 `VAL1`)을 정확한 10진 문자열로 준다. 직전 저장일은 날짜를 함께 보여 수집 공백이 드러난다. 읽기 전용이며 MCP 도구로 등록하지 않는다(후속). 거래·승인·주문 경로는 이 데이터를 읽지 않는다.
+- **유니버스·실행**: 기본 대상은 `kr_symbol_universe`의 활성 KOSPI·KOSDAQ 중 `security_type='STOCK'`이다. 수동 CLI `uv run python -m scripts.collect_fnguide_consensus [--symbols …|--limit N] [--pages …] [--dry-run|--commit]`이며 기본은 dry-run이다. `--symbols`를 주면 DB를 열지 않는다. 스케줄은 `deploy/dagu/at-fnguide-consensus/`의 사본이며 저장소가 등록하지 않는다.
+- **테스트**: `tests/services/fnguide_consensus/`(저장된 HTML 픽스처 005930·000660·028300·005930 invest, 네트워크 없음), DB 왕복은 CI(`test_fnguide_db.py`). 정적 테스트가 패키지의 주문·브로커·MCP·승인 모듈 import가 없음을 고정한다.
+- **운영 주의**: 원시 JSON 보관량은 종목·페이지·일 단위로 늘어난다. 보존 기간 정책은 이 PR 범위 밖이며 운영자 결정 대상이다.

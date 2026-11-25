@@ -1,0 +1,22 @@
+# FnGuide 컨센서스·투자지표·재무 일별 스냅샷(hk 6508): 월–금 KRX 정규장 마감 후 16:40 KST 1회. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 공개 페이지 wcomp.fnguide.com/CompanyInfo 를 기본 유니버스(KOSPI/KOSDAQ 보통주)에 대해 읽어 fnguide_snapshots·fnguide_values·fnguide_reports 에 추가 전용으로 쓴다.
+# 요청은 동시 2개·약 1초 간격. 같은 날 재실행은 0행이다. 등록과 기동은 설계 세션이 한다(decision/2026-11-25/at-public-scraping-fnguide).
+description: "FnGuide public consensus / invest / finance daily snapshots"
+schedule:
+  - "CRON_TZ=Asia/Seoul 40 16 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_fnguide_consensus --commit --concurrency 2 --interval 1.0 || rc=$?
+      exit "$rc"
+    timeout_sec: 3300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-fnguide-consensus "dag=at-fnguide-consensus status=success"'
+  failure:
+    command: 'logger -t at-dagu-fnguide-consensus "dag=at-fnguide-consensus status=failure"'
