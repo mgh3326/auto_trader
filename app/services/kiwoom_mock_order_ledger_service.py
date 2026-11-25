@@ -58,6 +58,7 @@ __all__ = (
     "KiwoomMockTransitionRefused",
     "LedgerReceipt",
     "journaled_progress",
+    "place_rows_by_ids",
     "unmatched_sell_since",
     "RESERVATION_ACCOUNT_SCOPE",
     "RESERVATION_ACCOUNT_SCOPE_US",
@@ -246,6 +247,31 @@ async def place_rows_for_idempotency_keys(
         KiwoomMockOrderLedger.account_mode == account_mode,
         KiwoomMockOrderLedger.operation_kind == "place",
         KiwoomMockOrderLedger.idempotency_key.in_(idempotency_keys),
+    )
+    return list((await session.execute(stmt)).all())
+
+
+async def place_rows_by_ids(
+    session: AsyncSession, *, account_mode: str, ledger_ids: list[int]
+) -> list[Any]:
+    """Read-only: place rows of one Kiwoom mock account by primary key.
+
+    The sleeve book (hk 5642) resolves a fill row's trading day through the
+    place row that booked it (``execution_ledger.raw_payload_json.ledger_id``);
+    this keeps this module the only one that references the ledger model.
+    """
+    if not ledger_ids:
+        return []
+    stmt = select(
+        KiwoomMockOrderLedger.id,
+        KiwoomMockOrderLedger.broker_order_id,
+        KiwoomMockOrderLedger.trading_day,
+        KiwoomMockOrderLedger.account_mode,
+        KiwoomMockOrderLedger.operation_kind,
+    ).where(
+        KiwoomMockOrderLedger.broker == "kiwoom",
+        KiwoomMockOrderLedger.account_mode == account_mode,
+        KiwoomMockOrderLedger.id.in_(sorted(set(ledger_ids))),
     )
     return list((await session.execute(stmt)).all())
 
@@ -876,12 +902,22 @@ class KiwoomMockOrderLedgerService:
         row_id: int | None = None
         fill_seq: int | None = None
         if delta > 0:
+            trading_day = str(row.trading_day or "").strip()
+            if not trading_day:
+                # The row's identity includes the place ledger's trading day;
+                # without it two days could share one fill_seq.
+                raise KiwoomMockTransitionRefused(
+                    ledger_id=ledger_id,
+                    status=row.status,
+                    reason="trading_day_unavailable",
+                )
             try:
                 fill = build_kiwoom_execution_ledger_upsert(
                     ledger_id=row.id,
                     broker_order_id=str(row.broker_order_id),
                     symbol=row.symbol,
                     side=str(row.side),
+                    trading_day=trading_day,
                     previous_filled_qty=previous,
                     previous_average_price=previous_average,
                     filled_quantity=filled_quantity,

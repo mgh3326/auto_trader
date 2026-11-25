@@ -410,6 +410,15 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (부킹된 명목 합은 브로커 누적 명목과 같아진다).
   Kiwoom 모의 TR 은 수수료·체결 시각을 주지 않으므로
   `fee_basis='not_provided'`·`filled_at_basis='observed_at'` 이고 0 으로 채우지 않는다.
+  **hk 5642 — `fill_seq` 에 거래일이 들어간다**: 키움 주문번호는 계좌+거래일 안에서만
+  유일하므로 새 행의 `fill_seq` 입력에는 place 원장의 `trading_day` 가 포함된다(같은
+  번호·같은 누계라도 다른 거래일이면 다른 행). 멱등키 열(`broker, account_mode, venue,
+  broker_order_id, fill_seq`)은 바뀌지 않고 기존 행은 재작성하지 않는다 — 재실행의 중복
+  방지는 키가 아니라 주문 행의 이미 부킹된 누적 수량(델타 0 이면 builder 에 도달하지
+  않는다)이다. sleeve 판독은 체결의 거래일을 `raw_payload_json.ledger_id` 가 가리키는
+  place 원장 행의 `trading_day` 에서만 얻고, 그 증명이 없으면 추론 없이
+  unattributed/unmeasured 로 남긴다(`kiwoom_fill_day_unknown`) — 관측 시각(`filled_at`)으로
+  거래일을 정하지 않는다.
   🔴 **저널 투영은 델타 부킹과 같은 트랜잭션이다 (hk 4802).** full 대사는 부킹한
   `execution_ledger` 델타마다 `(account, order_id)` 단일 누적 `review.trades` 행을
   upsert 하고 `account='kiwoom_mock'`·`account_type='mock'` 의 `TradeJournal` 을

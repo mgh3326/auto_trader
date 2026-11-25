@@ -11,6 +11,15 @@ through :class:`ExecutionLedgerRepository`, the only ``execution_ledger`` writer
 The Kiwoom mock TRs report no fee, no tax and no fill timestamp (design §3.1),
 so the row says so: ``fee_basis='not_provided'`` and
 ``filled_at_basis='observed_at'``. Unknown cost is not recorded as zero.
+
+hk 5642: the broker order number is only unique within an account and trading
+day (the order ledger's account+day+order-number unique key), so the place
+ledger's ``trading_day`` is part of this row's ``fill_seq`` identity. An order
+number reused on another day with the same cumulative quantity is a different
+order and gets a different ``fill_seq``. Rows written before hk 5642 keep their
+old ``fill_seq`` and are never rewritten; a re-run of the same broker evidence
+is deduplicated on the order row's booked cumulative quantity (a zero delta
+never reaches this builder), not on that key.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ def build_kiwoom_execution_ledger_upsert(
     broker_order_id: str,
     symbol: str,
     side: str,
+    trading_day: str,
     previous_filled_qty: Decimal,
     filled_quantity: int,
     average_price: int,
@@ -75,7 +85,16 @@ def build_kiwoom_execution_ledger_upsert(
 
     ``filled_quantity`` and ``average_price`` are the broker's exact integer KRW
     values — they are converted to ``Decimal`` without a float step.
+
+    ``trading_day`` is the place ledger's trading day of the order that owns
+    the fill (``YYYYMMDD`` for KR). It is part of the ``fill_seq`` identity, so
+    the same order number on another day is another row.
     """
+    if not isinstance(trading_day, str) or not trading_day.strip():
+        # The day is identity, not decoration: without it two days could
+        # collide. An unprovable day is refused, never defaulted.
+        raise ValueError("trading_day must not be blank")
+    trading_day = trading_day.strip()
     if isinstance(filled_quantity, bool) or not isinstance(filled_quantity, int):
         raise TypeError("filled_quantity must be an exact int")
     if isinstance(average_price, bool) or not isinstance(average_price, int):
@@ -120,7 +139,8 @@ def build_kiwoom_execution_ledger_upsert(
     else:
         price = cumulative_average
     fill_seq = _stable_int32_hash(
-        f"{order_id}:{previous_filled_qty.normalize()}:{cumulative.normalize()}"
+        f"{order_id}:{trading_day}:{previous_filled_qty.normalize()}:"
+        f"{cumulative.normalize()}"
     )
     return ExecutionLedgerUpsert(
         broker=KIWOOM_BROKER,

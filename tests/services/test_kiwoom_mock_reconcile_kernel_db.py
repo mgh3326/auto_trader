@@ -19,6 +19,7 @@ booked.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -35,8 +36,12 @@ from app.models.execution_ledger import (
 )
 from app.models.review import KiwoomMockOrderLedger, Trade
 from app.models.trade_journal import TradeJournal
+from app.services import kiwoom_mock_order_ledger_service as ledger_service_module
 from app.services import kiwoom_mock_reconcile as kernel
-from app.services.kiwoom_execution_ledger import KIWOOM_BROKER
+from app.services.kiwoom_execution_ledger import (
+    KIWOOM_BROKER,
+    build_kiwoom_execution_ledger_upsert,
+)
 from app.services.kiwoom_mock_order_ledger_service import (
     KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
@@ -369,6 +374,12 @@ def _partial_detail(order_no: str, quantity: int, symbol: str) -> dict[str, Any]
     )
 
 
+def _legacy_fill_seq(order_no: str, previous: Decimal, cumulative: Decimal) -> int:
+    """The pre-hk5642 seed: order number and quantities, no trading day."""
+    seed = f"{order_no}:{previous.normalize()}:{cumulative.normalize()}"
+    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) & 2_147_483_647
+
+
 async def _fills(order_no: str) -> list[ExecutionLedger]:
     async with AsyncSessionLocal() as session:
         return list(
@@ -539,6 +550,83 @@ async def test_full_mode_books_one_in_effect_row_and_journals_it(
             assert run.broker == "kiwoom"
             assert run.dry_run is False
             assert run.committed_insert >= 1
+    finally:
+        await _cleanup_full(
+            client_order_id=client_order_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
+
+
+async def test_a_rerun_over_an_old_style_fill_seq_books_no_second_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hk 5642: an order booked before the day joined the key is not re-booked.
+
+    The first pass books the way the code before hk 5642 did — the order
+    number and quantities only, no trading day — and advances the order row.
+    The second pass runs the real builder over the same broker evidence: the
+    dedupe happens on the order row's booked cumulative quantity (a zero
+    delta never reaches the builder), so the ledger keeps exactly one row
+    under its old ``fill_seq``. The new-style key for the same delta is a
+    different value, which is why the key alone could not answer this.
+    """
+    _full_mode(monkeypatch)
+    client_order_id = f"kwoomm-f-{uuid.uuid4().hex[:12]}"
+    order_no = _order_no()
+    symbol = _symbol()
+    run_ids: list[str] = []
+    legacy_seq = _legacy_fill_seq(order_no, Decimal("0"), Decimal("10"))
+    real_builder = ledger_service_module.build_kiwoom_execution_ledger_upsert
+
+    def _legacy_builder(**kwargs):
+        return real_builder(**kwargs).model_copy(update={"fill_seq": legacy_seq})
+
+    try:
+        await _accepted(client_order_id, order_no, symbol=symbol)
+
+        monkeypatch.setattr(
+            ledger_service_module,
+            "build_kiwoom_execution_ledger_upsert",
+            _legacy_builder,
+        )
+        first = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if first.get("reconcile_run"):
+            run_ids.append(first["reconcile_run"]["run_id"])
+        assert first["reconciled"][0]["action"] == "booked_filled"
+        booked = await _fills(order_no)
+        assert [fill.fill_seq for fill in booked] == [legacy_seq]
+        assert (await _fetch(client_order_id)).filled_qty == Decimal("10")
+
+        monkeypatch.setattr(
+            ledger_service_module,
+            "build_kiwoom_execution_ledger_upsert",
+            real_builder,
+        )
+        replay = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        if replay.get("reconcile_run"):
+            run_ids.append(replay["reconcile_run"]["run_id"])
+        assert replay["reconciled"][0]["action"] == "noop_already_booked"
+        assert replay["reconcile_run"]["committed_insert"] == 0
+        still = await _fills(order_no)
+        assert [fill.fill_seq for fill in still] == [legacy_seq]
+        assert len(still) == 1
+
+        # The same delta under the current identity is another key: the old
+        # row is untouched history, not a duplicate the new key would add.
+        new_style = build_kiwoom_execution_ledger_upsert(
+            ledger_id=(await _fetch(client_order_id)).id,
+            broker_order_id=order_no,
+            symbol=symbol,
+            side="buy",
+            trading_day=TODAY,
+            previous_filled_qty=Decimal("0"),
+            filled_quantity=10,
+            average_price=70000,
+            observed_at=datetime.now(UTC),
+        )
+        assert new_style.fill_seq != legacy_seq
     finally:
         await _cleanup_full(
             client_order_id=client_order_id,

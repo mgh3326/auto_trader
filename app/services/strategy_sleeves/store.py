@@ -20,11 +20,17 @@ Fill attribution reads execution_ledger evidence only:
   the rung's idempotency key or correlation id *and* its order number -- never
   by the order number alone;
 * for Kiwoom mock (hk 5529), whose order numbers are unique only within an
-  account and trading day, the same day rule with a stricter match: the day
-  comes from the rung's Kiwoom mock ledger place row (read through the ledger
-  service), matched by the sleeve's own account, the rung's idempotency key *and* its normalized order
-  number. A Kiwoom fill row carries only the time the reconcile observed it, so
-  its trading day is the KST (KR) or ET-rollover (US) day of that instant.
+  account and trading day, the same day rule with a stricter match: the rung's
+  day comes from its Kiwoom mock ledger place row (read through the ledger
+  service), matched by the sleeve's own account, the rung's idempotency key
+  *and* its normalized order number. hk 5642: the *fill's* day comes from the
+  place row that booked it — ``execution_ledger.raw_payload_json.ledger_id``,
+  written by the Kiwoom fill writer — never from the instant the reconcile
+  observed the fill, so a fill reconciled after KST midnight still belongs to
+  its order's day. A fill whose place row, account, order number or day cannot
+  be proven is not guessed onto a rung and is not dropped as another day's:
+  the rungs it could belong to are reported as unattributed and the sleeve's
+  P&L becomes unmeasured.
 
 A ``go`` sleeve (hk 5441) has a second source of orders: the submit children of
 its execution intents, read by ``intent_orders``. Their fills are the same
@@ -42,18 +48,16 @@ guessed onto one of them either.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
-from app.core.timezone import trade_day_kst
 from app.models.execution_ledger import ExecutionLedger, execution_ledger_in_effect
 from app.models.execution_mandates import ExecutionExitHandoff
 from app.models.order_proposals import OrderProposal, OrderProposalRung
@@ -72,6 +76,7 @@ from app.services.execution_ledger.supersede import (
     order_trading_day,
 )
 from app.services.kiwoom_mock_order_ledger_service import (
+    place_rows_by_ids,
     place_rows_for_idempotency_keys,
 )
 from app.services.strategy_sleeves.book import SleeveFill, SleeveOrder
@@ -93,7 +98,6 @@ from app.services.strategy_sleeves.vocabulary import (
 
 ZERO = Decimal("0")
 _CRYPTO_PREFIX = "KRW-"
-_US_EASTERN = ZoneInfo("America/New_York")
 #: NUMERIC(20, 4) holds at most 16 integer digits.
 _MAX_AMOUNT = Decimal("1e16")
 
@@ -647,17 +651,13 @@ def kiwoom_rung_order_days(
 
 
 def _fill_trading_day(row: ExecutionLedger, instrument: str) -> Any:
-    """The trading day a fill row belongs to; ``None`` where no rule exists."""
-    if row.broker == "kiwoom":
-        when = row.filled_at
-        if instrument == "equity_us":
-            from app.services.execution_ledger.kis_lots import us_trading_day_window
+    """The trading day a non-Kiwoom fill row belongs to.
 
-            end = us_trading_day_window(
-                when if when.tzinfo else when.replace(tzinfo=UTC)
-            )[1]
-            return end.astimezone(_US_EASTERN).strftime("%Y%m%d")
-        return trade_day_kst(when)
+    Kiwoom rows never take their day from the row (hk 5642): the reconcile
+    observes a fill later than the trade, so ``filled_at`` is not its day. Their
+    day comes from the place ledger row that booked them
+    (:func:`_kiwoom_fill_days`) or is unknown.
+    """
     return order_trading_day(row.broker, instrument, row.filled_at)
 
 
@@ -727,6 +727,64 @@ async def _kiwoom_send_rows(
     return await place_rows_for_idempotency_keys(
         session, account_mode=sleeve.account_mode, idempotency_keys=idem
     )
+
+
+def _payload_ledger_id(row: ExecutionLedger) -> int | None:
+    """The place ledger row the fill writer recorded for this row, if usable.
+
+    The Kiwoom fill writer stores the id of the order row it booked from
+    (hk 4734). It is the only per-row binding from a fill to its order: the
+    order number alone repeats across days.
+    """
+    payload = getattr(row, "raw_payload_json", None)
+    if not isinstance(payload, dict):
+        return None
+    ledger_id = payload.get("ledger_id")
+    if isinstance(ledger_id, bool) or not isinstance(ledger_id, int):
+        return None
+    return ledger_id if ledger_id > 0 else None
+
+
+async def _kiwoom_fill_days(
+    session: AsyncSession, sleeve: StrategySleeve, rows: Sequence[ExecutionLedger]
+) -> dict[int, str]:
+    """execution_ledger row id -> the day of the place row that booked it.
+
+    Only a ``place`` row on the sleeve's own account whose normalized order
+    number is the fill's gives a day. Everything else (no binding, another
+    account, a correction row, a different order number, no recorded day)
+    leaves the fill without a day, and :func:`attribute_fills` treats such a
+    fill as unmeasured rather than as another day's.
+    """
+    place_ids = sorted(
+        {place_id for place_id in map(_payload_ledger_id, rows) if place_id is not None}
+    )
+    if not place_ids:
+        return {}
+    place_rows = await place_rows_by_ids(
+        session, account_mode=sleeve.account_mode, ledger_ids=place_ids
+    )
+    by_id = {int(place.id): place for place in place_rows}
+    days: dict[int, str] = {}
+    for row in rows:
+        row_id = getattr(row, "id", None)
+        if row_id is None:
+            continue
+        place = by_id.get(_payload_ledger_id(row) or 0)
+        if place is None:
+            continue
+        if getattr(place, "operation_kind", "place") != "place":
+            continue
+        if place.account_mode != sleeve.account_mode:
+            continue
+        if normalize_order_id(place.broker_order_id) != normalize_order_id(
+            row.broker_order_id
+        ):
+            continue
+        day = _key_text(place.trading_day)
+        if day is not None:
+            days[int(row_id)] = day
+    return days
 
 
 async def load_sleeve_inputs(
@@ -816,10 +874,17 @@ async def load_sleeve_inputs(
                 ),
             )
         )
+        rows = list(ledger_rows.scalars().all())
+        fill_days = (
+            await _kiwoom_fill_days(session, sleeve, rows)
+            if broker == "kiwoom"
+            else None
+        )
         fills, skipped, unattributed = attribute_fills(
-            rows=list(ledger_rows.scalars().all()),
+            rows=rows,
             by_order_id=by_order_id,
             sleeve=sleeve,
+            fill_days=fill_days,
         )
         diagnostics.update(skipped)
     marked = mark_children_with_unbooked_fills(
@@ -939,11 +1004,18 @@ def attribute_fills(
     rows: Sequence[ExecutionLedger],
     by_order_id: dict[str, list[_RungRef]],
     sleeve: StrategySleeve,
+    fill_days: Mapping[int, str] | None = None,
 ) -> tuple[list[SleeveFill], Counter[str], set[int]]:
     """Match ledger rows to the sleeve's rungs.
 
     Returns the fills, the skip counts, and the rungs that had a fill on their
     order number that could not be tied to them.
+
+    ``fill_days`` (execution_ledger row id -> trading day) is the Kiwoom
+    account's proof of a fill's day, resolved from the place ledger row that
+    booked it. It is never derived from ``filled_at``: the reconcile observes
+    a fill later than the trade, so a row reconciled after KST midnight would
+    otherwise fall on the next day and be dropped as a reused order number.
     """
     skipped: Counter[str] = Counter()
     fills: list[SleeveFill] = []
@@ -962,10 +1034,19 @@ def attribute_fills(
             and ref.order.symbol in symbols
             and row.filled_at >= ref.created_at
         ]
-        day = _fill_trading_day(row, instrument)
+        if row.broker == "kiwoom":
+            day = (fill_days or {}).get(row.id)
+            if matches and day is None:
+                # No proven day is not "another day": the fill could be the
+                # rung's own, so measure nothing instead of dropping it.
+                skipped["kiwoom_fill_day_unknown"] += 1
+                unattributed.update(ref.order.rung_id for ref in matches)
+                continue
+        else:
+            day = _fill_trading_day(row, instrument)
         if day is not None and matches:
-            # KIS reuses order numbers on other days: the fill must be on the
-            # trading day of the rung's own order.
+            # KIS and Kiwoom reuse order numbers on other days: the fill must
+            # be on the trading day of the rung's own order.
             # A candidate with an unknown day could own the fill, even when
             # another candidate's day matches: ambiguous, so never guessed.
             unknown = [ref for ref in matches if ref.order_day is None]

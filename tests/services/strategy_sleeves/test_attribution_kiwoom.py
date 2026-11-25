@@ -36,6 +36,7 @@ def _row(ledger_id: int, **overrides: Any) -> SimpleNamespace:
         "fee_currency": None,
         "filled_at": T0 + timedelta(minutes=5),
         "currency": "KRW",
+        "raw_payload_json": None,
     }
     return SimpleNamespace(**{**values, **overrides})
 
@@ -113,9 +114,29 @@ def test_a_rung_without_an_idempotency_key_never_gets_a_day() -> None:
 # --- fills: account, day, number, key ------------------------------------------
 
 
+def _place(
+    place_id: int,
+    order_no: str = "0000123",
+    trading_day: str | None = DAY0,
+    *,
+    account_mode: str = ACCOUNT,
+    operation_kind: str = "place",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=place_id,
+        broker_order_id=order_no,
+        trading_day=trading_day,
+        account_mode=account_mode,
+        operation_kind=operation_kind,
+    )
+
+
 def test_a_fill_on_the_rungs_order_day_is_the_rungs_fill() -> None:
     fills, skipped, unattributed = store.attribute_fills(
-        rows=[_row(1)], by_order_id={"123": [_ref(10)]}, sleeve=_sleeve()
+        rows=[_row(1)],
+        by_order_id={"123": [_ref(10)]},
+        sleeve=_sleeve(),
+        fill_days={1: DAY0},
     )
     assert [(f.ledger_id, f.rung_id, f.quantity) for f in fills] == [(1, 10, D("3"))]
     assert not skipped and not unattributed
@@ -124,23 +145,45 @@ def test_a_fill_on_the_rungs_order_day_is_the_rungs_fill() -> None:
 def test_the_same_number_on_another_trading_day_is_not_the_rungs_fill() -> None:
     later = _row(1, filled_at=T0 + timedelta(days=1))
     fills, skipped, unattributed = store.attribute_fills(
-        rows=[later], by_order_id={"123": [_ref(10)]}, sleeve=_sleeve()
+        rows=[later],
+        by_order_id={"123": [_ref(10)]},
+        sleeve=_sleeve(),
+        fill_days={1: "20261103"},
     )
     assert fills == []
     assert skipped == {"order_id_reused_on_another_day": 1}
     assert not unattributed
 
 
-def test_the_trading_day_is_the_kst_day_of_the_observation_instant() -> None:
-    # 23:50 UTC is 08:50 KST the next calendar day: day 20261103, not 20261102.
+def test_a_fill_observed_after_kst_midnight_belongs_to_the_orders_day() -> None:
+    """hk 5642: the day comes from the place ledger, not the observed instant.
+
+    23:50 UTC is 08:50 KST the next calendar day. The reconcile booked this
+    order's fill then, but the order and its trading day are the previous one,
+    so the fill is the rung's — it used to be dropped as a reused number.
+    """
     late = _row(1, filled_at=datetime(2026, 11, 2, 23, 50, tzinfo=UTC))
-    fills, skipped, _ = store.attribute_fills(
+    fills, skipped, unattributed = store.attribute_fills(
         rows=[late],
         by_order_id={"123": [_ref(10, created=T0 - timedelta(hours=1))]},
         sleeve=_sleeve(),
+        fill_days={1: DAY0},
+    )
+    assert [(f.ledger_id, f.rung_id) for f in fills] == [(1, 10)]
+    assert not skipped and not unattributed
+
+
+def test_a_fill_without_a_proven_place_row_is_unmeasured_not_dropped() -> None:
+    """No provable day is not "another day": the rung is unmeasured instead."""
+    fills, skipped, unattributed = store.attribute_fills(
+        rows=[_row(1)],
+        by_order_id={"123": [_ref(10)]},
+        sleeve=_sleeve(),
+        fill_days={},
     )
     assert fills == []
-    assert skipped == {"order_id_reused_on_another_day": 1}
+    assert skipped == {"kiwoom_fill_day_unknown": 1}
+    assert unattributed == {10}
 
 
 def test_a_rung_without_a_known_order_day_is_unmeasured_not_zero() -> None:
@@ -148,6 +191,7 @@ def test_a_rung_without_a_known_order_day_is_unmeasured_not_zero() -> None:
         rows=[_row(1)],
         by_order_id={"123": [_ref(10, order_day=None)]},
         sleeve=_sleeve(),
+        fill_days={1: DAY0},
     )
     assert fills == []
     assert skipped == {"kiwoom_order_day_unknown": 1}
@@ -159,6 +203,7 @@ def test_two_rungs_on_one_account_day_number_are_ambiguous_and_never_guessed() -
         rows=[_row(1)],
         by_order_id={"123": [_ref(10), _ref(11, created=T0 + timedelta(minutes=1))]},
         sleeve=_sleeve(),
+        fill_days={1: DAY0},
     )
     assert fills == []
     assert skipped == {"kiwoom_order_match_ambiguous": 1}
@@ -169,7 +214,10 @@ def test_the_rung_whose_day_matches_owns_a_shared_number() -> None:
     old = _ref(10, order_day="20261030", created=T0 - timedelta(days=3))
     new = _ref(11)
     fills, skipped, unattributed = store.attribute_fills(
-        rows=[_row(1)], by_order_id={"123": [old, new]}, sleeve=_sleeve()
+        rows=[_row(1)],
+        by_order_id={"123": [old, new]},
+        sleeve=_sleeve(),
+        fill_days={1: DAY0},
     )
     assert [f.rung_id for f in fills] == [11]
     assert not skipped and not unattributed
@@ -179,7 +227,10 @@ def test_an_unknown_day_candidate_blocks_a_day_proven_one() -> None:
     proven = _ref(10)
     unknown = _ref(11, order_day=None, created=T0 - timedelta(days=1))
     fills, skipped, unattributed = store.attribute_fills(
-        rows=[_row(1)], by_order_id={"123": [proven, unknown]}, sleeve=_sleeve()
+        rows=[_row(1)],
+        by_order_id={"123": [proven, unknown]},
+        sleeve=_sleeve(),
+        fill_days={1: DAY0},
     )
     assert fills == []
     assert skipped == {"kiwoom_order_day_unknown": 1}
@@ -191,6 +242,7 @@ def test_a_fill_of_another_side_or_symbol_never_attaches() -> None:
         rows=[_row(1, side="sell"), _row(2, symbol="000660", raw_symbol="000660")],
         by_order_id={"123": [_ref(10)]},
         sleeve=_sleeve(),
+        fill_days={1: DAY0, 2: DAY0},
     )
     assert fills == []
     assert skipped == {"no_matching_order": 2}
@@ -252,7 +304,8 @@ async def test_the_loader_reads_the_own_account_place_rows_and_the_in_effect_led
     session = _Session(
         [(proposal, rung)],
         [_send("123", DAY0)],
-        [_row(1)],
+        [_row(1, raw_payload_json={"ledger_id": 70})],
+        [_place(70)],
     )
 
     inputs = await store.load_sleeve_inputs(session, _sleeve())  # type: ignore[arg-type]
@@ -267,6 +320,11 @@ async def test_the_loader_reads_the_own_account_place_rows_and_the_in_effect_led
     assert "quarantined_at IS NULL" in ledger_sql
     assert "broker = 'kiwoom'" in ledger_sql
     assert "account_mode = 'mock'" in ledger_sql
+    # hk 5642: the fill's day is resolved from the place row that booked it.
+    place_sql = session.statements[3]
+    assert "kiwoom_mock_order_ledger" in place_sql
+    assert "account_mode = 'kiwoom_mock'" in place_sql
+    assert "id IN (70)" in place_sql
 
 
 def test_the_kiwoom_mock_combination_is_in_the_vocabulary() -> None:
@@ -340,8 +398,20 @@ async def test_a_kiwoom_mock_sleeves_used_and_pnl_come_from_the_attributed_fills
         [buy, sell],
         [_send("123", DAY0, idem="idem-10"), _send("456", DAY0, idem="idem-11")],
         [
-            _row(1, filled_qty=D("4"), filled_price=D("70000"), id=1),
-            _row(2, filled_qty=D("2"), filled_price=D("70500"), id=2),
+            _row(
+                1,
+                filled_qty=D("4"),
+                filled_price=D("70000"),
+                id=1,
+                raw_payload_json={"ledger_id": 70},
+            ),
+            _row(
+                2,
+                filled_qty=D("2"),
+                filled_price=D("70500"),
+                id=2,
+                raw_payload_json={"ledger_id": 70},
+            ),
             _row(
                 3,
                 side="sell",
@@ -350,10 +420,19 @@ async def test_a_kiwoom_mock_sleeves_used_and_pnl_come_from_the_attributed_fills
                 filled_price=D("72000"),
                 filled_at=T0 + timedelta(minutes=30),
                 id=3,
+                raw_payload_json={"ledger_id": 90},
             ),
-            # Same number on another day: never this rung's fill.
-            _row(4, filled_at=T0 + timedelta(days=1), filled_qty=D("9"), id=4),
+            # Same number on another day: its place row says so, never this
+            # rung's fill — even though it was observed the next day.
+            _row(
+                4,
+                filled_at=T0 + timedelta(days=1),
+                filled_qty=D("9"),
+                id=4,
+                raw_payload_json={"ledger_id": 80},
+            ),
         ],
+        [_place(70), _place(80, trading_day="20261103"), _place(90, order_no="456")],
     )
 
     inputs = await store.load_sleeve_inputs(session, _sleeve())  # type: ignore[arg-type]
@@ -395,8 +474,9 @@ async def test_an_unattributable_kiwoom_fill_leaves_the_sleeve_unmeasured() -> N
         limit="70000",
         state="filled",
     )
-    # No place row on this account carries the rung's key: its day is unknown.
-    session = _Session([buy], [], [_row(1)])
+    # The fill records its place row, but that row is not on this account's
+    # ledger: its day is unprovable, so the sleeve measures nothing.
+    session = _Session([buy], [], [_row(1, raw_payload_json={"ledger_id": 70})], [])
 
     inputs = await store.load_sleeve_inputs(session, _sleeve())  # type: ignore[arg-type]
 
