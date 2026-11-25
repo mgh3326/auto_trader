@@ -1,7 +1,7 @@
 """hk 6510: US intraday movers rows in the momentum snapshot table.
 
 Revision ID: 20261125_hk6510_us_movers
-Revises: 20261125_hk6503_kr_trading_flags
+Revises: 20261125_hk6508_fnguide
 Create Date: 2026-11-25
 
 Additive, plus two CHECK replacements on one small observation table.
@@ -44,7 +44,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261125_hk6510_us_movers"
-down_revision: str | Sequence[str] | None = "20261125_hk6503_kr_trading_flags"
+down_revision: str | Sequence[str] | None = "20261125_hk6508_fnguide"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
