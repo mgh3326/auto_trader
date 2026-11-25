@@ -25,6 +25,7 @@ OPERATIONS = {
     "retro_decisions": ("from", "to"),
     "retro_timeline": ("market", "date"),
     "mock_experiments": (),
+    "mock_round_trips": (),
     "get_bars": ("symbol", "tf", "from", "to"),
     "data_gaps": (),
 }
@@ -38,6 +39,7 @@ READERS = {
     "retro_decisions": readers.read_retro_decisions,
     "retro_timeline": readers.read_retro_timeline,
     "mock_experiments": readers.read_mock_experiments,
+    "mock_round_trips": readers.read_mock_round_trips,
     "get_bars": readers.read_get_bars,
     "data_gaps": readers.read_data_gaps,
 }
@@ -60,6 +62,8 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         allowed.add("symbol")
     if operation == "mock_experiments":
         allowed.add("strategy_id")
+    if operation == "mock_round_trips":
+        allowed.update(("strategy_id", "venue"))
     if operation in {"retro_symbol", "get_bars"}:
         allowed.add("market")
     if set(params) - allowed or any(k not in params for k in required):
