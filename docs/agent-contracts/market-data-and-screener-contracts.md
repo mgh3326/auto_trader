@@ -31,6 +31,8 @@
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 - FnGuide 컨센서스·추정치·투자지표 일별 스냅샷 (hk 6508)
 
+- Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
+
 ## 기준 원문 계약
 
 ### KR/US Category Normalization & Lazy Fill (ROB-512)
@@ -584,7 +586,7 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
   (`available_at` = 처음 본 시각, `fact_hash` 로 중복 제거).
 - **health**: 기한(`봉 가용 시각 + grace`)이 지난 세션 파티션이 빠지면 `gap`/`stale`, 해시 불일치 `corrupt`,
   커버리지 미달 `low_coverage` → exit 1. ping URL 은 출력하지 않는다.
-- **Dagu**: `deploy/dagu/data-plane/*.yaml` — data-plane-kr/-us/-crypto 는 OCI Dagu coordinator 에 **등록되어 있고** NCP worker 에서 실행된다(hk:doc `report/2026-11-10/ncp-schedule-inventory` §4; 등록 시점은 그 인벤토리에 날짜 없음). DAG 등록·수정은 운영자만 호스트에서 하며, 레포의 YAML 은 사본이라 어떤 deploy 단계도 적용하지 않는다. 새 명령만 참조.
+- **Dagu**: `deploy/dagu/data-plane/*.yaml` — data-plane-kr/-us/-crypto 는 OCI Dagu coordinator 에 **등록되어 있고** pi worker 에서 실행된다(hk:doc `report/2026-11-10/ncp-schedule-inventory` §4; 등록 시점은 그 인벤토리에 날짜 없음). DAG 등록·수정은 운영자만 호스트에서 하며, 레포의 YAML 은 사본이라 어떤 deploy 단계도 적용하지 않는다. 새 명령만 참조.
 - **venue 라벨 relabel (hk 3847)**: US 유니버스의 `otherlisted` 거래소 코드 `F`=Texas Stock Exchange, `M`=NYSE Texas 는 NASDAQ Trader 정의 페이지에 없어(A/N/P/Z/V 만 기재) 실제 파일 행에서 매핑했다. 축소 가드는 이전 파티션 카운트에 `symdir.LEGACY_VENUE_ALIASES`(검토된 옛 라벨→새 라벨, 현재 `UNKNOWN:TXSE`→Texas Stock Exchange)만 접어 비교한다 — 임계값·slack 불변, 알려진 venue 의 실제 감소는 그대로 거부한다. 미매핑 코드는 `UNKNOWN:<code>` 로 남고 universe manifest 의 `unmapped_venues` 로 보고된다.
 - **Dagu 제안 (배치 1, hk 3848)**: `deploy/dagu/at-batch/*.yaml` 11개 — Prefect 배치 11개의 이전 후보. 🔴 **등록 안 됨**: 등록·Prefect pause 는 `docs/runbooks/dagu-batch1-cutover.md` 를 잡별로 따를 때만, 8·10·11번은 hk 3846/3845 수정 배포 후. 정적 검사 `tests/scripts/test_dagu_at_batch_dags.py`.
 - **Dagu 배치 2 (hk 4896)**: `deploy/dagu/at-batch2/*.yaml` 4개 — at-scheduler(TaskIQ) 은퇴로 체결 원장 대사(`scripts.reconcile_execution_ledger`, KIS·Upbit 독립 두 단계, 한쪽이 실패하면 run 실패, 30분마다, `EXECUTION_LEDGER_COMMIT_ENABLED` 가 참일 때만 `--commit`)와 종목 목록 3종(`scripts.sync_{kr,us,upbit}_symbol_universe`, 태스크와 같은 시각)을 옮긴 것. 운영자 승인(2026-11-17 채팅 "새로 만들 Dagu 잡의 스케줄 등록 승인", hk:doc consult/2026-11-17/at-go-1117-fable52)으로 OCI Dagu 에 **등록됨**. 레포 파일은 사본이며 어떤 배포 단계도 적용하지 않는다. 명령 안에서 셸 변수를 쓰지 않는다(Dagu 가 `${VAR}` 를 먼저 펼칠 수 있다). `docker run --init` 으로 시간 초과 시 컨테이너도 멈춘다.
@@ -658,6 +660,18 @@ CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성�
 ### KR get_quote 장전 응답 (hk 6300)
 
 `get_quote`의 KR 응답은 KRX 정규장 개장(09:00 KST) 전(`data_state: premarket_unavailable`)에 전일 이월 봉을 쓴다. 이때 `open`/`high`/`low`는 `krx_ohlcv_basis: "carried_previous_close"`로 표시하고 `volume`/`value`는 `null`로 둔다(0 체결 수로 읽지 않는다). NXT 호가를 가격으로 쓰는 것은 `nxt_tradable: true`인 종목뿐이며, 그 경우 `nxt_trade_state: "no_trade_observed"`를 남긴다. 그 밖의 종목은 `price_usable: false`다. 날짜만 있는 `price_as_of`(KST 자정, 일봉 날짜)는 장전 경로에서 fresh가 아니며 `price_as_of_kind: "date_only"`와 `price_unavailable_reason: "date_only_price_asof"`를 준다. 정규장 KR 응답의 형태는 바뀌지 않았다. 이 필드를 읽는 앱 내부 소비자는 `order_preflight`(`price_freshness`가 `fresh`가 아니면 거부, 키움 모의 경로 `kiwoom_mock_place`·`orders_kiwoom_variants`가 공급)와 `auto_approve_price_fallback`(`is_stale_price`·`data_state`)이다.
+
+### KR get_quote 가격 종류 (hk 6498)
+
+KR `get_quote`의 대표가(`price`)는 `price_kind`로 어떤 근거인지 밝힌다: `last_trade`(세션 안 마지막 체결), `mid`(양쪽 호가가 모두 있는 중간가), `expected`(예상체결가, 동시호가 구간에서만), `unavailable`(판단 불가, 사유 `price_kind_reason`). 예상체결가는 **연속매매 중에는 대표가가 되지 않는다**(장전 NXT `nxt_pre`, NXT 애프터 `nxt_post`, KRX 애프터 포함). 한쪽 호가만 있으면 가격이 아니다. 세션을 알 수 없으면 `unavailable`이며 추측하지 않는다.
+
+- 예상체결가는 항상 `expected_price`(와 `expected_price_venue`) 필드에 따로 남는다. 같은 값이 `price`로 복사되는 것은 `price_kind=expected`(동시호가)뿐이다.
+- `venues`는 읽은 시장마다 `best_bid`·`best_ask`·`observed_at`(호가 시각)·`expected_price`와, 체결이 있으면 `last_trade_price`·`last_trade_at`을 싣는다. 현재 `get_quote`는 NXT 호가만 읽으므로 `venues`에는 `nxt`만 나온다.
+- 체결은 KIS 분봉(`inquire_minute_chart`, NX, 1분)의 거래량이 있는 가장 최근 봉에서 읽는다. 봉 종가가 체결가, 봉 시작 시각이 체결 시각(분 단위)이다. `inquire-price`(FHKST01010100)는 체결 시각을 주지 않으므로 쓰지 않는다. 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:30 KST) 이후이면서 현재 시각 이전이고, 현재 시각보다 5분(`TRADE_MAX_AGE`, 호가 신선도 기준과 같음) 이내여야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다. 읽기 실패도 체결 없음이다.
+- `price_kind`가 `expected`이면 `is_stale_price: true`, `price_freshness: "unavailable"`, `price_usable: false`, `price_unavailable_reason: "expected_price_not_order_basis"`다. 주문 근거로 쓰지 않는다. `order_preflight`(키움 모의 `fetch_kr_quote_for_preflight`)와 `auto_approve_price_fallback`(`classify_kis_quote`)은 이 값을 거부한다.
+- 정규장 KRX 기본 경로(`data_state: fresh`, NXT 오버레이 없음)는 `price_kind: "last_trade"`, `price_session: "regular"`를 더한다. 그 밖의 기본 경로(장전·장마감)는 `price_kind: "unavailable"`과 사유 `premarket_unavailable` 또는 `krx_market_closed`를 더한다. 다른 키의 값과 형태는 그대로다.
+- KRX 동시호가 구간(08:30–09:00, 15:20–15:30 KST, 거래일)에는 `get_quote`가 KRX 호가를 한 번 더 읽어 `price_session: auction`으로 판정한다. 이때 예상체결가가 있으면 `price_kind: expected`이고 주문 근거가 아니다. 호가 읽기가 실패하면 기존 기본 경로를 그대로 둔다.
+- 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. 시장 개장 사실(동시호가 시각, NXT 경계)은 이 PR 에서 거래소 공지로 확인하지 않았다. 장후 NX 분봉의 시장 코드와 봉 시각 의미는 `[unverified]`이며 운영자 스모크로 확인한다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
 
 ## 유지 규약
 
@@ -831,3 +845,16 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 - **유니버스·실행**: 기본 대상은 `kr_symbol_universe`의 활성 KOSPI·KOSDAQ 중 `security_type='STOCK'`이다. 수동 CLI `uv run python -m scripts.collect_fnguide_consensus [--symbols …|--limit N] [--pages …] [--dry-run|--commit]`이며 기본은 dry-run이다. `--symbols`를 주면 DB를 열지 않는다. 스케줄은 `deploy/dagu/at-fnguide-consensus/`의 사본이며 저장소가 등록하지 않는다.
 - **테스트**: `tests/services/fnguide_consensus/`(저장된 HTML 픽스처 005930·000660·028300·005930 invest, 네트워크 없음), DB 왕복은 CI(`test_fnguide_db.py`). 정적 테스트가 패키지의 주문·브로커·MCP·승인 모듈 import가 없음을 고정한다.
 - **운영 주의**: 원시 JSON 보관량은 종목·페이지·일 단위로 늘어난다. 보존 기간 정책은 이 PR 범위 밖이며 운영자 결정 대상이다.
+
+### Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
+
+`app/services/upbit_intraday_shadow/` + 수동 CLI `scripts/upbit_intraday_shadow.py` 는 hk 6035 동결 규칙을 마감된 15분 봉에 적용해 **전향 증거만** 쌓는다. 6035 는 세 계열 모두 `NOT_SUPPORTED` 였으므로 이 행들은 매매 신호·알림·정책 입력이 아니다. 🔴 주문·미리보기·승인·원장 모듈을 import 하지 않고(정적 import 폐쇄 + 새 인터프리터 로드 검사 `tests/services/upbit_intraday_shadow/test_static_boundary.py`), 스케줄러 등록 없음(하드룰 6: `deploy/dagu/at-upbit-intraday-shadow/` 는 미등록 복사본, 등록은 마이그레이션 적용 뒤 설계 세션).
+
+- **데이터**: Upbit 공개 GET 두 경로(`/v1/market/all`, `/v1/candles/minutes/15`)만, 6035 의 허용 목록·파싱·페이서 재사용(키 없음, 요청 간격 0.15초, 429/5xx 재시도). websocket 대신 candles GET 인 이유: 규칙이 이 거래소 집계 봉으로 시험됐고, 상주 프로세스가 필요 없고, 놓친 회차가 있어도 같은 페이지를 다시 읽는다. 봉은 마감 10초 뒤부터만 읽고 형성 중 봉은 요청하지 않는다. 1분봉 저장은 이 기록기 범위가 아니다.
+- **규칙**: `research/upbit_intraday/rules.py` 를 import 해 12개 설정 전부를 평가한다(`selected_config` = `frozen_selection.json` 의 3개). 파일 sha256 이 6035 매니페스트 핀과 다르면 실행 전에 거부한다(종료 코드 2). 규칙·평가 파일은 고치지 않는다. 스테이블 제외·보유 집합 분할은 규칙의 것이고 제외 행을 만들지 않는다.
+- **후보 행** `research.upbit_shadow_candidates`(키 `rules_version, market, config_id, signal_bar_open_at`): 동결 신호, 또는 가격·거래량 배수 조건은 맞지만 거래대금 20,000,000 KRW 미만인 후보(16봉 쿨다운 밖)가 한 행이다. 쿨다운이 눌러 준 원 조건과 룩백 봉이 75% 미만인 시각(unknown)은 행이 없다. `disposition` ∈ `signal`|`excluded`, `exclusion_reasons` 는 닫힌 어휘 `market_event_warning`·`market_event_caution`·`market_event_unknown`·`market_event_stale`·`liquidity_below_floor`·`cooldown_unverified`(해당하는 것 전부, 이 순서). `cooldown_unverified` = 패널 안에 16봉을 넘는 공백이 없어 동결 쿨다운 결과를 보지 못한 봉으로부터 확정할 수 없는 경우. 신호 봉 OHLC·거래대금, 직전 N 고/저(`ref_level`)·이격, 중앙값·배수, 24시간 거래대금·구간, 수수료(편도 0.05%)·동결 왕복 비용·호가 단위(`app/core/upbit_tick.py`), 경보 상태·타입·관측 시각을 함께 남긴다. `signal_time` = 봉 마감, `first_received_at` = 마감 봉을 처음 받은 시각.
+- **경보 상태**: 그 회차의 `market/all` 의 `market_event` 를 `app/services/upbit_market_event.classify_market_event`(hk 6026 어휘)로 분류한다. 이 기록기에서는 `caution` 도 제외 사유다(구매측 리더 규칙은 바뀌지 않는다). 🔴 관측이 신호 시각보다 30분 넘게 늦으면(놓친 회차를 따라잡는 경우) 그 시각의 상태를 모르므로 `market_event_unknown` 이고 과거 상태를 지어내지 않는다.
+- **가상 왕복** `research.upbit_shadow_virtual_trades`(키 `candidate_id, horizon_bars` = 4·16·96, `is_virtual` 항상 true, `disposition` 은 복합 FK 로 후보와 결속 — 제외 후보의 행도 있으므로 소비자는 반드시 구분한다): 🔴 진입은 **신호 다음 봉의 시가뿐**이다. 저가·고가가 가격에 닿는 것은 체결이 아니며, 다음 15분에 봉이 없으면 진입 없이 `missing_reason=next_bar_no_trades` 다. 청산은 진입 봉부터 `h` 번째 봉 종가, 그 칸에 체결이 없으면 직전 체결 종가(`exit_basis`). `gross_return`(방향 부호 적용 — C 는 매도 뒤 재매수 이득)·`mae`·`mfe` 는 동결 함수 값, `net_return = gross - 왕복 비용`. 아직 판정할 수 없으면 행이 없고(다음 회차), 영원히 판정할 수 없으면(상장 목록에서 빠지고 404 = `market_unavailable`) 사유만 있고 숫자는 NULL 이다 — 0 으로 채우지 않는다(DB CHECK).
+- **쓰기**: 두 표의 유일한 writer 는 `writer.py`, `ON CONFLICT DO NOTHING` 삽입뿐이라 재실행은 첫 수신 시각과 값을 바꾸지 않는다. 어떤 live·mock 체결 표와도 분리돼 있고 그 표를 읽거나 쓰지 않는다. 마이그레이션 `20261125_hk6036_upbit_shadow`(추가형, `at_app` 조건부 GRANT SELECT·INSERT·schema USAGE, downgrade 는 행이 있으면 거부).
+- **실행**: 기본은 드라이런(DB 접근 0, 후보·가상 행 출력), `--commit` 만 쓴다. `--catchup-bars`(기본 4, 최대 96), `--markets`. 시장 하나의 실패는 `errors` 에 남기고 계속하며 종료 코드 1. 실계좌·전략·게이트 변경 없음.
+- **테스트**: `tests/services/upbit_intraday_shadow/`(2026-11-25 BTC·XRP·SAHARA 녹화 봉 재생, 터치=진입 아님, 동결 해시), `tests/test_hk6036_upbit_shadow_migration_db.py`(DB 부분은 CI), `tests/scripts/test_dagu_upbit_intraday_shadow_dag.py`. 이미지에는 `research/upbit_intraday` 의 규칙·fetch·선택 파일과 `research/crypto_universe/public_http.py` 만 더 싣는다.

@@ -53,7 +53,7 @@ Dagu 워커(`worker_selector: host: pi`, 2026-11-20 hk 5752 에서 레포 사본
 - **이미지 포인터**: `/root/at-run/deployed-digest` (`ghcr.io/mgh3326/auto_trader@sha256:…` 전체 참조, deploy 스크립트가 쓴다).
 - **컨테이너 env 파일**: `/root/at-secrets/.env.api` — Prefect 래퍼가 `--env-file` 로 넘기던 파일과 같다.
   파일 안에 `TOSS_API_ENABLED`(6·7번), `CRYPTO_INSIGHT_COMMIT_ENABLED`(2번)가 Prefect 때와 같은 값으로 있어야 한다.
-  Prefect 의 로컬 모드는 `TOSS_API_ENABLED=true` 를 export 했지만 docker 모드 명령에는 없었다 — 즉 지금 NCP 는 env 파일 값에 의존한다.
+  Prefect 의 로컬 모드는 `TOSS_API_ENABLED=true` 를 export 했지만 docker 모드 명령에는 없었다 — 즉 지금 pi 호스트는 env 파일 값에 의존한다.
 - **DAG 용 dotenv**: `/root/at-secrets/.env.dagu-at-batch` (권한 `0600`). 이름만:
 
   | 이름 | 용도 |
@@ -162,7 +162,7 @@ Discord 는 서비스 중단·돈·주문에만 쓴다(결정 169).
 
 - 각 DAG 의 `handler_on.success` / `failure` 가 핑보다 먼저 `logger -t at-dagu-batch "dag=<DAG 이름> status=success|failure"` 를 한 번 쓴다.
   `<DAG 이름>` 은 파일명에서 `.yaml` 을 뺀 값이다(`dagu start` 에 넘기는 이름과 같다).
-- NCP 에서 Dagu 워커는 systemd `dagu-worker.service` 로 돈다. Alloy 가 systemd journal 을 Grafana Cloud Loki 로 보내며
+- pi 에서 Dagu 워커는 systemd `dagu-worker.service` 로 돈다. Alloy 가 systemd journal 을 Grafana Cloud Loki 로 보내며
   라벨은 `source="journal"`, `app=<syslog identifier>`(여기서는 `at-dagu-batch`), `unit`, `level` 이다.
 - `run=${DAG_RUN_ID}` 필드는 넣지 않았다. 이 레포의 런북과 DAG 어디에도 Dagu 가 `DAG_RUN_ID` 를 노출한다는 근거가 없다.
 - 핑은 선택이다. 핑 URL 환경변수가 비어 있으면 curl 을 건너뛰고, 핑이 실패해도 journal 줄은 이미 쓰인 뒤다.
@@ -170,7 +170,7 @@ Discord 는 서비스 중단·돈·주문에만 쓴다(결정 169).
 **소유와 승인**
 
 - Grafana 알림 규칙은 운영자 데스크(operator-desk)가 만든다(observability 는 desk 소관). 이 PR 은 규칙을 만들지 않는다.
-- DAG 파일을 OCI/NCP 에 복사하거나 적용하는 일은 `deploy/dagu/**` 가 mergewake `deploy_approval` 경로이므로 사람 승인 건이다.
+- DAG 파일을 OCI/pi 에 복사하거나 적용하는 일은 `deploy/dagu/**` 가 mergewake `deploy_approval` 경로이므로 사람 승인 건이다.
   이 PR 머지는 그 승인을 대신하지 않는다.
 
 **쿼리 (i) — 최근 15분 실패**

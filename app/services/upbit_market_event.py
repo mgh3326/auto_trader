@@ -42,8 +42,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.upbit_symbol_universe import UpbitSymbolUniverse
-
 logger = logging.getLogger(__name__)
 
 STATE_NONE = "none"
@@ -182,6 +180,10 @@ async def load_market_event_states(
     stale_after: timedelta = MARKET_EVENT_STALE_AFTER,
 ) -> dict[str, MarketEventState]:
     """Closed state per active market, read from ``upbit_symbol_universe``."""
+    # Imported here so the pure classifier above stays usable without loading
+    # ``app.models`` (and with it every ledger table definition).
+    from app.models.upbit_symbol_universe import UpbitSymbolUniverse
+
     normalized_quote = str(quote_currency or "").strip().upper()
     stmt = select(
         UpbitSymbolUniverse.market,

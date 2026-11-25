@@ -414,6 +414,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/mock_round_trips:
+    get:
+      operationId: mock_round_trips
+      description: 'Count and rows share one read-only snapshot. Mock (paper/demo)
+        strategy round trips only; never live.'
+      parameters:
+      - name: strategy_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: venue
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - alpaca_paper
+          - alpaca_paper_crypto
+          - binance_spot_demo
+          - binance_futures_demo
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MockRoundTripsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /trading/api/retro/v1/get_bars:
     get:
       operationId: get_bars
@@ -1536,6 +1606,146 @@ components:
               $ref: '#/components/schemas/ExperimentRow'
       description: total counts matching experiment rows before pagination, or null
         with count_unavailable. Page length is never total.
+      unevaluatedProperties: false
+    RoundTripLeg:
+      type: object
+      additionalProperties: false
+      required:
+      - leg_ref
+      - role
+      - side
+      - status
+      - broker_order_bound
+      properties:
+        leg_ref: *id001
+        role:
+          type: string
+          enum:
+          - entry
+          - exit
+        side:
+          type: string
+          enum:
+          - buy
+          - sell
+          - short
+          - cover
+        status:
+          type: string
+          enum:
+          - planned
+          - sending
+          - uncertain
+          - accepted
+          - partially_filled
+          - filled
+          - canceled
+          - rejected
+          - closed
+        broker_order_bound:
+          description: true when the journal holds a broker order binding; the number itself is never exposed.
+          type: boolean
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        notional:
+          $ref: '#/components/schemas/DecimalValue'
+    RoundTripRow:
+      description: One paper/demo episode (entry leg plus exit legs). Nulls are explained by reason, or by an unknown with the dotted data path.
+      type: object
+      additionalProperties: false
+      required:
+      - strategy_id
+      - round_trip_ref
+      - environment
+      - mode
+      - side
+      - state
+      - reason
+      - opened_at
+      - closed_at
+      - entry_price
+      - exit_price
+      - realized_pnl_amount
+      - currency
+      - unit
+      - basis
+      - legs
+      properties:
+        strategy_id: *id001
+        round_trip_ref: *id001
+        environment: *id001
+        mode:
+          type: string
+          const: mock
+        side:
+          type:
+          - string
+          - 'null'
+          enum:
+          - buy
+          - short
+          - null
+        state:
+          type: string
+          enum:
+          - closed
+          - open
+          - unresolved
+          - not_filled
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - awaiting_fill
+          - awaiting_close_evidence
+          - uncertain_leg
+          - not_sent
+          - rejected
+          - canceled
+          - pnl_unrecorded
+          - incomplete_evidence
+          - null
+        opened_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        closed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        entry_price:
+          $ref: '#/components/schemas/DecimalValue'
+        exit_price:
+          $ref: '#/components/schemas/DecimalValue'
+        realized_pnl_amount:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit:
+          type: string
+          const: currency
+        basis:
+          description: The journal is not broker evidence of a fill, so the basis is always inference.
+          type: string
+          const: inference
+        legs:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoundTripLeg'
+    MockRoundTripsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/RoundTripRow'
+      description: total counts mock round trips before pagination, or null with count_unavailable. Page length is never total.
       unevaluatedProperties: false
     GetBarsResponse:
       allOf:

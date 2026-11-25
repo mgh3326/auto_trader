@@ -29,6 +29,9 @@ DATA_STATE_FRESH = "fresh"
 DATA_STATE_STALE = "stale"
 DATA_STATE_PREMARKET_UNAVAILABLE = "premarket_unavailable"
 DATA_STATE_MARKET_CLOSED = "market_closed"
+# hk 6521: the freshness of an extended-hours overlay could not be decided
+# (quote_asof missing or unparsable). Never reported as fresh.
+DATA_STATE_UNKNOWN = "unknown"
 
 # hk 6300: closed vocabulary for KR quotes served before the KRX open.
 # ``krx_ohlcv_basis`` marks open/high/low/volume/value as carried from the prior

@@ -1,22 +1,13 @@
 # Fill-event handoff
 
-This NCP timer transfers sanitized, evidence-backed fill rows into the market
+This timer transfers sanitized, evidence-backed fill rows into the market
 operator briefing. It never calls a model or a broker/order/proposal/watch
 mutation surface. Durable `session_context` is canonical; pane delivery and
 early kickoff are best effort only.
 
 ## Install
 
-After deploying an image containing this revision, on NCP install the versioned
-units, create `/var/lib/fill-event-handoff` mode 0700 owned by uid/gid 10001,
-then enable the timer:
-
-```bash
-install -m 0644 ops/ncp/systemd/fill-event-handoff.{service,timer} /etc/systemd/system/
-install -d -m 0700 -o 10001 -g 10001 /var/lib/fill-event-handoff
-systemctl daemon-reload
-systemctl enable --now fill-event-handoff.timer
-```
+Retired (hk 6441): the versioned units (`ops/ncp/systemd/fill-event-handoff.{service,timer}`) were deleted when the NCP host was returned, so there is no install or enable step on the pi host. The state-directory rule below still applies to any container that runs this image: `/var/lib/fill-event-handoff` must be mode 0700 and owned by uid/gid 10001.
 
 `fill-event-handoff.service` reads the image digest already selected by
 `/root/at-run/deployed-digest`; it runs that image with host networking and
@@ -24,7 +15,7 @@ bind-mounts only the state directory. The container process runs as `appuser`
 uid 10001 (`Dockerfile.api` line 63), so the state directory must be owned by
 10001:10001 — a root-owned mode-0700 directory raises `PermissionError` on the
 first state write. The numeric IDs are required because `appuser` exists only
-inside the image, not on the NCP host. Deployment remains an operator action.
+inside the image, not on the pi host. Deployment remains an operator action.
 
 The unit layers `/root/at-secrets/.env.api` first, then the mode-0600
 `/root/at-secrets/.env.fill-handoff` override. The API file supplies the
@@ -239,7 +230,7 @@ Do not set `FILL_HANDOFF_EMIT_TIMEOUT_S` to one second or less. The panewire
 panewire returns after its file write before this process can fall back to
 herdr and risk dual delivery.
 
-NCP timer installation, environment configuration, and lane registration are
+Timer installation is retired (hk 6441); environment configuration and lane registration are
 outside this PR and remain operator actions.
 
 Check a run with `journalctl -u fill-event-handoff.service -n 100`. A pane or
@@ -262,7 +253,7 @@ are still forced to the Null implementations and `TradeNotifierRiskPush` is
 never even constructed. `--since-fill-id`/`--since-watch-id` behave as in the
 enabled path.
 
-### Desk command (NCP)
+### Desk command (pi host)
 
 Create the dedicated state directory, then run the same selected image on a
 five-minute cadence during KR/US regular hours (crypto rows evaluate whenever
@@ -283,7 +274,7 @@ The state directory is bind-mounted into the container, which runs as
 `appuser` uid 10001 (`Dockerfile.api` line 63), so it must be owned by
 10001:10001 — a root-owned mode-0700 directory raises `PermissionError` on the
 first state write. Use the numeric IDs: `appuser` exists only inside the
-image, not on the NCP host.
+image, not on the pi host.
 
 A five-minute systemd timer or cron entry wrapping that invocation is the
 cadence lever; this change registers no scheduler.

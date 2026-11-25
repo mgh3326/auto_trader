@@ -57,6 +57,19 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
+**Alpaca paper 프리·애프터 모의 제출 — `extended_hours` (hk 6497)**: `alpaca_paper_preview_order`와
+`alpaca_paper_submit_order`는 선택 인자 `extended_hours: bool = False`를 받는다. 기본값은 기존 요청 본문·
+정규화 canonical·hash·`client_order_id`·echo를 바이트 단위로 바꾸지 않는다(테스트가 골든으로 고정).
+`true`이면 요청 본문에 `extended_hours: true`가 실리고, 그 값은 canonical에도 포함되어 preview 해시와
+`client_order_id`에 묶인다. 패킷은 `execution_extended_hours`로 이 값을 결속하고, submit의 값이 패킷과 다르면
+`order_extended_hours_mismatch`로 전송 전에 거부한다. 로컬 거부(브로커 호출 전): `type=limit`과
+`time_in_force=day`만 허용한다(Alpaca 문서는 `gtc`도 허용하지만 이 표면은 더 좁게 둔다). 암호화폐 주문은
+범위 밖이며 거부한다. 분수 수량은 Alpaca 문서상 프리·애프터에서도 허용되며(거래소 상장·분수 거래 가능 자산
+한정), 자산 자격은 브로커가 판정하므로 로컬에서 거부하지 않는다. 근거: Alpaca "Orders at Alpaca"
+(https://docs.alpaca.markets/docs/orders-at-alpaca, 2026-11-25 확인)와 "Fractional Trading"
+(https://docs.alpaca.markets/docs/fractional-trading, 2026-11-25 확인). 게이트(env·confirm·paper URL·계좌
+suffix)와 ROB-1474 전략 CLI는 바뀌지 않았다. 야간(24/5) 세션과 KIS·Kiwoom·실계좌는 범위 밖이다.
+
 ### ROB-1474 US paper 전략 에피소드
 
 `review.mock_strategy_orders`는 네 paper/demo venue의 전략 귀속과 전송 journal이다.
@@ -275,7 +288,7 @@ ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
   strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
   마이그레이션도 별도 운영 절차로 적용한다. 상세는
   docs/runbooks/binance-h5-demo.md를 따른다.
-- **NCP 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
+- **H5 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
   `docs/runbooks/binance-h5-ncp-manual-playbook.md`(명령의 플래그는
   `tests/scripts/test_binance_h5_ncp_playbook.py`가 각 스크립트의 실제 argparse로
   검증). 데모 플래그 3종(`BINANCE_H5_DEMO_ENABLED`·`BINANCE_FUTURES_DEMO_ENABLED`·
@@ -332,7 +345,7 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
 - **CLI·kill switch·알림 (hk 4753, CT-5a)**: `scripts/binance_trend_demo.py`의 네 모드(`--once`/`--loop`/`--manage-only`/`--readiness`)는 모두 `BINANCE_TREND_DEMO_ENABLED` AND `BINANCE_FUTURES_DEMO_ENABLED`(정확히 `"true"`) AND 호출별 `--confirm-demo`를 네트워크·DB 사용 전에 검사한다. `--readiness`는 게이트·envelope·`constants.SEAL_LOOKBACK_DAYS`(60)·`SEAL_HARD_STOP_FRACTION`(0.10)만 출력하고 HTTP·DB·자격증명을 쓰지 않는다. `--manage-only`는 executor의 `run_tick(manage_only=True)`로 미해소/미전송 intent 정리·uncertain 차단·보유 관리까지만 수행하고 평가 루프 전에 `entries_skipped_manage_only`로 돌아오며 `_enter`도 거부한다(전송 0건, 테스트가 단언). 단독이면 1회 관리 tick이고 `--loop`와 결합하면 매 tick 관리만 한다(은퇴 시 flat 확인까지 반복, 강제 청산이 아니다). `--loop`은 60초 간격 foreground이고 스케줄러·systemd·`--restart` 등록이 없다.
   - 🔴 **kill switch 알림**: 두 래치(연속 hard stop 2/UTC일, gross·동시 포지션 cap)는 `entry_gate`가 그대로 판정하고, conflict 주 3건 래치가 진입을 거부하면(`entry_refused:…conflict_week_limit_reached`) `control.tick_failures`가 `kill_switch_conflict_week` 버킷으로 ERROR 알림을 낸다(설계 §4.4). 다른 `entry_refused`(사이징·cap)는 정상 동작이라 알린다 하지 않는다. conflict 기록 자체(`entry_conflict_blocked`/`entry_conflict_rejected`)도 알림 버킷이다 — 주 3건 래치가 걸리는 순간이 바로 그 기록이므로, 나중의 `conflict_week_limit_reached` 거부만 알리면 래치 발동 시점을 놓친다.
   - **알림**(`trend/alerting.py`): `BINANCE_TREND_ALERT_ENABLED` 정확히 `"true"`일 때만, 기존 ops Discord 웹훅(`settings.discord_webhook_alerts`)으로 `stopped`/`error`/`heartbeat_missed`(+ 테스트)를 보낸다. 에피소드당 1회, 리마인더 최대 6시간 1회, 전송 실패 5분 뒤 재시도, 전송 타임아웃 5초·예외 삼킴. 틱 알림은 백그라운드 태스크라 tick을 늦추지 않고, 알림 경로가 깨져도 tick 결과·exit code가 바뀌지 않는다.
-  - **heartbeat**: `--loop`은 세션 advisory lock(`auto_trader:binance_trend_runner`)을 **러너 수명 동안 체크아웃한 단일 `AsyncConnection`**에 잡는다(풀 `AsyncSession`의 commit은 물리 연결을 반납하지만 세션 advisory lock은 그 연결에 남으므로 그 연결을 풀에 돌려주면 안 된다). 🔴 **잠금 소유와 heartbeat는 분리한다**: `open()`은 `acquired`/`held_by_other`/`unavailable` 세 결과를 돌려주고(경쟁 러너와 DB 장애를 구분), `stamp()`는 그 연결에서 benign `SELECT 1`만 실행해 `pg_stat_activity.state_change`를 갱신한다. 일시적 statement 오류는 rollback으로 aborted transaction을 끝낸 뒤 로그만 남기고 loop을 계속하며(다음 tick 재시도, 계속 실패하면 watcher stale 알림), **backend 사망이 증명된 경우에만** False로 loop을 종료한다(그때 잠금도 함께 사라진다). unlock이 실패한 연결은 풀로 돌려주지 않고 invalidate한다. `scripts/binance_trend_heartbeat_watch.py`는 `pg_locks`와 `pg_stat_activity`만 SELECT로 읽고, **이 watcher가 러너를 한 번이라도 본 뒤의** 잠금 부재 또는 10분 초과 touch를 `heartbeat_missed` 1회로 알린다(한 번도 못 본 absent는 사고가 아니고, DB 읽기 실패는 `unreadable`이다). 🔴 이 레인에는 durable tick stamp가 없으므로 **본 뒤의 잠금 부재가 사망 신호**다(운영 순서: 러너 첫 tick 뒤 watcher 시작, 정지 시 watcher 먼저). 러너 **프로세스** 사망(SIGKILL/OOM)을 잡는 경로이고(같은 호스트의 watcher는 호스트 상실을 잡지 못하며 그 구간은 NCP 호스트 감시(desk 소관)에 의존한다) 스케줄…
+  - **heartbeat**: `--loop`은 세션 advisory lock(`auto_trader:binance_trend_runner`)을 **러너 수명 동안 체크아웃한 단일 `AsyncConnection`**에 잡는다(풀 `AsyncSession`의 commit은 물리 연결을 반납하지만 세션 advisory lock은 그 연결에 남으므로 그 연결을 풀에 돌려주면 안 된다). 🔴 **잠금 소유와 heartbeat는 분리한다**: `open()`은 `acquired`/`held_by_other`/`unavailable` 세 결과를 돌려주고(경쟁 러너와 DB 장애를 구분), `stamp()`는 그 연결에서 benign `SELECT 1`만 실행해 `pg_stat_activity.state_change`를 갱신한다. 일시적 statement 오류는 rollback으로 aborted transaction을 끝낸 뒤 로그만 남기고 loop을 계속하며(다음 tick 재시도, 계속 실패하면 watcher stale 알림), **backend 사망이 증명된 경우에만** False로 loop을 종료한다(그때 잠금도 함께 사라진다). unlock이 실패한 연결은 풀로 돌려주지 않고 invalidate한다. `scripts/binance_trend_heartbeat_watch.py`는 `pg_locks`와 `pg_stat_activity`만 SELECT로 읽고, **이 watcher가 러너를 한 번이라도 본 뒤의** 잠금 부재 또는 10분 초과 touch를 `heartbeat_missed` 1회로 알린다(한 번도 못 본 absent는 사고가 아니고, DB 읽기 실패는 `unreadable`이다). 🔴 이 레인에는 durable tick stamp가 없으므로 **본 뒤의 잠금 부재가 사망 신호**다(운영 순서: 러너 첫 tick 뒤 watcher 시작, 정지 시 watcher 먼저). 러너 **프로세스** 사망(SIGKILL/OOM)을 잡는 경로이고(같은 호스트의 watcher는 호스트 상실을 잡지 못하며 그 구간은 호스트 감시(desk 소관)에 의존한다) 스케줄…
   - **truth gate**(`trend/truth_gate.py` + `scripts/binance_trend_truth_gate.py`): 서명 GET·SELECT만으로 `demo_host_identity`·`one_way_position_mode`·`account_isolated_1x`(유니버스 4종 readback)·`account_flat_vs_trend_state`(미해소 intent 0, `holding` 외 활성 신호 0, foreign 포지션 0, 자기 `holding` 과 position 수량·방향 일치)를 판정하고 exit 0/2로 PASS/FAIL을 낸다. 주문·취소·레버리지·마진·원장 쓰기 도달이 없음을 AST 테스트가 고정한다. 런북 `docs/runbooks/binance-trend-demo.md`의 명령·플래그는 테스트가 실제 argparse와 대조한다.
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB). CT-5a: `test_alerting_control.py`(에피소드·kill switch 버킷·heartbeat 정책·잠금), `test_truth_gate.py`(판정·실패 격리·읽기 전용 AST), `test_cli.py`(모드별 게이트 거부·manage-only·알림 non-blocking), `test_executor.py`의 manage-only 단언, `tests/scripts/test_binance_trend_ncp_playbook.py`(런북 플래그 대조).
 - **forecast (hk 4760)**: `trend/forecast.py`가 H5와 같은 학습 척추를 잇는다 — forecast id는 `uuid5(correlation_id)`로 결정적이고, 브로커가 증명한 진입 체결(`holding`, 진입 의도 `settled`) 후에만 `review.trade_forecasts`에 저장하며, 실제 held close(`closed`) 후에만 실현 손익에서 추정 테이커 수수료(`fees_usdt`, 체결 증거마다 `executed*avg*TAKER_FEE_RATE` 적립 — H5와 같은 비용 모형)를 뺀 값으로 해소한다. 트렌드 상태 테이블에는 forecast 열이 없으므로 forecast 행 자체가 멱등 기록이다(기존 행=저장 완료, `open` 아님=해소 완료). 저장·해소 실패는 틱 결과·주문·전송 수를 바꾸지 않는 fail-open이며 매 틱 관리 구간의 복구 스캔(`list_forecast_recovery_signals` 후보를 `repair_forecasts`가 세션 하나·SELECT 하나로 일괄 대조)이 놓친 쓰기를 재시도한다.
@@ -649,7 +662,7 @@ ROB-1439 의 정규화 체결·주문·포지션·현금 하한을 그대로 재
 - **서비스**: `app/services/protected_position_auto_follow.py` — 모든 P 변경은 `ProtectedQuantityService.save`(origin `operator_cli`, actor 고정 owner `MCP_USER_ID`, 락 안 fresh broker 재조회) 경유
 - **킬스위치**: `PROTECTED_POSITION_AUTO_FOLLOW_ENABLED` 기본 false — off 면 head·broker 조회·쓰기·알림 0
 - **훅 위치**: 원장 커밋 **이후**만 — `ExecutionLedgerReconciler` 커밋(task·script `--commit`), Toss reconcile 부킹 세션 종료 후. dry-run 에서는 호출 안 함. `source=reconciler`·`account_mode=live` 행만(websocket 은 provisional 이라 무시)
-- **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **코드에 스케줄 없음**. desk 가 NCP systemd timer 로 KR/US 정규장 30분 간격 one-shot CLI 실행(운영자 Q-75, #944 option A). 🔴 timer 는 `--database-url-env NAME` 필수 — `--database-url` 은 수동용(argv 에 비밀 노출). URL 값은 출력·로그 금지, 오류는 변수 이름만
+- **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **코드에 스케줄 없음**. desk 가 호스트 systemd timer 로 KR/US 정규장 30분 간격 one-shot CLI 실행(운영자 Q-75, #944 option A). 🔴 timer 는 `--database-url-env NAME` 필수 — `--database-url` 은 수동용(argv 에 비밀 노출). URL 값은 출력·로그 금지, 오류는 변수 이름만
 - 🔴 **금지**: 미선언 키 자동 선언, P=0(해제) 재상향, 보유 초과 P, 읽기 경로·send-time guard 에서의 쓰기(`test_auto_follow_writer_is_unreachable_from_read_and_guard_paths` import allowlist 가 강제)
 - 🔴 **unobserved (#1061)**: 브로커가 응답했지만 그 키의 보유/매도가능 수량이 판독 불가(Toss `sellable_quantity=None` 등)면 그 키만 `unobserved`(reason `FIELD_unavailable:SYMBOL`) — P·revision 불변, 알림 없음, 레버 exit 1. **held 0 으로 취급 금지**(P 하향·해제 = 위험 방향). 락 안 재조회도 동일(save 롤백). 같은 응답의 다른 Toss 키·미선언 종목은 영향 없음. KIS 리더는 불변(시장 단위 실패)
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다

@@ -154,7 +154,7 @@ Where the rule runs:
    [--commit] (a preview unless --commit; exit 2 while the kill switch is off,
    1 if any key failed or was unobserved) or the TaskIQ task protected_positions.auto_follow_reconcile,
    which has no schedule and commits when called. The code registers no
-   schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from an NCP systemd timer, per operator decision Q-75 on task 944 (option A).
+   schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from a systemd timer on the pi host, per operator decision Q-75 on task 944 (option A).
    See "Lever timer unit" below; the timer must use --database-url-env.
 
 Known gap, Toss app sales: a sale made in the Toss app never reaches the
@@ -165,7 +165,7 @@ shortfall. The ROB-866 Toss manual-activity sweep is not wired to this rule.
 
 ### Lever timer unit
 
-Desk owns the NCP systemd service and timer; this repository ships no unit
+Desk owns the pi systemd service and timer; this repository ships no unit
 and registers no schedule. Constraints the unit must follow:
 
 - Name the database with --database-url-env NAME, never --database-url. A URL

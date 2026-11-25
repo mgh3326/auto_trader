@@ -130,13 +130,13 @@ def test_an_explicit_empty_list_is_an_empty_policy() -> None:
         ("app/services/kis_trading*.py", "app/services/kis_trading_service.py", True),
         ("app/services/kis_trading*.py", "app/services/x/kis_trading_a.py", False),
         (
-            "ops/ncp/systemd/job-kickoff-[0-9]*.timer",
-            "ops/ncp/systemd/job-kickoff-0905.timer",
+            "deploy/shiftgate/pi/at-[0-9]*.timer",
+            "deploy/shiftgate/pi/at-0905.timer",
             True,
         ),
         (
-            "ops/ncp/systemd/job-kickoff-[0-9]*.timer",
-            "ops/ncp/systemd/job-kickoff-us-x.timer",
+            "deploy/shiftgate/pi/at-[0-9]*.timer",
+            "deploy/shiftgate/pi/at-follow.timer",
             False,
         ),
     ],

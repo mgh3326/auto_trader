@@ -37,7 +37,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
@@ -114,6 +121,7 @@ class PaperApprovalPacketError(ValueError):
         order_asset_class_mismatch — submit asset_class != packet.execution_asset_class
         order_type_mismatch       — submit order type != packet.execution_order_type
         order_tif_mismatch        — submit TIF != packet.execution_time_in_force
+        order_extended_hours_mismatch — submit extended_hours != packet.execution_extended_hours
         order_missing_size        — submit has neither qty nor notional
         notional_exceeds_max      — submit notional (or qty*limit) > packet.max_notional
         qty_exceeds_max           — submit qty > packet.max_qty
@@ -170,6 +178,9 @@ class PaperApprovalPacket(BaseModel):
     snapshot_id: str | None = None
     execution_order_type: Literal["limit", "market"] | None = None
     execution_time_in_force: str | None = None
+    # hk 6497: the packet binds extended-hours intent. False (default) means a
+    # regular-session order; a submit must match it exactly.
+    execution_extended_hours: bool = False
     # ROB-842: trusted reference price (from the server-observed market snapshot),
     # used to bound notional for qty/market orders that carry no limit price.
     reference_price: Decimal | None = None
@@ -178,6 +189,19 @@ class PaperApprovalPacket(BaseModel):
     # new automated SELL can claim or reach the broker.
     source_client_order_id: str | None = None
     decision_identity_hash: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_default_extended_hours(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        # hk 6497: a regular-session packet serializes exactly as before this
+        # field existed, so stored preview rows and packet_hash stay identical.
+        # An older release (extra="forbid") can therefore still load them after a
+        # rollback. A missing key loads as False.
+        data = handler(self)
+        if data.get("execution_extended_hours") is False:
+            del data["execution_extended_hours"]
+        return data
 
     @field_validator("expires_at")
     @classmethod
@@ -704,6 +728,17 @@ def verify_order_within_packet(
             message=(
                 f"submit time_in_force {canonical.get('time_in_force')!r} != packet "
                 f"execution_time_in_force {packet.execution_time_in_force!r}"
+            ),
+        )
+    # hk 6497: an absent key is a regular-session order. Only an explicit True
+    # means extended hours, matching how the send path builds the request.
+    submit_extended_hours = canonical.get("extended_hours") is True
+    if submit_extended_hours != packet.execution_extended_hours:
+        raise PaperApprovalPacketError(
+            code="order_extended_hours_mismatch",
+            message=(
+                f"submit extended_hours {submit_extended_hours!r} != packet "
+                f"execution_extended_hours {packet.execution_extended_hours!r}"
             ),
         )
 

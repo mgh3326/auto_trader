@@ -224,16 +224,8 @@ deploy_approval:
       - 'app/tasks/protected_position_tasks.py'
       - 'app/tasks/pending_orders.py'
       - 'scripts/lane_event_kickoff.py'
-      - 'ops/ncp/systemd/job-kickoff-[0-9]*.timer'
-      - 'ops/ncp/systemd/job-kickoff-[0-9]*.service'
-      - 'ops/ncp/systemd/job-kickoff-crypto-*.timer'
-      - 'ops/ncp/systemd/job-kickoff-crypto-*.service'
-      - 'ops/ncp/systemd/job-kickoff-nxt-*.timer'
-      - 'ops/ncp/systemd/job-kickoff-nxt-*.service'
-      - 'ops/ncp/systemd/job-kickoff-us-*.timer'
-      - 'ops/ncp/systemd/job-kickoff-us-*.service'
-      - 'ops/ncp/systemd/job-kickoff-b0x-nudge-*.timer'
-      - 'ops/ncp/systemd/job-kickoff-b0x-nudge-*.service.in'
+      - 'deploy/shiftgate/pi/*.timer'
+      - 'deploy/shiftgate/pi/*.service'
     reason: Shared scheduler registration, live order lifecycle tasks and trading-session kickoffs can enable or alter real execution.
   - paths:
       - 'config/trading_policy.yaml'

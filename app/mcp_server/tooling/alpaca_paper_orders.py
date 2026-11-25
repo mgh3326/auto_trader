@@ -133,6 +133,7 @@ def _canonical_payload(validated: PreviewOrderInput) -> dict[str, Any]:
         notional=validated.notional,
         limit_price=validated.limit_price,
         asset_class=validated.asset_class,
+        extended_hours=validated.extended_hours,
     )
 
 
@@ -211,6 +212,7 @@ def _build_manual_packet(
         preview_payload_hash=canonical_hash(canonical),
         execution_order_type=validated.type,
         execution_time_in_force=validated.time_in_force,
+        execution_extended_hours=validated.extended_hours,
         reference_price=evidence.price,
     )
 
@@ -227,6 +229,7 @@ async def alpaca_paper_submit_order(
     asset_class: str = "us_equity",
     confirm: bool = False,
     account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+    extended_hours: bool = False,
 ) -> dict[str, Any]:
     """Submit a single Alpaca PAPER order (us_equity or narrow crypto).
 
@@ -256,6 +259,7 @@ async def alpaca_paper_submit_order(
         stop_price=None,
         client_order_id=None,
         asset_class=asset_class,
+        extended_hours=extended_hours,
     )
     if (
         selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE

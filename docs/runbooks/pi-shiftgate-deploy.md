@@ -367,3 +367,33 @@ W5 Telegram durable inbox 를 다시 켜려면 TaskIQ worker 복원이 먼저다
 - 로그 드라이버는 `daemon`(현재 at-swap 과 같은 데몬 기본값).
 - shiftgate 드레인은 CLI 를 `drain_timeout` 까지 막고 취소하지 않는다(shiftgate docs/design.md). 그래서 `at-mcp` 는 1시간이 아니라 300초다.
 - `deploy.sh` 는 DB 백업·마이그레이션을 하지 않는다(pi 의 기존 절차 그대로 운영자 몫). 자동 배포(`follow.sh`)는 설치 전에 DB 백업을 돌리지 않는다(백업은 Dagu 일일 잡 `at-pg-backup`). 마이그레이션이 든 릴리스는 승격 단계에서 항상 보류된다(§4.1).
+
+## 8. Exact-SHA full-suite gate와 이미지 태그 정책 (ROB-1456)
+
+> 이 절은 삭제된 NCP pull-deploy 런북(`ncp-pull-deploy.md`, hk 6456 은퇴)의 현재도 유효한 내용을 옮긴 것이다. 규칙 문장은 바꾸지 않았고 경로만 pi 로 바꿨다.
+
+**Exact-SHA 게이트.** 모든 전진 배포(`--dry-run` 포함)는 첫 이미지 pull·파일 쓰기·컨테이너 변경 전에 GitHub 를 확인한다. `scripts/deploy_ci_gate.py` 가 `docker buildx imagetools inspect` 로 원격 태그를 읽고 레지스트리 digest 를 고정한 뒤, 그 불변 이미지 플랫폼 config 의 `org.opencontainers.image.revision` 을 읽는다. 실행 가능한 모든 플랫폼이 같은 40자 전체 커밋 SHA 를 가리켜야 한다. 현재 `main` 끝, 짧은 태그 접미사, 로컬 캐시 이미지의 revision 으로 대체하지 않는다.
+
+그 정확한 SHA 에 대해 가장 최근의 `Test` workflow push/dispatch run 과 그 최신 attempt 에 여섯 개 job(`lint`, `taskiq-smoke`, `test (3.13, 1)`~`test (3.13, 4)`)이 모두 완료·성공이어야 한다(`.github/workflows/test.yml`). ROB-1454 의 빠른 `PR gate`는 이 증거를 대신하지 못한다(`PR gate`, `ci-required`, PR run, skipped/neutral shard 는 받지 않는다). 결과를 run·attempt·커밋을 넘나들어 합치지 않는다. 없음·빨강·진행 중·취소·읽기 불가인 항목은 이름을 출력하고 **exit 78** 로 거부한다. API·인증 실패도 닫힌 쪽으로 실패한다. 암묵적 대기·재시도는 없다. CI 가 끝난 뒤 다시 실행한다. 수동 전체 스위트는 `gh workflow run test.yml --ref <branch>`(ROB-1454)로 돌리고 `head_sha` 가 의도한 커밋인지 확인한다.
+
+성공하면 스크립트는 **이미 검증한 digest** 를 pull·승격한다(태그를 다시 읽지 않는다). 검사와 pull 사이에 태그가 움직여도 배포되는 커밋은 바뀌지 않는다. 자동 실패 복구와 명시적 `--rollback` 은 기존 불변 대상을 쓰는 **검사 없는 비상 경로**로 남는다.
+
+`deploy-ok`(hk 3445)는 증거일 뿐이다. main push `Test` 뒤 배포 tier 가 그 digest 에 `deploy-ok` commit status 를 남기지만 `deploy_ci_gate.py` 는 이를 읽지 않는다. 전진 배포는 여전히 위 여섯 job 이 필요하고, 빨갛거나 없는 `deploy-ok` 는 아무것도 막지 않으며, 빨간 배포 tier 가 이미지를 게시 취소하지도 않는다. 상세: `docs/runbooks/ci-required-aggregator.md` §0a.
+
+비상 전진 배포(운영자 결정; 사유는 사고 기록에 남기고 비밀은 넣지 않는다):
+
+```bash
+/root/at-run/shiftgate-pi/deploy.sh --allow-unverified 'INC-123: operator accepted missing full-suite evidence' main
+```
+
+`--allow-unverified REASON` 은 빈 값이 아닌 사유를 요구하고 `OVERRIDE`, 정확한 SHA, JSON 이스케이프된 사유, 없음·빨간 check 를 기록한다. CI 증거만 면제하며 이미지 identity 나 다른 배포 전제는 면제하지 않는다. digest·revision 이 없거나 플랫폼 SHA 가 섞이면 CI 우회와 무관하게 고쳐야 한다.
+
+GHCR 애플리케이션 이미지 workflow(`.github/workflows/deploy.yml`)도 QEMU·Buildx 설정, registry 로그인, build/push 전에 같은 게이트를 쓴다. 자동 빌드는 이 레포 `main` push 의 완료된 `Test` run 을 따라가므로 CI 와 경쟁하지 않는다. checkout, build 인자, OCI revision, `sha-<short7>` 태그는 그 run 의 `head_sha` 를 쓰고 기본 브랜치 끝을 쓰지 않는다. `workflow_dispatch` 와 게시된 release 는 각자의 이벤트 SHA 를 검사한다. 수동 dispatch 는 같은 기록되는 우회 `allow_unverified` 를 제공한다. `workflow_run` 으로 기다리므로 docs-only main push 도 CI 뒤에 빌드된다(그 이벤트에 `paths-ignore` 가 없다). SHA 이미지 빌드에는 공유 concurrency group 이 없다. 적격한 모든 run 과 matrix 이미지는 별도 `promote-moving-tags` job 이 시작되기 전에 `sha-<short7>` 태그를 게시한다. 이동 태그 승격 job 만 비취소·이미지별 concurrency group 을 쓴다.
+
+`main` 과 수동 dispatch 는 같은 승격 경로를 쓴다. 직렬화된 승격 job 안에서 Buildx·로그인 전에 정확한 SHA 게이트를 다시 실행하고, 게시 직전에 현재 `main` 끝을 읽는다. 일치하면 이미 게시된 SHA 이미지에서 **`main` 과 `latest` 를 함께** 승격한다. 과거 SHA 는 둘 다 바꾸지 않는다. 버전·릴리스·main 이 아닌 브랜치 태그는 이동 태그를 독립적으로 갱신하지 않는다(`metadata-action` 의 암묵 latest 생성은 끈다). 승격 job 이 밀리면 그 SHA 이미지는 여전히 배포 가능하고, main 의 수동 dispatch 가 짝 승격을 다시 요청할 수 있다.
+
+**태그 정책.**
+- `main` 과 `latest` 는 검증된 현재 `main` 이미지에서 함께 승격된다(자동 또는 main 수동 dispatch). 의도적으로 이동 가능하다.
+- `sha-<short7>` 은 정확한 `main` 커밋 이미지를 가리키며 롤백이나 사고 고정의 선택지다.
+- `production` 은 수동 릴리스 태그로 남는다. 이 workflow 는 main push 에서 올리지 않는다.
+- GitHub Actions 이미지 workflow 는 `workflow_dispatch` 와 게시된 release 도 지원하며, 둘 다 같은 정확한 SHA 전체 스위트 증거를 요구한다.

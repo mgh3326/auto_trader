@@ -1,0 +1,47 @@
+[
+ {
+  "market": "KRW-XRP",
+  "korean_name": "엑스알피(리플)",
+  "english_name": "XRP",
+  "market_event": {
+   "warning": false,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": false,
+    "DEPOSIT_AMOUNT_SOARING": false,
+    "GLOBAL_PRICE_DIFFERENCES": false,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ },
+ {
+  "market": "KRW-SAHARA",
+  "korean_name": "사하라에이아이",
+  "english_name": "Sahara AI",
+  "market_event": {
+   "warning": false,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": true,
+    "DEPOSIT_AMOUNT_SOARING": true,
+    "GLOBAL_PRICE_DIFFERENCES": false,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ },
+ {
+  "market": "KRW-BTC",
+  "korean_name": "비트코인",
+  "english_name": "Bitcoin",
+  "market_event": {
+   "warning": false,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": false,
+    "DEPOSIT_AMOUNT_SOARING": false,
+    "GLOBAL_PRICE_DIFFERENCES": false,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ }
+]

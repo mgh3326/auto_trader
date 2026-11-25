@@ -1,7 +1,7 @@
 """hk 6508: FnGuide public CompanyInfo snapshots (consensus, invest, finance).
 
 Revision ID: 20261125_hk6508_fnguide_snapshots
-Revises: 20261125_hk6322_us_venue_val
+Revises: 20261125_hk6036_upbit_shadow
 Create Date: 2026-11-25
 
 Additive. Three new tables, no existing object is touched:
@@ -30,7 +30,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261125_hk6508_fnguide_snapshots"
-down_revision: str | Sequence[str] | None = "20261125_hk6322_us_venue_val"
+down_revision: str | Sequence[str] | None = "20261125_hk6036_upbit_shadow"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -138,7 +138,7 @@ def test_the_guard_has_something_to_look_at() -> None:
     assert "env.example" in names
     assert "env.prod.example" in names
     assert any(name.startswith("docker-compose") for name in names)
-    assert "haproxy.cfg.tmpl" in names
+    assert "follow.sh" in names
     assert any(name.endswith(".sh") for name in names)
 
 
@@ -212,7 +212,7 @@ OMITTED_SURFACES = (
     "run_docker.sh",
     "run_api_compose.sh",
     ".github/workflows/taskiq-smoke.sh",
-    "ops/ncp/haproxy/haproxy.cfg.tmpl",
+    "deploy/shiftgate/pi/follow.sh",
     "deploy/shiftgate/pi/deploy.sh",
 )
 
@@ -300,7 +300,7 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
     for relative in (
         "env.prod.example",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/ncp/haproxy/haproxy.cfg.tmpl",
+        "deploy/shiftgate/pi/follow.sh",
         "deploy/shiftgate/pi/deploy.sh",
     ):
         assert (_REPO / relative).is_file(), relative
@@ -313,7 +313,7 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
         "env.prod.example",
         "Makefile",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/ncp/haproxy/haproxy.cfg.tmpl",
+        "deploy/shiftgate/pi/follow.sh",
         "deploy/shiftgate/pi/deploy.sh",
     ):
         assert relative in discovered, relative

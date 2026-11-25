@@ -81,6 +81,7 @@ from app.services.kiwoom_mock_order_ledger_service import (
     kr_trading_day,
     us_trading_day,
 )
+from app.services.kr_quote_price import PRICE_KIND_EXPECTED
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -138,6 +139,9 @@ async def fetch_kr_quote_for_preflight(symbol: str) -> tuple[int | None, str]:
         from app.mcp_server.tooling.market_data_quotes import _get_quote_impl
 
         quote = await _get_quote_impl(symbol, "kr")
+        if quote.get("price_kind") == PRICE_KIND_EXPECTED:
+            # hk 6498: refuse the expected price as the preflight basis.
+            return None, "unavailable"
         raw_price = quote.get("price")
         freshness = str(quote.get("price_freshness") or "unavailable")
         if raw_price is not None:

@@ -1,4 +1,4 @@
-# NCP TaskIQ task-kick API — 은퇴 (hk 5753)
+# TaskIQ task-kick API — 은퇴 (hk 5753)
 
 이 런북의 HTTP 표면은 제거됐다. `POST /trading/api/ops/tasks/{task}/kick`,
 `GET /trading/api/ops/tasks/runs/{id}`, `app/services/ops_task_kick/`,

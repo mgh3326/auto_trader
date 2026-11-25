@@ -42,6 +42,7 @@ tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_kis_mock_shadow_order_history.py
+tests/mcp_server/test_kr_quote_price_kind.py
 tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_parking_exclusion.py
@@ -118,8 +119,6 @@ tests/scripts/b0x/test_cycle.py
 tests/scripts/b0x/test_derivation.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/b0x/us/test_alpaca.py
-tests/scripts/test_at_job_runner.py
-tests/scripts/test_at_pre_deploy.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_build_market_valuation_cli_gates.py
@@ -148,7 +147,6 @@ tests/scripts/test_pi_shiftgate_deploy.py
 tests/scripts/test_pi_shiftgate_image_prune.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
-tests/scripts/test_shiftgate_services_at.py
 tests/scripts/test_upbit_krw_shadow_runbook.py
 tests/services/account_value/test_cli.py
 tests/services/account_value/test_confirm_flows_account.py
@@ -350,6 +348,7 @@ tests/services/test_kis_mock_preopen_approval_bridge.py
 tests/services/test_kis_us_inference_expiry.py
 tests/services/test_kis_us_inference_expiry_db.py
 tests/services/test_kr_preopen_news_brief_service.py
+tests/services/test_kr_quote_price.py
 tests/services/test_live_place_provenance.py
 tests/services/test_live_reconcile_metrics.py
 tests/services/test_manual_holdings_leftover.py

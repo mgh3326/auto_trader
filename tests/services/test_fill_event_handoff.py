@@ -751,22 +751,11 @@ def test_fill_handoff_emitter_namespace_priority(
     )
 
 
-def test_cli_and_unit_layer_settings_environment(tmp_path: Path) -> None:
+def test_cli_settings_environment(tmp_path: Path) -> None:
     args = handoff_cli.parse_args(["--since-ledger-id", "54646", "--dry-run", "--once"])
     assert (args.since_ledger_id, args.dry_run, args.once) == (54646, True, True)
 
     root = Path(__file__).parents[2]
-    unit = (root / "ops/ncp/systemd/fill-event-handoff.service").read_text()
-    timer = (root / "ops/ncp/systemd/fill-event-handoff.timer").read_text()
-    assert "EnvironmentFile=/root/at-secrets/.env.api" in unit
-    assert "EnvironmentFile=/root/at-secrets/.env.fill-handoff" in unit
-    assert (
-        "--env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.fill-handoff"
-        in unit
-    )
-    assert "scripts.fill_event_handoff --once" in unit
-    assert "OnBootSec=2min" in timer
-
     api_environment = {
         "KIS_APP_KEY": "test",
         "KIS_APP_SECRET": "test",
@@ -785,7 +774,7 @@ def test_cli_and_unit_layer_settings_environment(tmp_path: Path) -> None:
         "FILL_HANDOFF_KICK_DEPLOYMENTS": "{}",
         "DISCORD_FILL_HANDOFF_WEBHOOK": "",
     }
-    # Equivalent to `env -i` with the two unit files layered. The socket guard
+    # Equivalent to `env -i` with the two environment layers applied. The socket guard
     # deliberately rejects an `env -i ... python` child because it would lose
     # the child policy channel, so pass the clean mapping directly instead.
     completed = subprocess.run(
