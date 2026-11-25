@@ -38,8 +38,8 @@ image="$(cat /root/at-run/deployed-digest)"
 env_file=/root/at-secrets/.env.api
 ```
 
-`deployed-digest`는 `scripts/deploy-ncp-pull.sh`가 마지막으로 승격한 이미지다
-([ncp-pull-deploy.md](ncp-pull-deploy.md)). 배포 스크립트는 자기 유닛만 관리하므로
+`deployed-digest`는 `deploy/shiftgate/pi/deploy.sh`가 마지막으로 승격한 이미지다
+([pi-shiftgate-deploy.md](pi-shiftgate-deploy.md)). 배포 스크립트는 자기 유닛만 관리하므로
 `at-trend-demo`·`at-trend-watch`가 떠 있으면 배포가 그것을 멈추거나 교체하지 않는다 —
 러너는 자기가 시작한 이미지로 계속 돈다.
 

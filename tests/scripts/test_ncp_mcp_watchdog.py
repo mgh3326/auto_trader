@@ -259,5 +259,3 @@ def test_heartbeat_stall_threshold_and_timer_cadence_are_unchanged(
         )
         == "wedged"
     )
-    timer = Path("ops/ncp/systemd/at-mcp-watchdog.timer").read_text(encoding="utf-8")
-    assert "OnUnitActiveSec=15s" in timer

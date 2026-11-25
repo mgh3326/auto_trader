@@ -143,8 +143,7 @@ an unchecked emergency path. Install the helper beside the host script;
 Python >= 3.11 (via `AT_DEPLOY_GATE_PYTHON` or python3; older refuses 78),
 Docker Buildx, and authenticated GitHub CLI Actions read access for a manual
 run are prerequisites (`follow.sh` reads GitHub anonymously). Runbook:
-`docs/runbooks/pi-shiftgate-deploy.md`. The NCP pull-deploy script was deleted
-by hk 6456.
+`docs/runbooks/pi-shiftgate-deploy.md` (§8 holds the exact-SHA gate and the tag policy).
 
 ## Content-based rollout approval
 

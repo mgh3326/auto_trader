@@ -156,7 +156,7 @@ probe is fixed to `127.0.0.1`.
 | Company-managed Mac | Git, UV, company-approved Docker Desktop/Compose v2 | Keep `.env.dev` local; do not use corporate production/staging names or ports. | Request Docker Desktop entitlement/proxy access through the company process; no additional language runtime is needed. |
 | Ubuntu x86 desktop | Git, UV, Docker Engine + Compose plugin | Use the Docker group/rootless setup approved for that host, then run the same Make targets. | Do not bind `55432`/`56379` beyond loopback. |
 | Raspberry Pi arm64 | 64-bit Raspberry Pi OS/Ubuntu, Git, UV, Docker Engine + Compose plugin | Keep the default caps or lower them only after an operator review; use a dedicated suffix. | 2 GiB or more host RAM is recommended because Docker itself needs headroom beyond the 960 MiB service caps. |
-| NCP / OCI host shared with staging or production | Git, UV, Docker Engine + Compose plugin | A unique project suffix and unique loopback port pair are mandatory; never attach this project to a production Compose network or volume. | Run `make dev-config` before `dev-up`, and document the exact project and port pair in the host change record. |
+| pi / OCI host shared with staging or production | Git, UV, Docker Engine + Compose plugin | A unique project suffix and unique loopback port pair are mandatory; never attach this project to a production Compose network or volume. | Run `make dev-config` before `dev-up`, and document the exact project and port pair in the host change record. |
 
 ## 7. Witness checklist (fable)
 

@@ -14,8 +14,8 @@ RETIRED = (
     REPO_ROOT / "ops" / "native" / "scripts" / "native_deploy_lib.sh",
 )
 RETIREMENT_MESSAGE = (
-    "native deployment retired 2026-09-03; serving runs on NCP — "
-    "see docs/runbooks/ncp-pull-deploy.md"
+    "native deployment retired 2026-09-03; serving runs on the pi — "
+    "see docs/runbooks/pi-shiftgate-deploy.md"
 )
 
 

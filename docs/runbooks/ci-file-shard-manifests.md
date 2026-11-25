@@ -89,7 +89,7 @@ as `not_called`), and it is what `pytest -n 4` actually spends.
 `pytest "${SHARD_FILES[@]}" -n 4 --dist=loadfile`: the **file** is the
 scheduling unit, so a shard's pytest time is a *makespan*, and no packing can
 finish a shard before its largest single file. On the 2026-11-03 artifact the
-largest file is `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py` at
+largest file is `tests/scripts/test_deploy_ncp_pull_h3_crypto_paper.py` (deleted with the NCP pull-deploy script, hk 6456) at
 **301.0 s**, against a **231.5 s** fair share per worker — so the equal-total
 LPT packing that reports `max_min_spread_pct: 0.0` cannot be realised by any
 job.
@@ -126,7 +126,7 @@ capture CI itself checks against, see §4.3):
 `(301.0 − 233.4) / 233.4 = 29.0 %` (3,735.2 s / 16 workers = 233.4 s) —
 because the single 301 s file alone exceeds a worker's fair share; the extra
 ~6 points are the dispatch delay the two giant files pay in sorted order. Getting genuinely below the floor needs
-one of: splitting the four `tests/scripts/test_deploy_ncp_pull_*.py` files
+one of: splitting the four `tests/scripts/test_deploy_ncp_pull_*.py` files (deleted with the NCP pull-deploy script, hk 6456; this option no longer applies as written)
 (≈1,010 s, 27 % of the suite) into smaller files, or dropping
 `--dist=loadfile` so one heavy file's tests can span workers. Both are out of
 scope here.

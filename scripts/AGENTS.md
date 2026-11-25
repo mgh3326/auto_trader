@@ -6,7 +6,7 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Production deployment orchestration | `scripts/deploy-ncp-pull.sh`, `ops/ncp/` | NCP Docker blue/green production path |
+| Production deployment orchestration | `deploy/shiftgate/pi/` | pi shiftgate blue/green production path |
 | Retired Docker deployment guard | `scripts/deploy.sh`, `scripts/healthcheck.sh` | Fail closed after ROB-263; cleanup guidance only |
 | Migration risk precheck | `scripts/migration-check.sh` | DB connectivity and high-risk migration pattern checks |
 | Migration execution | `scripts/migrate.sh` | Host-side Alembic execution with pre/post verification |

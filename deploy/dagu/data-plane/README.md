@@ -39,7 +39,7 @@ Worker prerequisites (operator):
 
 * an auto_trader checkout at a reviewed commit (`AUTO_TRADER_DIR`), `uv` installed;
 * `DATA_PLANE_ROOT` outside git with enough disk (US bars ≈ 11k rows/day);
-* for KR/US broker bars: the NCP host that has the app's KIS/Toss credentials
+* for KR/US broker bars: the pi host that has the app's KIS/Toss credentials
   and Redis (token sharing) in the env the checkout reads; without them the
   brokers are recorded as unavailable and Yahoo serves;
 * optional ping URLs `DATA_PLANE_PING_<MARKET>_<UNIVERSE|BARS|BARS_ADJUSTED|ACTIONS>`;

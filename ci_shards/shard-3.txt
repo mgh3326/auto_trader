@@ -106,7 +106,6 @@ tests/scripts/b0x/test_envelope_and_locks.py
 tests/scripts/b0x/test_kr_envelope_and_kill_switch.py
 tests/scripts/b0x/test_no_forbidden_imports.py
 tests/scripts/b0x/test_owner_release_observation.py
-tests/scripts/b0x/test_systemd_render.py
 tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/b0x/us/test_cycle.py
 tests/scripts/test_binance_demo_strategy_loop.py

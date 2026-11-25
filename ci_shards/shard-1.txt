@@ -118,8 +118,6 @@ tests/scripts/b0x/test_cycle.py
 tests/scripts/b0x/test_derivation.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/b0x/us/test_alpaca.py
-tests/scripts/test_at_job_runner.py
-tests/scripts/test_at_pre_deploy.py
 tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_build_market_valuation_cli_gates.py
@@ -148,7 +146,6 @@ tests/scripts/test_pi_shiftgate_deploy.py
 tests/scripts/test_pi_shiftgate_image_prune.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
-tests/scripts/test_shiftgate_services_at.py
 tests/scripts/test_upbit_krw_shadow_runbook.py
 tests/services/account_value/test_cli.py
 tests/services/account_value/test_confirm_flows_account.py

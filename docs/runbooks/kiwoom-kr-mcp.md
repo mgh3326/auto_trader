@@ -63,7 +63,7 @@ Codex/Kiro mock lane은 full/default로 fallback하지 않고 spawn 전에 실�
 
 ## 🔴 배포 체인 판정
 
-상주 배포 유닛은 없다. 8772 고정 유닛은 ncp와 함께 사라졌고 hk 6456에서 은퇴했다.
+상주 배포 유닛은 없다. 8772 고정 유닛은 NCP 반납과 함께 사라졌고 hk 6456에서 은퇴했다.
 Mac native 배포에도 MCP profile 포트·plist·watchdog를 두지 않으며, 필요해지면 새
 리뷰로 추가한다.
 

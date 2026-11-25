@@ -194,11 +194,11 @@ write_marker() {
   if ! mv -f "$tmp" "$DEPLOYED_DIGEST_FILE"; then rm -f "$tmp"; return 1; fi
 }
 
-# --- 오래된 이미지 정리 (hk 6437: task 934 규칙을 pi 로 이식; 정본 scripts/deploy-ncp-pull.sh 와 docs/contracts/task-934-image-prune.md)
+# --- 오래된 이미지 정리 (hk 6437: task 934 규칙을 pi 로 이식; 규칙 정본 docs/contracts/task-934-image-prune.md)
 # 성공한 전진 배포가 deployed-digest 를 쓴 뒤에만 돈다(롤백·실패·이미 배포됨 경로는 아무것도 지우지 않는다).
 # 보존: 현재 digest, deployed-digest.previous(롤백 대상), 상태와 무관하게 컨테이너가 쓰는 모든 이미지.
 # 입력을 하나라도 읽지 못하면 아무것도 지우지 않는다. 지우는 것은 docker image rm(-f 없음)뿐이다.
-# 이 블록은 scripts/deploy-ncp-pull.sh 의 같은 함수들을 복사한 것이다(NCP 스크립트 동작은 바꾸지 않는다).
+# 이 블록은 hk 6437 이전에 쓰던 같은 함수들을 옮긴 것이다(동작은 바꾸지 않는다; 원본 NCP 스크립트는 hk 6456 에서 삭제됨).
 is_image_id() { [[ "$1" =~ ^sha256:[[:xdigit:]]{64}$ ]]; }
 # 이미지 참조의 저장소 부분: '@' 뒤(digest)를 버리고, '/' 를 포함하지 않는 마지막 ':' 뒤(태그)만 버린다(레지스트리 포트 보존).
 ref_repository() {

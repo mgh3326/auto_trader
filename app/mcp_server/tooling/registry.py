@@ -67,7 +67,7 @@ Profile → tool surface mapping
   surfaces are physically absent.
 
 ROB-1436 retired "analysis_readonly", "account_read", "tradingcodex_execution"
-and "live-kr" / "live-us" / "live-crypto" with their NCP units. hk 6456
+and "live-kr" / "live-us" / "live-crypto" with their units. hk 6456
 retired the full Kiwoom mock profile and the two H3 paper pilot profiles with
 theirs.
 

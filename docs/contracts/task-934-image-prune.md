@@ -1,5 +1,7 @@
 # Task 934: prune old auto_trader images after a successful NCP deploy
 
+Current implementation: `deploy/shiftgate/pi/deploy.sh` (hk 6437 ported these rules; the NCP script was deleted in hk 6456). The rules below are unchanged.
+
 Frozen before implementation. Purpose: stop unused `ghcr.io/mgh3326/auto_trader`
 images from filling the NCP disk (2026-09-29: 66 unused images, pull failed at
 100% disk) without ever deleting the image a rollback or a live container needs,
@@ -46,11 +48,11 @@ Each keep rule below is one invariant sentence. The acceptance suite counts the
   with the prune is not in the snapshot, but `docker image rm` without `-f`
   still refuses an image used by any container; (d) reference-less images and
   build cache are never touched, so a host that builds locally still needs
-  manual cleanup (NCP pulls only).
+  manual cleanup (pi pulls only).
 
 ## Acceptance commands
 
-Run only against fake docker and curl shims: `bash -n scripts/deploy-ncp-pull.sh`;
-`shellcheck scripts/deploy-ncp-pull.sh` (no findings beyond the pre-existing
-SC2016 info in `schedule_drain`); `uv run pytest tests/scripts/test_deploy_ncp_pull_image_prune.py tests/scripts/test_deploy_ncp_pull_rollback.py tests/scripts/test_deploy_ncp_pull_digest_pin.py -q`.
+Run only against fake docker and curl shims: `bash -n deploy/shiftgate/pi/deploy.sh`;
+`shellcheck deploy/shiftgate/pi/deploy.sh` (no findings beyond the pre-existing
+SC2016 info in `schedule_drain`); `uv run pytest tests/scripts/test_deploy_ncp_pull_image_prune.py tests/scripts/test_deploy_ncp_pull_rollback.py tests/scripts/test_deploy_ncp_pull_digest_pin.py -q` (these test files were removed with the NCP script in hk 6456; the pi port of the image-prune rules is `tests/scripts/test_pi_shiftgate_image_prune.py`).
 No production host, app, MCP server, broker, database or real env file participates.

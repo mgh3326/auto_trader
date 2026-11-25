@@ -72,7 +72,7 @@
     "hold": true
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-0905.timer",
+    "path": "deploy/shiftgate/pi/at-follow.timer",
     "hold": true
   },
   {
@@ -184,23 +184,15 @@
     "hold": true
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-0905.service",
+    "path": "deploy/shiftgate/pi/at-follow.service",
     "hold": true
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-crypto-0220.timer",
+    "path": "deploy/shiftgate/pi/at-pg-backup.timer",
     "hold": true
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-nxt-open.service",
-    "hold": true
-  },
-  {
-    "path": "ops/ncp/systemd/job-kickoff-us-2235.timer",
-    "hold": true
-  },
-  {
-    "path": "ops/ncp/systemd/job-kickoff-b0x-nudge-kr.service.in",
+    "path": "deploy/shiftgate/pi/at-pg-backup.service",
     "hold": true
   },
   {
@@ -276,27 +268,27 @@
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-crypto-invest-screener-snapshots.service",
+    "path": "docs/runbooks/pi-shiftgate-deploy.md",
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-us-market-valuation-snapshots.timer",
+    "path": "docs/runbooks/ops-task-kick.md",
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-b0x-harvest.service.in",
+    "path": "docs/runbooks/worker-log-rotation.md",
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-b0x-harvest.timer",
+    "path": "docs/runbooks/dev-kit.md",
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-b0x-table-kr.service.in",
+    "path": "docs/runbooks/dagu-batch1-cutover.md",
     "hold": false
   },
   {
-    "path": "ops/ncp/systemd/job-kickoff-b0x-table-us.timer",
+    "path": "docs/runbooks/lane-event-kickoff.md",
     "hold": false
   },
   {

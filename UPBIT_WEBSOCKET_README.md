@@ -103,16 +103,16 @@ UPBIT_SECRET_KEY=your_upbit_secret_key_here
 
 ## 🚀 운영 배포
 
-업비트 소비자는 NCP의 `at-upbit-ws` Docker 유닛입니다. 맥 launchd plist는
+업비트 소비자는 pi의 `at-upbit-ws` Docker 싱글턴입니다. 맥 launchd plist는
 2026-09-02에 제거되었으며, 맥 배포에서 다시 시작하면 중복 실행이 됩니다. API/MCP처럼
-블루/그린으로 교체되지 않으며 NCP digest-pinned 배포에 함께 승격됩니다.
+블루/그린으로 교체되지 않으며 pi digest-pinned 배포(shiftgate, `swap-singletons.sh`)로 함께 승격됩니다.
 
 ```bash
-# NCP 운영자만 실행: 5개 유닛을 같은 GHCR digest로 승격
-/root/at-run/deploy-ncp-pull.sh sha-abcdef0
+# pi 운영자만 실행: 배포 유닛을 같은 GHCR digest로 승격
+/root/at-run/shiftgate-pi/deploy.sh sha-abcdef0
 ```
 
-배포·준비 로그·롤백 절차는 `docs/runbooks/ncp-pull-deploy.md`를 따른다.
+배포·준비 로그·롤백 절차는 `docs/runbooks/pi-shiftgate-deploy.md`를 따른다.
 
 ## 🚨 주의사항
 

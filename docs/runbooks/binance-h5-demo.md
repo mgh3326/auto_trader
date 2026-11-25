@@ -105,9 +105,9 @@ touches rather than a replay of executable minute quotes; report this
 resolution limit with every score. A restart after 24h reads the declared
 first 24h envelope plus a current executable quote and exits by wall clock.
 
-## NCP operation and failure alerts
+## pi operation and failure alerts
 
-The exact copy-paste procedure for NCP (truth gate, flag-scoped one-off
+The exact copy-paste procedure for the pi host (truth gate, flag-scoped one-off
 containers, T0 record, stop, incident response, rollback) is
 [binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md). Failure
 alerts (`stopped`, `error`, `heartbeat_missed`) are off unless

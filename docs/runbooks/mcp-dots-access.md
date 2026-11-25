@@ -66,8 +66,8 @@ tunnel route without the Access application forwards to the origin with no edge 
    `hk-mcp.robinco.dev` application has it. Copy the application **AUD tag** (64 hex). Confirm
    the saved policy lists only the operator email before going on.
 2. **Tunnel route** (only after step 1 is saved): public hostname `at-mcp.robinco.dev` → service `http://127.0.0.1:8765`
-   (the DEFAULT HAProxy front, `ops/ncp/haproxy/haproxy.cfg.tmpl` `ft_mcp_loopback`), on a
-   `cloudflared` that runs **on the NCP host** (loopback), or point it at the tailnet front
+   (the DEFAULT loopback front; its former HAProxy template `ops/ncp/haproxy/haproxy.cfg.tmpl` `ft_mcp_loopback` was deleted in hk 6441), on a
+   `cloudflared` that runs **on the pi host** (loopback), or point it at the tailnet front
    `100.122.100.56:8765` from a host on the tailnet.
    > **Open item:** which host and tunnel run `cloudflared` for `hk-mcp.robinco.dev`, and how
    > it is managed, is not recorded in this repo or in the handoffkeep repo/docs. The operator
