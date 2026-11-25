@@ -15,8 +15,8 @@ KR·US 닫힌 1분봉을 `research.kr_candles_1m` / `research.us_candles_1m` 에
 uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 005930 000660] [--dry-run]
 ```
 
-- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `null_value`, `errors`, `error_details`(종목·venue·예외 클래스만), `targeted_symbols`(이번 실행의 대상 전부), `targets_tiers`(단계별 `budget`·`allowance`·`candidates`·`selected`·`cut`), `targets_cuts`(잘린 종목마다 `symbol`·`tier`·`reason`, reason 은 `budget_cut` 하나), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
-- 단계 순서(hk 6299): ① **고정** = 보유(KIS·수동) + 고정 목록, 절대 자르지 않는다(예산 50 을 넘어도 전부 받고 아래 단계가 줄어든다). ② **KR 장중 승격** = 오늘의 6154 최초 포착, 최초 포착 시각 → 순위 순, 예산 40. 오늘 분봉이 이미 있는 종목은 예산에서 보호되어 같은 날 내려가지 않는다. ③ **장전 스크리너** = 프리셋별 상위 N 의 합집합, 예산 60. ④ **pick log** = 나머지. 쓰지 않은 예산은 다음 단계로 넘어간다(예: 고정이 2개만 쓰면 48 이 승격으로 간다). US 는 ② 가 없다.
+- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `null_value`, `errors`, `error_details`(종목·venue·예외 클래스만), `targeted_symbols`(이번 실행의 대상 전부), `targets_tiers`(단계별 `budget`·`allowance`·`candidates`·`selected`·`cut`), `targets_cuts`(잘린 종목마다 `symbol`·`tier`·`reason`, reason 은 `budget_cut` 하나), `targets_by_origin`, `targets_truncated`. US 실행은 추가로 `targets_decisions`(거래일·달러 하한·종목별 최종 결정과 점수 입력, hk 6554)를 낸다. 종료 코드 0 = 정상, 1 = 오류 있음.
+- 단계 순서(hk 6299): ① **고정** = 보유(KIS·수동) + 고정 목록, 절대 자르지 않는다(예산 50 을 넘어도 전부 받고 아래 단계가 줄어든다). ② **KR 장중 승격** = 오늘의 6154 최초 포착, 최초 포착 시각 → 순위 순, 예산 40. 오늘 분봉이 이미 있는 종목은 예산에서 보호되어 같은 날 내려가지 않는다. ③ **장전 스크리너** = 프리셋별 상위 N 의 합집합, 예산 60. ④ **pick log** = 나머지. 쓰지 않은 예산은 다음 단계로 넘어간다(예: 고정이 2개만 쓰면 48 이 승격으로 간다). US 의 ② 는 hk 6554 점수 순서다(오늘 모든 실행의 최고 순위 → 거래대금 하한 버킷, 자산 `right_or_warrant` 제외, 계약 `market-data-and-screener-contracts` 의 hk 6554 절).
 - `targets_truncated` 가 0 이 아니면 상한 또는 단계 예산에 걸린 것이다. 잘린 목록은 `targets_cuts` 에 있다.
 - 닫힌 봉만 쓴다(`시작 + 1분 + 10초 <= 요청 직전`). 같은 봉을 다시 받으면 `already_present` 이고 `retrieved_at` 은 최초 값 그대로다.
 - KIS 분봉 한 번 호출은 최근 구간만 돌려준다(KR 최대 30행, US 최대 120행). 5분 간격 DAG 에서는 겹치지만, 실행이 한동안 멈추면 그 구간은 비며 소급 채움은 없다(진단의 `missing_minutes` 로 보인다).
@@ -30,7 +30,7 @@ uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11
     [--symbols 005930 000660] [--collect-report RUN.json [RUN2.json ...]]
 ```
 
-`--collect-report` 는 수집기가 출력한 JSON(한 줄에 한 실행, 같은 시장)이다. 선택이다. 없으면 `requested_zero_row` 키가 나오지 않고 나머지 출력은 같다(`futures-minutes.md` 의 `--symbols` 명령은 그대로 동작한다). `dry_run` 보고는 근거에서 빠진다. 실행별 `runs`(단계 수·잘린 목록)가 나오고, 행이 0개인 요청 종목마다 닫힌 사유 하나가 `requested_zero_row` 에 붙는다.
+`--collect-report` 는 수집기가 출력한 JSON(한 줄에 한 실행, 같은 시장)이다. 선택이다. US 는 그 거래일의 `targets_decisions` 가 `decisions` 로 나온다(hk 6554; 키가 없는 과거 실행은 건너뛴다). 없으면 `requested_zero_row` 키가 나오지 않고 나머지 출력은 같다(`futures-minutes.md` 의 `--symbols` 명령은 그대로 동작한다). `dry_run` 보고는 근거에서 빠진다. 실행별 `runs`(단계 수·잘린 목록)가 나오고, 행이 0개인 요청 종목마다 닫힌 사유 하나가 `requested_zero_row` 에 붙는다.
 
 | 사유 | 뜻 |
 |---|---|
