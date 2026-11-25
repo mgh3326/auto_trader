@@ -193,6 +193,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # hk 4702 trend state tables are later than this boundary (intents first).
     "review.binance_trend_intents",
     "review.binance_trend_signals",
+    # hk 6508 FnGuide tables are later than this boundary (children first).
+    "fnguide_reports",
+    "fnguide_values",
+    "fnguide_snapshots",
 )
 
 
