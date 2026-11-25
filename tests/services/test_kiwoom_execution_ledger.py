@@ -31,6 +31,7 @@ def _build(**overrides) -> ExecutionLedgerUpsert:
         "broker_order_id": "000123",
         "symbol": "005930",
         "side": "buy",
+        "trading_day": "20261116",
         "previous_filled_qty": Decimal("0"),
         "filled_quantity": 10,
         "average_price": 70000,
@@ -113,6 +114,29 @@ def test_fill_seq_is_stable_across_calls() -> None:
     # A fixed seed rather than an object identity: the value survives restarts,
     # so a re-run of the same broker evidence cannot book a second row.
     assert _build().fill_seq == _build().fill_seq
+
+
+def test_the_same_delta_on_another_trading_day_is_another_row() -> None:
+    """hk 5642: a Kiwoom order number is unique only within a trading day.
+
+    The same number and the same cumulative quantity on another day is another
+    order: the day is part of the ``fill_seq`` identity, so it cannot collide
+    on ``uq_execution_ledger_fill`` and the second day's fill is not lost.
+    """
+    first = _build(trading_day="20261116")
+    same_day = _build(trading_day="20261116")
+    next_day = _build(trading_day="20261117")
+
+    assert first.fill_seq == same_day.fill_seq
+    assert first.fill_seq != next_day.fill_seq
+
+
+def test_a_blank_trading_day_is_refused() -> None:
+    for day in ("", "   "):
+        with pytest.raises(ValueError):
+            _build(trading_day=day)
+    with pytest.raises(ValueError):
+        _build(trading_day=None)
 
 
 @pytest.mark.parametrize(

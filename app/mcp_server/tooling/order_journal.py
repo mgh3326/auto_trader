@@ -9,12 +9,12 @@ from decimal import Decimal
 from typing import Any
 from typing import cast as typing_cast
 
-from sqlalchemy import desc, select
+from sqlalchemy import Date, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.fx_pnl import (
     FX_PNL_ACCURACY_UNAVAILABLE,
     FX_RATE_SOURCE_UNAVAILABLE,
@@ -27,6 +27,9 @@ from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import Trade
 from app.models.trade_journal import JournalStatus, TradeJournal
 from app.models.trading import InstrumentType
+
+#: The calendar a ``review.trades`` row's day is read in (hk 5642).
+_TRADE_DAY_TIMEZONE = "Asia/Seoul"
 
 
 def _order_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -65,7 +68,8 @@ async def _record_trade_for_fill(
     currency: str,
     account: str,
     order_id: str | None,
-) -> int:
+    trade_day: datetime.date,
+) -> int | None:
     """Insert or update the order's single trade row to its cumulative figures.
 
     ``review.trades`` is unique on ``(account, order_id)``, so a later fill
@@ -73,11 +77,21 @@ async def _record_trade_for_fill(
     dropped by the unique conflict. The caller owns the transaction (this
     function never commits), which is what lets a reconcile commit the trade,
     the journal and its progress marker atomically.
+
+    hk 5642: a broker reuses order numbers across trading days. ``trade_day``
+    is the fill's own order day, which the caller must prove; the row is
+    written on that day and the conflict update applies only to a row of the
+    same day. A row of another day is left exactly as it is and no trade is
+    recorded for this fill, so the caller gets ``None`` and flags the row for
+    review; no journal points at the earlier day's trade.
     """
+    day_at = datetime.datetime(
+        trade_day.year, trade_day.month, trade_day.day, tzinfo=KST
+    )
     stmt = (
         pg_insert(Trade)
         .values(
-            trade_date=now_kst(),
+            trade_date=day_at,
             symbol=symbol,
             instrument_type=instrument_type,
             side=side,
@@ -96,11 +110,15 @@ async def _record_trade_for_fill(
                 "quantity": quantity,
                 "total_amount": total_amount,
             },
+            # Compared in KST so the session timezone cannot change the answer.
+            where=func.cast(func.timezone(_TRADE_DAY_TIMEZONE, Trade.trade_date), Date)
+            == trade_day,
         )
         .returning(Trade.id)
     )
     result = await db.execute(stmt)
-    return int(result.scalar_one())
+    row_id = result.scalar_one_or_none()
+    return None if row_id is None else int(row_id)
 
 
 async def _save_order_fill(
