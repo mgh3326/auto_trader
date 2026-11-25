@@ -5,6 +5,11 @@ One bounded GET per page against the endpoints in
 ``token`` query parameter (the header form answers HTTP 401), is read from env
 at call time and never appears in an error, a log line or a stored payload.
 
+Completeness: the page-number pager exposes no total or next-page flag, so the
+read ends on an **empty page**, never on "shorter than requested". A provider
+that silently caps ``pagesize`` below the requested value is therefore still
+read to exhaustion instead of being mistaken for a complete single page.
+
 Safety: the caller must pass :func:`app.services.benzinga_http.
 require_calendars_enabled` before constructing this client; the client itself
 never reads the gate, so there is exactly one gate check per run and it happens
@@ -174,12 +179,18 @@ class BenzingaCalendarClient:
                 client_factory=self._client_factory,
             )
             rows = extract_rows(endpoint, payload)
-            collected.extend(rows)
-            if len(rows) < endpoint.page_size:
+            if not rows:
+                # A page-number pager has no independent "total" signal, so an
+                # empty page is the only safe end-of-read marker: a provider
+                # that silently caps ``pagesize`` below the requested value
+                # still returns its rows across page 0,1,2… and only an empty
+                # page proves exhaustion. The cost is one extra request per
+                # read.
                 return collected
+            collected.extend(rows)
         raise BenzingaPaginationCapExceeded(
             f"benzinga {category} reached the page cap ({self._max_pages}) with "
-            f"a full page (path {endpoint.path})"
+            f"a non-empty page (path {endpoint.path})"
         )
 
 

@@ -70,6 +70,18 @@ class MarketEventsRepository:
         update_columns["updated_at"] = func.now()
 
         if payload.get("source_event_id"):
+            # Provider-keyed rows are identified by ``source_event_id``, not by
+            # the natural key, so a revision may legitimately move the event
+            # date (earnings dates, conference-call and ex-dividend dates are
+            # revised) or the symbol/fiscal fields. Those columns therefore
+            # belong to the update set — otherwise the current row keeps a
+            # superseded date while the revision log records the new one.
+            # Natural-key rows cannot move them: the natural key *is*
+            # (symbol, event_date, fiscal_year, fiscal_quarter).
+            update_columns["event_date"] = payload.get("event_date")
+            update_columns["symbol"] = payload.get("symbol")
+            update_columns["fiscal_year"] = payload.get("fiscal_year")
+            update_columns["fiscal_quarter"] = payload.get("fiscal_quarter")
             stmt = (
                 pg_insert(MarketEvent.__table__)
                 .values(**payload)
@@ -194,11 +206,14 @@ class MarketEventsRepository:
         provider_updated_at: datetime | None = None,
         raw_payload_json: dict[str, Any] | None = None,
     ) -> bool:
-        """Append one provider revision; return False when it already exists.
+        """Append one provider revision; return False when the write lost a race.
 
-        Both unique keys are handled by ``ON CONFLICT DO NOTHING`` so a repeat
-        of the same content (hash) or a lost race on the sequence number writes
-        nothing rather than failing the batch.
+        Only the sequence number is unique, so the same content may be appended
+        again after an intervening version (A → B → A is three revisions and the
+        newest row must describe A). ``ON CONFLICT DO NOTHING`` covers a
+        concurrent writer taking the same sequence number; a False result means
+        this observation was *not* recorded and the caller must not update the
+        current row as if it had been.
         """
         latest = await self.latest_revision(
             source=source,

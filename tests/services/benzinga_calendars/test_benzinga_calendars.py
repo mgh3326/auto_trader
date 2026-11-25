@@ -242,7 +242,9 @@ def _client(responses, **kwargs):
 @pytest.mark.asyncio
 async def test_client_sends_token_in_query_and_returns_rows():
     rows = ROWS_BY_CATEGORY["earnings"]
-    client, http = _client([_FakeResponse({"earnings": rows})])
+    client, http = _client(
+        [_FakeResponse({"earnings": rows}), _FakeResponse({"earnings": []})]
+    )
     got = await client.fetch(
         "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
     )
@@ -257,7 +259,7 @@ async def test_client_sends_token_in_query_and_returns_rows():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_client_uses_endpoint_specific_pagination_names():
-    client, http = _client([_FakeResponse(ROWS_BY_CATEGORY["wiim"])])
+    client, http = _client([_FakeResponse(ROWS_BY_CATEGORY["wiim"]), _FakeResponse([])])
     await client.fetch("wiim", from_date=date(2024, 1, 1), to_date=date(2024, 1, 2))
     params = http.requests[0]["params"]
     assert params["channels"] == "WIIM"
@@ -269,7 +271,9 @@ async def test_client_uses_endpoint_specific_pagination_names():
 @pytest.mark.asyncio
 async def test_client_flattens_nested_short_interest_map():
     payload = load("short_interest.json")
-    client, _ = _client([_FakeResponse(payload)])
+    client, _ = _client(
+        [_FakeResponse(payload), _FakeResponse({"shortInterestData": {}})]
+    )
     rows = await client.fetch(
         "short_interest",
         from_date=date(2026, 1, 1),
@@ -356,6 +360,7 @@ class FakeRepo:
         self.partitions: dict[tuple, SimpleNamespace] = {}
         self.revisions: dict[tuple, list[SimpleNamespace]] = {}
         self.events: list[dict] = []
+        self.fail_append = False
 
     async def list_succeeded_partitions_in_range(self, **_kwargs):
         return {
@@ -409,9 +414,9 @@ class FakeRepo:
         provider_updated_at=None,
         raw_payload_json=None,
     ):
-        rows = self.revisions.setdefault((category, source_event_id), [])
-        if any(row.content_hash == content_hash for row in rows):
+        if self.fail_append:
             return False
+        rows = self.revisions.setdefault((category, source_event_id), [])
         rows.append(
             SimpleNamespace(
                 revision_seq=len(rows) + 1,
@@ -658,3 +663,117 @@ def test_endpoint_registry_matches_the_taxonomy():
     }
     assert set(spec.CALENDAR_ENDPOINTS) <= taxonomy.CATEGORIES
     assert "benzinga" in taxonomy.SOURCES
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_page_size_cap_is_read_to_exhaustion():
+    """A silent provider cap below the requested pagesize must not truncate.
+
+    The endpoint is asked for 1000 rows; the provider returns 100 per page.
+    Three non-empty pages + an empty page = all 250 rows.
+    """
+    row = ROWS_BY_CATEGORY["earnings"][0]
+    pages = [
+        _FakeResponse({"earnings": [row] * 100}),
+        _FakeResponse({"earnings": [row] * 100}),
+        _FakeResponse({"earnings": [row] * 50}),
+        _FakeResponse({"earnings": []}),
+    ]
+    client, http = _client(pages)
+    rows = await client.fetch(
+        "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+    )
+    assert len(rows) == 250
+    assert [request["params"]["page"] for request in http.requests] == [0, 1, 2, 3]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_revision_that_reverts_to_earlier_content_is_appended():
+    """A → B → A is three revisions; the newest row must describe A."""
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    repo = FakeRepo()
+    original = ROWS_BY_CATEGORY["analyst_rating"][0]
+    changed = {
+        **original,
+        "updated": original["updated"] + 60,
+        "pt_current": "270.0000",
+    }
+    window = (date(2026, 1, 5), date(2026, 1, 5))
+    key = ("analyst_rating", "benzinga:analyst_rating:695c16678f047b0001fee512")
+
+    for payload in (original, changed, original):
+        await ingest_benzinga_category_for_range(
+            None,
+            "analyst_rating",
+            *window,
+            client=FakeClient({"analyst_rating": [payload]}),
+            repo=repo,
+            fetched_at=OBSERVED,
+            skip_succeeded=False,
+        )
+
+    history = repo.revisions[key]
+    assert [row.revision_seq for row in history] == [1, 2, 3]
+    assert history[-1].raw_payload_json["pt_current"] == "260.0000"
+    assert repo.events[-1]["event"]["raw_payload_json"]["pt_current"] == "260.0000"
+
+    # The newest revision now matches the stored content, so a fourth read of
+    # the same payload writes nothing.
+    await ingest_benzinga_category_for_range(
+        None,
+        "analyst_rating",
+        *window,
+        client=FakeClient({"analyst_rating": [original]}),
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+    assert len(repo.revisions[key]) == 3
+    assert len(repo.events) == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unrecorded_revision_fails_the_partition_instead_of_updating():
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    repo = FakeRepo()
+    repo.fail_append = True
+    results = await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        date(2026, 10, 29),
+        date(2026, 10, 29),
+        client=FakeClient({"earnings": ROWS_BY_CATEGORY["earnings"]}),
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+    assert [result.status for result in results] == ["failed"]
+    assert repo.events == []
+    assert {p.status for p in repo.partitions.values()} == {"failed"}
+
+
+@pytest.mark.unit
+def test_wiim_event_date_uses_eastern_time():
+    from app.services.benzinga_calendars.normalizers import normalize_row
+
+    after_hours = {
+        **ROWS_BY_CATEGORY["wiim"][0],
+        "created": "Tue, 02 Jan 2024 21:30:00 -0400",
+        "updated": "Tue, 02 Jan 2024 21:30:00 -0400",
+    }
+    item = normalize_row(
+        "wiim", after_hours, first_received_at=OBSERVED, fetched_at=OBSERVED
+    )
+    assert item is not None
+    # 01:30 UTC on Jan 3, but still Jan 2 in New York — the partition day.
+    assert item.event["provider_created_at"] == datetime(2024, 1, 3, 1, 30, tzinfo=UTC)
+    assert item.event["event_date"] == date(2024, 1, 2)

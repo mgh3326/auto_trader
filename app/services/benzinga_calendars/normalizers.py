@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.symbol import to_db_symbol
 from app.services.benzinga_http import parse_provider_time, parse_unix_timestamp
@@ -34,6 +35,8 @@ MAX_RAW_STRING = 2000
 TRUNCATION_MARKER = "…(truncated)"
 SOURCE = "benzinga"
 MARKET = "us"
+
+_EASTERN = ZoneInfo("America/New_York")
 
 _EARNINGS_TIME_HINT = {
     "bmo": "before_open",
@@ -638,7 +641,11 @@ def _normalize_wiim(
     observed = times["provider_created_at"] or times["provider_updated_at"]
     if observed is None:
         raise ValueError("benzinga wiim row missing a parseable created/updated")
-    event_date = observed.date()
+    # WIIM items are ET-timestamped (``-0400``/``-0500``), and after-hours
+    # moving news is exactly this population. Bucketing by the UTC date would
+    # put anything created after 20:00 ET on the next day's partition, where a
+    # ``--date`` run drops it as out of window.
+    event_date = observed.astimezone(_EASTERN).date()
     title = _text(row.get("title"))
     if title is None:
         raise ValueError("benzinga wiim row missing title")

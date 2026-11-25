@@ -175,8 +175,11 @@ class MarketEventRevision(Base):
     the payload it arrived as.
 
     Uniqueness is by (source, category, market, source_event_id, revision_seq)
-    and by the same key plus ``content_hash`` — re-ingesting an unchanged
-    payload inserts nothing.
+    only: the same provider content may legitimately reappear after a different
+    version (A → B → A), and that third observation is a real revision that the
+    newest-row rule must see. Re-ingesting an *unchanged* payload inserts
+    nothing because the caller compares against the newest revision's
+    ``content_hash`` before appending.
     """
 
     __tablename__ = "market_event_revisions"
@@ -188,14 +191,6 @@ class MarketEventRevision(Base):
             "source_event_id",
             "revision_seq",
             name="uq_market_event_revisions_seq",
-        ),
-        UniqueConstraint(
-            "source",
-            "category",
-            "market",
-            "source_event_id",
-            "content_hash",
-            name="uq_market_event_revisions_hash",
         ),
         Index(
             "ix_market_event_revisions_key",

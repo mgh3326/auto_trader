@@ -254,7 +254,7 @@ async def _write_day(
         )
         if latest is not None and latest.content_hash == digest:
             continue
-        await repository.append_revision(
+        appended = await repository.append_revision(
             source=SOURCE,
             category=event["category"],
             market=MARKET,
@@ -265,6 +265,13 @@ async def _write_day(
             provider_updated_at=event.get("provider_updated_at"),
             raw_payload_json=event.get("raw_payload_json"),
         )
+        if not appended:
+            # The observation was not recorded (a concurrent writer took this
+            # sequence number). Updating the current row anyway would leave the
+            # revision log disagreeing with the state it explains.
+            raise RuntimeError(
+                f"benzinga revision for {source_event_id} was not recorded"
+            )
         await repository.upsert_event_with_values(event, normalized.values)
         written += 1
     return written

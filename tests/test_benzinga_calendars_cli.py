@@ -125,3 +125,26 @@ async def test_missing_key_exits_two_without_touching_the_network(monkeypatch):
 
     ns = cli.parse_args(["--category", "earnings", "--date", "2026-11-25", "--commit"])
     assert await cli.run(ns) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gate_off_covers_the_compare_mode(monkeypatch):
+    """The gate covers every mode: comparison must not open a session either."""
+    monkeypatch.delenv("BENZINGA_CALENDARS_ENABLED", raising=False)
+
+    def _explode(*_args, **_kwargs):  # pragma: no cover - guard
+        raise AssertionError("no session may be opened with the gate off")
+
+    monkeypatch.setattr(cli, "AsyncSessionLocal", _explode)
+
+    ns = cli.parse_args(
+        [
+            "--compare-earnings",
+            "--from-date",
+            "2026-10-01",
+            "--to-date",
+            "2026-11-25",
+        ]
+    )
+    assert await cli.run(ns) == 2

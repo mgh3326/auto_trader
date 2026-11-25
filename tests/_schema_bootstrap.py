@@ -201,7 +201,11 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v78 (hk 6154): public.invest_momentum_event_runs is a new ORM table (create_all
 # builds it with its CHECK/UNIQUE; no mirrored ALTER needed). Production migration:
 # 20261124_hk6154_momentum_runs.
-SCHEMA_BOOTSTRAP_VERSION = 78
+# v79 (hk 6513): public.market_event_revisions is a new ORM table (create_all) and
+# market_events gains five columns — the columns ARE mirrored as ALTERs below, the
+# append-only triggers are mirrored DDL. Production migration:
+# 20261125_hk6513_benzinga_calendars.
+SCHEMA_BOOTSTRAP_VERSION = 79
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -862,6 +866,39 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     """,
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
+    # hk 6513 — provider evidence timestamps and our first-observation clock.
+    # ``market_event_revisions`` itself comes from create_all; its append-only
+    # triggers are mirrored here (non-ORM DDL).
+    "ALTER TABLE market_events "
+    "ADD COLUMN IF NOT EXISTS provider_created_at TIMESTAMPTZ",
+    "ALTER TABLE market_events "
+    "ADD COLUMN IF NOT EXISTS provider_created_raw TEXT",
+    "ALTER TABLE market_events "
+    "ADD COLUMN IF NOT EXISTS provider_updated_at TIMESTAMPTZ",
+    "ALTER TABLE market_events "
+    "ADD COLUMN IF NOT EXISTS provider_updated_raw TEXT",
+    "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS first_received_at TIMESTAMPTZ",
+    """
+    CREATE OR REPLACE FUNCTION public.market_event_revisions_reject_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        RAISE EXCEPTION 'market_event_revisions is append-only'
+            USING ERRCODE = 'restrict_violation';
+    END
+    $$
+    """,
+    "DROP TRIGGER IF EXISTS trg_market_event_revisions_append_only "
+    "ON market_event_revisions",
+    "CREATE TRIGGER trg_market_event_revisions_append_only "
+    "BEFORE UPDATE OR DELETE ON market_event_revisions FOR EACH ROW "
+    "EXECUTE FUNCTION public.market_event_revisions_reject_mutation()",
+    "DROP TRIGGER IF EXISTS trg_market_event_revisions_truncate "
+    "ON market_event_revisions",
+    "CREATE TRIGGER trg_market_event_revisions_truncate "
+    "BEFORE TRUNCATE ON market_event_revisions FOR EACH STATEMENT "
+    "EXECUTE FUNCTION public.market_event_revisions_reject_mutation()",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
     # ---- analysis_artifacts ----
     "ALTER TABLE review.analysis_artifacts ADD COLUMN IF NOT EXISTS correlation_id TEXT",

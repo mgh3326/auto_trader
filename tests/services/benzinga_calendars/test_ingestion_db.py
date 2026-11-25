@@ -134,3 +134,44 @@ async def test_reingest_is_idempotent_and_a_revision_is_kept(db_session):
     await db_session.refresh(event)
     assert event.raw_payload_json["eps"] == "2.25"
     assert event.first_received_at == NOW
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_revised_event_date_moves_the_current_row(db_session):
+    """A provider date revision must move market_events.event_date.
+
+    ``source_event_id`` identifies the record, so the date is a mutable
+    attribute of it: the row is served from the date the provider now says,
+    and the previous date survives only in the revision log.
+    """
+    await _ingest(db_session, [EARNINGS_ROW], day=date(2026, 10, 29))
+
+    moved = {**EARNINGS_ROW, "date": "2026-10-31", "updated": 1766187300}
+    await _ingest(db_session, [moved], day=date(2026, 10, 31))
+
+    rows = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(MarketEvent.source == "benzinga")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].event_date.isoformat() == "2026-10-31"
+
+    revisions = (
+        (
+            await db_session.execute(
+                select(MarketEventRevision).order_by(MarketEventRevision.revision_seq)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [row.raw_payload_json["date"] for row in revisions] == [
+        "2026-10-29",
+        "2026-10-31",
+    ]

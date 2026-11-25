@@ -106,8 +106,12 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   캘린더 계열은 `page`/`pagesize` + `parameters[date_from]`/`parameters[date_to]`(선택 `parameters[tickers]`),
   short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
   `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
-  `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 마지막 페이지가 가득 찬 채
-  페이지 상한(기본 20)에 닿으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
+  `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 읽기 종료는
+  `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
+  캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한
+  (기본 20)에 닿았는데 그 페이지가 비어 있지 않으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
+- **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
+  꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
 - **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,
   `SOURCES` 에 `benzinga`. 컨퍼런스콜은 기존 `conference`, 경제지표는 기존 `economic`(미국 행만)을 쓴다.
   기존 값은 그대로이고 `market_events` 에 category/source CHECK 는 없다(코드가 정본).
@@ -115,10 +119,16 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   갱신 열에서 제외). 제공자 시각은 `provider_created_at`/`provider_updated_at`(aware UTC)과
   `provider_created_raw`/`provider_updated_raw`(받은 그대로)로 함께 남긴다. 캘린더 계열 `updated` 는 Unix
   seconds, WIIM `created`/`updated` 는 RFC 2822(`-0400`)다. 해석 불가는 `null` 이며 0 으로 채우지 않는다.
-- **revision**: `market_event_revisions`(append-only). 레코드의 정규화 payload 해시가 최신 revision 과 같으면
-  아무것도 쓰지 않고(값·`first_received_at`·`updated_at` 불변), 다르면 새 revision 행을 추가한 뒤 현재
-  `market_events` 행을 갱신한다 — **덮어써서 이전 상태를 잃지 않는다**. 유일키는
-  `(source, category, market, source_event_id, revision_seq)` 와 같은 키 + `content_hash` 다.
+  WIIM 의 `event_date`(파티션 날짜)는 제공자 오프셋대로 `America/New_York` 날짜다 — 20:00 ET 이후 기사는
+  UTC 로는 다음 날이지만 ET 로는 같은 날이며, 그 시간대가 WIIM 의 주 모집단이다.
+- **revision**: `market_event_revisions`(append-only, UPDATE/DELETE/TRUNCATE 는 **모든 역할**에 대해 트리거가
+  거부). 레코드의 정규화 payload 해시가 최신 revision 과 같으면 아무것도 쓰지 않고(값·`first_received_at`·
+  `updated_at` 불변), 다르면 새 revision 행을 추가한 뒤 현재 `market_events` 행을 갱신한다 — **덮어써서
+  이전 상태를 잃지 않는다**. 유일키는 `(source, category, market, source_event_id, revision_seq)` **하나뿐**이다:
+  A→B→A 처럼 같은 내용이 다시 관측되면 그대로 세 번째 revision 이고, 최신 행이 항상 최신 관측을 설명한다.
+  `append_revision` 이 False(동시 writer 가 같은 seq 를 가져감)면 현재 행을 갱신하지 않고 파티션을 실패로
+  남긴다. `source_event_id` 로 식별되는 행은 개정으로 **`event_date`·`symbol`·`fiscal_year`·`fiscal_quarter`
+  가 움직일 수 있으므로** 갱신 열에 포함된다(자연키 행은 그 값들이 키 자체라 불변).
 - **raw payload**: `raw_payload_json` 은 2,000자 넘는 문자열을 절단하고(`…(truncated)`) 리포지토리에서
   redaction 을 거친다. 대체 비교에 필요한 증거는 남기되 무한 blob 은 남기지 않는다.
 - **리더(union/prefer 규칙 명시)**: `get_earnings_calendar` US 성공 응답은 Finnhub 행에 **저장된 Benzinga
@@ -130,16 +140,23 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   ROB-1384 fail-closed 계약(저장분 degraded 폴백·`earnings_lookup_failed`)은 변경 없고, 그 폴백 행은 이미
   `source` 별로 라벨링된다. market events 읽기 표면(`/trading/api/market-events/...`)도 `source` 필드로
   벤징가 행을 그대로 노출한다.
-- **파티션·재실행**: `(benzinga, category, us, date)` 파티션. `--force` 없이는 `succeeded` 파티션을 건너뛴다.
-  fetch 실패는 그 창의 처리 대상 파티션 전부를 `failed` 로 남긴 뒤 예외를 다시 올린다.
+- **파티션·재실행**: `(benzinga, category, us, date)` 파티션. `--force` 없이는 `succeeded` 파티션을 건너뛰므로,
+  개정을 잡아야 하는 날짜는 **매 실행 `--force` 로 다시 받는다**(같은 payload 는 payload 해시 비교로 0행).
+  fetch 실패는 그 창의 처리 대상 파티션 전부를 `failed` 로 남긴 뒤 예외를 다시 올린다. 개정으로
+  `event_date` 가 움직이면 새 날짜 파티션에 기록되고 이전 날짜 파티션에는 그 행이 없다(파티션은 그 날짜에
+  관측된 행의 수를 센다).
 - **CLI**: `scripts/ingest_benzinga_calendars.py` — `--category`(콤마/반복, 필수), `--date` 또는
   `--from-date/--to-date`, `--symbols`(short_interest 필수, 그 밖에는 선택 필터), `--commit`(없으면 dry-run,
-  네트워크 0), `--force`, `--max-pages`, `--compare-earnings`(읽기 전용).
+  네트워크 0), `--force`(succeeded 파티션 재수집 — 개정 포착에 필요), `--max-pages`,
+  `--compare-earnings`(읽기 전용, 게이트는 동일하게 적용).
 - **비교 도우미**: `app/services/benzinga_calendars/compare.py::compare_earnings` — Finnhub 대비 coverage
   (심볼 공통/한쪽만, 항목 한쪽만)와 **양쪽이 모두 관측한 항목에 대해서만** 시간대 일치/불일치/unknown 을 낸다.
   대체 판정용 읽기이며 어떤 정책·게이트도 바꾸지 않는다.
-- **DAG 사본**: `deploy/dagu/at-benzinga-calendars/`(장전 1회, 장중 30분). **등록되지 않았다** — 등록은 설계
-  세션 몫이고, `short_interest` 는 symbols 필수라 DAG 에 넣지 않는다(수동 CLI). 그래서
+- **DAG 사본**: `deploy/dagu/at-benzinga-calendars/`(장전 1회, 장중 30분). 둘 다 스케줄이
+  `America/New_York` 이므로 **날짜도 `TZ=America/New_York date +%F`** 로 계산한다(KST 날짜는 10:00 ET 이후
+  하루 앞서고, Benzinga 캘린더의 `date` 도 미국 날짜다). 개정을 잡기 위해 두 DAG 모두 `--force` 를 준다 —
+  없으면 장전이 오늘 파티션을 `succeeded` 로 만들어 장중 틱이 fetch 전에 건너뛴다. **등록되지 않았다** —
+  등록은 설계 세션 몫이고, `short_interest` 는 symbols 필수라 DAG 에 넣지 않는다(수동 CLI). 그래서
   `market_events/expected_sources` 의 `EXPECTED_SOURCES` 에도 넣지 않았다 — 스케줄이 없는데 기대 소스로 두면
   신선도·`data_gaps` 가 매일 누락을 보고한다. DAG 를 등록할 때 같은 PR 에서 함께 정한다.
 - **마이그레이션** `20261125_hk6513_benzinga_calendars`: 추가형. `market_events` 에 5개 nullable 열과

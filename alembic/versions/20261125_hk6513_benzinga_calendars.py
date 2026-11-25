@@ -16,8 +16,10 @@ Additive. Two things are added for the Benzinga calendar ingestion
 * ``market_event_revisions`` — an append-only log of every distinct provider
   version of a record, keyed by ``source_event_id``. A revised record becomes a
   new row instead of silently overwriting the previous state. Uniqueness is by
-  (source, category, market, source_event_id, revision_seq) and by the same key
-  plus ``content_hash``, so re-ingesting an unchanged payload inserts nothing.
+  (source, category, market, source_event_id, revision_seq) only: the same
+  content may legitimately reappear after a different version (A → B → A), and
+  the newest row must describe the newest observation. UPDATE/DELETE/TRUNCATE
+  are rejected by triggers for every role.
 
 No category/source CHECK exists on ``market_events`` (the taxonomy is code), so
 the new values need no constraint change.
@@ -97,19 +99,40 @@ def upgrade() -> None:
             "revision_seq",
             name="uq_market_event_revisions_seq",
         ),
-        sa.UniqueConstraint(
-            "source",
-            "category",
-            "market",
-            "source_event_id",
-            "content_hash",
-            name="uq_market_event_revisions_hash",
-        ),
     )
     op.create_index(
         "ix_market_event_revisions_key",
         "market_event_revisions",
         ["source", "category", "market", "source_event_id"],
+    )
+
+    # Append-only for every role, not just ``at_app``: the downgrade guard and
+    # the "revisions are never overwritten" contract must not depend on who
+    # holds table privileges (``at_migration_owner`` can still UPDATE).
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION public.market_event_revisions_reject_mutation()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            RAISE EXCEPTION 'market_event_revisions is append-only'
+                USING ERRCODE = 'restrict_violation';
+        END
+        $$
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER trg_market_event_revisions_append_only "
+        "BEFORE UPDATE OR DELETE ON market_event_revisions "
+        "FOR EACH ROW EXECUTE FUNCTION "
+        "public.market_event_revisions_reject_mutation()"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_market_event_revisions_truncate "
+        "BEFORE TRUNCATE ON market_event_revisions "
+        "FOR EACH STATEMENT EXECUTE FUNCTION "
+        "public.market_event_revisions_reject_mutation()"
     )
 
     # Stage-4 role may not exist in dev/CI databases — conditional GRANT.
@@ -145,9 +168,20 @@ def downgrade() -> None:
             f"{observed_rows} row(s) with provider evidence columns"
         )
 
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_market_event_revisions_truncate "
+        "ON market_event_revisions"
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_market_event_revisions_append_only "
+        "ON market_event_revisions"
+    )
     op.drop_index(
         "ix_market_event_revisions_key", table_name="market_event_revisions"
     )
     op.drop_table("market_event_revisions")
+    op.execute(
+        "DROP FUNCTION IF EXISTS public.market_event_revisions_reject_mutation()"
+    )
     for name, _ in reversed(_NEW_COLUMNS):
         op.drop_column("market_events", name)

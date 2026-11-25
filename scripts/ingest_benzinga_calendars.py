@@ -25,8 +25,9 @@ Examples:
 
 Gates: ``BENZINGA_CALENDARS_ENABLED`` must be exactly ``"true"`` and
 ``BENZINGA_API_KEY`` must hold the key. The gate is checked before anything
-else — with it off the command exits 2 and makes no network call. Missing key
-reports the env variable name only.
+else, for every mode including ``--compare-earnings`` — with it off the command
+makes no network call, opens no session and exits 2. Missing key reports the
+env variable name only.
 """
 
 from __future__ import annotations
@@ -109,7 +110,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Reprocess partitions already marked succeeded.",
+        help=(
+            "Reprocess partitions already marked succeeded. Required to capture "
+            "provider revisions: without it a (category, date) partition is "
+            "fetched once and never again, so the shipped DAGs pass --force for "
+            "the dates they exist to refresh. Same-payload re-reads still write "
+            "nothing."
+        ),
     )
     parser.add_argument("--max-pages", type=int, default=20, dest="max_pages")
     parser.add_argument(
@@ -194,14 +201,16 @@ async def _run_compare(from_date: date, to_date: date, symbols: str | None) -> i
 
 
 async def run(ns: argparse.Namespace) -> int:
-    if ns.compare_earnings:
-        return await _run_compare(ns.from_date, ns.to_date, ns.symbols)
-
+    # The gate covers every mode, including the read-only comparison: with it
+    # off the command must not open a session or read a key.
     if not calendars_enabled():
         logger.error(
             "BENZINGA_CALENDARS_ENABLED is not exactly 'true'; no network call"
         )
         return GATE_OFF
+
+    if ns.compare_earnings:
+        return await _run_compare(ns.from_date, ns.to_date, ns.symbols)
 
     partition_count = len(dates_in_range(ns.from_date, ns.to_date))
 
