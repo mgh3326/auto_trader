@@ -360,6 +360,35 @@ async def test_symbol_local_database_failure_is_reported_and_other_symbol_commit
     assert [row.symbol for row in repo.rows] == ["GOOD"]
 
 
+@pytest.mark.asyncio
+async def test_rolled_back_symbol_commit_is_not_counted_as_upserted() -> None:
+    repo = _Repo()
+    repo.session.commit.side_effect = [ValueError("commit rejected"), None]
+
+    async def write(rows):
+        if len(rows) > 1:
+            raise ValueError("batch rejected")
+        return len(rows)
+
+    repo.write = write
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [
+        _target("COMMIT_FAIL"),
+        _target("GOOD"),
+    ]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["rows_upserted"] == 1
+    assert result["failed_symbols"] == [
+        {"symbol": "COMMIT_FAIL", "error_class": "ValueError"}
+    ]
+
+
 def test_us_daily_lane_rate_budgets_match_provider_limits() -> None:
     assert DEFAULT_KIS_API_RATE_LIMITS[
         "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice"
