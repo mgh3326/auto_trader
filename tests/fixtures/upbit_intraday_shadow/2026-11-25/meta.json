@@ -1,0 +1,13 @@
+{
+ "source": "Upbit public GET /v1/market/all?isDetails=true and /v1/candles/minutes/15 (no key)",
+ "market_event_fetched_at": "2026-11-25T09:40:12Z",
+ "window_utc": [
+  "2026-11-22T15:00:00Z",
+  "2026-11-25T09:30:00Z"
+ ],
+ "rows": {
+  "KRW-BTC": 266,
+  "KRW-XRP": 266,
+  "KRW-SAHARA": 264
+ }
+}
