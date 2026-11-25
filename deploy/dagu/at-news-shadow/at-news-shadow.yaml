@@ -1,0 +1,23 @@
+# 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# Benzinga 뉴스 그림자 수집: 미국 정규장 중 NVDA·AMD·QQQ·SMH를 Benzinga와
+# Finnhub에서 같은 패스로 읽어 호스트 디렉터리에 JSONL로 쌓는다(DB 쓰기 없음).
+# 등록은 hk 6395 설계 세션이 한다(키·구매는 운영자 결정).
+description: "Benzinga news shadow poll (NVDA AMD QQQ SMH) into host JSONL"
+schedule:
+  - "CRON_TZ=America/New_York */30 9-16 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: poll
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/benzinga-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH --out-dir /out || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-news-shadow "dag=at-news-shadow status=success"'
+  failure:
+    command: 'logger -t at-dagu-news-shadow "dag=at-news-shadow status=failure"'
