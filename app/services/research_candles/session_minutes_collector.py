@@ -38,7 +38,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -87,6 +87,10 @@ TOSS_CURSOR_SLACK = timedelta(minutes=2)
 #: ends at the same instant the window opens (20:00 ET), so the last KIS bars (19:54-
 #: 19:59 ET) are read by the first runs after the open, not dropped (review r1).
 KIS_DAY_MARKET_GRACE = timedelta(minutes=15)
+#: US extended session start: the backfill of a newly promoted US mover pages back
+#: to this ET minute (hk 6510), and a page loop stops there.
+US_SESSION_START_ET = time(4, 0)
+US_BACKFILL_MAX_PAGES = 8
 TOSS_VENUE_ERROR = TOSS_US_VENUE
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -762,10 +766,10 @@ async def build_targets(
 
     1. ``fixed``: KIS + manual holdings and the fixed list. Never cut; its unused
        part of ``fixed_budget`` spills to the next tier.
-    2. ``intraday_movers`` (KR only): today's first captures (hk 6154), ordered by
-       earliest capture then best rank; ``intraday_budget``. A symbol that already
-       has minute rows today is protected from the budget (never demoted the same
-       day).
+    2. ``intraday_movers``: today's first captures — hk 6154 for KR, hk 6510 for
+       US (``market='us'`` rows, ET trading day) — ordered by earliest capture
+       then best rank; ``intraday_budget``. A symbol that already has minute rows
+       today is protected from the budget (never demoted the same day).
     3. ``screener_snapshot``: top ``screener_top_n`` of every active preset, by best
        rank; ``screener_budget``.
     4. ``screener_pick_log``: today's admitted symbols, the remainder of the cap.
@@ -841,33 +845,38 @@ async def build_targets(
 
     mover_order: list[str] = []
     protected: set[str] = set()
-    if market == "kr":
-        try:
-            from app.services.invest_momentum_events.intraday import first_captures
+    try:
+        from app.services.invest_momentum_events.intraday import first_captures
 
-            captures = await first_captures(
-                session, now.astimezone(_KST).date(), market="kr"
-            )
-            # Promotion order: earliest capture first, then best rank, then symbol.
-            ranked = sorted(
-                {c.symbol: c for c in captures}.values(),
-                key=lambda c: (c.snapshot_at, c.rank, c.symbol),
-            )
-            for capture in ranked:
-                symbol = normalize_symbol("kr", capture.symbol)
-                if symbol and symbol not in mover_order:
-                    mover_order.append(symbol)
+        # hk 6154 (KR) / hk 6510 (US): the observation log's trading date is the
+        # KST date in KR and the ET trading day in US.
+        trading_day = (
+            now.astimezone(_KST).date()
+            if market == "kr"
+            else now.astimezone(_ET).date()
+        )
+        captures = await first_captures(session, trading_day, market=market)
+        # Promotion order: earliest capture first, then best rank, then symbol.
+        ranked = sorted(
+            {c.symbol: c for c in captures}.values(),
+            key=lambda c: (c.snapshot_at, c.rank, c.symbol),
+        )
+        for capture in ranked:
+            symbol = normalize_symbol(market, capture.symbol)
+            if symbol and symbol not in mover_order:
+                mover_order.append(symbol)
+        if mover_order:
             found["intraday_movers"] = list(mover_order)
-        except Exception as exc:  # noqa: BLE001 - other origins still count
-            await session.rollback()
-            errors.append(
-                {"origin": "intraday_movers", "error_class": type(exc).__name__}
-            )
+    except Exception as exc:  # noqa: BLE001 - other origins still count
+        await session.rollback()
+        errors.append({"origin": "intraday_movers", "error_class": type(exc).__name__})
     have_today: set[str] = set()
     have_known = False
     if mover_order:
         try:
-            have_today = await load_symbols_with_rows_today(session, mover_order, now)
+            have_today = await load_symbols_with_rows_today(
+                session, mover_order, now, market
+            )
             have_known = True
         except Exception as exc:  # noqa: BLE001 - no protection, the run continues
             await session.rollback()
@@ -886,16 +895,13 @@ async def build_targets(
     ]
     specs = [
         TierSpec(TIER_FIXED, fixed_tier, budget=fixed_budget, exempt=True),
+        TierSpec(
+            "intraday_movers",
+            mover_candidates,
+            budget=intraday_budget,
+            protected=frozenset(protected),
+        ),
     ]
-    if market == "kr":
-        specs.append(
-            TierSpec(
-                "intraday_movers",
-                mover_candidates,
-                budget=intraday_budget,
-                protected=frozenset(protected),
-            )
-        )
     specs.append(
         TierSpec(
             "screener_snapshot",
@@ -925,17 +931,32 @@ async def build_targets(
 
 
 async def load_symbols_with_rows_today(
-    session: AsyncSession, symbols: Sequence[str], now: datetime
+    session: AsyncSession,
+    symbols: Sequence[str],
+    now: datetime,
+    market: Market = "kr",
 ) -> set[str]:
-    """KR symbols that already have at least one minute row for today's KST date."""
+    """Symbols that already have at least one minute row for today.
+
+    KR: ``research.kr_candles_1m.session_date_kst`` on today's KST date.
+    US (hk 6510): ``research.us_candles_1m.session_date`` on today's ET trading day.
+    """
     if not symbols:
         return set()
-    rows = await session.execute(
-        text(
+    if market == "kr":
+        statement = (
             f"SELECT DISTINCT symbol FROM {KR_TABLE} "
             "WHERE symbol = ANY(:symbols) AND session_date_kst = :day"
-        ),
-        {"symbols": list(symbols), "day": now.astimezone(_KST).date()},
+        )
+        day = now.astimezone(_KST).date()
+    else:
+        statement = (
+            f"SELECT DISTINCT symbol FROM {US_TABLE} "
+            "WHERE symbol = ANY(:symbols) AND session_date = :day"
+        )
+        day = now.astimezone(_ET).date()
+    rows = await session.execute(
+        text(statement), {"symbols": list(symbols), "day": day}
     )
     return {str(value) for value in rows.scalars().all()}
 
@@ -1019,6 +1040,53 @@ async def _with_earlier_page(
     return combined.sort_values("datetime").reset_index(drop=True), 1
 
 
+async def _with_earlier_us_pages(
+    kis: KisMinuteReader,
+    page: Any,
+    *,
+    symbol: str,
+    venue: str,
+    session_start_et: datetime,
+    max_pages: int = US_BACKFILL_MAX_PAGES,
+) -> tuple[pd.DataFrame, int]:
+    """Append earlier KIS overseas pages back to the session start (hk 6510).
+
+    A US symbol first seen mid-session would otherwise only get the newest page
+    (~120 minutes). The ``keyb`` cursor pages backwards until the oldest bar has
+    reached ``session_start_et`` (04:00 ET of the trading day), the provider says
+    there is no more history, or ``max_pages`` is spent. Overlapping bars are
+    harmless (same key, ``DO NOTHING``). A failing page raises; the caller keeps
+    the newest page and reports the error, so the newest page is never lost.
+
+    Returns ``(combined_frame, pages_read)``.
+    """
+    frame = page.frame
+    keyb = getattr(page, "next_keyb", None)
+    has_more = bool(getattr(page, "has_more", False))
+    pages = 0
+    while has_more and keyb and pages < max_pages:
+        older = await kis.inquire_overseas_minute_chart(
+            symbol, exchange_code=venue, n=120, keyb=keyb
+        )
+        pages += 1
+        older_frame = getattr(older, "frame", None)
+        if older_frame is None or older_frame.empty:
+            break
+        frame = pd.concat([older_frame, frame], ignore_index=True)
+        stamps = pd.to_datetime(older_frame["datetime"], errors="coerce").dropna()
+        if stamps.empty or stamps.min() <= session_start_et:
+            break
+        has_more = bool(getattr(older, "has_more", False))
+        keyb = getattr(older, "next_keyb", None)
+    if pages:
+        frame = (
+            frame.drop_duplicates(subset=["datetime"], keep="last")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
+    return frame, pages
+
+
 async def collect(
     *,
     market: Market,
@@ -1046,8 +1114,13 @@ async def collect(
     """
     batch = batch_id or new_batch_id(market, clock())
     nxt = set(nxt_eligible)
-    backfill = set(backfill_symbols) if market == "kr" else set()
+    backfill = set(backfill_symbols)
     backfill_pages = 0
+    us_session_start = (
+        datetime.combine(clock().astimezone(_ET).date(), US_SESSION_START_ET)
+        if market == "us"
+        else None
+    )
     exchanges = us_exchanges or {}
     inserted = already_present = skipped_forming = skipped_invalid = 0
     null_value = would_write = 0
@@ -1106,6 +1179,26 @@ async def collect(
                     symbol, exchange_code=venue, n=120
                 )
                 frame = page.frame
+                if symbol in backfill and us_session_start is not None:
+                    try:
+                        frame, extra = await _with_earlier_us_pages(
+                            kis,
+                            page,
+                            symbol=symbol,
+                            venue=venue,
+                            session_start_et=us_session_start,
+                        )
+                        backfill_pages += extra
+                        reads += extra
+                    except Exception as exc:  # noqa: BLE001 - keep the first page
+                        errors.append(
+                            {
+                                "symbol": symbol,
+                                "venue": venue,
+                                "origin": "intraday_movers",
+                                "error_class": type(exc).__name__,
+                            }
+                        )
             reads += 1
             parsed = bars_from_frame(
                 frame,

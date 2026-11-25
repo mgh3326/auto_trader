@@ -531,7 +531,16 @@ def test_alembic_script_directory_has_one_head_and_it_is_the_follow_up() -> None
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
-    assert script.get_heads() == ["20261125_hk6322_us_venue_val"]
+    assert script.get_heads() == ["20261125_hk6510_us_movers_val"]
+    assert script.get_revision("20261125_hk6510_us_movers_val").down_revision == (
+        "20261125_hk6510_us_movers"
+    )
+    assert script.get_revision("20261125_hk6510_us_movers").down_revision == (
+        "20261125_hk6322_us_venue_val"
+    )
+    assert script.get_revision("20261125_hk6322_us_venue_val").down_revision == (
+        "20261125_hk6322_us_toss_venue"
+    )
     assert script.get_revision("20261125_hk6322_us_toss_venue").down_revision == (
         "20261124_hk6154_momentum_runs"
     )
