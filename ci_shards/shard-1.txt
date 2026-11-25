@@ -311,6 +311,7 @@ tests/services/research_candles/test_futures_minutes_collector.py
 tests/services/research_candles/test_futures_minutes_db.py
 tests/services/research_candles/test_futures_session_coverage.py
 tests/services/research_candles/test_futures_session_segment.py
+tests/services/research_candles/test_minute_ingest.py
 tests/services/research_candles/test_session_coverage.py
 tests/services/research_candles/test_session_minutes_collector.py
 tests/services/research_candles/test_session_minutes_db.py
