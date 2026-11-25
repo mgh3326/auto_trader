@@ -30,7 +30,7 @@ uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11
     [--symbols 005930 000660 --collect-report RUN.json [RUN2.json ...]]
 ```
 
-`--collect-report` 는 수집기가 출력한 JSON(한 줄에 한 실행, 같은 시장)이다. `--symbols` 를 주면 필수다. 실행별 `runs`(단계 수·잘린 목록)가 나오고, 행이 0개인 요청 종목마다 닫힌 사유 하나가 `requested_zero_row` 에 붙는다.
+`--collect-report` 는 수집기가 출력한 JSON(한 줄에 한 실행, 같은 시장)이다. KR·US 에서 `--symbols` 를 주면 필수다(futures 는 수집 실행 기록이 없어 해당 없음, `futures-minutes.md` 의 명령은 그대로 동작한다). 실행별 `runs`(단계 수·잘린 목록)가 나오고, 행이 0개인 요청 종목마다 닫힌 사유 하나가 `requested_zero_row` 에 붙는다.
 
 | 사유 | 뜻 |
 |---|---|

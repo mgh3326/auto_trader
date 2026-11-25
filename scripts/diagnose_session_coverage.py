@@ -14,7 +14,8 @@ not a first receipt). Writes nothing, registers nothing.
 object per line, same market). With it the output lists every run's tier counts
 and cut symbols, and each requested symbol with no stored minute gets one closed
 reason (hk 6299): ``not_selected``, ``cut_by_budget``, ``fetch_error`` or
-``no_trades_reported``. ``--symbols`` requires it.
+``no_trades_reported``. For KR and US, ``--symbols`` requires it; futures has no
+collector run report and keeps its plain output.
 
 Exit 0 = report printed, 1 = the read failed, 2 = usage or an unreadable run report.
 """
@@ -83,7 +84,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="collect_session_minutes JSON output (one object per line)",
     )
     args = parser.parse_args(argv)
-    if args.symbols and not args.collect_report:
+    if args.symbols and args.market != "futures" and not args.collect_report:
         parser.error("--symbols requires --collect-report to classify zero-row symbols")
     return args
 
@@ -183,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
-    if args.symbols and not reports:
+    if args.symbols and args.market != "futures" and not reports:
         print(json.dumps({"status": "no_matching_run_report", "market": args.market}))
         return 2
 

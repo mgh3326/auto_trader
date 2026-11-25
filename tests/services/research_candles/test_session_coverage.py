@@ -332,6 +332,11 @@ def test_diagnostic_needs_run_reports_for_symbols_and_reads_one_market(
         )
     args = diag._parse_args(["--market", "kr", "--date", "2026-11-24"])
     assert args.collect_report == []
+    # futures has no collector run report: --symbols keeps working without one
+    futures = diag._parse_args(
+        ["--market", "futures", "--date", "2026-11-24", "--symbols", "MF200.2612"]
+    )
+    assert futures.symbols == ["MF200.2612"] and futures.collect_report == []
     kr = {
         "market": "kr",
         "batch_id": "session-minutes-kr-1",
