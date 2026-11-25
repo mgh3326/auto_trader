@@ -3,6 +3,8 @@
 
     uv run python -m scripts.diagnose_session_coverage --market kr|us|futures --date YYYY-MM-DD \\
         [--symbols 005930 000660] [--collect-report RUN.json [RUN2.json ...]]
+    uv run python -m scripts.diagnose_session_coverage --market us --date YYYY-MM-DD --first-last \\
+        [--symbols NVDA]
 
 One ``READ ONLY`` transaction with an 8 s statement timeout, SELECT only. Per
 symbol x venue x session_segment it reports rows, expected minutes, missing
@@ -16,6 +18,11 @@ and cut symbols, and each requested symbol with no stored minute gets one closed
 reason (hk 6299): ``not_selected``, ``cut_by_budget``, ``fetch_error`` or
 ``no_trades_reported``. Optional: without it the output is the plain coverage report
 (no ``requested_zero_row`` key). Reports of a ``dry_run`` give no evidence.
+
+``--first-last`` (hk 6322, US only) prints, per symbol x source x venue x session
+segment of one ET session date, the first and the last stored bar START (UTC and KST).
+It is the one-command check for the US day market: Toss rows (``TOSS_INTEGRATED``,
+segment ``US_DAY``) sit next to the KIS rows, never merged. Same READ ONLY rules.
 
 Exit 0 = report printed, 1 = the read failed, 2 = usage or an unreadable run report.
 """
@@ -36,8 +43,10 @@ from app.core.cli import setup_logging_and_sentry
 from app.core.db import engine
 from app.services.research_candles.session_coverage import (
     BACKFILL_BATCH_LIKE,
+    EdgeRow,
     StoredMinute,
     coverage_report,
+    first_last_report,
     run_evidence_from_report,
 )
 from app.services.research_candles.session_minutes_collector import (
@@ -60,6 +69,12 @@ _SELECT_FUTURES = text(
     "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
     "AND batch_id NOT LIKE :backfill_a AND batch_id NOT LIKE :backfill_b"
 )
+_SELECT_US_EDGE = text(
+    "SELECT symbol, source, venue, session_segment, time_utc "
+    "FROM research.us_candles_1m "
+    "WHERE session_date = :session_date "
+    "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[])))"
+)
 _SELECT_US = text(
     "SELECT symbol, venue, session_segment, time_utc, retrieved_at, "
     "(value IS NULL) AS value_is_null "
@@ -76,6 +91,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument(
+        "--first-last",
+        action="store_true",
+        help="US only: first and last stored bar per symbol, source, venue and segment",
+    )
+    parser.add_argument(
         "--collect-report",
         action="append",
         default=[],
@@ -84,6 +104,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="collect_session_minutes JSON output (one object per line)",
     )
     args = parser.parse_args(argv)
+    if args.first_last and args.market != "us":
+        parser.error("--first-last is available for --market us only")
     return args
 
 
@@ -127,6 +149,8 @@ async def run(
             symbols = sorted(
                 {s for s in (normalize_symbol(args.market, p) for p in parts) if s}
             )
+    if args.first_last:
+        return await _first_last(args, symbols)
     statement = {"kr": _SELECT_KR, "us": _SELECT_US, "futures": _SELECT_FUTURES}[
         args.market
     ]
@@ -167,6 +191,29 @@ async def run(
     if reports:
         report["runs"] = [_run_summary(r) for r in reports]
     return report
+
+
+async def _first_last(
+    args: argparse.Namespace, symbols: list[str] | None
+) -> dict[str, object]:
+    async with engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET TRANSACTION READ ONLY"))
+            await conn.execute(text("SET LOCAL statement_timeout = '8s'"))
+            result = await conn.execute(
+                _SELECT_US_EDGE, {"session_date": args.date, "symbols": symbols}
+            )
+            edges = [
+                EdgeRow(
+                    symbol=row.symbol,
+                    source=row.source,
+                    venue=row.venue,
+                    session_segment=row.session_segment,
+                    time_utc=row.time_utc,
+                )
+                for row in result
+            ]
+    return first_last_report(edges, market="us", session_date=args.date)
 
 
 def main(argv: list[str] | None = None) -> int:

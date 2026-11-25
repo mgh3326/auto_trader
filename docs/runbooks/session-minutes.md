@@ -59,6 +59,25 @@ NTX 표지는 NXT 공식 시간을 따른다(출처: nextrade.co.kr 거래시스
 - 기존 저장 행은 재라벨하지 않는다(백필 없음). 이 변경 이전에 저장된 15:20 이후 NTX 행은 옛 표지(`NXT_OVERLAP`/`NXT_POST`)로 남아 진단의 `rows` 에 들어갈 수 있다.
 - 프로모션 경로(`research_candles/promotion.py`의 `classify_session_segment`)는 별도 분류기이며 이 변경 대상이 아니다.
 
+## 3b. 미국 데이마켓 — Toss 1분봉 (hk 6322)
+
+미국 데이마켓(토스 `dayMarket`, 한국 시각 대략 10:00–17:50, 서머타임에 따라 ET 20:00–04:50)은 KIS 해외 분봉이 주지 않으므로 토스 `GET /api/v1/candles?interval=1m` 로 받는다. 설계 결정: 한 통합 피드이므로 실행 venue 를 모르고, venue 는 `TOSS_INTEGRATED` 한 값이다(`NASD`/`NYSE`/`AMEX` 로 쓰지 않는다). 토스 분봉의 `timestamp` 는 봉의 **끝**이고 `[timestamp − 1분, timestamp)` 이므로 저장하는 봉 시작은 `timestamp − 1분`(예: 15:10 끝 봉 = 15:09 시작)이다.
+
+- **마이그레이션 2개(운영자 적용, 자동 배포는 보류한다)**: `20261125_hk6322_us_toss_venue`(venue CHECK 에 `TOSS_INTEGRATED` 를 NOT VALID 로 추가, `us_candles_1m.value` NOT NULL 해제 — 토스 분봉은 봉별 거래대금이 없어 NULL 이다)와 후속 `20261125_hk6322_us_venue_val`(`VALIDATE CONSTRAINT`). 1번을 먼저 적용하고 2번을 적용한다. 되돌리기(downgrade)는 `TOSS_INTEGRATED` 행이나 NULL `value` 행이 있으면 거부한다.
+- **달력이 정한다**: 수집 실행마다 `GET /api/v1/market-calendar/US` 를 한 번 받는다(`get_toss_market_calendar`, 조회 날짜는 KST 오늘이고 전·다음 영업일이 같은 응답에 들어 있다). dayMarket 창 안의 봉은 `US_DAY`, 달력의 pre/regular/after 창 안의 토스 봉은 `US_PRE`/`US_REGULAR`/`US_POST`, 어느 창에도 없으면 `UNKNOWN` 으로 저장한다(추측하지 않는다). 휴장일(모든 세션 null)은 창이 없어 `UNKNOWN` 이다. 하드코딩된 데이마켓 시각은 없다.
+- **달력을 못 받으면 토스를 읽지 않는다**: 보고서에 `toss: calendar_unavailable` 과 `CalendarUnavailable` 오류가 남고 종료 코드는 1 이다(KIS 쪽 수집은 그대로 한다). `TOSS_API_ENABLED` 가 꺼져 있으면 `toss: disabled` 이고 오류는 없다.
+- **KIS 와 토스는 섞이지 않는다**: KIS 행(`NASD` 등)과 토스 행(`TOSS_INTEGRATED`)은 venue 가 달라 PK 가 충돌하지 않고, 출처 `KIS`/`TOSS` 로 따로 보인다. 수집기는 달력의 dayMarket 창이 열려 있는 동안 KIS 미국 읽기를 건너뛴다(`kis_skipped_day_market`). pre/regular/post 는 KIS 가 그대로 맡는다.
+- **읽는 범위**: 실행마다 종목별로 현재 시각 3시간 전부터 현재까지(`TOSS_US_LOOKBACK`, 최대 4페이지), 형성 중인 봉은 `is_closed`(시작 + 1분 + 10초) 규칙으로 건너뛴다. 재실행은 `ON CONFLICT DO NOTHING` 이라 0행이고 `retrieved_at`(최초 수신)은 그대로다. 토스 `before` 커서는 현재 시각 + 2분으로 보낸다(형성 중인 봉을 받아 버리기 위해; 클라이언트의 "커서보다 새 봉" 검사를 피한다).
+- **DAG 사본**: `deploy/dagu/at-session-minutes/at-session-minutes-us.yaml` 은 KIS 창 04:00–20:10 ET 에 데이마켓 창을 더했다 — 일–금 20:00–23:55 ET 와 월–토 00:00–03:55 ET. 세 줄은 겹치지 않는다. 등록은 여전히 설계 세션이 한다.
+- **확인 명령(한 줄)**: 오늘 미국 세션마다 종목·출처·venue 별 첫 봉과 마지막 봉(봉 시작, UTC·KST):
+
+  ```bash
+  uv run python -m scripts.diagnose_session_coverage --market us --date 2026-11-25 --first-last [--symbols NVDA]
+  ```
+
+  읽기 전용(8초 timeout). `TOSS_INTEGRATED` 행은 `US_DAY` 세그먼트로, KIS 행과 따로 나온다. 쓰지 않는다.
+- **알려진 한계(운영자 스모크로 확인)**: ① BRK.B 같은 점 표기 심볼을 토스가 받는지 `[unverified]`(수집기는 DB 표기 그대로 보낸다; 실패는 종목별 오류로 남는다). ② 토스 `adjusted=false` 로 읽는다(KIS 원시 가격과 맞춘다). ③ 이 경로는 KR 이 아니다 — KR 세션과 선물은 건드리지 않는다. ④ 토스 행은 기대 분(expected) 계산에 들어가지 않으므로(`expected_minutes` 는 KIS 표지만 센다) 커버리지 진단은 `--first-last` 로 본다. ⑤ `research.us_candles_1m` 을 읽는 다른 소비자(retro `get_bars`, 신선도 `candles_1m.us`)는 이제 `TOSS_INTEGRATED` 행을 함께 본다.
+
 ## 4. 주의
 
 - US `session_date` 는 ET 거래일(20:00 ET 롤오버)이라 KST 달력일과 다를 수 있다.

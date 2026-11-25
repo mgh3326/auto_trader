@@ -18,9 +18,18 @@ Rules (design hk:doc design/2026-11-24/at-session-timeline §4):
   An unknown segment is stored as ``UNKNOWN``, never guessed.
 * No backfill, no scheduler: this module registers nothing.
 
+US day market (hk 6322): when a Toss US market calendar is passed, US runs also
+read Toss ``GET /api/v1/candles`` 1m bars (source ``TOSS``, venue
+``TOSS_INTEGRATED``, one integrated feed). The calendar is fetched once per run
+by the CLI. KIS US reads are skipped while a calendar day-market window is open,
+because KIS has no bars there. Toss bars are labelled from the calendar alone
+(``US_DAY`` inside dayMarket, ``UNKNOWN`` outside every window) and their 1m
+timestamp is the bar END, so the bar start is ``timestamp - 1 min``.
+
 The KIS client is injected and only four read methods are used (see
-``KisMinuteReader``); this module imports no order, ledger, approval or
-broker-mutation code.
+``KisMinuteReader``); the Toss reader only ``collect_minute_candles`` (see
+``TossMinuteReader``). This module imports no order, ledger, approval or
+broker-mutation code, and no Toss module at runtime.
 """
 
 from __future__ import annotations
@@ -31,7 +40,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -45,18 +54,36 @@ from app.services.brokers.kis.live_order_expiry import (
     KR_REGULAR_OPEN_KST,
 )
 from app.services.research_candles.session_segment import (
+    TOSS_US_VENUE,
     session_segment_of,
+    us_calendar_segment,
+    us_day_market_bar,
     us_session_date,
 )
+
+if TYPE_CHECKING:  # type only
+    from app.services.brokers.toss.dto import TossMinuteCandle
+    from app.services.brokers.toss.market_calendar import TossMarketCalendar
 
 logger = logging.getLogger(__name__)
 
 Market = Literal["kr", "us"]
 
 SOURCE = "KIS"
+TOSS_SOURCE = "TOSS"
+TOSS_USD = "USD"
 BAR = timedelta(minutes=1)
 CLOSE_GRACE = timedelta(seconds=10)
 BATCH_PREFIX = "session-minutes"
+#: Toss US lookback per symbol and run (hk 6322). The 5-minute cadence re-reads the
+#: window; a re-read bar is ``DO NOTHING``. 3 h fits one 200-bar page.
+TOSS_US_LOOKBACK = timedelta(hours=3)
+TOSS_US_MAX_PAGES = 4
+#: Toss ``before`` cursor is set this far past the clock, so the still-forming
+#: minute (timestamp = its END, up to 1 min ahead) is returned and then dropped
+#: by ``is_closed``, instead of tripping the client's "newer than before" check.
+TOSS_CURSOR_SLACK = timedelta(minutes=2)
+TOSS_VENUE_ERROR = TOSS_US_VENUE
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
@@ -67,6 +94,22 @@ US_TABLE = "research.us_candles_1m"
 KR_VENUE_MARKET_CODE = {"KRX": "J", "NTX": "NX"}
 US_PICK_LOOKBACK = timedelta(hours=24)
 _US_VENUES = frozenset({"NASD", "NYSE", "AMEX"})
+
+
+class TossMinuteReader(Protocol):
+    """The only Toss surface the collector may touch (read-only, hk 6322)."""
+
+    async def collect_minute_candles(
+        self,
+        symbol: str,
+        *,
+        adjusted: bool,
+        before: str,
+        not_before: datetime,
+        max_pages: int = 16,
+        page_count: int = 200,
+        pace: Any = None,
+    ) -> list[TossMinuteCandle]: ...
 
 
 class KisMinuteReader(Protocol):
@@ -141,6 +184,7 @@ def bars_from_frame(
     symbol: str,
     venue: str,
     observed_before: datetime,
+    us_calendar: TossMarketCalendar | None = None,
 ) -> FrameResult:
     """KIS frame (``datetime`` = naive START label in the local clock) -> bars.
 
@@ -241,7 +285,9 @@ def bars_from_frame(
                 ),
                 symbol=symbol,
                 venue=venue,
-                session_segment=session_segment_of(market, venue, start_utc),
+                session_segment=session_segment_of(
+                    market, venue, start_utc, us_calendar=us_calendar
+                ),
                 source=SOURCE,
                 open=o,
                 high=h,
@@ -252,6 +298,67 @@ def bars_from_frame(
             )
         )
     return result
+
+
+def bars_from_toss_candles(
+    candles: Iterable[TossMinuteCandle],
+    *,
+    symbol: str,
+    observed_before: datetime,
+    us_calendar: TossMarketCalendar | None,
+) -> FrameResult:
+    """Toss 1m candles (timestamp = bar END) -> closed US bars (hk 6322).
+
+    The bar START is ``timestamp - 1 min``. A bar is kept only when it is closed
+    by the same rule as KIS (``is_closed``), so the still-forming minute is counted
+    in ``skipped_forming`` and never stored. A candle whose currency is not USD is
+    counted in ``skipped_invalid``. The label comes from the calendar only:
+    ``US_DAY`` inside dayMarket, the calendar's pre/regular/post window otherwise,
+    ``UNKNOWN`` when no window holds the bar (stored, not guessed). Toss does not
+    report a per-minute trade value, so ``value`` is NULL.
+    """
+    result = FrameResult()
+    for candle in candles:
+        start_utc = candle.bar_start.astimezone(UTC)
+        if candle.currency != TOSS_USD:
+            result.skipped_invalid += 1
+            continue
+        if not is_closed(start_utc, observed_before):
+            result.skipped_forming += 1
+            continue
+        result.bars.append(
+            MinuteBar(
+                time_utc=start_utc,
+                session_date=us_session_date(start_utc),
+                symbol=symbol,
+                venue=TOSS_US_VENUE,
+                session_segment=session_segment_of(
+                    "us", TOSS_US_VENUE, start_utc, us_calendar=us_calendar
+                ),
+                source=TOSS_SOURCE,
+                open=candle.open_price,
+                high=candle.high_price,
+                low=candle.low_price,
+                close=candle.close_price,
+                volume=candle.volume,
+                value=None,
+            )
+        )
+    return result
+
+
+def calendar_overlaps(
+    calendar: TossMarketCalendar | None, start: datetime, end: datetime
+) -> bool:
+    """True when any Toss US window of the calendar overlaps ``[start, end)``."""
+    if calendar is None:
+        return False
+    for day in calendar.days:
+        for attribute in ("day_market", "pre_market", "regular_market", "after_market"):
+            window = getattr(day, attribute, None)
+            if window is not None and window.start < end and start < window.end:
+                return True
+    return False
 
 
 # --------------------------------------------------------------------- writer
@@ -922,8 +1029,17 @@ async def collect(
     dry_run: bool = False,
     prior_errors: Sequence[Mapping[str, str]] = (),
     backfill_symbols: Iterable[str] = (),
+    toss: TossMinuteReader | None = None,
+    us_calendar: TossMarketCalendar | None = None,
+    toss_lookback: timedelta = TOSS_US_LOOKBACK,
 ) -> dict[str, Any]:
-    """Read, filter to closed bars, write. ``writer`` is unused when ``dry_run``."""
+    """Read, filter to closed bars, write. ``writer`` is unused when ``dry_run``.
+
+    US only (hk 6322): ``us_calendar`` is the Toss US market calendar of this run
+    and ``toss`` the Toss reader. Without ``toss`` no Toss read happens. Without a
+    calendar the Toss pass records ``CalendarUnavailable`` and reads nothing, and
+    KIS labels are unchanged (no day-market window is known).
+    """
     batch = batch_id or new_batch_id(market, clock())
     nxt = set(nxt_eligible)
     backfill = set(backfill_symbols) if market == "kr" else set()
@@ -932,6 +1048,9 @@ async def collect(
     inserted = already_present = skipped_forming = skipped_invalid = 0
     null_value = would_write = 0
     reads = 0
+    kis_day_market_skips = 0
+    toss_reads = 0
+    toss_status = "not_requested"
     errors: list[dict[str, str]] = [dict(item) for item in prior_errors]
     for symbol in unresolved_symbols:
         errors.append({"symbol": symbol, "error_class": "UnresolvedSymbol"})
@@ -947,6 +1066,14 @@ async def collect(
 
     for symbol, venue in plan:
         observed_before = clock()
+        if (
+            market == "us"
+            and us_calendar is not None
+            and us_day_market_bar(observed_before, us_calendar)
+        ):
+            # KIS has no US bars inside a day-market window; Toss covers it (hk 6322).
+            kis_day_market_skips += 1
+            continue
         try:
             if market == "kr":
                 frame = await kis.inquire_minute_chart(
@@ -1004,6 +1131,62 @@ async def collect(
                 {"symbol": symbol, "venue": venue, "error_class": type(exc).__name__}
             )
 
+    if market == "us" and toss is not None:
+        if us_calendar is None:
+            toss_status = "calendar_unavailable"
+            errors.append(
+                {"venue": TOSS_VENUE_ERROR, "error_class": "CalendarUnavailable"}
+            )
+        else:
+            now = clock()
+            if calendar_overlaps(us_calendar, now - toss_lookback, now):
+                toss_status = "ran"
+                for symbol in symbols:
+                    observed_before = clock()
+                    try:
+                        candles = await toss.collect_minute_candles(
+                            symbol,
+                            adjusted=False,
+                            before=(observed_before + TOSS_CURSOR_SLACK)
+                            .replace(microsecond=0)
+                            .isoformat(),
+                            not_before=observed_before - toss_lookback,
+                            max_pages=TOSS_US_MAX_PAGES,
+                        )
+                        toss_reads += 1
+                        parsed = bars_from_toss_candles(
+                            candles,
+                            symbol=symbol,
+                            observed_before=observed_before,
+                            us_calendar=us_calendar,
+                        )
+                        skipped_forming += parsed.skipped_forming
+                        skipped_invalid += parsed.skipped_invalid
+                        if dry_run:
+                            would_write += len(parsed.bars)
+                        elif parsed.bars:
+                            assert writer is not None
+                            new, present = await writer.insert(
+                                parsed.bars, batch_id=batch, retrieved_at=clock()
+                            )
+                            inserted += new
+                            already_present += present
+                    except Exception as exc:  # noqa: BLE001 - one symbol must not stop the run
+                        logger.warning(
+                            "session minutes toss read/write failed symbol=%s error=%s",
+                            symbol,
+                            type(exc).__name__,
+                        )
+                        errors.append(
+                            {
+                                "symbol": symbol,
+                                "venue": TOSS_VENUE_ERROR,
+                                "error_class": type(exc).__name__,
+                            }
+                        )
+            else:
+                toss_status = "no_window"
+
     return {
         "market": market,
         "batch_id": batch,
@@ -1020,6 +1203,9 @@ async def collect(
         "would_write": would_write if dry_run else None,
         "errors": len(errors),
         "error_details": errors,
+        "kis_skipped_day_market": kis_day_market_skips,
+        "toss": toss_status,
+        "toss_reads": toss_reads,
     }
 
 
@@ -1029,6 +1215,10 @@ __all__ = [
     "MinuteBar",
     "MinuteWriter",
     "SqlMinuteWriter",
+    "TossMinuteReader",
+    "bars_from_toss_candles",
+    "calendar_overlaps",
+    "us_calendar_segment",
     "TIER_ORDER",
     "TargetSet",
     "TierReport",
