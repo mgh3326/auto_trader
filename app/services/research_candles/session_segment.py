@@ -15,8 +15,12 @@ Windows are start-inclusive / end-exclusive on the bar START time:
 
 KR (KST), only on a confirmed XKRX trading day:
   KRX  09:00-15:30 KRX_REGULAR; 16:00-20:00 KRX_AFTER
-  NTX  08:00-08:50 NXT_PRE; 09:00-15:30 NXT_OVERLAP; 15:30-20:00 NXT_POST
-  everything else (incl. the 08:50-09:00 gap and KRX 15:30-16:00) -> UNKNOWN
+  NTX  08:00-08:50 NXT_PRE; 09:00-15:20 NXT_OVERLAP; 16:00-20:00 NXT_POST
+       (NXT official hours; hk 6039 c32602. 15:20-15:40 has no NXT continuous
+       trading; 15:40-16:00 overlaps the KRX closing-price trade and the minute
+       frame has no field that tells the two apart, so it is UNKNOWN)
+  everything else (incl. the 08:50-09:00 gap, KRX 15:30-16:00 and the NTX
+  15:20-16:00 gap) -> UNKNOWN
 US (ET): 04:00-regular open US_PRE; regular session US_REGULAR;
   regular close-20:00 US_POST; 20:00-04:00 and non-session days -> UNKNOWN
   (``US_DAY`` exists in the table CHECK for a later day-market reader; this
@@ -56,6 +60,7 @@ from app.services.brokers.kis.live_order_expiry import (
     KR_REGULAR_OPEN_KST,
     KRX_AFTER_CLOSE_KST,
     KRX_AFTER_OPEN_KST,
+    NXT_CLOSE_KST,
 )
 from app.services.kis_futures_mock.session_calendar import (
     REGULAR_CLOSE as FUTURES_DAY_CLOSE_KST,
@@ -77,6 +82,15 @@ US_REGULAR = "US_REGULAR"
 US_POST = "US_POST"
 FUT_DAY = "FUT_DAY"
 FUT_NIGHT = "FUT_NIGHT"
+
+# NXT windows (bar START minute). The event windows are 09:00:30-15:20 for the main
+# market and 15:40-20:00 for after-market; a bar is labelled by its start minute, so
+# the 09:00 bar (which holds 09:00:30+ trades) is NXT_OVERLAP and the 15:19 bar is the
+# last one. The 15:40-16:00 part of the after-market shares time with the KRX
+# closing-price trade and is not labelled (see the module docstring).
+NXT_MAIN_OPEN_KST = time(9, 0)
+NXT_MAIN_CLOSE_KST = time(15, 20)
+NXT_AFTER_OPEN_KST = time(16, 0)
 
 FUTURES_NIGHT_OPEN_KST = time(18, 0)
 FUTURES_NIGHT_CLOSE_KST = time(6, 0)
@@ -119,9 +133,9 @@ def _kr_segment(venue: str, bar_start_utc: datetime) -> str:
     if venue == "NTX":
         if _in(clock, KR_PREMARKET_OPEN_KST, KR_PREMARKET_CLOSE_KST):
             return NXT_PRE
-        if _in(clock, KR_REGULAR_OPEN_KST, KR_REGULAR_CLOSE_KST):
+        if _in(clock, NXT_MAIN_OPEN_KST, NXT_MAIN_CLOSE_KST):
             return NXT_OVERLAP
-        if _in(clock, KR_REGULAR_CLOSE_KST, KRX_AFTER_CLOSE_KST):
+        if _in(clock, NXT_AFTER_OPEN_KST, NXT_CLOSE_KST):
             return NXT_POST
     return UNKNOWN
 

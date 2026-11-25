@@ -32,6 +32,9 @@ def _et(day: tuple[int, int, int], hhmm: str) -> datetime:
     return datetime(*day, hour, minute, tzinfo=ET)
 
 
+# NXT official hours (nextrade.co.kr, checked 2026-11-25): pre 08:00-08:50, main
+# 09:00:30-15:20, after-market 15:40-20:00 with 15:40-16:00 shared with the KRX
+# closing-price trade (not distinguishable by time or by the minute frame).
 KR_CASES = [
     # time, KRX, NTX
     ("07:59", "UNKNOWN", "UNKNOWN"),
@@ -40,9 +43,13 @@ KR_CASES = [
     ("08:50", "UNKNOWN", "UNKNOWN"),
     ("08:59", "UNKNOWN", "UNKNOWN"),
     ("09:00", "KRX_REGULAR", "NXT_OVERLAP"),
-    ("15:29", "KRX_REGULAR", "NXT_OVERLAP"),
-    ("15:30", "UNKNOWN", "NXT_POST"),
-    ("15:59", "UNKNOWN", "NXT_POST"),
+    ("15:19", "KRX_REGULAR", "NXT_OVERLAP"),
+    ("15:20", "KRX_REGULAR", "UNKNOWN"),
+    ("15:29", "KRX_REGULAR", "UNKNOWN"),
+    ("15:30", "UNKNOWN", "UNKNOWN"),
+    ("15:39", "UNKNOWN", "UNKNOWN"),
+    ("15:40", "UNKNOWN", "UNKNOWN"),
+    ("15:59", "UNKNOWN", "UNKNOWN"),
     ("16:00", "KRX_AFTER", "NXT_POST"),
     ("19:59", "KRX_AFTER", "NXT_POST"),
     ("20:00", "UNKNOWN", "UNKNOWN"),

@@ -52,8 +52,8 @@ def test_expected_minutes_per_segment_match_the_windows() -> None:
     assert {k: len(v) for k, v in krx.items()} == {"KRX_REGULAR": 390, "KRX_AFTER": 240}
     assert {k: len(v) for k, v in ntx.items()} == {
         "NXT_PRE": 50,
-        "NXT_OVERLAP": 390,
-        "NXT_POST": 270,
+        "NXT_OVERLAP": 380,
+        "NXT_POST": 240,
     }
     us = cov.expected_minutes_by_segment("us", "NASD", date(2026, 12, 15))
     assert {k: len(v) for k, v in us.items()} == {
@@ -94,6 +94,54 @@ def test_missing_minutes_and_latency_percentiles_on_a_fixture() -> None:
     )
     assert after["latency_p50_s"] is None
     assert report["symbols_without_rows"] == ["000660"]
+
+
+def test_ntx_expected_total_follows_the_official_hours() -> None:
+    # pre 08:00-08:49 (50) + main 09:00-15:19 (380) + after 16:00-19:59 (240);
+    # 15:20-16:00 has no scheduled NXT continuous trading and is never expected.
+    ntx = cov.expected_minutes_by_segment("kr", "NTX", KR_DATE)
+    assert sum(len(v) for v in ntx.values()) == 670
+    assert _utc_kst(15, 20) not in set().union(*ntx.values())
+    assert _utc_kst(15, 39) not in set().union(*ntx.values())
+    assert _utc_kst(15, 40) not in set().union(*ntx.values())
+    assert _utc_kst(16, 0) in ntx["NXT_POST"]
+
+
+def test_ntx_gap_minutes_are_never_missing() -> None:
+    # only the 09:00-15:19 main minutes are stored; 15:20-16:00 must not add misses
+    main = [_utc_kst(9, 0) + timedelta(minutes=i) for i in range(380)]
+    rows = [
+        cov.StoredMinute(
+            symbol="005930",
+            venue="NTX",
+            session_segment="NXT_OVERLAP",
+            time_utc=m,
+            retrieved_at=m + timedelta(minutes=1, seconds=5),
+        )
+        for m in main
+    ]
+    report = cov.coverage_report(
+        rows, market="kr", session_date=KR_DATE, as_of=_utc_kst(21, 0)
+    )
+    assert not any(e["session_segment"] == "UNKNOWN" for e in report["entries"])
+    overlap = next(
+        e for e in report["entries"] if e["session_segment"] == "NXT_OVERLAP"
+    )
+    assert (
+        overlap["rows"],
+        overlap["expected_minutes"],
+        overlap["missing_minutes"],
+    ) == (
+        380,
+        380,
+        0,
+    )
+    after = next(e for e in report["entries"] if e["session_segment"] == "NXT_POST")
+    assert (after["rows"], after["expected_minutes"], after["missing_minutes"]) == (
+        0,
+        240,
+        240,
+    )
 
 
 def test_only_closed_minutes_are_expected_at_as_of() -> None:
