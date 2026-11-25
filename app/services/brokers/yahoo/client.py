@@ -173,6 +173,7 @@ async def _fetch_ohlcv_raw(
     end_date: datetime | None = None,
     *,
     prepost: bool = False,
+    empty_ok: bool = False,
 ) -> pd.DataFrame:
     period_map = {"day": "1d", "week": "1wk", "month": "1mo", "1h": "60m"}
     if period not in period_map:
@@ -211,6 +212,8 @@ async def _fetch_ohlcv_raw(
                 .reset_index(drop=True)
             )
             if df.empty:
+                if empty_ok:
+                    return df
                 raise ValueError(f"{ticker} OHLCV not found")
             return df
         except Exception as exc:

@@ -8,6 +8,7 @@ NOT know about the database or about KIS.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -32,7 +33,28 @@ class YahooFallbackRow:
 async def fetch_us_daily_yahoo_fallback(
     *, symbol: str, n: int
 ) -> list[YahooFallbackRow]:
-    frame = await yahoo_service.fetch_ohlcv(ticker=symbol, days=n, period="day")
+    # yfinance's download is synchronous. Keep this caller's batch fallback
+    # from blocking the event loop while preserving Yahoo's closed-day filter.
+    try:
+        frame = await asyncio.to_thread(
+            lambda: asyncio.run(
+                yahoo_service._fetch_ohlcv_raw(
+                    ticker=symbol, days=n, period="day", empty_ok=True
+                )
+            )
+        )
+    except TypeError as exc:
+        # Compatibility for patched raw fetchers that predate empty_ok.
+        if "empty_ok" not in str(exc):
+            raise
+        frame = await asyncio.to_thread(
+            lambda: asyncio.run(
+                yahoo_service._fetch_ohlcv_raw(
+                    ticker=symbol, days=n, period="day"
+                )
+            )
+        )
+    frame = yahoo_service._filter_closed_buckets_nyse(frame, "day")
     if frame.empty or "close" not in frame.columns:
         return []
 

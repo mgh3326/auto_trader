@@ -68,6 +68,12 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 1,
         "period": 0.2,
     },
+    # US daily sync is intentionally held below the KIS app-key ceiling so
+    # serving traffic and other jobs retain headroom.
+    "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice": {
+        "rate": 10,
+        "period": 1.0,
+    },
     # ROB-951: mock-US buy preflight and the read-only probe use VTTS3007R.
     "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
         "rate": 10,

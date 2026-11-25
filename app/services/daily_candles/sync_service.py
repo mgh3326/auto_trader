@@ -12,15 +12,18 @@ fetcher modules; the SQL lives in the repository.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
+from app.core.async_rate_limiter import AsyncSlidingWindowRateLimiter
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -92,6 +95,40 @@ KISUsFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 YahooUsFetcher = Callable[..., Awaitable[list[YahooFallbackRow]]]
 UpbitCryptoFetcher = Callable[..., Awaitable["pd.DataFrame"]]
 TossDailyFetcher = Callable[..., Awaitable["pd.DataFrame"]]
+UsLaneFetcher = Callable[[SyncTarget, int], Awaitable[pd.DataFrame]]
+
+
+@dataclass(slots=True)
+class UsDailyLane:
+    """One source's US daily fetch budget and concurrency boundary."""
+
+    name: str
+    source: str
+    fetcher: UsLaneFetcher
+    max_concurrency: int
+    rate_per_second: int
+    limiter: Any | None = None
+    _semaphore: asyncio.Semaphore = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.max_concurrency < 1:
+            raise ValueError("max_concurrency must be positive")
+        self._semaphore = asyncio.Semaphore(self.max_concurrency)
+        if self.limiter is None:
+            self.limiter = AsyncSlidingWindowRateLimiter(
+                rate=self.rate_per_second, period=1.0, name=f"daily-us-{self.name}"
+            )
+
+    async def fetch(self, target: SyncTarget, horizon_bars: int) -> pd.DataFrame:
+        async with self._semaphore:
+            await self.limiter.acquire()
+            return await self.fetcher(target, horizon_bars)
+
+
+class NoDataError(RuntimeError):
+    """All US daily sources completed without rows for a symbol."""
+
+
 # (symbol, exchange-or-None) pairs of currently held US symbols; see the
 # holdings-union docstring on ``sync_market_universe``.
 UsHoldingsLoader = Callable[[], Awaitable[list[tuple[str, str | None]]]]
@@ -112,6 +149,7 @@ class DailyCandleSyncService:
         upbit_holdings_loader: Callable[[], Awaitable[set[str]]] | None = None,
         close_callbacks: list[Callable[[], object]] | None = None,
         kst_today: Callable[[], date] | None = None,
+        us_daily_lanes: list[UsDailyLane] | None = None,
     ) -> None:
         self._repository = repository
         self._kis_kr = kis_kr_fetcher
@@ -124,6 +162,7 @@ class DailyCandleSyncService:
         self._upbit_holdings_loader = upbit_holdings_loader
         self._close_callbacks = close_callbacks or []
         self._kst_today = kst_today
+        self._us_daily_lanes = us_daily_lanes
 
     def _run_date(self) -> date:
         return self._kst_today() if self._kst_today is not None else today_kst()
@@ -293,6 +332,10 @@ class DailyCandleSyncService:
         For the holdings-union pattern, see app/services/us_candles_sync_service.py:471-481.
         """
         targets = await self._resolve_universe(market=market)
+        if market == "us":
+            return await self._sync_us_universe(
+                targets=targets, horizon_bars=horizon_bars
+            )
         rows_total = 0
         fallback_count = 0
         skipped = 0
@@ -354,6 +397,197 @@ class DailyCandleSyncService:
             "failed_symbols": failed_symbols,
             "failed_count": failed_count,
         }
+
+    def _us_lanes(self) -> list[UsDailyLane]:
+        if self._us_daily_lanes is not None:
+            return self._us_daily_lanes
+        lanes: list[UsDailyLane] = [
+            UsDailyLane(
+                name="kis",
+                source="kis",
+                fetcher=lambda target, n: self._kis_us(
+                    symbol=target.symbol, exchange_code=target.partition, n=n
+                ),
+                max_concurrency=10,
+                rate_per_second=10,
+            )
+        ]
+        if self._toss_us is not None:
+            lanes.append(
+                UsDailyLane(
+                    name="toss",
+                    source="toss_fallback",
+                    fetcher=lambda target, n: self._toss_us(
+                        symbol=target.symbol, n=n
+                    ),
+                    max_concurrency=15,
+                    rate_per_second=15,
+                )
+            )
+        return lanes
+
+    async def _sync_us_universe(
+        self, *, targets: list[SyncTarget], horizon_bars: int
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        lanes = self._us_lanes()
+        if not lanes:
+            raise RuntimeError("US daily sync requires at least one source lane")
+        stats = {
+            lane.name: {"attempted": 0, "rows": 0, "empty": 0, "errors": 0}
+            for lane in lanes
+        }
+        assigned = {lane.name: 0 for lane in lanes}
+
+        async def fetch_target(
+            target: SyncTarget, first_lane_index: int
+        ) -> tuple[SyncTarget, list[DailyCandleRow], bool, Exception | None]:
+            last_error: Exception | None = None
+            for offset in range(len(lanes)):
+                lane = lanes[(first_lane_index + offset) % len(lanes)]
+                lane_stats = stats[lane.name]
+                lane_stats["attempted"] += 1
+                if offset:
+                    assigned[lane.name] += 1
+                try:
+                    frame = await lane.fetch(target, horizon_bars)
+                    rows = frame_to_rows(
+                        frame,
+                        symbol=target.symbol,
+                        partition=target.partition,
+                        source=lane.source,
+                    )
+                except Exception as exc:
+                    lane_stats["errors"] += 1
+                    last_error = exc
+                    logger.warning(
+                        "US daily lane failed lane=%s symbol=%s error_class=%s",
+                        lane.name,
+                        target.symbol,
+                        type(exc).__name__,
+                    )
+                    continue
+                if rows:
+                    lane_stats["rows"] += len(rows)
+                    return target, rows, offset > 0, None
+                lane_stats["empty"] += 1
+
+            # Yahoo is deliberately last after each source has been attempted
+            # once. Its empty result is ordinary no-data, not an exception.
+            try:
+                yahoo_rows = await self._yahoo_us(
+                    symbol=target.symbol, n=horizon_bars
+                )
+            except Exception as exc:
+                return target, [], True, exc
+            if yahoo_rows:
+                rows = [
+                    DailyCandleRow(
+                        time_utc=row.time_utc,
+                        symbol=row.symbol,
+                        partition=target.partition,
+                        open=row.open,
+                        high=row.high,
+                        low=row.low,
+                        close=row.close,
+                        adj_close=row.adj_close,
+                        volume=row.volume,
+                        value=row.value,
+                        source="yahoo_fallback",
+                    )
+                    for row in yahoo_rows
+                ]
+                return target, rows, True, None
+            return target, [], True, last_error or NoDataError("no US daily rows")
+
+        fetched = await asyncio.gather(
+            *(
+                fetch_target(target, index % len(lanes))
+                for index, target in enumerate(targets)
+            )
+        )
+
+        rows_total = 0
+        fallback_count = 0
+        failures: dict[str, Exception] = {
+            target.symbol: error
+            for target, rows, _fallback, error in fetched
+            if error is not None and not rows
+        }
+        # Serialize all session access. Successful symbols are written as one
+        # executemany call per chunk; only a bad chunk is retried individually.
+        for offset in range(0, len(fetched), 100):
+            chunk = fetched[offset : offset + 100]
+            for _target, rows, fallback_used, _error in chunk:
+                if rows and fallback_used:
+                    fallback_count += 1
+            row_groups = {
+                target.symbol: rows for target, rows, _fallback, _error in chunk if rows
+            }
+            if not row_groups:
+                continue
+            rows_total += await self._write_us_chunk(row_groups, failures)
+
+        failed_symbols = [
+            {"symbol": symbol, "error_class": type(error).__name__}
+            for symbol, error in sorted(failures.items())
+        ]
+        failed_count = len(failed_symbols)
+        status = (
+            "failed"
+            if targets and failed_count == len(targets)
+            else "partial"
+            if failed_count
+            else "ok"
+        )
+        elapsed = max(time.monotonic() - started, 0.001)
+        return {
+            "status": status,
+            "market": "us",
+            "targets_total": len(targets),
+            "rows_upserted": rows_total,
+            "fallback_count": fallback_count,
+            "skipped": 0,
+            "failed_symbols": failed_symbols,
+            "failed_count": failed_count,
+            "lane_counts": stats,
+            "lane_fallbacks": assigned,
+            "throughput_symbols_per_second": round(len(targets) / elapsed, 2),
+        }
+
+    async def _write_us_chunk(
+        self,
+        row_groups: dict[str, list[DailyCandleRow]],
+        failures: dict[str, Exception],
+    ) -> int:
+        all_rows = [row for rows in row_groups.values() for row in rows]
+        try:
+            written = await self._repository.upsert_rows(
+                market=MarketKey.US, rows=all_rows
+            )
+            await self._commit_or_rollback()
+            return written
+        except Exception as exc:
+            await self._repository.session.rollback()
+            if _is_job_wide_database_failure(exc):
+                raise
+            logger.warning(
+                "US daily candle batch write failed; isolating symbols error_class=%s",
+                type(exc).__name__,
+            )
+        written = 0
+        for symbol, rows in row_groups.items():
+            try:
+                written += await self._repository.upsert_rows(
+                    market=MarketKey.US, rows=rows
+                )
+                await self._commit_or_rollback()
+            except Exception as exc:
+                await self._repository.session.rollback()
+                if _is_job_wide_database_failure(exc):
+                    raise
+                failures[symbol] = exc
+        return written
 
     async def _resolve_universe(self, *, market: str) -> list[SyncTarget]:
         """Return list of (market, symbol, partition) targets to sync.
@@ -524,9 +758,11 @@ async def _build_default_service() -> DailyCandleSyncService:
     from app.services.daily_candles.yahoo_us_fallback import (
         fetch_us_daily_yahoo_fallback,
     )
+    from app.services.brokers.toss.client import TossReadClient
 
     session = AsyncSessionLocal()
     kis = KISClient()
+    toss = TossReadClient.from_settings() if settings.toss_api_enabled else None
 
     async def _kr(*, code: str, n: int) -> pd.DataFrame:
         return await fetch_kr_daily_unclamped(kis=kis, code=code, n=n)
@@ -573,7 +809,9 @@ async def _build_default_service() -> DailyCandleSyncService:
         )
 
     async def _toss(*, symbol: str, n: int) -> pd.DataFrame:
-        return await fetch_daily_toss_unclamped(symbol=symbol, n=n)
+        return await fetch_daily_toss_unclamped(
+            symbol=symbol, n=n, client=toss
+        )
 
     async def _us_holdings() -> list[tuple[str, str | None]]:
         """Held US symbols for the target union (KIS + manual holdings).
@@ -625,5 +863,9 @@ async def _build_default_service() -> DailyCandleSyncService:
         toss_us_fetcher=_toss if settings.toss_api_enabled else None,
         us_holdings_loader=_us_holdings,
         upbit_holdings_loader=_upbit_holdings,
-        close_callbacks=[session.close, kis.close],
+        close_callbacks=[
+            session.close,
+            kis.close,
+            *([toss.aclose] if toss is not None else []),
+        ],
     )

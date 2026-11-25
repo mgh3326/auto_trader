@@ -37,6 +37,10 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 1,
         "period": 0.2,
     },
+    "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice": {
+        "rate": 10,
+        "period": 1.0,
+    },
     "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
         "rate": 10,
         "period": 1.0,

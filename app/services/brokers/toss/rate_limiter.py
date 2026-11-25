@@ -88,7 +88,9 @@ _BASE_LIMITS: dict[TossApiGroup, int] = {
     TossApiGroup.STOCK: 5,
     TossApiGroup.MARKET_INFO: 3,
     TossApiGroup.MARKET_DATA: 10,
-    TossApiGroup.MARKET_DATA_CHART: 5,
+    # Official cap is 20/s (overview.md read 2026-11-26); reserve headroom for
+    # other chart callers sharing the client.
+    TossApiGroup.MARKET_DATA_CHART: 15,
     TossApiGroup.STOCK_TRADING_TREND: 10,
     TossApiGroup.MARKET_INDICATOR: 10,
     TossApiGroup.RANKING: 5,
