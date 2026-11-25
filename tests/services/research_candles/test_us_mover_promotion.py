@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.config import settings
 from app.services.research_candles import session_minutes_collector as sc
 
 pytestmark = pytest.mark.unit
@@ -104,7 +105,15 @@ class _UsSession:
         text = str(statement)
         self.statements.append(text)
         if "invest_momentum_event_snapshots" in text:
-            return _Result(self._movers)
+            values = statement.compile().params.values()
+            return _Result(
+                row
+                for row in self._movers
+                if not (
+                    (row.source == "benzinga_pro" and "benzinga_pro" in values)
+                    or (row.order_type == "excluded" and "excluded" in values)
+                )
+            )
         if "us_candles_1m" in text:
             return _Result(self._earliest)
         return _Result(self._pick)
@@ -240,3 +249,27 @@ async def test_the_excluded_warrant_is_reported_with_its_reason(monkeypatch) -> 
             "position": None,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_benzinga_pro_promotion_is_opt_in_and_excludes_sentinels(monkeypatch):
+    kis_rows = _the_11_25_rows()
+    alpaca = _row("ALPA", at=T_1320, rank=3, trade_value="5000000")
+    alpaca.source = "alpaca_screener"
+    existing = [*kis_rows, alpaca]
+    benzinga = _row("BZUP", at=T_1320, rank=1, trade_value="50000000")
+    benzinga.source = "benzinga_pro"
+    excluded = _row("BZNO", at=T_1320, rank=1, trade_value="50000000")
+    excluded.source, excluded.order_type = "benzinga_pro", "excluded"
+    all_rows = [*existing, benzinga, excluded]
+
+    monkeypatch.setattr(settings, "SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED", False)
+    baseline = await _us_targets(monkeypatch, _UsSession(existing))
+    disabled = await _us_targets(monkeypatch, _UsSession(all_rows))
+    assert baseline.symbols == disabled.symbols
+    assert sc.targets_report(baseline) == sc.targets_report(disabled)
+
+    monkeypatch.setattr(settings, "SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED", True)
+    enabled = await _us_targets(monkeypatch, _UsSession(all_rows))
+    assert "BZUP" in enabled.symbols
+    assert "BZNO" not in enabled.symbols

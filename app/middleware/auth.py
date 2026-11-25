@@ -7,6 +7,7 @@ from typing import ClassVar, cast
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette._utils import get_route_path
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.web_router import get_current_user_from_session
@@ -268,6 +269,29 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid execution ledger ingest token"},
+                )
+            return None
+
+        if (
+            get_route_path(scope).rstrip("/")
+            == "/trading/api/research/benzinga-pro/ingest"
+        ):
+            if settings.BENZINGA_PRO_INGEST_ENABLED is not True:
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            expected = settings.BENZINGA_PRO_INGEST_TOKEN
+            header = settings.BENZINGA_PRO_INGEST_TOKEN_HEADER.strip()
+            if not expected or not header:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Benzinga Pro ingest token not configured"},
+                )
+            if not hmac.compare_digest(
+                request.headers.get(header, "").encode("utf-8", "surrogateescape"),
+                expected.encode("utf-8", "surrogateescape"),
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid Benzinga Pro ingest token"},
                 )
             return None
 

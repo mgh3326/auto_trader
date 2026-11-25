@@ -27,6 +27,7 @@ CATEGORIES: frozenset[str] = frozenset(
         "dividend",
         "short_interest",
         "wiim",
+        "breaking_news",
     }
 )
 
@@ -56,6 +57,7 @@ SOURCES: frozenset[str] = frozenset(
         "wisefn",
         "tradingview",
         "benzinga",
+        "benzinga_pro",
     }
 )
 
