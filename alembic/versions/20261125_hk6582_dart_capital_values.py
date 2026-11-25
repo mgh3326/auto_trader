@@ -16,9 +16,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Migration-cycle fixtures create current metadata before stamping an older revision.
     op.add_column(
         "market_event_values",
         sa.Column("value_details", postgresql.JSONB(none_as_null=True), nullable=True),
+        if_not_exists=True,
     )
 
 

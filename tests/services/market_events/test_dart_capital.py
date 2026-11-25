@@ -466,3 +466,26 @@ def test_dart_suite_is_in_exactly_one_ci_shard():
         )
         == 1
     )
+
+
+def test_dart_migration_upgrade_accepts_a_metadata_created_column():
+    from io import StringIO
+
+    from alembic.config import Config
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    rev = script.get_revision("20261125_hk6582_dart_capital")
+    assert rev is not None
+    output = StringIO()
+    ctx = MigrationContext.configure(
+        dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}
+    )
+    with Operations.context(ctx):
+        rev.module.upgrade()
+    assert (
+        "ALTER TABLE market_event_values ADD COLUMN IF NOT EXISTS value_details JSONB"
+        in output.getvalue()
+    )
