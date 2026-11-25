@@ -455,3 +455,35 @@ async def test_submit_extended_hours_differing_from_preview_is_refused(
     assert outcome.broker_called is False
     assert transport.calls == []
     assert ledger.recorded == []
+
+
+# ---------------------------------------------------------------------------
+# Packet serialization: the default shape is unchanged (rollback-safe)
+# ---------------------------------------------------------------------------
+def test_default_packet_serialization_omits_extended_hours_key() -> None:
+    canonical = _limit_day_canonical(extended_hours=False)
+    packet = _packet(
+        client_order_id=GOLDEN_DEFAULT_COID,
+        preview_canonical=canonical,
+        execution_extended_hours=False,
+    )
+
+    dumped = packet.model_dump(mode="json")
+
+    assert "execution_extended_hours" not in dumped
+    # A stored packet without the key (as an older release writes it) loads as False.
+    assert PaperApprovalPacket(**dumped).execution_extended_hours is False
+
+
+def test_extended_packet_serialization_carries_the_flag() -> None:
+    canonical = _limit_day_canonical(extended_hours=True)
+    packet = _packet(
+        client_order_id=derive_client_order_id(canonical),
+        preview_canonical=canonical,
+        execution_extended_hours=True,
+    )
+
+    dumped = packet.model_dump(mode="json")
+
+    assert dumped["execution_extended_hours"] is True
+    assert PaperApprovalPacket(**dumped).execution_extended_hours is True

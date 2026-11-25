@@ -302,6 +302,7 @@ tests/services/strategy_sleeves/test_exit_handoffs.py
 tests/services/strategy_sleeves/test_gate.py
 tests/services/strategy_sleeves/test_store_db.py
 tests/services/strategy_sleeves/test_store_inputs.py
+tests/services/test_alpaca_paper_extended_hours.py
 tests/services/test_alpaca_paper_ledger_lifecycle_fixture.py
 tests/services/test_alpaca_paper_snapshot_attestation.py
 tests/services/test_alpaca_paper_submit_coordinator.py

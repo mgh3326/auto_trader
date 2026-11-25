@@ -37,7 +37,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
@@ -182,6 +189,19 @@ class PaperApprovalPacket(BaseModel):
     # new automated SELL can claim or reach the broker.
     source_client_order_id: str | None = None
     decision_identity_hash: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_default_extended_hours(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        # hk 6497: a regular-session packet serializes exactly as before this
+        # field existed, so stored preview rows and packet_hash stay identical.
+        # An older release (extra="forbid") can therefore still load them after a
+        # rollback. A missing key loads as False.
+        data = handler(self)
+        if data.get("execution_extended_hours") is False:
+            del data["execution_extended_hours"]
+        return data
 
     @field_validator("expires_at")
     @classmethod
