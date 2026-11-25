@@ -62,11 +62,17 @@ def test_vocabularies_match_the_code() -> None:
 
 
 @pytest.mark.unit
-def test_downgrade_refuses_while_us_rows_exist() -> None:
+def test_downgrade_refuses_while_us_rows_or_new_reasons_exist() -> None:
     source = EXPAND.read_text()
     downgrade = source.split("def downgrade()", 1)[1]
+    # snapshot rows would violate the restored kr-only CHECK ...
     assert "market = 'us'" in downgrade
-    assert "RAISE EXCEPTION" in downgrade
+    # ... and so would a run row carrying the widened reason.
+    assert "source_unavailable" in downgrade
+    assert downgrade.count("RAISE EXCEPTION") == 2
+    migration = _load(EXPAND, "hk6510_runs_guard")
+    assert migration.RUNS_TABLE == "invest_momentum_event_runs"
+    assert "{RUNS_TABLE}" in downgrade
 
 
 @pytest.mark.unit
