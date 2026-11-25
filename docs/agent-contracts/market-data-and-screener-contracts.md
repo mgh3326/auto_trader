@@ -29,6 +29,7 @@
 - research 분봉 HTTP ingest·대상 읽기 (hk 6343)
 - 장중 급등·급락 관측 로그 (hk 6154)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
+- KR 관리·시장경고·정리매매·거래정지 플래그 (hk 6503)
 
 ## 기준 원문 계약
 
@@ -816,3 +817,15 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 ### Go↔Python 분봉 전환 비교 (hk 6345)
 
 `scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 비교할 근거가 없으면(한쪽 0행, 겹치는 봉 0개, 요청 종목이 양쪽에 없음) PASS 가 아니라 `INCONCLUSIVE`(종료 코드 4)다. Python 쪽은 세션 수집기 행(`batch_id` 접두어 `session-minutes-`)만 본다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
+
+### KR 관리·시장경고·정리매매·거래정지 플래그 (hk 6503)
+
+국내 종목의 관리종목·시장경고·정리매매·거래정지 상태를 `public.kr_symbol_trading_flags`(PK `(symbol, category)`, 마이그레이션 `20261125_hk6503_kr_trading_flags`, 추가형)에 둔다. 🔴 **행이 없으면 unknown 이며 `none` 이 아니다.** `none` 은 소스가 명시한 값(KIS `N`, 네이버 `tradeStopYn=N`, 시장경고 `00`)에서만 온다.
+
+- **소스와 오프라인 계약**: KIS 종목정보(`kospi_code.mst`·`kosdaq_code.mst`)의 tail 고정폭 필드(거래정지·정리매매·관리종목·시장경고)는 공개 스펙 `github.com/koreainvestment/open-trading-api` `stocks_info/kis_{kospi,kosdaq}_code_mst.py` 의 오프셋으로 읽는다(`app/services/kr_trading_flags/kis_master.py`). 스펙의 폭 합은 tail 길이(228/222)보다 1바이트 작다. 🔴 **[unverified]** 스펙은 필드 이름과 폭만 주고 값 샘플은 주지 않는다. 시장경고 `02`/`03` 과 `Y/N` 의 실제 분포는 라이브 스모크 전에는 확정하지 않는다. 네이버 `manageStatusGb=1` 을 관리로 보는 것도 픽스처 224060 에서만 추정한 것이다(`naver_status.py`).
+- **쓰기 가드**(`store.py`, SQL 에 있다): 새 `observed_at` 만 기존 행을 덮는다. `unmapped` 은 매핑된 상태를 절대 덮지 않는다(읽지 못한 코드가 이미 제외된 종목을 다시 열지 못하게 한다). 매핑되지 않는 코드는 `raw_code` 로 보존하고 추측하지 않는다.
+- **닫힌 어휘**: 관리 `designated|none|unmapped`, 시장경고 `none|caution|warning|risk|unmapped`(투자주의=caution, 투자경고=warning, 투자위험=risk), 정리매매 `in_progress|none|unmapped`, 거래정지 `halted|none|unmapped`. DB CHECK 가 카테고리별 상태를 강제한다.
+- **스크리너 게이트**(`app/services/kr_trading_flags/gate.py`, `app/mcp_server/tooling/screening/trading_flag_filter.py`, `screen_stocks` 진입점의 halt 필터 뒤): 관리·투자경고·투자위험·정리매매·거래정지는 제외되고 `meta.trading_flag_excluded` 에 사유 코드(`management_designated`·`market_alert_warning`·`market_alert_risk`·`delisting_trade_in_progress`·`trading_halt`), 출처, 관측 시각, 소스 사유 코드, 지정일이 남는다. **투자주의는 제외하지 않고** 행의 `trading_flag_labels` 로만 표시한다. 저장소 읽기 실패는 fail-open(모든 행 유지, `meta.trading_flags_check_skipped`). 이 게이트는 `screen_stocks`(매수 후보 fanout 포함)에만 있고 DB-only `screen_stocks_snapshot` 에는 아직 없다(후속).
+- **halted_suspect**: 판정 로직은 그대로다. 국내 종목에 halt suspicion 이 서고 저장된 `trading_halt=halted` 행이 있을 때만 `halt_suspect.confirmed_halt_flag` 로 근거를 붙인다(`app/services/kr_trading_flags/lookup.py`).
+- **쓰기 경로(운영자 수동)**: `scripts/sync_kr_trading_flags.py --source kis-master|naver-intraday [--dry-run]`. 소스 실패·형식 오류는 쓰기 전에 종료 코드 1. 네이버 목록은 상태가 있는 종목만 준다. 목록에 없는 종목은 "해제"의 증거가 아니므로 아무것도 쓰지 않는다. 스케줄 등록은 없다. 장중 10분 간격 DAG 사본은 `deploy/dagu/at-kr-trading-flags/`(등록 안 됨).
+- **범위 밖**: 주문 경로, Upbit, US, KRX 거래정지 마스터(`halted_suspect` 의 `krx_halt_master: unavailable` 는 그대로다), 스냅샷 전용 스크리너(`screen_stocks_snapshot`), KOSDAQ 의 `투자주의환기종목여부`(별도 필드).

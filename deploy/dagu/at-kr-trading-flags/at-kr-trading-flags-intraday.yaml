@@ -1,0 +1,22 @@
+# KR 관리·투자경고·정리매매·거래정지 장중 보조 갱신 (네이버 status 목록): 월–금 KRX 장중 09:00–15:50 KST 10분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 네이버 관리·거래정지·경보 목록을 kr_symbol_trading_flags 에 가드된 쓰기로 반영한다(새 관측만 덮음, unmapped 은 매핑된 상태를 덮지 않음).
+# 실패하면 아무것도 쓰지 않고 종료 코드 1로 끝난다. 일 1회 KIS 종목정보 기준값은 별도 실행이다(README 참고). 등록은 설계 세션이 한다.
+description: "KR trading flags intraday overlay from the Naver 관리·거래정지·경보 list"
+schedule:
+  - "CRON_TZ=Asia/Seoul */10 9-15 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: overlay
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_kr_trading_flags --source naver-intraday || rc=$?
+      exit "$rc"
+    timeout_sec: 120
+handler_on:
+  success:
+    command: 'logger -t at-dagu-kr-trading-flags "dag=at-kr-trading-flags-intraday status=success"'
+  failure:
+    command: 'logger -t at-dagu-kr-trading-flags "dag=at-kr-trading-flags-intraday status=failure"'
