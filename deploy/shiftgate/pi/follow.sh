@@ -10,14 +10,14 @@
 #   5. deploy_ci_gate.py --github anonymous --main-ancestor : 그 SHA 가 main 의 조상이고 전체 스위트 6개 job 이 초록
 #      (레포는 공개라 인증 없는 GitHub API 읽기. 한도 60회/시간이라 digest 가 바뀐 틱에만 부른다)
 #   6. sha-<7> 태그가 같은 digest 인지 확인
-#   7. DB 백업(systemctl start at-pg-backup.service) — 성공해야만 설치한다. 성공한 백업은 digest 별로 기록해
-#      deploy.sh 가 일시 장애로 되돌아온 재시도에서는 다시 돌리지 않는다(최근 AT_FOLLOW_BACKUP_MAX_AGE_SECONDS 안일 때만)
-#   8. deploy.sh sha-<7> (--allow-unverified 는 절대 쓰지 않는다) → 끝나면 deployed-digest 가 그 digest 인지 확인.
+#   7. deploy.sh sha-<7> (--allow-unverified 는 절대 쓰지 않는다) → 끝나면 deployed-digest 가 그 digest 인지 확인.
 #      이 스크립트가 방금 검증한 digest 는 AT_FOLLOW_VERIFIED_DIGEST 로 넘긴다: deploy.sh 는 GitHub 를 다시 묻지 않고
 #      sha-<7> 태그가 그 digest 인지만 레지스트리에서 확인한다(수동 deploy.sh 는 그대로 전체 게이트를 돈다)
+# 설치 전 DB 백업은 이 스크립트가 하지 않는다(hk 6466, 운영자 결정 decision/2026-11-25/at-pg-backup-dagu-only):
+# at-pg-backup.service 는 Dagu 일일 잡(deploy/dagu/at-maintenance/at-pg-backup.yaml, 매일 04:30 KST)이 돌린다.
 # 실패하면 그 digest 를 hold 한다(사람이 보고 --clear-hold). GitHub 읽기 실패처럼 digest 와 무관한 일시 장애는 retry-after
 # (AT_FOLLOW_RETRY_SECONDS) 뒤 다시 시도하되 digest 마다 최대 AT_FOLLOW_MAX_TRANSIENT_RETRIES 번(기본 3)까지다 — 그 뒤에는
-# 영구 hold 로 바뀌어 사람이 --clear-hold 한다. 백업 실패는 별도 retry-after(AT_FOLLOW_BACKUP_RETRY_SECONDS)다. 결과는 로그(/root/at-run/follow.log, journal)와
+# 영구 hold 로 바뀌어 사람이 --clear-hold 한다. 결과는 로그(/root/at-run/follow.log, journal)와
 # /root/at-run/follow-status.json 에 남기고, panewire 가 있고 AT_FOLLOW_PANEWIRE_LANE 이 있으면 알린다(알림 실패는 배포에 영향 없음).
 # 배포 롤백: deploy.sh --rollback 하기 전에 follow.sh --hold "이유" 로 지금의 deploy 태그 digest 를 hold 한다.
 set -Eeuo pipefail
@@ -28,17 +28,12 @@ RUN_DIRECTORY="${AT_RUN_DIR:-/root/at-run}"
 DEPLOY_TAG="${AT_FOLLOW_TAG:-deploy}"
 PYTHON="${AT_DEPLOY_GATE_PYTHON:-python3}"
 DEPLOY_SH="${AT_FOLLOW_DEPLOY_SH:-${SCRIPT_DIRECTORY}/deploy.sh}"
-SYSTEMCTL="${AT_SYSTEMCTL_BIN:-systemctl}"
-BACKUP_UNIT="${AT_BACKUP_UNIT:-at-pg-backup.service}"
 DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 HOLD_FILE="${RUN_DIRECTORY}/follow-hold"
 STATUS_FILE="${RUN_DIRECTORY}/follow-status.json"
 LOG_FILE="${RUN_DIRECTORY}/follow.log"
 TRANSIENT_RETRY_SECONDS="${AT_FOLLOW_RETRY_SECONDS:-600}"
-BACKUP_RETRY_SECONDS="${AT_FOLLOW_BACKUP_RETRY_SECONDS:-900}"
 MAX_TRANSIENT_RETRIES="${AT_FOLLOW_MAX_TRANSIENT_RETRIES:-3}"
-BACKUP_MAX_AGE_SECONDS="${AT_FOLLOW_BACKUP_MAX_AGE_SECONDS:-3600}"
-BACKUP_MARKER="${RUN_DIRECTORY}/follow-backup-ok"
 TRANSIENT_FILE="${RUN_DIRECTORY}/follow-transient"
 
 usage() {
@@ -47,10 +42,9 @@ usage: follow.sh                       deploy 태그가 새 digest 면 검증 �
        follow.sh --hold REASON         지금의 deploy 태그 digest 를 hold 한다(롤백 전에)
        follow.sh --clear-hold          hold 를 푼다(원인을 확인한 뒤)
        follow.sh --status              마지막 결과와 hold 를 출력한다
-  환경 변수: AT_RUN_DIR AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_FOLLOW_DEPLOY_SH AT_SYSTEMCTL_BIN AT_BACKUP_UNIT
-            AT_FOLLOW_TAG AT_FOLLOW_RETRY_SECONDS AT_FOLLOW_BACKUP_RETRY_SECONDS AT_FOLLOW_MAX_TRANSIENT_RETRIES
-            AT_FOLLOW_BACKUP_MAX_AGE_SECONDS AT_FOLLOW_PANEWIRE_LANE
-  종료 코드: 0 할 일 없음/설치함 · 1 확인하지 못함/백업 실패 · 2 사용법 · 75 다른 배포가 잠금을 잡음(다음 틱) · 78 검증 거부 · 그 밖은 deploy.sh 의 코드
+  환경 변수: AT_RUN_DIR AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_FOLLOW_DEPLOY_SH
+            AT_FOLLOW_TAG AT_FOLLOW_RETRY_SECONDS AT_FOLLOW_MAX_TRANSIENT_RETRIES AT_FOLLOW_PANEWIRE_LANE
+  종료 코드: 0 할 일 없음/설치함 · 1 확인하지 못함/설치 전 실패 · 2 사용법 · 75 다른 배포가 잠금을 잡음(다음 틱) · 78 검증 거부 · 그 밖은 deploy.sh 의 코드
 USAGE
 }
 
@@ -126,18 +120,6 @@ hold_transient() { # digest reason → 0 = 다시 시도 예정, 1 = 횟수를 �
   return 0
 }
 
-# --- 백업 기록: 일시 장애 재시도가 같은 digest 의 백업을 되풀이하지 않게 한다 ------------------------------------------------
-
-backup_recent() { # digest: 이 digest 의 백업이 최근에 성공했으면 0
-  local digest="$1" b_digest b_at
-  [[ -r "$BACKUP_MARKER" ]] || return 1
-  IFS=$'\t' read -r b_digest b_at <"$BACKUP_MARKER" || true
-  [[ "$b_digest" == "$digest" && "$b_at" =~ ^[0-9]+$ ]] || return 1
-  (($(now) - b_at <= BACKUP_MAX_AGE_SECONDS))
-}
-
-backup_record() { printf '%s\t%s\n' "$1" "$(now)" >"$BACKUP_MARKER" 2>/dev/null || true; }
-
 hold_active() { # digest: 이 digest 가 hold 이고 아직 재시도 시각 전이면 0
   local digest="$1" h_digest h_retry
   [[ -r "$HOLD_FILE" ]] || return 1
@@ -198,7 +180,7 @@ case "$MODE" in
     [[ -r "$HOLD_FILE" ]] && { printf 'hold: '; cat "$HOLD_FILE"; } || printf 'no hold\n'
     exit 0 ;;
   clear)
-    rm -f "$HOLD_FILE" "$BACKUP_MARKER" "$TRANSIENT_FILE" && printf 'hold cleared\n' >&2
+    rm -f "$HOLD_FILE" "$TRANSIENT_FILE" && printf 'hold cleared\n' >&2
     exit 0 ;;
 esac
 
@@ -275,20 +257,9 @@ if ! sha_resolved="$(resolve_tag "$SHA_TAG" 2>"$WORK/sha.err")" || [[ "${sha_res
   exit 78
 fi
 
-# 7. 백업이 성공해야만 설치한다. 이 digest 의 백업이 방금 성공했다면(deploy.sh 의 일시 장애로 되돌아온 재시도) 다시 돌리지 않는다.
-if backup_recent "$PINNED"; then
-  log "backup for this digest already succeeded recently; installing ${SHA_TAG}"
-else
-  if ! "$SYSTEMCTL" start "$BACKUP_UNIT" >"$WORK/backup.out" 2>&1; then
-    hold_write "$PINNED" "$BACKUP_RETRY_SECONDS" "backup failed" || true
-    report backup_failed "$PINNED" "$SHA" "${BACKUP_UNIT} failed; nothing was installed, retry in ${BACKUP_RETRY_SECONDS}s"
-    exit 1
-  fi
-  backup_record "$PINNED"
-  log "backup OK; installing ${SHA_TAG}"
-fi
+# 7. 설치. --allow-unverified 는 이 경로에 없다. DB 백업은 여기서 돌리지 않는다(Dagu 일일 잡이 맡는다).
+log "installing ${SHA_TAG}"
 
-# 8. 설치. --allow-unverified 는 이 경로에 없다.
 rc=0
 AT_FOLLOW_VERIFIED_DIGEST="$PINNED" "$DEPLOY_SH" "$SHA_TAG" >"$WORK/deploy.out" 2>&1 || rc=$?
 { printf -- '--- deploy.sh %s (exit %s) ---\n' "$SHA_TAG" "$rc"; cat "$WORK/deploy.out"; } >>"$LOG_FILE" 2>/dev/null || true
@@ -299,8 +270,8 @@ if ((rc == 75)); then
 fi
 if ((rc == 78)) && deploy_gate_unavailable "$WORK/deploy.out"; then
   # deploy.sh's own gate could not read GitHub (an older deploy.sh without the verified-digest handoff, or a
-  # failure of the handoff's registry read): nothing was touched and the digest was verified above and its backup
-  # recorded, so wait and retry — at most MAX_TRANSIENT_RETRIES times per digest, then a permanent hold.
+  # failure of the handoff's registry read): nothing was touched and the digest was verified above, so wait
+  # and retry — at most MAX_TRANSIENT_RETRIES times per digest, then a permanent hold.
   if hold_transient "$PINNED" "deploy.sh gate evidence unavailable"; then
     report refused "$PINNED" "$SHA" "deploy.sh gate evidence unavailable, retry in ${TRANSIENT_RETRY_SECONDS}s"
   else
@@ -308,7 +279,6 @@ if ((rc == 78)) && deploy_gate_unavailable "$WORK/deploy.out"; then
   fi
   exit 78
 fi
-rm -f "$BACKUP_MARKER"  # 설치를 시도했거나(성공·실패) 재시도 대상이 아니므로 이 백업을 다시 쓰지 않는다
 if ((rc != 0)); then
   hold_write "$PINNED" 0 "deploy.sh exit ${rc}" || true
   report failed "$PINNED" "$SHA" "deploy.sh exited ${rc}; see ${LOG_FILE} (rerun deploy.sh or follow.sh --clear-hold after checking)"
