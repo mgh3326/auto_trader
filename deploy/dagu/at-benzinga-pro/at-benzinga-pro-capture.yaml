@@ -1,0 +1,27 @@
+# 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다. 등록은 설계 세션이 한다(hk 6573).
+# Benzinga Pro 스캐너 캡처: 운영자 Mac(worker mbp)의 aside 로그인 세션 안에서 조회하고(세션 키는 페이지 밖으로 나가지 않는다),
+# 결과를 로컬 JSONL 에 남긴 뒤 AT ingest(hk 6579)로 보낸다. 운영자 결정 decision/2026-11-25/at-benzinga-pro-capture-and-trading-use.
+# ingest 주소·토큰은 ~/.config/auto_trader/benzinga-pro-ingest.env (BENZINGA_PRO_INGEST_URL, BENZINGA_PRO_INGEST_TOKEN).
+description: "Benzinga Pro scanner capture via aside on mbp (pre-market every 30m + after the open)"
+schedule:
+  - "CRON_TZ=America/New_York */30 4-8 * * 1-5"
+  - "CRON_TZ=America/New_York 0,30 9 * * 1-5"
+  - "CRON_TZ=America/New_York 45 9 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: mbp
+dotenv: ~/.config/auto_trader/benzinga-pro-ingest.env
+steps:
+  - name: capture
+    working_dir: ~/work/auto_trader
+    script: |
+      rc=0
+      uv run python -m scripts.benzinga_pro_capture || rc=$?
+      exit "$rc"
+    timeout_sec: 600
+handler_on:
+  success:
+    command: 'logger -t at-dagu-benzinga-pro "dag=at-benzinga-pro-capture status=success"'
+  failure:
+    command: 'logger -t at-dagu-benzinga-pro "dag=at-benzinga-pro-capture status=failure"'
