@@ -593,16 +593,14 @@ def test_kis_tail_is_still_read_in_the_first_grace_minutes_after_day_market_open
     assert bar.session_segment == US_POST
 
 
-def test_runner_commits_each_revision_before_the_next() -> None:
-    """Commit order (review r3): env.py must set transaction_per_migration in both the
-    offline and the online configure call, so the expand revision commits before the
-    VALIDATE revision starts. The DB order is checked in CI; this pins the setting."""
-    source = (REPO / "alembic/env.py").read_text()
-    assert source.count("transaction_per_migration=True") == 2
-    assert source.count("context.configure(") == 2
-    # the VALIDATE revision itself is a plain statement (no autocommit block)
-    validate = (MIGRATION_B).read_text()
-    assert "autocommit_block" not in validate
+def test_validate_revision_is_a_plain_statement_and_states_its_lock() -> None:
+    """Review r3 (consult): no autocommit block in the validate revision (it breaks the
+    DB harness, which applies migrations inside an open transaction), and the
+    docstring states that the scan runs under the expand locks."""
+    source = MIGRATION_B.read_text()
+    assert "autocommit_block" not in source
+    assert "VALIDATE CONSTRAINT" in source
+    assert "ACCESS EXCLUSIVE" in source and "ONE transaction" in source
 
 
 def test_unbuildable_toss_reader_counts_as_a_run_error_in_collect() -> None:

@@ -5,9 +5,19 @@ Revises: 20261125_hk6322_us_toss_venue
 Create Date: 2026-11-25
 
 Runs ``VALIDATE CONSTRAINT`` on ``ck_research_us_candles_1m_venue`` after the
-NOT VALID expand step. The validation scans the table under SHARE UPDATE
-EXCLUSIVE only, so writes continue. Downgrade is a no-op: the validated constraint
-is the one the previous revision's downgrade replaces.
+NOT VALID expand step.
+
+Lock behaviour, stated plainly: ``alembic/env.py`` runs every pending revision in
+ONE transaction (no ``transaction_per_migration``). So the scan below runs while
+the expand revision's ACCESS EXCLUSIVE locks (ADD CONSTRAINT, DROP NOT NULL) are
+still held. That is accepted for this table: ``research.us_candles_1m`` was
+created one revision earlier by hk 6145, holds at most a few days of rows, and
+its only writer (the session-minutes collector) is an unregistered DAG copy, so
+nothing is blocked in practice. Making each revision commit on its own is a
+runner-level change for every migration and is tracked as a separate task.
+
+Downgrade is a no-op: the validated constraint is the one the previous revision's
+downgrade replaces.
 """
 
 # expand-contract: contract-step 6322
@@ -26,9 +36,6 @@ US_VENUE_CHECK = "ck_research_us_candles_1m_venue"
 
 
 def upgrade() -> None:
-    # alembic/env.py sets transaction_per_migration: the expand revision has already
-    # committed, so its ACCESS EXCLUSIVE locks are gone and this scan takes only
-    # SHARE UPDATE EXCLUSIVE (hk 6322, review r3).
     op.execute(
         f"ALTER TABLE research.us_candles_1m VALIDATE CONSTRAINT {US_VENUE_CHECK}"
     )
