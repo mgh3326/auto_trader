@@ -560,7 +560,11 @@ async def test_toss_not_listed_and_real_errors_are_reported_separately() -> None
     )
     assert report["errors"] == 1
     assert report["error_details"] == [
-        {"symbol": "BAD", "venue": "TOSS_INTEGRATED", "error_class": "TossApiResponseError"}
+        {
+            "symbol": "BAD",
+            "venue": "TOSS_INTEGRATED",
+            "error_class": "TossApiResponseError",
+        }
     ]
     assert report["toss_not_listed"] == {"count": 1, "symbols": ["ALDF"]}
 

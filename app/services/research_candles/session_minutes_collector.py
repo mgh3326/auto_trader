@@ -53,7 +53,6 @@ from app.services.brokers.kis.live_order_expiry import (
     KR_PREMARKET_OPEN_KST,
     KR_REGULAR_OPEN_KST,
 )
-from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.research_candles.session_segment import (
     TOSS_US_VENUE,
     session_segment_of,
@@ -1456,6 +1455,10 @@ async def collect(
                             inserted += new
                             already_present += present
                     except Exception as exc:  # noqa: BLE001 - one symbol must not stop the run
+                        from app.services.brokers.toss.errors import (
+                            TossApiResponseError,
+                        )
+
                         if (
                             isinstance(exc, TossApiResponseError)
                             and exc.status_code == 404
