@@ -41,6 +41,24 @@ uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11
 
 읽기 전용(8초 timeout). 종목 × venue × session_segment 별 `rows`, `expected_minutes`, `missing_minutes`, `value_null`/`value_null_ratio`(세션별 NULL `value` 분 수·비율), `latency_p50_s`/`latency_p95_s`(= `retrieved_at − (time_utc + 1분)`). 백필·승격(`%backfill%`, `promote-%`) 배치 행은 제외한다. `UNKNOWN` 세그먼트 행은 예상 분이 0 으로 따로 나온다.
 
+## 3a. NXT 세션 경계 (hk 6298)
+
+NTX 표지는 NXT 공식 시간을 따른다(출처: nextrade.co.kr 거래시스템 안내, 2026-11-25 확인, hk 6039 c32602).
+
+| NTX 분(봉 시작) | 표지 | 비고 |
+|---|---|---|
+| 08:00–08:49 | `NXT_PRE` | 프리마켓 |
+| 08:50–08:59 | `UNKNOWN` | 매매 없는 구간 |
+| 09:00–15:19 | `NXT_OVERLAP` | 본장 09:00:30–15:20. 09:00 봉은 09:00:30 이후 체결을 담는다 |
+| 15:20–15:59 | `UNKNOWN` | 15:20–15:40 은 NXT 연속매매 없음, 15:40–16:00 은 KRX 종가매매와 겹침 |
+| 16:00–19:59 | `NXT_POST` | 애프터마켓(15:40 시작이지만 16:00 까지는 위 이유로 `UNKNOWN`) |
+| 20:00 이후 | `UNKNOWN` | |
+
+- 정상 거래일의 NTX 예상 분은 프리 50 + 본장 380 + 애프터 240 = 670 이다. `UNKNOWN` 분은 예상 분에 들지 않으므로 결손이 아니다.
+- **15:40–16:00 구분 확인 (hk 6298)**: KIS 주식당일분봉조회(`FHKST03010200`, 공식 샘플 `examples_llm/domestic_stock/inquire_time_itemchartprice`·`domestic_stock_functions.py`의 `inquire_time_itemchartprice`)의 output2 필드는 `stck_bsop_date`·`stck_cntg_hour`·`stck_oprc`·`stck_hgpr`·`stck_lwpr`·`stck_prpr`·`cntg_vol`·`acml_tr_pbmn` 이며 매매 방식(연속/종가)을 구분하는 필드는 없다. 레포 frame 도 이 열들만 남긴다(`_MINUTE_FRAME_COLUMNS`). 그래서 15:40–16:00 은 `UNKNOWN` 이다. `FID_COND_MRKT_DIV_CODE=NX` 조회도 NXT 데이터만 주는 것이지 체결 건별 구분 필드가 아니다. 구분 필드가 문서로 확인되면 이 절과 `session_segment.py` 를 함께 바꾼다.
+- 기존 저장 행은 재라벨하지 않는다(백필 없음). 이 변경 이전에 저장된 15:20 이후 NTX 행은 옛 표지(`NXT_OVERLAP`/`NXT_POST`)로 남아 진단의 `rows` 에 들어갈 수 있다.
+- 프로모션 경로(`research_candles/promotion.py`의 `classify_session_segment`)는 별도 분류기이며 이 변경 대상이 아니다.
+
 ## 4. 주의
 
 - US `session_date` 는 ET 거래일(20:00 ET 롤오버)이라 KST 달력일과 다를 수 있다.
