@@ -26,9 +26,15 @@ US_VENUE_CHECK = "ck_research_us_candles_1m_venue"
 
 
 def upgrade() -> None:
-    op.execute(
-        f"ALTER TABLE research.us_candles_1m VALIDATE CONSTRAINT {US_VENUE_CHECK}"
-    )
+    # env.py runs every pending revision in ONE transaction, so the expand
+    # revision's ACCESS EXCLUSIVE locks (ADD CONSTRAINT, DROP NOT NULL) would be
+    # held through this scan. The autocommit block first commits that transaction,
+    # so the validation runs after the expand commit, without those locks
+    # (review r2). The validation itself takes only SHARE UPDATE EXCLUSIVE.
+    with op.get_context().autocommit_block():
+        op.execute(
+            f"ALTER TABLE research.us_candles_1m VALIDATE CONSTRAINT {US_VENUE_CHECK}"
+        )
 
 
 def downgrade() -> None:
