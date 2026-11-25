@@ -601,6 +601,24 @@ async def test_apply_nxt_quote_overlay_noop_on_empty_book(monkeypatch):
     assert quote == {"symbol": "192820", "price": 168300.0}
 
 
+def _patch_nxt_eligible(monkeypatch, market_data_quotes) -> None:
+    """hk 6300: premarket NXT overlay is gated on NXT tradability (now True)."""
+    import datetime as dt
+
+    from app.services.nxt_preflight import NxtTradability
+
+    async def eligible(symbols, db=None):
+        return {
+            symbols[0]: NxtTradability(
+                nxt_eligible=True,
+                nxt_trading_suspended=False,
+                asof=dt.datetime.now(dt.UTC),
+            )
+        }
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", eligible)
+
+
 @pytest.mark.asyncio
 async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
     monkeypatch,
@@ -623,6 +641,7 @@ async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
 
     get_orderbook_mock = AsyncMock(return_value=_nxt_quote_book(expected_price=114300))
 
+    _patch_nxt_eligible(monkeypatch, market_data_quotes)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         market_data_quotes,
@@ -675,6 +694,7 @@ async def test_get_quote_korean_equity_premarket_routes_to_nxt_mid(
         )
     )
 
+    _patch_nxt_eligible(monkeypatch, market_data_quotes)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         market_data_quotes,

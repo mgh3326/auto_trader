@@ -30,6 +30,21 @@ DATA_STATE_STALE = "stale"
 DATA_STATE_PREMARKET_UNAVAILABLE = "premarket_unavailable"
 DATA_STATE_MARKET_CLOSED = "market_closed"
 
+# hk 6300: closed vocabulary for KR quotes served before the KRX open.
+# ``krx_ohlcv_basis`` marks open/high/low/volume/value as carried from the prior
+# session (volume and value are then null, never a zero trade count).
+KRX_OHLCV_CARRIED_PREVIOUS_CLOSE = "carried_previous_close"
+# ``nxt_trade_state`` is set when an NXT orderbook price is overlaid: the payload
+# proves no NXT trade, only an orderbook-derived price.
+NXT_NO_TRADE_OBSERVED = "no_trade_observed"
+# ``price_as_of_kind`` separates the exchange trade time from a date-only value.
+PRICE_AS_OF_KIND_TIME = "time"
+PRICE_AS_OF_KIND_DATE_ONLY = "date_only"
+PRICE_AS_OF_KIND_NONE = "none"
+# ``price_unavailable_reason`` values added for the premarket KR path.
+PRICE_UNAVAILABLE_PREMARKET = "premarket_unavailable"
+PRICE_UNAVAILABLE_DATE_ONLY = "date_only_price_asof"
+
 US_SESSION_PREMARKET = "premarket"
 US_SESSION_REGULAR = "regular"
 US_SESSION_AFTERHOURS = "afterhours"

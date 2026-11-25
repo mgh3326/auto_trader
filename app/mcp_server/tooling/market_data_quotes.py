@@ -34,6 +34,13 @@ from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     DATA_STATE_PREMARKET_UNAVAILABLE,
     DATA_STATE_STALE,
+    KRX_OHLCV_CARRIED_PREVIOUS_CLOSE,
+    NXT_NO_TRADE_OBSERVED,
+    PRICE_AS_OF_KIND_DATE_ONLY,
+    PRICE_AS_OF_KIND_NONE,
+    PRICE_AS_OF_KIND_TIME,
+    PRICE_UNAVAILABLE_DATE_ONLY,
+    PRICE_UNAVAILABLE_PREMARKET,
     US_SESSION_AFTERHOURS,
     US_SESSION_CLOSED,
     US_SESSION_PREMARKET,
@@ -655,6 +662,81 @@ async def _apply_nxt_quote_overlay(
         require_trading_date=True,
     )
     return True
+
+
+def _price_as_of_kind(as_of: Any) -> str:
+    """hk 6300: classify a price_as_of value without guessing a trade time.
+
+    A KST midnight value with no time component is the daily-candle date, not an
+    exchange trade time, so it is reported as ``date_only``.
+    """
+    parsed = _parse_price_as_of(as_of)
+    if parsed is None:
+        return PRICE_AS_OF_KIND_NONE
+    if (
+        parsed.hour == 0
+        and parsed.minute == 0
+        and parsed.second == 0
+        and parsed.microsecond == 0
+    ):
+        return PRICE_AS_OF_KIND_DATE_ONLY
+    return PRICE_AS_OF_KIND_TIME
+
+
+def _mark_krx_ohlcv_carried(quote: dict[str, Any]) -> None:
+    """hk 6300: before the KRX open the daily row is the prior session's carry.
+
+    open/high/low keep their values but are marked carried; volume and value
+    become null so a carried zero is never read as an observed trade count.
+    """
+    quote["krx_ohlcv_basis"] = KRX_OHLCV_CARRIED_PREVIOUS_CLOSE
+    quote["volume"] = None
+    quote["value"] = None
+
+
+def _mark_premarket_price_unusable(quote: dict[str, Any]) -> None:
+    """hk 6300: a KR premarket_unavailable price is never usable.
+
+    A date-only price_as_of is never fresh here; a time-bearing one is unusable
+    because the KRX session has not opened. Missing as_of keeps the existing
+    ``missing_price_asof`` reason from the freshness annotator.
+    """
+    as_of_kind = _price_as_of_kind(quote.get("price_as_of"))
+    quote["price_as_of_kind"] = as_of_kind
+    if as_of_kind == PRICE_AS_OF_KIND_NONE:
+        return
+    quote.update(
+        {
+            "is_stale_price": True,
+            "price_freshness": "stale",
+            "price_usable": False,
+            "price_unavailable_reason": (
+                PRICE_UNAVAILABLE_DATE_ONLY
+                if as_of_kind == PRICE_AS_OF_KIND_DATE_ONLY
+                else PRICE_UNAVAILABLE_PREMARKET
+            ),
+        }
+    )
+
+
+async def _kr_premarket_quote(
+    symbol: str, quote: dict[str, Any], *, nxt_tradable: bool
+) -> dict[str, Any]:
+    """hk 6300: KR get_quote before the KRX open (data_state premarket_unavailable).
+
+    The NXT orderbook is consulted only for symbols NXT reports as tradable now.
+    Anything else keeps the carried KRX prior close, marked carried and unusable.
+    """
+    _mark_krx_ohlcv_carried(quote)
+    if nxt_tradable and await _apply_nxt_quote_overlay(
+        symbol, quote, data_state=DATA_STATE_PREMARKET_UNAVAILABLE
+    ):
+        quote["nxt_trade_state"] = NXT_NO_TRADE_OBSERVED
+        quote["price_as_of_kind"] = _price_as_of_kind(quote.get("price_as_of"))
+        return quote
+    quote["data_state"] = DATA_STATE_PREMARKET_UNAVAILABLE
+    _mark_premarket_price_unusable(quote)
+    return quote
 
 
 def _build_orderbook_walls_for_side(
@@ -1800,6 +1882,12 @@ async def _get_quote_impl(
         if tradability is not None:
             quote.update(tradability.public_fields())
         quote.update(await _krx_after_quote_fields(symbol))
+        if data_state == DATA_STATE_PREMARKET_UNAVAILABLE:
+            # hk 6300: before the KRX open only NXT-tradable symbols may take the
+            # NXT orderbook price; everything else is carried and unusable.
+            return await _kr_premarket_quote(
+                symbol, quote, nxt_tradable=quote.get("nxt_tradable") is True
+            )
         if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
             return quote
 
