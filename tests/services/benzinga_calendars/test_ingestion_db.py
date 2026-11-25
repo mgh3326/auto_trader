@@ -180,21 +180,21 @@ async def test_revised_event_date_moves_the_current_row(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_revision_log_rejects_update_and_delete(db_session):
-    """Append-only is a DB property, not just a missing grant."""
+    """Append-only is a DB property, not just a missing grant.
+
+    Each statement runs inside its own savepoint so the rejection leaves the
+    test transaction usable (the row is uncommitted; the fixture rolls back).
+    """
     await _ingest(db_session, [EARNINGS_ROW])
-    await db_session.commit()
 
-    with pytest.raises(Exception) as updated:
-        await db_session.execute(
-            text("UPDATE market_event_revisions SET revision_seq = 99")
-        )
-    await db_session.rollback()
-    assert "append-only" in str(updated.value)
-
-    with pytest.raises(Exception) as deleted:
-        await db_session.execute(text("DELETE FROM market_event_revisions"))
-    await db_session.rollback()
-    assert "append-only" in str(deleted.value)
+    for statement in (
+        "UPDATE market_event_revisions SET revision_seq = 99",
+        "DELETE FROM market_event_revisions",
+    ):
+        with pytest.raises(Exception) as rejected:
+            async with db_session.begin_nested():
+                await db_session.execute(text(statement))
+        assert "append-only" in str(rejected.value)
 
 
 @pytest.mark.integration
