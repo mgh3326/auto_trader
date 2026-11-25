@@ -47,7 +47,7 @@ closed, and `Persistent=false` forbids implicit catch-up.
 | `LANE_EVENT_KICKOFF_LANE_US` | unset | Admiral-supplied destination for the US slot. |
 | `LANE_EVENT_KICKOFF_LANE_B0X` | unset | Installer-supplied destination for all B0X sources. |
 
-The pre-existing fill-handoff CLI also understands the five
+The pre-existing fill-handoff CLI (removed in hk 6457) also understood the five
 `LANE_EVENT_EMIT_*` settings. Its deployment-specific `FILL_HANDOFF_EMIT_BIN`,
 `_HOST`, `_PANE`, `_INBOX_ROOT`, and `_TIMEOUT_S` settings win over their
 shared counterparts independently; existing deployments that set only
@@ -146,7 +146,7 @@ all three false binding gates (`ingress_enabled`, `dispatch_enabled`, and
 observation-only path while the legacy owner alone remains live. At cutover,
 freeze evidence, wait for the current legacy slot, record queued/unconsumed
 dispositions, and stop while the approved queued-cycle dispatch entry point in
-`b0x-portability-install.md` remains unresolved. Only a separately approved
+the b0x portability installer (its runbook was removed in hk 6457) remains unresolved. Only a separately approved
 resolution plus exact floor/time/head/install/sink receipts may continue with
 disabling all six legacy sources, verifying them disabled, enabling ingress and
 dispatch, then enabling the B0X source and proving one owner plus successor

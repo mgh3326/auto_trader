@@ -48,7 +48,6 @@ from app.services.execution_ledger.opening_lots import (
 )
 from app.services.execution_ledger.query_service import ExecutionLedgerQueryService
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-from app.services.fill_event_handoff import broker_risk
 from app.services.market_close_digest import queries as digest_queries
 from app.services.mechanical_loss_cut.positions import load_held_lots
 from app.services.order_proposals import kis_leftover_inference_service as inference
@@ -461,16 +460,6 @@ async def test_1112_inference_no_longer_sees_the_phantom_as_a_fill(
 Probe = Callable[[Any, Scenario], Awaitable[bool]]
 
 
-async def _broker_risk_fills(db, s: Scenario) -> bool:
-    rows = await broker_risk.SqlAlchemyEvidenceSource(db).list_fills_for_order(
-        broker="kis",
-        account_mode="live",
-        venue="krx",
-        broker_order_id=s.phantom_order_no,
-    )
-    return bool(rows)
-
-
 async def _has_fill_for_order(db, s: Scenario) -> bool:
     return await ExecutionLedgerRepository(db).has_fill_for_order(
         broker="kis",
@@ -625,7 +614,6 @@ async def _recorded_boundary_fill(db, s: Scenario) -> bool:
 
 READERS: dict[str, tuple[Probe, Any, str]] = {
     # name: (probe answering "is the phantom counted?", module to mutate, side)
-    "broker_risk.list_fills_for_order": (_broker_risk_fills, broker_risk, "buy"),
     "repository.has_fill_for_order": (_has_fill_for_order, repository_module, "buy"),
     "repository.list_recent_fills_for_triage": (_triage, repository_module, "buy"),
     "repository.position_before_fill": (_position_before, repository_module, "buy"),

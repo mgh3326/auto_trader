@@ -75,8 +75,8 @@ The incoming object is deliberately two-part:
 `lane_event` follows the existing transport shape; `context` is supplied beside
 it and is not claimed to be a field emitted by the current transport. The
 consumer requires the event id to be a canonical UUID. The older fill-handoff
-producer currently uses an `execution_ledger:<id>` event key
-(`app/services/fill_event_handoff/service.py:391-437`), so a UUID artifact
+producer used an `execution_ledger:<id>` event key (its service,
+`app/services/fill_event_handoff/service.py`, was removed in hk 6457), so a UUID artifact
 adapter is a future integration, not a claim that this Phase 0 process is
 already subscribed to that producer.
 

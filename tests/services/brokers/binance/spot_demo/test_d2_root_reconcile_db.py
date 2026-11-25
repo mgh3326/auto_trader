@@ -20,7 +20,6 @@ from sqlalchemy import select, text
 from app.core.db import AsyncSessionLocal, engine
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
-from app.services.brokers.binance.h5 import truth_gate
 from app.services.brokers.binance.spot_demo import d2_root_reconcile as r
 from scripts import binance_spot_demo_d2_root_reconcile as cli
 from tests._run_owned_database import validate_run_owned_database_url
@@ -165,11 +164,6 @@ async def _states(ids) -> dict[int, str]:
             ).where(BinanceDemoOrderLedger.id.in_(list(ids)))
         )
         return dict(result.all())
-
-
-async def _gate_ledger_check() -> truth_gate.GateCheck:
-    async with AsyncSessionLocal() as session:
-        return await truth_gate._ledger(BinanceDemoLedgerService(session))
 
 
 async def _preview(client, ids):
@@ -407,25 +401,6 @@ async def test_a2_live_host_client_reads_and_writes_nothing() -> None:
         await _commit(client, ids)
     assert client.calls == []
     assert await _snapshot() == before
-
-
-# ------------------------------------------------------------------ A3
-
-
-async def test_a3_truth_gate_ledger_check_passes_after_commit() -> None:
-    ids = tuple((await _d2_roots()).values())
-    before = await _gate_ledger_check()
-    assert before.name == "demo_ledger_no_open_roots"
-    assert not before.ok
-    assert "open_roots=3" in before.detail
-    assert "filled=3" in before.detail
-
-    assert (await _commit(_reader(), ids)).status == "committed"
-
-    after = await _gate_ledger_check()
-    assert after.ok, after.detail
-    assert after.detail.startswith("open_roots=0")
-    assert "reconciled=3" in after.detail
 
 
 # ------------------------------------------------------------------ CLI
