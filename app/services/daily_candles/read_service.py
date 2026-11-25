@@ -27,10 +27,9 @@ non-session days the DB-first path proceeds. The US path needs no such gate:
 the Yahoo daily path is already closed-bucket only.
 """
 
-from __future__ import annotations
-
 import datetime
 import logging
+from contextvars import ContextVar
 from functools import lru_cache
 
 import exchange_calendars as xcals
@@ -41,6 +40,24 @@ from app.services.daily_candles.repository import DailyCandleRow
 from app.services.kis_ohlcv_cache import KRX_DAILY_CACHE_CUTOFF
 
 logger = logging.getLogger(__name__)
+# hk 6376: request-scoped batch prefetch for get_holdings. When
+# _prefetch_kr_batch_frames populates this map, per-symbol cache_first_kr
+# (count == 2, end is None) serves from it without opening a session, so N
+# symbols cost 1 batched SELECT instead of N. Fail-open: miss means "not
+# prefetched", never a DB statement.
+_KR_BATCH_CACHE: ContextVar[dict[str, object] | None] = ContextVar(
+    "kr_batch_cache", default=None
+)
+
+
+def install_kr_batch_cache(frames: dict[str, object | None]) -> None:
+    """Install a request-scoped KR frame map for count == 2 lookups."""
+    _KR_BATCH_CACHE.set(dict(frames))
+
+
+def clear_kr_batch_cache() -> None:
+    """Clear the request-scoped KR frame map."""
+    _KR_BATCH_CACHE.set(None)
 
 # Canonical OHLCV column ordering produced by ``rows_to_frame``. Kept here so
 # consumers (``market_data_indicators`` and ``get_ohlcv``) share one source of
@@ -269,11 +286,16 @@ async def cache_first_kr(
         return None
 
     try:
+        if end is None and count == 2 and now is None:
+            batched = _KR_BATCH_CACHE.get()
+            if batched is not None and symbol in batched:
+                cached_frame = batched[symbol]
+                # None means the batch already proved miss/stale: no DB stmt.
+                return cached_frame  # type: ignore[return-value]
         if kr_daily_bar_may_be_forming(now):
             # ROB-639: intraday KRX — serve live so today's forming bar is
             # included (parity with the pre-DB-first live path).
             return None
-
         from app.core.db import AsyncSessionLocal
         from app.services.daily_candles.repository import (
             DailyCandlesRepository,
@@ -497,8 +519,10 @@ __all__ = [
     "cache_first_us",
     "cache_is_fresh_crypto",
     "cache_is_fresh_equity",
+    "clear_kr_batch_cache",
     "drop_forming_daily_rows",
     "get_calendar",
+    "install_kr_batch_cache",
     "kr_daily_bar_may_be_forming",
     "last_final_session_kr",
     "last_final_session_us",

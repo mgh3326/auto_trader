@@ -20,6 +20,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar as _ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -146,6 +147,68 @@ class ProtectionKey:
     account_scope: AccountScope
     market: ProtectionMarket
     symbol: str
+
+# hk 6376: request-scoped head prefetch for get_holdings. When
+# prefetch_protection_heads populates this map, per-symbol _read_head_snapshot
+# serves from it without opening a session, so N symbols cost one SELECT per
+# (account_scope, market) instead of N. Fail-open: miss means "not prefetched".
+
+_HEAD_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object] | None] = _ContextVar(
+    "protection_head_batch", default=None
+)
+_HEAD_BATCH_MISSING: object = object()
+
+
+def install_protection_head_cache(
+    heads: dict[ProtectionKey, object | None],
+) -> None:
+    """Install a request-scoped head map (None = proven absent)."""
+    _HEAD_BATCH_CACHE.set(dict(heads))
+
+
+def clear_protection_head_cache() -> None:
+    """Clear the request-scoped head map."""
+    _HEAD_BATCH_CACHE.set(None)
+
+
+async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
+    """Read all heads in one SELECT per (account_scope, market). Fail-open."""
+    unique: dict[ProtectionKey, None] = {}
+    for key in keys:
+        unique[key] = None
+    if not unique:
+        return
+    from collections import defaultdict
+
+    from app.core.db import AsyncSessionLocal
+
+    grouped: dict[tuple[str, str], list[ProtectionKey]] = defaultdict(list)
+    for key in unique:
+        grouped[(key.account_scope, key.market)].append(key)
+    merged: dict[ProtectionKey, object | None] = {}
+    try:
+        for (scope, market), group_keys in grouped.items():
+            symbols = sorted({k.symbol for k in group_keys})
+            async with AsyncSessionLocal() as db:
+                rows = (
+                    await db.execute(
+                        select(ProtectedPosition).where(
+                            ProtectedPosition.account_scope == scope,
+                            ProtectedPosition.market == market,
+                            ProtectedPosition.symbol.in_(symbols),
+                        )
+                    )
+                ).scalars()
+                by_symbol: dict[str, ProtectedPosition] = {}
+                for row in rows:
+                    by_symbol.setdefault(str(row.symbol), row)
+                for key in group_keys:
+                    row = by_symbol.get(key.symbol)
+                    merged[key] = None if row is None else _snapshot(row)
+    except Exception:
+        logger.debug("protection head prefetch failed; falling back per-symbol", exc_info=True)
+        return
+    install_protection_head_cache(merged)
 
 
 class BrokerPositionUnobserved(RuntimeError):
@@ -388,6 +451,13 @@ async def _read_head(
 
 
 async def _read_head_snapshot(key: ProtectionKey) -> ProtectedPositionSnapshot | None:
+    batched = _HEAD_BATCH_CACHE.get()
+    if batched is not None and key in batched:
+        cached = batched[key]
+        if cached is _HEAD_BATCH_MISSING:
+            return None
+        # None means the batch proved absence: no DB stmt.
+        return cached  # type: ignore[return-value]
     from app.core.db import AsyncSessionLocal
 
     try:
