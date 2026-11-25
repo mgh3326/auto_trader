@@ -5581,6 +5581,9 @@ class TestInvestorFlowCommon:
             "institutional_net": 2969153,
             "individual_net": -2372813,
             "close": 340500,
+            # hk 6317: relabelled — the close is a Naver provider value.
+            "close_source": "naver_trend_closePrice",
+            "close_basis": "provider_unverified",
         }
         assert "error" not in block
 

@@ -774,3 +774,13 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
 - **수집기**: `app/services/research_candles/futures_minutes_collector.py` + 수동 CLI `scripts/collect_futures_minutes.py [--dry-run]`(6145 수집기의 대상 선정 코드는 건드리지 않았다). 마스터에서 근월·차근월을 해석해 당일(KST) 주간 분봉을 읽고, 닫힌 봉(`시작 + 1분 + 10초 <= 요청 직전`)만 `ON CONFLICT (time_utc, symbol) DO NOTHING` 으로 쓴다(재실행은 0행·`retrieved_at` 불변). 출력 JSON: `inserted`/`already_present`/`skipped_forming`/`skipped_invalid`/`products_resolved`/`night`/`errors`/(dry-run 만) `samples`(+`error_details`: 종목·예외 클래스만), 종료 코드 0 = 정상·1 = 오류·2 = 게이트 꺼짐. 해석되지 않은 상품은 `UnresolvedProduct` 오류다.
 - **진단**: `scripts/diagnose_session_coverage.py --market futures --date D`(같은 READ ONLY·8초 규칙). 예상 분은 주간 세션만이고 야간 행은 예상 0 으로 따로 나오며 `night_collection: "unsupported"` 가 붙는다.
 - **DAG 사본**: `deploy/dagu/at-futures-minutes/`(주간 월–금 08:40–15:50 KST, 야간 월–금 17:55–익일 06:10 KST, 5분 간격 — 등록되지 않는 복사본, 등록은 별도 운영자 승인). **테스트**: `tests/services/kis_futures_quotes/`, `tests/services/research_candles/test_futures_{session_segment,minutes_collector,session_coverage,minutes_db}.py`, `tests/test_hk6148_futures_minutes_migration_db.py`, `tests/scripts/test_dagu_futures_minutes_dags.py`(DB 는 CI). 런북 `docs/runbooks/futures-minutes.md`.
+
+### 투자자 수급 history 종가의 출처 표시 (hk 6317)
+
+`get_investor_trends`(`data[]`, `period=week|month` 버킷 포함)와 `get_intraday_investor_flow`의 `confirmed.history[]`가 내는 `close`는 네이버 모바일 trend JSON의 `closePrice`(`app/services/naver_finance/investor.py` `_parse_trend_row`, `fundamentals_sources_naver._fetch_investor_trends_naver`)다. 이 값은 KRX 정규장 확정 종가가 아니다. 2026-11-24 005930은 네이버가 `closePrice` 182,900을 주지만, 다음 세션(11-25) 네이버 비교 필드로 역산한 확정 종가는 189,400이다(000660도 1,113,000 대 1,158,000). 확정 일봉 종가는 `public.kr_candles_1d`다.
+
+- 🔴 `close`를 가진 모든 행은 `close_source`(`naver_trend_closePrice`)와 `close_basis`(`provider_unverified`)를 같이 싣는다(`_investor_flow_common.label_provider_close`). `close`가 없으면 두 키는 null이다. 키 집합은 행마다 같다.
+- `close` 값 자체와 `change`·`change_pct`는 바꾸지 않았다(하위 호환). 이 두 파생값도 같은 공급자 종가에서 나오므로 같은 basis를 따른다.
+- 확정 KRX 종가로 바꾸는 선택은 하지 않았다. 이 도구는 네이버만 읽고 DB 의존을 더하지 않는다. 확정 종가가 필요하면 `kr_candles_1d`를 같은 거래일로 읽는다.
+- 🔴 `investor_flow_snapshots.close`(18:10 KST job, `app/services/investor_flow_snapshots/builder.py:247-264`)는 같은 공급자 값이 레이블 없이 저장된다. 이 테이블을 읽는 리더는 같은 레이블을 붙이거나 확정 종가를 써야 하며, 현재 MCP 수급 도구는 이 열을 노출하지 않는다.
+- 테스트: `tests/mcp_server/test_investor_flow_close_basis.py`(실제 네이버 trend 페이로드 4행 픽스처 `tests/fixtures/investor_flow/005930_trend_2026-11-24_provider_close.json`).

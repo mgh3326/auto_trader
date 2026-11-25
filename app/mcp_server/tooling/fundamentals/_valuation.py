@@ -14,6 +14,9 @@ from app.mcp_server.tooling.fundamentals._investor_flow_common import (
     holding_rate_change as _holding_rate_change,
 )
 from app.mcp_server.tooling.fundamentals._investor_flow_common import (
+    label_provider_close,
+)
+from app.mcp_server.tooling.fundamentals._investor_flow_common import (
     ownership_summary as _ownership_summary,
 )
 from app.mcp_server.tooling.fundamentals_sources_naver import (
@@ -170,6 +173,10 @@ async def handle_get_investor_trends(
 
     if period != "day":
         result["data"] = _aggregate_investor_data(result["data"], period)
+
+    # hk 6317: label every close (day rows and week/month bucket closes alike).
+    for row in result["data"]:
+        label_provider_close(row)
 
     result["period"] = period
     capped_days = min(max(days, 1), 60)
