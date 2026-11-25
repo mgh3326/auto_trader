@@ -25,7 +25,9 @@ def test_runs_on_mbp_with_capture_script_and_no_inline_secret() -> None:
     assert doc["max_active_runs"] == 1
     assert "저장소가 등록하지 않는다" in text.splitlines()[0]
     (step,) = doc["steps"]
-    assert "-m scripts.benzinga_pro_capture" in step["script"]
+    assert "-m scripts.benzinga_pro_capture --emit" in step["script"]
+    assert "--post-stdin" in step["script"] and "ssh pi" in step["script"]
+    assert "dotenv" not in doc  # the token lives only on the pi
     assert step["timeout_sec"] < 1800
     for word in ("apikey", "TOKEN=", "Bearer"):
         assert word not in step["script"]

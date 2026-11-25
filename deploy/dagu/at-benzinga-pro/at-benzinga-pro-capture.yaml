@@ -1,8 +1,8 @@
 # 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다. 등록은 설계 세션이 한다(hk 6573).
 # Benzinga Pro 스캐너 캡처: 운영자 Mac(worker mbp)의 aside 로그인 세션 안에서 조회하고(세션 키는 페이지 밖으로 나가지 않는다),
-# 결과를 로컬 JSONL 에 남긴 뒤 AT ingest(hk 6579)로 보낸다. 운영자 결정 decision/2026-11-25/at-benzinga-pro-capture-and-trading-use.
-# ingest 주소·토큰은 ~/.config/auto_trader/benzinga-pro-ingest.env (BENZINGA_PRO_INGEST_URL, BENZINGA_PRO_INGEST_TOKEN).
-description: "Benzinga Pro scanner capture via aside on mbp (pre-market every 30m + after the open)"
+# 결과 payload 를 ssh 로 pi 에 넘겨 pi 의 일회성 컨테이너가 루프백 AT ingest(hk 6579)로 보낸다. ingest 토큰은 pi 의
+# /root/at-secrets/.env.api 에만 있다. 운영자 결정 decision/2026-11-25/at-benzinga-pro-capture-and-trading-use.
+description: "Benzinga Pro scanner capture via aside on mbp, relayed to the pi ingest"
 schedule:
   - "CRON_TZ=America/New_York */30 4-8 * * 1-5"
   - "CRON_TZ=America/New_York 0,30 9 * * 1-5"
@@ -11,13 +11,17 @@ max_active_runs: 1
 hist_retention_days: 30
 worker_selector:
   host: mbp
-dotenv: ~/.config/auto_trader/benzinga-pro-ingest.env
 steps:
-  - name: capture
+  - name: capture-and-relay
     working_dir: ~/work/auto_trader
     script: |
       rc=0
-      uv run python -m scripts.benzinga_pro_capture || rc=$?
+      tmp=$(mktemp)
+      uv run python -m scripts.benzinga_pro_capture --emit > "$tmp" || rc=$?
+      if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
+        ssh pi 'sudo docker run --rm -i --network host --workdir /app --env-file /root/at-secrets/.env.api "$(sudo cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_pro_capture --post-stdin' < "$tmp" || rc=$?
+      fi
+      rm -f "$tmp"
       exit "$rc"
     timeout_sec: 600
 handler_on:
