@@ -15,13 +15,22 @@ Additive, plus two CHECK replacements on one small observation table.
 * ``ix_..._market_date_symbol`` backs ``first_captures`` for one market's trading
   day.
 
-The two CHECKs are added ``NOT VALID`` so the ADD does not scan the existing log
-while holding ACCESS EXCLUSIVE; the follow-up revision
+🔴 The CHECKs are replaced by **definition text**, not by name: the models carry
+``ck_%(table_name)s_%(constraint_name)s``, so a CHECK created from that metadata is
+stored double-prefixed and, past 63 bytes, truncated with a deterministic hash.
+No single literal name exists in every database, and the two snapshot CHECKs
+truncate to nearly the same prefix. ``pg_get_constraintdef`` does name them
+reliably. The new constraints use the short names the model and the validate
+revision refer to.
+
+The two snapshot CHECKs are added ``NOT VALID`` so the ADD does not scan the
+existing log while holding ACCESS EXCLUSIVE; the follow-up revision
 ``20261125_hk6510_us_movers_val`` runs ``VALIDATE CONSTRAINT`` (same pattern as
 hk 6322). No new grant: the table's ``at_app`` grants are unchanged (hard rule 18).
 
-Downgrade refuses when ``us`` rows exist: they violate the restored ``kr``-only
-CHECK, and silently deleting observations is not a downgrade.
+Downgrade refuses when ``us`` snapshot rows or ``source_unavailable`` run rows
+exist: they violate the vocabulary the downgrade restores, and discarding
+observations is not a downgrade.
 """
 
 # expand-contract: contract-step 6510
@@ -40,11 +49,53 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 TABLE = "invest_momentum_event_snapshots"
+RUNS_TABLE = "invest_momentum_event_runs"
 MARKET_CHECK = "ck_invest_momentum_event_snapshots_market"
 SOURCE_CHECK = "ck_invest_momentum_event_snapshots_source"
-RUNS_TABLE = "invest_momentum_event_runs"
 RUNS_CHECK = "ck_invest_momentum_event_runs_status_reason"
 INDEX = "ix_invest_momentum_event_snapshots_market_date_symbol"
+
+#: ``pg_get_constraintdef`` fragment that finds each CHECK regardless of how the
+#: naming convention spelled it. One marker per CHECK in its table.
+MARKET_MARKER = "market"
+SOURCE_MARKER = "naver_stock"
+RUNS_MARKER = "no_rows"
+
+_RUNS_VOCABULARY = (
+    "'http_4xx', 'http_5xx', 'timeout', 'transport', "
+    "'bad_response', 'unparseable', 'unexpected'"
+)
+
+
+def _drop_check(table: str, marker: str) -> None:
+    """Drop the CHECK whose definition contains ``marker`` (naming-convention safe)."""
+    op.execute(
+        f"""
+        DO $$
+        DECLARE c record;
+        BEGIN
+            FOR c IN
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = '{table}'::regclass
+                  AND contype = 'c'
+                  AND pg_get_constraintdef(oid) LIKE '%{marker}%'
+            LOOP
+                EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', c.conname);
+            END LOOP;
+        END
+        $$
+        """
+    )
+
+
+def _runs_check_sql(reasons: str) -> str:
+    return (
+        "CHECK ("
+        "(status = 'ok' AND reason IS NULL AND row_count > 0)"
+        " OR (status = 'empty' AND reason = 'no_rows' AND row_count = 0)"
+        " OR (status = 'error' AND row_count = 0 AND reason IN ("
+        f"{reasons})))"
+    )
 
 
 def upgrade() -> None:
@@ -54,8 +105,9 @@ def upgrade() -> None:
         sa.Column("first_received_at", sa.TIMESTAMP(timezone=True), nullable=True),
     )
     op.add_column(TABLE, sa.Column("field_reasons", postgresql.JSONB(), nullable=True))
-    op.drop_constraint(MARKET_CHECK, TABLE, type_="check")
-    op.drop_constraint(SOURCE_CHECK, TABLE, type_="check")
+    op.create_index(INDEX, TABLE, ["market", "trading_date", "symbol", "snapshot_at"])
+    _drop_check(TABLE, MARKET_MARKER)
+    _drop_check(TABLE, SOURCE_MARKER)
     # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {MARKET_CHECK} "
@@ -67,23 +119,13 @@ def upgrade() -> None:
         "CHECK (source IN ('naver_stock', 'alpaca_screener', "
         "'kis_overseas_ranking')) NOT VALID"
     )
-    op.create_index(
-        INDEX,
-        TABLE,
-        ["market", "trading_date", "symbol", "snapshot_at"],
-    )
     # The US run can report ``source_unavailable`` (no reader / no credentials), so
-    # the closed reason vocabulary of the status row grows by that one value. The
-    # runs table holds one day of a manual job, so the ADD scans it directly.
-    op.drop_constraint(RUNS_CHECK, RUNS_TABLE, type_="check")
+    # the closed reason vocabulary of the status row grows by that one value.
+    _drop_check(RUNS_TABLE, RUNS_MARKER)
     # expand-contract: contract-step 6510
     op.execute(
-        f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} CHECK ("
-        "(status = 'ok' AND reason IS NULL AND row_count > 0)"
-        " OR (status = 'empty' AND reason = 'no_rows' AND row_count = 0)"
-        " OR (status = 'error' AND row_count = 0 AND reason IN ("
-        "'http_4xx', 'http_5xx', 'timeout', 'transport', "
-        "'bad_response', 'unparseable', 'unexpected', 'source_unavailable')))"
+        f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} "
+        + _runs_check_sql(f"{_RUNS_VOCABULARY}, 'source_unavailable'")
     )
 
 
@@ -96,8 +138,6 @@ def downgrade() -> None:
                 RAISE EXCEPTION
                     '{TABLE} has us rows; downgrade would discard US observations';
             END IF;
-            -- hk 6510 widened the run reason vocabulary; a row that the restored
-            -- CHECK cannot hold would abort the downgrade with a raw violation.
             IF EXISTS (
                 SELECT 1 FROM public.{RUNS_TABLE}
                 WHERE reason = 'source_unavailable'
@@ -110,18 +150,15 @@ def downgrade() -> None:
         """
     )
     op.drop_index(INDEX, table_name=TABLE)
-    op.drop_constraint(RUNS_CHECK, RUNS_TABLE, type_="check")
+    _drop_check(RUNS_TABLE, RUNS_MARKER)
     # expand-contract: contract-step 6510
     op.execute(
-        f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} CHECK ("
-        "(status = 'ok' AND reason IS NULL AND row_count > 0)"
-        " OR (status = 'empty' AND reason = 'no_rows' AND row_count = 0)"
-        " OR (status = 'error' AND row_count = 0 AND reason IN ("
-        "'http_4xx', 'http_5xx', 'timeout', 'transport', "
-        "'bad_response', 'unparseable', 'unexpected')))"
+        f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} "
+        + _runs_check_sql(_RUNS_VOCABULARY)
     )
-    op.drop_constraint(MARKET_CHECK, TABLE, type_="check")
-    op.drop_constraint(SOURCE_CHECK, TABLE, type_="check")
+    _drop_check(TABLE, MARKET_MARKER)
+    _drop_check(TABLE, SOURCE_MARKER)
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {MARKET_CHECK} CHECK (market = 'kr')"
     )
