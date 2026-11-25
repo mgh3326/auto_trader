@@ -401,6 +401,24 @@ async def test_us_backfill_retries_until_the_earliest_bar_reaches_the_session_st
 
 
 @pytest.mark.asyncio
+async def test_us_backfill_completion_counts_only_kis_bars(monkeypatch) -> None:
+    """hk 6510 r4: Toss day-market bars (same session_date, earlier times) must not
+    make a mover look backfilled when no KIS page ever reached 04:00 ET."""
+
+    async def _captures(session, trading_date, market="kr"):
+        return [_mover("DELL", rank=1)]
+
+    monkeypatch.setattr(intraday, "first_captures", _captures)
+    session = _Session(us_earliest=[])
+    await _targets(
+        market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
+    )
+    (sql,) = [s for s in session.statements if "us_candles_1m" in s]
+    assert "source = 'KIS'" in sql
+    assert "venue IN ('NASD', 'NYSE', 'AMEX')" in sql
+
+
+@pytest.mark.asyncio
 async def test_report_lists_every_cut_with_tier_and_reason() -> None:
     """Acceptance 3 (collector side): the run report carries tier counts and cuts."""
     movers = [_mover(s, rank=i + 1) for i, s in enumerate(_syms(310000, 45))]

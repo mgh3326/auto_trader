@@ -997,10 +997,15 @@ async def load_earliest_rows_today(
 ) -> dict[str, datetime]:
     """Earliest minute row per symbol for today's session (hk 6510).
 
-    US: ``research.us_candles_1m`` rows of today's ET trading day. The earliest
-    bar tells whether the backfill of a newly promoted mover already reached the
-    04:00 ET session start; row presence alone does not, because a failed earlier
-    page still leaves the newest page stored.
+    US: earliest **KIS** bar of today's ET trading day. The earliest bar tells
+    whether the backfill of a newly promoted mover already reached the 04:00 ET
+    session start; row presence alone does not, because a failed earlier page
+    still leaves the newest page stored.
+
+    Only KIS rows count (``source = 'KIS'`` and a KIS venue): the Toss pass writes
+    TOSS_INTEGRATED day-market bars under the same ``session_date`` with times
+    before the session start (the ET day rolls at 20:00), and counting those would
+    mark a mover backfilled although no KIS page ever reached 04:00 ET.
     """
     if not symbols:
         return {}
@@ -1015,6 +1020,7 @@ async def load_earliest_rows_today(
         statement = (
             f"SELECT symbol, MIN(time_utc) FROM {US_TABLE} "
             "WHERE symbol = ANY(:symbols) AND session_date = :day "
+            f"AND source = '{SOURCE}' AND venue IN ('NASD', 'NYSE', 'AMEX') "
             "GROUP BY symbol"
         )
         day = now.astimezone(_ET).date()

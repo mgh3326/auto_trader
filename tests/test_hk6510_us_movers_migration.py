@@ -30,7 +30,7 @@ def test_revision_chain_and_length() -> None:
     expand = _load(EXPAND, "hk6510_chain")
     validate = _load(VALIDATE, "hk6510_chain_val")
     assert expand.revision == "20261125_hk6510_us_movers"
-    assert expand.down_revision == "20261125_hk6036_upbit_shadow"
+    assert expand.down_revision == "20261125_hk6503_kr_trading_flags"
     assert validate.revision == "20261125_hk6510_us_movers_val"
     assert validate.down_revision == expand.revision
     assert len(expand.revision) <= 32 and len(validate.revision) <= 32
