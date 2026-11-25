@@ -117,6 +117,7 @@ tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_binance_spot_demo_d2_root_reconcile_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_dagu_at_batch_dags.py
+tests/scripts/test_dagu_benzinga_calendars_dags.py
 tests/scripts/test_dagu_daily_candles_and_night_sweep_dags.py
 tests/scripts/test_dagu_gate_inputs_dag.py
 tests/scripts/test_dagu_news_shadow_dag.py

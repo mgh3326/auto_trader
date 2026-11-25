@@ -28,6 +28,7 @@ tests/integration/test_paper_positions_market_filter.py
 tests/jobs/test_kis_market_adapters.py
 tests/mcp_server/test_alpaca_paper_no_size_caps.py
 tests/mcp_server/test_analyze_stock_pipeline_compat.py
+tests/mcp_server/test_benzinga_earnings_union.py
 tests/mcp_server/test_buy_preview_concentration_field.py
 tests/mcp_server/test_cf_access_auth.py
 tests/mcp_server/test_earnings_context.py

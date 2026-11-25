@@ -139,6 +139,8 @@ tests/services/action_report/snapshot_backed/test_freshness_overall_derivation.p
 tests/services/action_report/snapshot_backed/test_intraday_floor.py
 tests/services/action_report/test_candidate_universe_collector_evidence.py
 tests/services/analysis_snapshot_bundle/test_capture.py
+tests/services/benzinga_calendars/test_benzinga_calendars.py
+tests/services/benzinga_calendars/test_ingestion_db.py
 tests/services/brokers/binance/demo/test_credential_identity.py
 tests/services/brokers/binance/demo/test_ledger_durable_claim.py
 tests/services/brokers/binance/demo/test_ledger_service.py
