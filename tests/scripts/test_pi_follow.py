@@ -68,8 +68,9 @@ exit "$rc"
 """
 
 FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
+# records every call: follow.sh must never reach it (the DB backup is a Dagu job now, hk 6466)
 printf 'systemctl %s\n' "$*" >>"$FAKE_DIR/calls"
-exit "$(cat "$FAKE_DIR/backup_rc" 2>/dev/null || echo 0)"
+exit 0
 """
 
 FAKE_PANEWIRE = r"""#!/usr/bin/env bash
@@ -170,17 +171,14 @@ def hold_line(state: dict) -> list[str]:
 # --- the happy path and the quiet no-ops --------------------------------------------------------
 
 
-def test_a_new_verified_digest_is_installed_after_a_backup_by_deploy_sh_with_the_sha_tag(
+def test_a_new_verified_digest_is_installed_by_deploy_sh_with_the_sha_tag(
     host: dict,
 ) -> None:
     result = follow(host)
     assert result.returncode == 0, result.stderr
     steps = calls(host)
-    assert [s.split("|")[0] for s in steps] == [
-        "systemctl start at-pg-backup.service",
-        f"deploy sha-{SHA_B[:7]}",
-    ]
-    deploy_call = steps[1]
+    assert [s.split("|")[0] for s in steps] == [f"deploy sha-{SHA_B[:7]}"]
+    deploy_call = steps[0]
     assert "--allow-unverified" not in deploy_call  # the timer never waives the gate
     assert (
         "github=anonymous" in deploy_call
@@ -192,6 +190,13 @@ def test_a_new_verified_digest_is_installed_after_a_backup_by_deploy_sh_with_the
     assert status(host)["result"] == "deployed" and status(host)["sha"] == SHA_B
     assert not (host["run"] / "follow-hold").exists()
     assert not (host["run"] / "shiftgate-deploy.lock").exists()  # the lock is released
+
+
+def test_an_install_never_runs_a_db_backup_first(host: dict) -> None:
+    # hk 6466: the DB backup is the daily Dagu job at-pg-backup.yaml, not a step before each install.
+    assert follow(host).returncode == 0
+    assert systemctl_calls(host) == []
+    assert status(host)["result"] == "deployed"
 
 
 def test_the_independent_check_asks_for_main_ancestry_and_the_exact_sha_anonymously(
@@ -238,7 +243,7 @@ def test_a_refused_sha_installs_nothing_and_is_held(host: dict, verdict: str) ->
     (host["fake"] / "verdict").write_text(verdict)
     result = follow(host)
     assert result.returncode == 78
-    assert calls(host) == []  # no backup, no install
+    assert calls(host) == []  # no install
     assert (host["run"] / "deployed-digest").read_text().strip() == REF_A
     assert status(host)["result"] == "refused"
     digest, _created, retry_at, reason = hold_line(host)
@@ -363,8 +368,8 @@ def expire_hold(host: dict) -> None:
     (host["run"] / "follow-hold").write_text(f"{digest}\t{created}\t1\t{reason}\n")
 
 
-def backups(host: dict) -> int:
-    return sum(c.startswith("systemctl start") for c in calls(host))
+def systemctl_calls(host: dict) -> list[str]:
+    return [c for c in calls(host) if c.startswith("systemctl")]
 
 
 def test_follow_hands_deploy_sh_the_digest_it_just_verified(host: dict) -> None:
@@ -373,40 +378,18 @@ def test_follow_hands_deploy_sh_the_digest_it_just_verified(host: dict) -> None:
     assert deploy_call.endswith(f"|verified={REF_B}")  # no second GitHub round for it
 
 
-def test_a_retry_after_a_transient_deploy_sh_failure_does_not_back_up_again(
+def test_a_retry_after_a_transient_deploy_sh_failure_only_runs_deploy_sh_again(
     host: dict,
 ) -> None:
     deploy_gate_unavailable(host)
     assert follow(host).returncode == 78
-    assert backups(host) == 1
     expire_hold(host)
     assert follow(host).returncode == 78  # deploy.sh still cannot read GitHub
-    assert (
-        backups(host) == 1
-    )  # the backup already taken for this digest is not repeated
-    # once it installs, the record is gone: the next digest gets its own backup
     expire_hold(host)
     (host["fake"] / "deploy_rc").write_text("0")
     assert follow(host).returncode == 0
-    assert backups(host) == 1
-    assert not (host["run"] / "follow-backup-ok").exists()
-
-
-def test_a_stale_backup_record_is_not_reused(host: dict) -> None:
-    deploy_gate_unavailable(host)
-    assert follow(host).returncode == 78
-    expire_hold(host)
-    (host["run"] / "follow-backup-ok").write_text(f"{REF_B}\t1\n")  # taken long ago
-    assert follow(host).returncode == 78
-    assert backups(host) == 2
-
-
-def test_a_backup_record_of_another_digest_is_not_reused(host: dict) -> None:
-    import time
-
-    (host["run"] / "follow-backup-ok").write_text(f"{REF_A}\t{int(time.time())}\n")
-    assert follow(host).returncode == 0
-    assert backups(host) == 1
+    assert [c.split("|")[0] for c in calls(host)] == [f"deploy sha-{SHA_B[:7]}"] * 3
+    assert systemctl_calls(host) == []
 
 
 def test_transient_deploy_sh_failures_are_capped_per_digest_then_held_for_good(
@@ -421,7 +404,7 @@ def test_transient_deploy_sh_failures_are_capped_per_digest_then_held_for_good(
     assert hold_line(host)[2] == "0" and "retries exhausted" in hold_line(host)[3]
     n = len(calls(host))
     assert follow(host).returncode == 0 and len(calls(host)) == n  # quiet from now on
-    assert backups(host) == 1
+    assert systemctl_calls(host) == []
 
 
 def test_transient_evidence_failures_of_the_followers_own_gate_are_capped_too(
@@ -435,7 +418,7 @@ def test_transient_evidence_failures_of_the_followers_own_gate_are_capped_too(
         expire_hold(host)
     assert follow(host).returncode == 78
     assert hold_line(host)[2] == "0"
-    assert backups(host) == 0  # it never got as far as the backup
+    assert systemctl_calls(host) == []
 
 
 def test_a_permanent_deploy_sh_refusal_that_mentions_a_registry_is_held_not_retried(
@@ -457,14 +440,6 @@ def test_a_permanent_gate_refusal_that_mentions_a_registry_is_held_not_retried(
     assert hold_line(host)[2] == "0"
 
 
-def test_clear_hold_forgets_the_backup_record(host: dict) -> None:
-    deploy_gate_unavailable(host)
-    follow(host)
-    assert (host["run"] / "follow-backup-ok").exists()
-    assert follow(host, "--clear-hold").returncode == 0
-    assert not (host["run"] / "follow-backup-ok").exists()
-
-
 def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:
     (host["fake"] / "deploy_skips_marker").write_text("")
     assert follow(host).returncode == 1
@@ -474,29 +449,10 @@ def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:
     )
 
 
-# --- invariant: the backup must succeed before anything is installed ----------------------------
-
-
-def test_a_failing_backup_blocks_the_install(host: dict) -> None:
-    (host["fake"] / "backup_rc").write_text("1")
-    result = follow(host)
-    assert result.returncode == 1
-    assert calls(host) == ["systemctl start at-pg-backup.service"]  # no deploy.sh call
-    assert (host["run"] / "deployed-digest").read_text().strip() == REF_A
-    assert status(host)["result"] == "backup_failed"
-    assert int(hold_line(host)[2]) > 0  # retried later, not on the next tick
-    assert follow(host).returncode == 0 and len(calls(host)) == 1
-
-
-def test_the_backup_unit_name_is_the_one_the_runbook_uses(host: dict) -> None:
-    follow(host)
-    assert "systemctl start at-pg-backup.service" in calls(host)
-
-
 # --- the host lock -------------------------------------------------------------------------------
 
 
-def test_a_busy_host_lock_is_exit_75_without_a_backup_or_install(host: dict) -> None:
+def test_a_busy_host_lock_is_exit_75_without_an_install(host: dict) -> None:
     holder = subprocess.Popen(["sleep", "60"])
     try:
         lock = host["run"] / "shiftgate-deploy.lock"

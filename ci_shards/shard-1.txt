@@ -125,6 +125,7 @@ tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_build_market_valuation_cli_gates.py
 tests/scripts/test_correct_journal_exit_fields_cli.py
 tests/scripts/test_dagu_account_value_snapshot_dag.py
+tests/scripts/test_dagu_at_pg_backup_dag.py
 tests/scripts/test_dagu_futures_minutes_dags.py
 tests/scripts/test_dagu_intraday_movers_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
