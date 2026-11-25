@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from app.core.timezone import KST, now_kst, today_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
@@ -26,15 +26,8 @@ from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.services.brokers.kis.futures_quotes import (
     GATE_ENV,
     FuturesQuotesGateOff,
-    FuturesQuotesUnsupported,
     gate_check,
 )
-from app.services.kis_futures_quotes.contracts import (
-    KOSPI200_FUTURES,
-    resolve_front_next,
-    roll_state,
-)
-from app.services.kis_futures_quotes.view import open_quotes_view
 
 _KR_INDEX_LAGGING_REASON = "kr_index_fresh_clock_payload_lagging"
 
@@ -92,10 +85,17 @@ def _has_distinct_prices(left: Any, right: Any) -> bool:
 
 
 def _is_fresh_clock_lagging_kr_index(index: dict[str, Any]) -> bool:
+    # When the OHLC is from an earlier session its top-level open is null (date
+    # separation). Compare against that session's open, the value this predicate
+    # read before the split, so the frozen-payload check still fires.
+    previous = index.get("previous_session")
+    open_price = index.get("open")
+    if open_price is None and isinstance(previous, dict):
+        open_price = previous.get("open")
     return (
         _is_zero(index.get("change"))
         and _is_zero(index.get("change_pct"))
-        and _has_distinct_prices(index.get("open"), index.get("current"))
+        and _has_distinct_prices(open_price, index.get("current"))
     )
 
 
@@ -112,7 +112,8 @@ def _tag_kr_index_data_state(index: Any) -> Any:
                 # ROB-464: all-zero change frozen at the prior close.
                 data_state = DATA_STATE_STALE
                 index["data_state_reason"] = _KR_INDEX_LAGGING_REASON
-                index["as_of"] = now_kst().isoformat()
+                index["as_of"] = _to_utc_iso(now_kst())
+                index["as_of_basis"] = "fetched_at"
             else:
                 # ROB-731: minute-granular quote lag. The signed change_pct is
                 # only as fresh as the quote it was derived from; when that lags
@@ -183,28 +184,15 @@ def _unsupported_row(symbol: str, meta: dict[str, str], reason: str) -> dict[str
     }
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        parsed = float(str(value).replace(",", ""))
-    except (TypeError, ValueError):
-        return None
-    return (
-        parsed
-        if parsed == parsed and parsed not in (float("inf"), float("-inf"))
-        else None
-    )
-
-
 async def _fetch_kospi200_night_futures(
-    symbol: str, meta: dict[str, str], *, on_date: date | None = None
+    symbol: str, meta: dict[str, str]
 ) -> dict[str, Any]:
-    """KOSPI200 night futures via the hk 6148 view; never invents a value.
+    """KOSPI200 night futures: always unsupported in this repo.
 
-    Gate off (``KIS_FUTURES_QUOTES_ENABLED`` not exactly ``true``) returns an
-    ``unsupported`` row with the reason and makes no KIS call. Gate on reads the
-    front KOSPI200 futures contract from the master and its price.
+    KIS documents no night-session futures quote TR (hk 6148). The only price TR the
+    futures quotes view has (``inquire-price``, market division ``F``) returns the
+    regular-session quote, so reporting it under a night symbol would present day
+    data as a night price. The gate only changes the reason. No KIS call is made.
     """
     try:
         gate_check()
@@ -214,52 +202,12 @@ async def _fetch_kospi200_night_futures(
             meta,
             f"{GATE_ENV} is not true; night-session futures quotes are gated (hk 6148)",
         )
-    today = on_date or today_kst()
-    view = open_quotes_view()
-    try:
-        master_rows = await view.master()
-        contracts, _unresolved = resolve_front_next(
-            master_rows, today, (KOSPI200_FUTURES,)
-        )
-        front = next((c for c in contracts if c.rank == 0), None)
-        if front is None:
-            return _unsupported_row(
-                symbol, meta, "no live KOSPI200 futures contract in the KIS master"
-            )
-        quote = await view.price(front.short_code)
-    except FuturesQuotesUnsupported as exc:
-        return _unsupported_row(symbol, meta, str(exc))
-    finally:
-        await view.close()
-
-    output = quote.get("output1") if isinstance(quote, dict) else None
-    if not isinstance(output, dict):
-        return _unsupported_row(
-            symbol, meta, "KIS futures price response had no output1"
-        )
-    current = _number(output.get("futs_prpr"))
-    if current is None:
-        return _unsupported_row(symbol, meta, "current futures price field absent")
-    return {
-        "symbol": symbol,
-        "name": meta["name"],
-        "current": current,
-        "change": _number(output.get("futs_prdy_vrss")),
-        "change_pct": _number(output.get("futs_prdy_ctrt")),
-        "source": "kis_futures_quotes",
-        "session_state": "futures_snapshot",
-        "contract": {
-            "kind": "dated",
-            "symbol": front.symbol,
-            "contract_month": front.contract_month,
-            "last_trade_date": front.last_trade_date.isoformat(),
-            "roll_state": roll_state(
-                front.contract_month, today, list(front.listed_months)
-            ),
-        },
-        "delayed": None,
-        "delay_basis": "not_verified",
-    }
+    return _unsupported_row(
+        symbol,
+        meta,
+        "KIS documents no night-session futures quote TR; the regular F-market price "
+        "is the day session and is not reported as a night price (hk 6148)",
+    )
 
 
 async def handle_get_market_index(

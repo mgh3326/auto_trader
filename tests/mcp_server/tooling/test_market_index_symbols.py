@@ -3,7 +3,7 @@ KR OHLC date separation (task 6301). All provider responses are fakes."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -209,10 +209,8 @@ async def test_kospi200_night_futures_gate_off_is_unsupported_without_kis_call(
 ):
     monkeypatch.delenv("KIS_FUTURES_QUOTES_ENABLED", raising=False)
 
-    def must_not_open():
-        raise AssertionError("KIS view must not be created while the gate is off")
-
-    monkeypatch.setattr(mkt, "open_quotes_view", must_not_open)
+    # The handler never reaches the regular-session futures quote view (review r1).
+    assert not hasattr(mkt, "open_quotes_view")
 
     result = await mkt.handle_get_market_index(symbol="KOSPI200_NIGHT")
 
@@ -223,81 +221,22 @@ async def test_kospi200_night_futures_gate_off_is_unsupported_without_kis_call(
     assert row["as_of_basis"] == "fetched_at"
 
 
-class _FakeFuturesView:
-    def __init__(self, master_rows, output1):
-        self._master_rows = master_rows
-        self._output1 = output1
-        self.price_calls: list[str] = []
-        self.closed = False
-
-    async def master(self):
-        return self._master_rows
-
-    async def price(self, symbol):
-        self.price_calls.append(symbol)
-        return {"output1": self._output1}
-
-    async def close(self):
-        self.closed = True
-
-
-async def test_kospi200_night_futures_gate_on_gives_value_with_contract(monkeypatch):
+async def test_kospi200_night_futures_gate_on_still_unsupported_and_reads_no_quote(
+    monkeypatch,
+):
+    """Review finding (high): the futures view's price TR is the regular F market,
+    so with the gate on it would return the day session under a night symbol. The
+    row must stay unsupported and no KIS quote may be read."""
     monkeypatch.setenv("KIS_FUTURES_QUOTES_ENABLED", "true")
-    monkeypatch.setattr(mkt, "today_kst", lambda: date(2026, 11, 25))
-    view = _FakeFuturesView(
-        master_rows=[
-            {
-                "product_type": "1",
-                "underlying_name": "KOSPI200",
-                "name": "F 202612",
-                "short_code": "A01612",
-            }
-        ],
-        output1={
-            "futs_prpr": "351.25",
-            "futs_prdy_vrss": "1.10",
-            "futs_prdy_ctrt": "0.31",
-        },
-    )
-    monkeypatch.setattr(mkt, "open_quotes_view", lambda: view)
 
-    row = (await mkt.handle_get_market_index(symbol="KOSPI200_NIGHT"))["indices"][0]
-
-    assert "unsupported" not in row
-    assert row["current"] == pytest.approx(351.25)
-    assert row["change"] == pytest.approx(1.10)
-    assert row["change_pct"] == pytest.approx(0.31)
-    assert row["contract"]["kind"] == "dated"
-    assert row["contract"]["contract_month"] == "2026-12"
-    assert row["contract"]["symbol"] == "F200.2612"
-    assert row["contract"]["last_trade_date"] == "2026-12-10"
-    assert row["contract"]["roll_state"] == "front"
-    assert row["delayed"] is None
-    assert row["delay_basis"] == "not_verified"
-    assert view.price_calls == ["A01612"]
-    assert view.closed is True
-
-
-async def test_kospi200_night_futures_missing_price_field_is_unsupported(monkeypatch):
-    monkeypatch.setenv("KIS_FUTURES_QUOTES_ENABLED", "true")
-    monkeypatch.setattr(mkt, "today_kst", lambda: date(2026, 11, 25))
-    view = _FakeFuturesView(
-        master_rows=[
-            {
-                "product_type": "1",
-                "underlying_name": "KOSPI200",
-                "name": "F 202612",
-                "short_code": "A01612",
-            }
-        ],
-        output1={"futs_prdy_vrss": "1.10"},
-    )
-    monkeypatch.setattr(mkt, "open_quotes_view", lambda: view)
+    assert not hasattr(mkt, "open_quotes_view")
 
     row = (await mkt.handle_get_market_index(symbol="KOSPI200_NIGHT"))["indices"][0]
 
     assert row["unsupported"] is True
-    assert row["current"] is None  # never invented
+    assert row["current"] is None
+    assert "day session" in row["unsupported_reason"]
+    assert "contract" not in row
 
 
 async def test_unknown_symbol_error_lists_supported_symbols():
@@ -306,3 +245,83 @@ async def test_unknown_symbol_error_lists_supported_symbols():
     message = str(info.value)
     for supported in ("SOX", "KOSPI200", "NQ=F", "ES=F", "USDKRW", "KOSPI200_NIGHT"):
         assert supported in message
+
+
+async def test_kr_frozen_lagging_payload_stamps_utc_as_of_and_basis(monkeypatch):
+    """Review finding (medium): the ROB-464 branch must not leave a KST as_of
+    without a basis."""
+    import app.mcp_server.tooling.fundamentals._market_index as mkt_mod
+
+    _naver_fake(
+        monkeypatch,
+        {
+            "closePrice": "8123.62",
+            "compareToPreviousClosePrice": "0",
+            "fluctuationsRatio": "0",
+        },
+        [
+            {
+                "localTradedAt": "2026-11-25",
+                "openPrice": "8263.85",
+                "highPrice": "8434.40",
+                "lowPrice": "8079.77",
+                "accumulatedTradingVolume": "450000000",
+            }
+        ],
+    )
+    monkeypatch.setattr(mkt, "kr_market_data_state", lambda *a, **k: "fresh")
+    monkeypatch.setattr(mkt, "_fetch_index_kr_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        mkt_mod,
+        "now_kst",
+        lambda: datetime(2026, 11, 25, 10, 0, 0, tzinfo=mkt_mod.KST),
+    )
+
+    row = (await mkt.handle_get_market_index(symbol="KOSPI"))["indices"][0]
+
+    assert row["data_state"] == "stale"
+    assert row["as_of"] == "2026-11-25T01:00:00+00:00"
+    assert row["as_of_basis"] == "fetched_at"
+
+
+async def test_kr_frozen_payload_stays_stale_when_ohlc_is_previous_session(
+    monkeypatch,
+):
+    """Review finding (medium): with a date split, open is null at top level. The
+    frozen-payload check must still fire on the previous session's open."""
+    import app.mcp_server.tooling.fundamentals._market_index as mkt_mod
+
+    _naver_fake(
+        monkeypatch,
+        {
+            "closePrice": "8123.62",
+            "compareToPreviousClosePrice": "0",
+            "fluctuationsRatio": "0",
+            "localTradedAt": "2026-11-25T10:00:00+09:00",
+        },
+        [
+            {
+                "localTradedAt": "2026-11-24",
+                "openPrice": "8263.85",
+                "highPrice": "8434.40",
+                "lowPrice": "8079.77",
+                "accumulatedTradingVolume": "450000000",
+            }
+        ],
+    )
+    monkeypatch.setattr(mkt, "kr_market_data_state", lambda *a, **k: "fresh")
+    monkeypatch.setattr(mkt, "_fetch_index_kr_history", AsyncMock(return_value=[]))
+    # 30 s after the quote: inside the lag threshold, so only the frozen-payload
+    # check can downgrade the row.
+    monkeypatch.setattr(
+        mkt_mod,
+        "now_kst",
+        lambda: datetime(2026, 11, 25, 10, 0, 30, tzinfo=mkt_mod.KST),
+    )
+
+    row = (await mkt.handle_get_market_index(symbol="KOSPI"))["indices"][0]
+
+    assert row["open"] is None
+    assert row["previous_session"]["open"] == pytest.approx(8263.85)
+    assert row["data_state"] == "stale"
+    assert row["data_state_reason"] == "kr_index_fresh_clock_payload_lagging"
