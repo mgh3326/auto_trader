@@ -62,6 +62,8 @@ ALPACA_MOST_ACTIVES_PATH = "/v1beta1/screener/stocks/most-actives"
 #: Same env pairs ``scripts/mock_data_refresh`` uses for the paper-data account.
 ALPACA_KEY_ENV = "ALPACA_DATA_API_KEY_ID"
 ALPACA_SECRET_ENV = "ALPACA_DATA_API_SECRET_KEY"
+ALPACA_PAPER_KEY_ENV = "ALPACA_PAPER_API_KEY"
+ALPACA_PAPER_SECRET_ENV = "ALPACA_PAPER_API_SECRET"
 ALPACA_TOP_MOVERS = 20
 ALPACA_TOP_ACTIVES = 50
 
@@ -165,13 +167,25 @@ def _credential(value: str | None, name: str) -> str:
 def alpaca_data_credentials(
     env: Mapping[str, str] | None = None,
 ) -> tuple[str, str] | None:
-    """``(key_id, secret)`` from the paper-data env pairs, or ``None`` if unset."""
+    """``(key_id, secret)`` from the paper-data env pairs, or ``None`` if unset.
+
+    The data pair wins when either half is set. When both are unset, the
+    Alpaca paper trading pair (the same account the mock data refresh reads
+    market data with) is used, because the pi env carries only that pair.
+    """
     source = env if env is not None else os.environ
     key = (source.get(ALPACA_KEY_ENV) or "").strip()
     secret = (source.get(ALPACA_SECRET_ENV) or "").strip()
+    if key or secret:
+        return _credential(key, ALPACA_KEY_ENV), _credential(secret, ALPACA_SECRET_ENV)
+    key = (source.get(ALPACA_PAPER_KEY_ENV) or "").strip()
+    secret = (source.get(ALPACA_PAPER_SECRET_ENV) or "").strip()
     if not key and not secret:
         return None
-    return _credential(key, ALPACA_KEY_ENV), _credential(secret, ALPACA_SECRET_ENV)
+    return (
+        _credential(key, ALPACA_PAPER_KEY_ENV),
+        _credential(secret, ALPACA_PAPER_SECRET_ENV),
+    )
 
 
 class AlpacaScreenerClient:
