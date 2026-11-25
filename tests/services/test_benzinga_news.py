@@ -85,6 +85,8 @@ async def test_fetch_sends_token_as_query_param() -> None:
         assert "tickers" not in request.url.params
         assert request.url.params.get("token") == "KEY-123"
         assert "Authorization" not in request.headers
+        # Without it Benzinga answers XML (pi, 2026-11-25).
+        assert request.headers.get("Accept") == "application/json"
         return httpx.Response(200, json=[BENZINGA_ITEM])
 
     def factory(timeout_s: float) -> httpx.AsyncClient:

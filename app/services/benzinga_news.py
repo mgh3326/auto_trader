@@ -73,6 +73,9 @@ API_KEY_ENV = "BENZINGA_API_KEY"
 
 BENZINGA_NEWS_URL = "https://api.benzinga.com/api/v2/news"
 BENZINGA_NEWS_PATH = "/api/v2/news"
+# Without an explicit Accept header Benzinga answers in XML (observed 2026-11-25
+# on the pi: every poll failed with a non-JSON content type).
+BENZINGA_REQUEST_HEADERS = {"Accept": "application/json"}
 
 REDACTED = "***"
 _TOKEN_PARAM_RE = re.compile(r"token=[^&\s]*")
@@ -303,7 +306,9 @@ async def fetch_benzinga_news(
     response: httpx.Response | None = None
     try:
         async with factory(timeout_s) as client:
-            response = await client.get(BENZINGA_NEWS_URL, params=params)
+            response = await client.get(
+                BENZINGA_NEWS_URL, params=params, headers=BENZINGA_REQUEST_HEADERS
+            )
     except httpx.TimeoutException as exc:
         failure = BenzingaNewsTransportError(
             f"benzinga news timeout {type(exc).__name__} for {symbol!r}"
