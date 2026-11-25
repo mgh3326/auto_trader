@@ -415,6 +415,24 @@ class KISClient(BaseKISClient):
             symbol, exchange_code, n, keyb
         )
 
+    async def inquire_overseas_updown_rate(
+        self,
+        exchange_code: str = "NAS",
+        *,
+        direction: str = "1",
+        nday: str = "0",
+        vol_rang: str = "0",
+        keyb: str = "",
+    ) -> dict[str, Any]:
+        """해외주식 상승률/하락률 순위 (HHDFS76290000), read-only (hk 6510)."""
+        return await self._market_data.inquire_overseas_updown_rate(
+            exchange_code,
+            direction=direction,
+            nday=nday,
+            vol_rang=vol_rang,
+            keyb=keyb,
+        )
+
     async def fetch_domestic_balance_snapshot(
         self,
         *,

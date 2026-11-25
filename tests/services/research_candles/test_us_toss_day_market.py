@@ -535,6 +535,12 @@ def test_alembic_script_directory_has_one_head_and_it_holds_the_follow_up() -> N
     assert len(heads) == 1, heads
     ancestry = {r.revision for r in script.walk_revisions("base", heads[0])}
     assert "20261125_hk6322_us_venue_val" in ancestry
+    assert "20261125_hk6036_upbit_shadow" in ancestry
+    assert "20261125_hk6503_kr_trading_flags" in ancestry
+    assert "20261125_hk6508_fnguide" in ancestry
+    # hk 6510 rides on that head (expand + validate revisions).
+    assert "20261125_hk6510_us_movers" in ancestry
+    assert "20261125_hk6510_us_movers_val" in ancestry
     assert script.get_revision("20261125_hk6322_us_toss_venue").down_revision == (
         "20261124_hk6154_momentum_runs"
     )

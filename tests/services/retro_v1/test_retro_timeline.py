@@ -387,6 +387,21 @@ async def test_coverage_counts_run_rows_by_status_and_pick_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_observation_run_counts_are_scoped_to_the_kr_surface_prefix() -> None:
+    """hk 6510: US runs share the run table on the ET date; KR coverage must not see them."""
+    session = timeline_session()
+    await read_retro_timeline(session, date=DAY, market="kr")
+    runs_sql = [s for s in session.statements if "invest_momentum_event_runs" in s]
+    assert runs_sql
+    assert all("invest_momentum_event_runs.surface LIKE" in sql for sql in runs_sql)
+    # the KR surface prefix is the filter value: a 'us:<source>:<session>:<side>'
+    # row cannot match it.
+    from app.services.retro_v1 import retro_timeline
+
+    assert retro_timeline._KR_RUN_SURFACE_PREFIX == "stock:"
+
+
+@pytest.mark.asyncio
 async def test_no_runs_rows_means_observation_log_not_running() -> None:
     session = timeline_session(**{"FROM invest_momentum_event_runs": []})
     response = await read_retro_timeline(session, date=DAY, market="kr")

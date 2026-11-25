@@ -303,6 +303,22 @@ async def scratch_database() -> AsyncIterator[str]:
                             f"DROP COLUMN IF EXISTS {column}"
                         )
                     )
+                # hk 6510 columns and index on the momentum snapshot table are
+                # later than this boundary; current metadata already contains
+                # them, so drop them and let the migration add them back.
+                for column in ("asset_type", "first_received_at", "field_reasons"):
+                    await connection.execute(
+                        text(
+                            "ALTER TABLE invest_momentum_event_snapshots "
+                            f"DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
+                await connection.execute(
+                    text(
+                        "DROP INDEX IF EXISTS "
+                        "ix_invest_momentum_event_snapshots_market_date_symbol"
+                    )
+                )
                 # ROB-s257 E-2 is later than this reconstructed boundary.
                 # Current metadata already contains its nullable observation
                 # column, so drop it and let the migration add it back.

@@ -1,6 +1,6 @@
-# 장중 급등·급락 관측 로그 런북 (hk 6154)
+# 장중 급등·급락 관측 로그 런북 (hk 6154, hk 6510)
 
-KRX 정규장 중 네이버 상승(`up`)·하락(`down`)·거래대금(`priceTop`) 상위를 5분마다 삽입 전용으로 쌓고, 면(surface)별 성공·0건·실패를 구분해 기록한다. 최초 포착 종목은 hk 6145 분봉 수집 대상(`intraday_movers`)이 된다. 계약은 `docs/agent-contracts/market-data-and-screener-contracts.md` 「장중 급등·급락 관측 로그」.
+KRX 정규장 중 네이버 상승(`up`)·하락(`down`)·거래대금(`priceTop`) 상위를, 미국 세션(04:00–20:00 ET) 중 Alpaca 스크리너(상승·하락·거래량 상위)와 KIS 해외 상승률/하락률 순위를 5분마다 삽입 전용으로 쌓고, 면(surface)별 성공·0건·실패를 구분해 기록한다. 최초 포착 종목은 hk 6145 분봉 수집 대상(`intraday_movers`)이 된다. 계약은 `docs/agent-contracts/market-data-and-screener-contracts.md` 「장중 급등·급락 관측 로그」·「미국 장중 급등·급락 관측 로그」.
 
 ## 1. 적용 순서 (운영자·설계 세션)
 
@@ -28,7 +28,7 @@ uv run python -m scripts.intraday_movers [--dry-run]
 |---|---|---|---|
 | `ok` | NULL | > 0 | 순위 행을 `invest_momentum_event_snapshots` 에 기록했다 |
 | `empty` | `no_rows` | 0 | 순위가 빈 목록으로 돌아왔다(조회는 성공) |
-| `error` | `http_4xx` `http_5xx` `timeout` `transport` `bad_response` `unparseable` `unexpected` | 0 | 조회·해석 실패. 순위 행은 없다. 예외 문자열은 저장하지 않는다 |
+| `error` | `http_4xx` `http_5xx` `timeout` `transport` `bad_response` `unparseable` `unexpected` `source_unavailable` | 0 | 조회·해석 실패, 또는 소스 리더·자격증명이 없어 시도조차 못 함(US, hk 6510). 순위 행은 없다. 예외 문자열은 저장하지 않는다 |
 
 DB CHECK 가 위 조합만 허용한다. 순위 행과 상태 행은 면 단위 한 트랜잭션이다.
 
@@ -42,6 +42,21 @@ DB CHECK 가 위 조합만 허용한다. 순위 행과 상태 행은 면 단위 
 
 🔴 KIS 분봉은 `n=200` 을 요청해도 **호출당 30봉**만 돌려준다(설계 세션 실측 2026-11-24). 그래서 오늘 분봉 행이 아직 없는 새 종목(`backfill`)은 첫 페이지의 가장 이른 봉 시각을 시간 커서(`FID_INPUT_HOUR_1`)로 한 번 더 읽어 이전 페이지를 붙인다 — 두 페이지 ≈ 60분. 추가 페이지가 실패하면 첫 페이지는 그대로 쓰고 오류만 보고한다. 커서 의미(`<=` 인지 `<` 인지)와 실제 소급 폭은 배포 뒤 운영 이미지로 확인한다(겹치는 봉은 `DO NOTHING`).
 
-## 6. 범위 밖
+## 6. 미국 (hk 6510)
 
-NXT 세션(2단계), 미국 movers(3단계), DAG 등록, 설정 스위치 변경, 테마 이벤트, retro/v1, 주문·승인 경로, 과거 소급.
+```bash
+uv run python -m scripts.us_intraday_movers [--dry-run]
+```
+
+- 자격증명: Alpaca 는 paper-data 쌍 `ALPACA_DATA_API_KEY_ID`/`ALPACA_DATA_API_SECRET_KEY`(`scripts.mock_data_refresh` 와 같은 쌍), KIS 는 기존 키. 값은 출력·로그에 남지 않는다. 한쪽이 없으면 그 소스의 면들이 `error`/`source_unavailable` 이고 종료 코드 1 이다.
+- 면: `us:alpaca_screener:<session>:up|down|active`(movers gainers/losers, most-actives), `us:kis_overseas_ranking:<session>:up|down`(NAS·NYS·AMS 합산, 하나라도 실패하면 그 면 전체가 `error`).
+- `session` 은 `us_pre`(04:00–09:30 ET)·`us_regular`·`us_post`(마감–20:00 ET)이고 XNYS 휴장일·창 밖은 `outside_session` 이다.
+- 출력 JSON 은 KR 과 같은 모양에 `sources`(소스별 리더 유무)와 면별 `source_updated_at`(Alpaca 가 목록을 계산한 시각)이 더해진다. 🔴 Alpaca movers 는 **개장 전에는 전일 목록**을 준다 — `source_updated_at` 으로 구분하고 프리마켓 움직임으로 읽지 않는다.
+- 행의 `asset_type` 은 `us_symbol_universe` 에서 유도한다(`common_stock`/`etf`/`leveraged_etf`/`right_or_warrant`/`unknown`). 마스터에 없는 종목은 `unknown`+`field_reasons.asset_type=not_in_symbol_universe` 다.
+- `trade_value`(달러 거래대금)는 제공자 값이 없으면 같은 행의 `price × volume` 이고 `raw_payload.trade_value_basis=price_times_volume` 로 표시한다. 둘 중 하나가 없으면 NULL + `field_reasons`.
+- US 최초 포착 종목은 `scripts.collect_session_minutes --market us` 의 `intraday_movers` 단계가 받는다. 오늘 분봉이 없는 새 종목은 `keyb` 커서로 04:00 ET 까지 최대 8페이지를 더 읽는다(`backfill_pages`).
+- DAG 사본 `deploy/dagu/at-intraday-movers/at-us-intraday-movers.yaml`(월–금 04:00–20:10 ET 5분). 등록은 1–3 과 마이그레이션 `20261125_hk6510_us_movers`(+`_val`) 적용 뒤 설계 세션이 한다.
+
+## 7. 범위 밖
+
+NXT 세션(2단계), DAG 등록, 설정 스위치 변경, 테마 이벤트, retro/v1, 주문·승인 경로, 과거 소급. 벤징가·뉴스·사이트 스크레이핑, KR 동작 변경.

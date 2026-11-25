@@ -1,8 +1,8 @@
 """hk 6299: tiered budgets for the session-minute collector.
 
-Order: fixed (holdings + fixed list, never cut) > KR intraday promotion (6154
-first captures) > pre-open screener snapshot > pick log remainder, under one run
-cap. Unused budget spills to the next tier; symbols cut by a tier are reported
+Order: fixed (holdings + fixed list, never cut) > intraday promotion (hk 6154 KR
+first captures, hk 6510 US first captures) > pre-open screener snapshot > pick log
+remainder, under one run cap. Unused budget spills to the next tier; symbols cut by a tier are reported
 with that tier and the closed reason ``budget_cut``.
 """
 
@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.core.config import Settings
+from app.services.invest_momentum_events import intraday
 from app.services.research_candles import session_minutes_collector as sc
 from app.services.research_candles.session_minutes_collector import TierSpec
 
@@ -31,6 +33,8 @@ def _mover(symbol: str, rank: int, captured=CAPTURED_0905):
     return SimpleNamespace(
         symbol=symbol,
         name=None,
+        market="kr",
+        surface="domestic_market_stock_default",
         snapshot_at=captured,
         trade_type="KRX",
         market_type="ALL",
@@ -55,19 +59,24 @@ class _Result:
 class _Session:
     """Dispatches by statement text: first captures, minute rows today, pick log."""
 
-    def __init__(self, pick=(), movers=(), have_today=()):
+    def __init__(self, pick=(), movers=(), have_today=(), us_earliest=()):
         self.pick = list(pick)
         self.movers = list(movers)
         self.have_today = list(have_today)
+        self.us_earliest = list(us_earliest)
         self.statements: list[str] = []
+        self.calls: list[tuple[str, dict]] = []
 
     async def execute(self, statement, params=None):
         text = str(statement)
         self.statements.append(text)
+        self.calls.append((text, params or {}))
         if "invest_momentum_event_snapshots" in text:
             return _Result(self.movers)
         if "kr_candles_1m" in text:
             return _Result(self.have_today)
+        if "us_candles_1m" in text:
+            return _Result(self.us_earliest)
         return _Result(self.pick)
 
     async def rollback(self):
@@ -328,9 +337,22 @@ async def test_promotion_order_is_earliest_capture_then_best_rank() -> None:
 
 
 @pytest.mark.asyncio
-async def test_us_has_no_movers_tier_and_selects_the_fixed_defaults() -> None:
-    """Acceptance 4: US fixed defaults are selected; no movers tier, no movers query."""
-    session = _Session(pick=["AAPL"], movers=[_mover("000700", rank=1)])
+async def test_us_selects_the_fixed_defaults_and_its_own_movers_tier(
+    monkeypatch,
+) -> None:
+    """hk 6510 acceptance 3: US keeps its fixed defaults and gains the movers tier.
+
+    The first-capture read is US-scoped (``market='us'``, ET trading day), so a KR
+    capture never promotes a US symbol.
+    """
+    calls: list[tuple[str, object]] = []
+
+    async def _captures(session, trading_date, market="kr"):
+        calls.append((market, trading_date))
+        return [_mover("DELL", rank=1)]
+
+    monkeypatch.setattr(intraday, "first_captures", _captures)
+    session = _Session(pick=["AAPL"])
     targets = await _targets(
         market="us",
         session=session,
@@ -339,9 +361,61 @@ async def test_us_has_no_movers_tier_and_selects_the_fixed_defaults() -> None:
         screener=["MSFT"],
     )
     assert {"SPY", "QQQ", "SMH"} <= set(targets.symbols)
-    assert "intraday_movers" not in [t.tier for t in targets.tiers]
-    assert all(c["tier"] != "intraday_movers" for c in targets.cuts)
-    assert not any("invest_momentum_event_snapshots" in s for s in session.statements)
+    assert "intraday_movers" in [t.tier for t in targets.tiers]
+    assert targets.by_origin["intraday_movers"] == 1
+    assert "DELL" in targets.symbols
+    # US-scoped first captures on the ET trading day: NOW is 2026-11-25 06:10 UTC
+    # = 01:10 ET on the 25th (the ET calendar date of that instant).
+    assert calls == [("us", NOW.astimezone(ZoneInfo("America/New_York")).date())]
+
+
+@pytest.mark.asyncio
+async def test_us_backfill_retries_until_the_earliest_bar_reaches_the_session_start(
+    monkeypatch,
+) -> None:
+    """hk 6510 r2: a failed earlier page must stay eligible for the next run.
+
+    US backfill completion is the earliest bar of today vs 04:00 ET, not row
+    presence: a mover that only has the newest page (09:30 ET) is retried, one
+    whose earliest bar is the session start is done.
+    """
+
+    async def _captures(session, trading_date, market="kr"):
+        return [_mover("DELL", rank=1), _mover("URBN", rank=2)]
+
+    monkeypatch.setattr(intraday, "first_captures", _captures)
+    # NOW is 2026-11-25 06:10 UTC = 01:10 ET on the 25th, so that ET day's open is
+    # 04:00 ET = 09:00 UTC on the 25th.
+    session_start_utc = datetime(2026, 11, 25, 9, 0, tzinfo=UTC)
+    session = _Session(
+        us_earliest=[
+            ("DELL", session_start_utc),  # paged back to the open: done
+            ("URBN", datetime(2026, 11, 25, 14, 30, tzinfo=UTC)),  # 09:30 ET only
+        ]
+    )
+    targets = await _targets(
+        market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
+    )
+    assert set(targets.symbols) == {"SPY", "DELL", "URBN"}
+    assert targets.backfill == ["URBN"]
+
+
+@pytest.mark.asyncio
+async def test_us_backfill_completion_counts_only_kis_bars(monkeypatch) -> None:
+    """hk 6510 r4: Toss day-market bars (same session_date, earlier times) must not
+    make a mover look backfilled when no KIS page ever reached 04:00 ET."""
+
+    async def _captures(session, trading_date, market="kr"):
+        return [_mover("DELL", rank=1)]
+
+    monkeypatch.setattr(intraday, "first_captures", _captures)
+    session = _Session(us_earliest=[])
+    await _targets(
+        market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
+    )
+    (sql,) = [s for s in session.statements if "us_candles_1m" in s]
+    assert "source = 'KIS'" in sql
+    assert "venue IN ('NASD', 'NYSE', 'AMEX')" in sql
 
 
 @pytest.mark.asyncio

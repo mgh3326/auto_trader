@@ -27,6 +27,11 @@ class MomentumEventUpsert(BaseModel):
     volume: int | None = None
     trade_value: Decimal | None = None
     market_cap: Decimal | None = None
+    # hk 6510 (US rows only): asset class, receipt time and per-field reasons.
+    # KR payloads leave them None and their insert is byte-identical.
+    asset_type: str | None = None
+    first_received_at: dt.datetime | None = None
+    field_reasons: dict[str, str] | None = None
     raw_payload: dict[str, Any] | None = None
 
 

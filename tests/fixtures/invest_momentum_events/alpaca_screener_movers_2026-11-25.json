@@ -1,0 +1,12 @@
+{
+  "gainers": [
+    {"symbol": "NVDA", "price": 182.44, "change": 4.12, "percent_change": 2.31},
+    {"symbol": "AMD", "price": 171.9, "change": 3.05, "percent_change": 1.81}
+  ],
+  "losers": [
+    {"symbol": "DELL", "price": 118.42, "change": -9.53, "percent_change": -7.45},
+    {"symbol": "URBN", "price": 43.11, "change": -7.38, "percent_change": -14.62}
+  ],
+  "market_type": "stocks",
+  "last_updated": "2026-11-24T21:00:00.123456789Z"
+}
