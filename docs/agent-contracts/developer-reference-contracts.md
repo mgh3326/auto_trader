@@ -177,6 +177,7 @@ pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main
   (+ 있으면 panewire `info`)에 남는다. 롤백은 `follow.sh --hold` 후 `deploy.sh --rollback`.
 - **신뢰 경계**: `deploy` 태그 쓰기 권한(Actions `GITHUB_TOKEN`, GHCR 패키지 쓰기)은 신뢰 경계다. follow 의 재확인은 "main 조상 + 전체 스위트 초록"까지다.
   hk 쪽 자동 재승격(결정에 A 로 답하면 dispatch)은 후속 작업이다. 런북: `docs/runbooks/pi-shiftgate-deploy.md` §4.1.
+- **이미지 정리 (hk 6437)**: 성공한 전진 배포(수동·`follow.sh` 모두)는 `deployed-digest` 를 쓴 뒤 오래된 `auto_trader` 이미지를 정리한다. 현재·이전 digest 와 컨테이너가 쓰는 이미지는 남긴다. 끄는 스위치는 `AT_IMAGE_PRUNE_ENABLED`(기본 1)이며 규칙은 `docs/runbooks/pi-shiftgate-deploy.md` §4.2 에 있다. 롤백·실패 경로는 정리하지 않는다.
 - **테스트**: `tests/ci/test_promote_deploy.py`, `tests/ci/test_promote_deploy_workflow.py`, `tests/scripts/test_pi_follow.py`, `tests/scripts/test_deploy_ci_gate_anonymous.py`.
 
 ## 문제 해결

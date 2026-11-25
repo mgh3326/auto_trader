@@ -142,6 +142,7 @@ tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_bhost_deploy.py
 tests/scripts/test_pi_follow.py
 tests/scripts/test_pi_shiftgate_deploy.py
+tests/scripts/test_pi_shiftgate_image_prune.py
 tests/scripts/test_post_watch_triage_reply.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
 tests/scripts/test_shiftgate_services_at.py
