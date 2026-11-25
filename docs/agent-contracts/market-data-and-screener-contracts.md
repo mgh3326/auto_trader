@@ -764,7 +764,7 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
 
 - **봉 시작**: 토스 `timestamp` 는 봉의 끝이므로 저장 시작은 `timestamp − 1분`이고 같은 닫힌 봉 규칙(`is_closed`)을 쓴다. 형성 중인 봉은 `skipped_forming` 으로 건너뛴다. 클라이언트 `TossReadClient.collect_minute_candles(adjusted=False)` 를 쓴다(수정주가 아님).
 - **달력**: `get_toss_market_calendar("us", today_kst)` 를 실행당 한 번 받는다. `session_segment_of(..., us_calendar=…)` 는 달력 창(절대 시각)으로만 라벨을 붙인다. dayMarket 창 안 → `US_DAY`(모든 venue; KIS 행도 달력이 있으면 같다), 토스 행은 그 밖에 pre/regular/after 창이면 그 라벨, 어느 창에도 없으면 `UNKNOWN`(저장하되 추측하지 않는다). 달력이 없으면 `TOSS_INTEGRATED` 는 `UNKNOWN` 이고 KIS 라벨은 바이트 동일하다(`us_calendar=None` 기본값). 휴장일(모든 세션 null)은 창이 없으므로 `UNKNOWN`.
-- **대상·예산**: 기존 US 단계(고정 SPY/QQQ/SMH·보유·스크리너)와 같다. 토스 읽기는 달력 창이 `[현재 − 3시간, 현재]` 와 겹칠 때만 하고, 그 밖이면 `toss: no_window` 로 보고한다. KIS 미국 읽기는 달력 dayMarket 창이 열린 순간 건너뛴다(`kis_skipped_day_market`).
+- **대상·예산**: 기존 US 단계(고정 SPY/QQQ/SMH·보유·스크리너)와 같다. 토스 읽기는 달력 창이 `[현재 − 3시간, 현재]` 와 겹칠 때만 하고, 그 밖이면 `toss: no_window` 로 보고한다. KIS 미국 읽기는 달력 dayMarket 창이 열린 뒤 15분(`KIS_DAY_MARKET_GRACE`)이 지나면 건너뛴다(`kis_skipped_day_market`). 그 전에는 KIS 가 마지막 봉을 읽는다.
 - **재실행**: `ON CONFLICT (time_utc, symbol, venue) DO NOTHING` 이므로 같은 토스 봉의 재삽입은 0행이고 `retrieved_at`(최초 수신)은 바뀌지 않는다(CI DB 테스트 `tests/services/research_candles/test_us_toss_day_market_db.py`). 마이그레이션 `downgrade` 는 `TOSS_INTEGRATED` 행이나 NULL `value` 행이 있으면 거부한다.
 - **확인**: `scripts/diagnose_session_coverage.py --market us --date D --first-last` 가 세션 세그먼트·출처·venue 별 첫 봉과 마지막 봉(봉 시작, UTC·KST)을 한 줄로 보인다(읽기 전용).
 - **범위 밖**: `get_quote` 와 Factortrail, KR 세션, 선물. DAG 는 사본만 갱신하며 등록하지 않는다. 토스 행의 `expected_minutes` 계산은 없다(KIS 표지만 기대 분을 센다).

@@ -83,6 +83,10 @@ TOSS_US_MAX_PAGES = 4
 #: minute (timestamp = its END, up to 1 min ahead) is returned and then dropped
 #: by ``is_closed``, instead of tripping the client's "newer than before" check.
 TOSS_CURSOR_SLACK = timedelta(minutes=2)
+#: KIS keeps being read for this long after a day-market window opens. KIS after-hours
+#: ends at the same instant the window opens (20:00 ET), so the last KIS bars (19:54-
+#: 19:59 ET) are read by the first runs after the open, not dropped (review r1).
+KIS_DAY_MARKET_GRACE = timedelta(minutes=15)
 TOSS_VENUE_ERROR = TOSS_US_VENUE
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -1070,8 +1074,10 @@ async def collect(
             market == "us"
             and us_calendar is not None
             and us_day_market_bar(observed_before, us_calendar)
+            and us_day_market_bar(observed_before - KIS_DAY_MARKET_GRACE, us_calendar)
         ):
-            # KIS has no US bars inside a day-market window; Toss covers it (hk 6322).
+            # Past the grace period KIS has no US bars in the day-market window; Toss
+            # covers it (hk 6322). Within the grace KIS is still read (tail bars).
             kis_day_market_skips += 1
             continue
         try:

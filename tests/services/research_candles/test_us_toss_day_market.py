@@ -441,7 +441,7 @@ def _load(path: Path, name: str):
 def test_migration_chain_revision_length_and_expand_contract_marker() -> None:
     a = _load(MIGRATION_A, "hk6322_a")
     b = _load(MIGRATION_B, "hk6322_b")
-    assert a.down_revision == "20261124_hk6148_futures_minutes"
+    assert a.down_revision == "20261124_hk6154_momentum_runs"
     assert b.down_revision == a.revision
     assert len(a.revision) <= 32 and len(b.revision) <= 32  # alembic_version width
     for path in (MIGRATION_A, MIGRATION_B):
@@ -523,3 +523,71 @@ def asyncio_run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+def test_alembic_script_directory_has_one_head_and_it_is_the_follow_up() -> None:
+    """The per-file tests above never resolve the chain; this one does (review r1)."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
+    assert script.get_heads() == ["20261125_hk6322_us_venue_val"]
+    assert script.get_revision("20261125_hk6322_us_toss_venue").down_revision == (
+        "20261124_hk6154_momentum_runs"
+    )
+
+
+def test_unbuildable_toss_reader_is_an_error_not_a_silent_skip() -> None:
+    import importlib
+
+    cli = importlib.import_module("scripts.collect_session_minutes")
+    errors = cli._toss_input_errors("reader_unavailable")
+    assert errors == [{"venue": TOSS_US_VENUE, "error_class": "TossReaderUnavailable"}]
+    assert cli._toss_input_errors("disabled") == []
+    assert cli._toss_input_errors("ready") == []
+
+
+def test_kis_tail_is_still_read_in_the_first_grace_minutes_after_day_market_opens() -> (
+    None
+):
+    # Day market opens at 20:00 ET (= 10:00 KST on 2026-11-25). KIS after-hours
+    # ends at the same instant, so the 19:59 ET bar must be read and stored at 20:00:30.
+    calendar = _calendar(day_market=("10:00", "17:50"))
+    observed = datetime(2026, 11, 24, 20, 0, 30, tzinfo=ET).astimezone(UTC)
+    assert observed == datetime(2026, 11, 25, 1, 0, 30, tzinfo=UTC)
+    bar_1959_et = datetime(2026, 11, 24, 19, 59, tzinfo=ET)
+    frame = pd.DataFrame(
+        {
+            "datetime": pd.to_datetime(["2026-11-24 19:59"]),
+            "open": [900.0],
+            "high": [901.0],
+            "low": [899.0],
+            "close": [900.5],
+            "volume": [50],
+            "value": [45000.0],
+        }
+    )
+
+    class _TailKis(_FakeKis):
+        async def inquire_overseas_minute_chart(
+            self, symbol, exchange_code="NASD", n=120, keyb=""
+        ):
+            self.calls += 1
+            return SimpleNamespace(frame=frame)
+
+    kis = _TailKis()
+    writer = _FakeWriter()
+    report = _run(
+        symbols=["NVDA"],
+        kis=kis,
+        writer=writer,
+        us_exchanges={"NVDA": "NASD"},
+        toss=None,
+        us_calendar=calendar,
+        clock=lambda: observed,
+    )
+    assert kis.calls == 1
+    assert report["kis_skipped_day_market"] == 0
+    (bar,) = writer.bars
+    assert bar.time_utc == bar_1959_et.astimezone(UTC)
+    assert bar.session_segment == US_POST

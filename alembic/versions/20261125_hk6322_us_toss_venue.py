@@ -1,7 +1,7 @@
 """hk 6322: Toss US day-market minutes in research.us_candles_1m (expand step).
 
 Revision ID: 20261125_hk6322_us_toss_venue
-Revises: 20261124_hk6148_futures_minutes
+Revises: 20261124_hk6154_momentum_runs
 Create Date: 2026-11-25
 
 Additive. ``public.*_candles_1m`` are untouched.
@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20261125_hk6322_us_toss_venue"
-down_revision: str | Sequence[str] | None = "20261124_hk6148_futures_minutes"
+down_revision: str | Sequence[str] | None = "20261124_hk6154_momentum_runs"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

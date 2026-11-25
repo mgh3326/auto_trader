@@ -53,6 +53,7 @@ from app.services.brokers.kis.client import KISClient
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.market_calendar import get_toss_market_calendar
 from app.services.research_candles import session_minutes_collector as collector
+from app.services.research_candles.session_segment import TOSS_US_VENUE
 
 if TYPE_CHECKING:
     from app.services.brokers.toss.market_calendar import TossMarketCalendar
@@ -94,6 +95,18 @@ async def _toss_us_inputs(
         )
         return None, calendar, "reader_unavailable"
     return reader, calendar, "ready"
+
+
+def _toss_input_errors(status: str) -> list[dict[str, str]]:
+    """A Toss reader that cannot be built is an error, never a silent skip (review r1).
+
+    The calendar failure is recorded by the collector (``CalendarUnavailable``) when a
+    reader exists; with no reader the collector never runs the Toss block, so the
+    failure is recorded here. Exit stays 1 while Toss is enabled and unreadable.
+    """
+    if status == "reader_unavailable":
+        return [{"venue": TOSS_US_VENUE, "error_class": "TossReaderUnavailable"}]
+    return []
 
 
 async def run(args: argparse.Namespace) -> dict[str, object]:
@@ -155,7 +168,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 us_exchanges=exchanges,
                 unresolved_symbols=unresolved,
                 dry_run=args.dry_run,
-                prior_errors=targets.errors,
+                prior_errors=[*targets.errors, *_toss_input_errors(toss_input_status)],
                 backfill_symbols=targets.backfill,
                 toss=toss,
                 us_calendar=us_calendar,
