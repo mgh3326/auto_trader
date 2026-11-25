@@ -59,6 +59,9 @@ class OrderRequest(BaseModel):
     limit_price: Decimal | None = None
     stop_price: Decimal | None = None
     client_order_id: str | None = None
+    # hk 6497: None is dropped by exclude_none, so the default body is unchanged.
+    # Set to True only for an extended-hours limit DAY order.
+    extended_hours: bool | None = None
 
 
 class Order(BaseModel):
