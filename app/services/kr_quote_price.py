@@ -48,6 +48,11 @@ NXT_PRE_END = dt.time(8, 50)
 NXT_POST_START = dt.time(15, 30)
 NXT_POST_END = dt.time(20, 0)
 
+# A last trade counts only when it is at most this old, the same bound as the
+# orderbook freshness gate. An older trade is not a live price; the firm mid of a
+# live two-sided book is used instead.
+TRADE_MAX_AGE = dt.timedelta(minutes=5)
+
 # KRX single-price auctions: pre-open call and closing call. Schedule assumption,
 # not checked against an exchange notice in this change.
 KRX_AUCTION_WINDOWS: tuple[tuple[dt.time, dt.time], ...] = (
@@ -170,12 +175,15 @@ def _valid_trade(
     *,
     session_start: dt.datetime,
     now: dt.datetime,
+    max_trade_age: dt.timedelta,
 ) -> bool:
     if trade is None or positive_price(trade.price) is None:
         return False
     if not _is_aware(trade.traded_at):
         return False
-    return session_start <= trade.traded_at <= now
+    if not session_start <= trade.traded_at <= now:
+        return False
+    return now - trade.traded_at <= max_trade_age
 
 
 def select_kr_price(
@@ -186,6 +194,7 @@ def select_kr_price(
     venue_books: Mapping[str, VenueBook],
     last_trades: Mapping[str, LastTrade],
     primary_venue: str,
+    max_trade_age: dt.timedelta = TRADE_MAX_AGE,
 ) -> PriceSelection:
     """Pick the representative price for one venue under the session rule.
 
@@ -243,7 +252,10 @@ def select_kr_price(
     # Continuous trading: expected never becomes the representative price here.
     trade = last_trades.get(primary_venue)
     if session_start is not None and _valid_trade(
-        trade, session_start=session_start, now=now
+        trade,
+        session_start=session_start,
+        now=now,
+        max_trade_age=max_trade_age,
     ):
         assert trade is not None  # narrowed by _valid_trade
         return PriceSelection(

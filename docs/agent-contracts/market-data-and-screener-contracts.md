@@ -664,10 +664,11 @@ KR `get_quote`의 대표가(`price`)는 `price_kind`로 어떤 근거인지 밝�
 
 - 예상체결가는 항상 `expected_price`(와 `expected_price_venue`) 필드에 따로 남는다. 같은 값이 `price`로 복사되는 것은 `price_kind=expected`(동시호가)뿐이다.
 - `venues`는 읽은 시장마다 `best_bid`·`best_ask`·`observed_at`(호가 시각)·`expected_price`와, 체결이 있으면 `last_trade_price`·`last_trade_at`을 싣는다. 현재 `get_quote`는 NXT 호가만 읽으므로 `venues`에는 `nxt`만 나온다.
-- 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:30 KST) 이후이면서 현재 시각 이전이어야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다.
+- 체결은 KIS 분봉(`inquire_minute_chart`, NX, 1분)의 거래량이 있는 가장 최근 봉에서 읽는다. 봉 종가가 체결가, 봉 시작 시각이 체결 시각(분 단위)이다. `inquire-price`(FHKST01010100)는 체결 시각을 주지 않으므로 쓰지 않는다. 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:30 KST) 이후이면서 현재 시각 이전이고, 현재 시각보다 5분(`TRADE_MAX_AGE`, 호가 신선도 기준과 같음) 이내여야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다. 읽기 실패도 체결 없음이다.
 - `price_kind`가 `expected`이면 `is_stale_price: true`, `price_freshness: "unavailable"`, `price_usable: false`, `price_unavailable_reason: "expected_price_not_order_basis"`다. 주문 근거로 쓰지 않는다. `order_preflight`(키움 모의 `fetch_kr_quote_for_preflight`)와 `auto_approve_price_fallback`(`classify_kis_quote`)은 이 값을 거부한다.
 - 정규장 KRX 기본 경로(`data_state: fresh`, NXT 오버레이 없음)는 `price_kind: "last_trade"`, `price_session: "regular"`를 더한다. 그 밖의 기본 경로(장전·장마감)는 `price_kind: "unavailable"`과 사유 `premarket_unavailable` 또는 `krx_market_closed`를 더한다. 다른 키의 값과 형태는 그대로다.
-- 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. NXT 마지막 체결은 KIS `inquire-price`를 `FID_COND_MRKT_DIV_CODE=NX`로 한 번 더 읽어 얻는다(`[unverified]` 장후 응답의 시장 코드와 체결 시각 필드는 운영자 스모크로 확인한다). 읽기가 실패하면 체결 없음으로 보고 `mid`로 내려간다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
+- KRX 동시호가 구간(08:30–09:00, 15:20–15:30 KST, 거래일)에는 `get_quote`가 KRX 호가를 한 번 더 읽어 `price_session: auction`으로 판정한다. 이때 예상체결가가 있으면 `price_kind: expected`이고 주문 근거가 아니다. 호가 읽기가 실패하면 기존 기본 경로를 그대로 둔다.
+- 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. 시장 개장 사실(동시호가 시각, NXT 경계)은 이 PR 에서 거래소 공지로 확인하지 않았다. 장후 NX 분봉의 시장 코드와 봉 시각 의미는 `[unverified]`이며 운영자 스모크로 확인한다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
 
 ## 유지 규약
 

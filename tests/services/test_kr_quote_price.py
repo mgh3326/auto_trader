@@ -257,3 +257,59 @@ def test_positive_price_rejects_non_positive_and_non_numeric(value):
 def test_positive_price_accepts_numeric_strings_and_floats():
     assert kqp.positive_price("169400") == 169400.0
     assert kqp.positive_price(169400) == 169400.0
+
+
+def test_last_trade_older_than_bound_falls_back_to_live_mid():
+    """hk 6498 review: a 17:00 trade at 18:16 is not a live price; the mid wins."""
+    sel = kqp.select_kr_price(
+        session=kqp.PRICE_SESSION_NXT_POST,
+        session_start=AFTER_SESSION_START,
+        now=AFTER_NOW,
+        venue_books={"nxt": _nxt_book()},
+        last_trades={"nxt": _trade(169500.0, _kst(17, 0))},
+        primary_venue="nxt",
+    )
+
+    assert sel.price_kind == kqp.PRICE_KIND_MID
+    assert sel.price == pytest.approx(169150.0)
+
+
+def test_last_trade_exactly_at_bound_counts_and_one_second_over_does_not():
+    at_bound = kqp.select_kr_price(
+        session=kqp.PRICE_SESSION_NXT_POST,
+        session_start=AFTER_SESSION_START,
+        now=AFTER_NOW,
+        venue_books={"nxt": _nxt_book()},
+        last_trades={"nxt": _trade(169400.0, _kst(18, 11))},
+        primary_venue="nxt",
+    )
+    over_bound = kqp.select_kr_price(
+        session=kqp.PRICE_SESSION_NXT_POST,
+        session_start=AFTER_SESSION_START,
+        now=AFTER_NOW,
+        venue_books={"nxt": _nxt_book()},
+        last_trades={
+            "nxt": _trade(
+                169400.0, AFTER_NOW - kqp.TRADE_MAX_AGE - dt.timedelta(seconds=1)
+            )
+        },
+        primary_venue="nxt",
+    )
+
+    assert at_bound.price_kind == kqp.PRICE_KIND_LAST_TRADE
+    assert over_bound.price_kind == kqp.PRICE_KIND_MID
+
+
+def test_max_trade_age_is_a_parameter():
+    sel = kqp.select_kr_price(
+        session=kqp.PRICE_SESSION_NXT_POST,
+        session_start=AFTER_SESSION_START,
+        now=AFTER_NOW,
+        venue_books={"nxt": _nxt_book()},
+        last_trades={"nxt": _trade(169500.0, _kst(17, 0))},
+        primary_venue="nxt",
+        max_trade_age=dt.timedelta(hours=2),
+    )
+
+    assert sel.price_kind == kqp.PRICE_KIND_LAST_TRADE
+    assert sel.price == 169500.0
