@@ -58,6 +58,7 @@ tests/mcp_server/tooling/test_toss_sellable_need_flag.py
 tests/models/test_analyst_consensus_snapshot_model.py
 tests/models/test_operator_session_context_model.py
 tests/models/test_symbol_news_relevance_model.py
+tests/monitoring/test_sentry_db_call_count.py
 tests/monitoring/test_sentry_noise_filters.py
 tests/research/crypto_universe/test_crypto_universe_pit.py
 tests/research/data_plane/test_data_plane_collect.py

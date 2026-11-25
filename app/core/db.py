@@ -1,13 +1,16 @@
+import logging
 import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 # MCP 서버에서는 stdout 오염 방지를 위해 echo=False 필수
 _echo = os.getenv("SQLALCHEMY_ECHO", "false").lower() in ("true", "1", "yes")
 
@@ -33,18 +36,31 @@ def build_engine(database_url: str | None = None) -> AsyncEngine:
     url = database_url if database_url is not None else settings.DATABASE_URL
     pool_class = os.getenv("DB_POOL_CLASS", "queue").strip().lower()
     if pool_class == "null":
-        return create_async_engine(
+        engine = create_async_engine(
             url, echo=_echo, pool_pre_ping=True, poolclass=NullPool
         )
-    return create_async_engine(
-        url,
-        echo=_echo,
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
-        pool_recycle=int(os.getenv("DB_POOL_RECYCLE_S", "1800")),
-        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT_S", "10")),
-    )
+    else:
+        engine = create_async_engine(
+            url,
+            echo=_echo,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+            pool_recycle=int(os.getenv("DB_POOL_RECYCLE_S", "1800")),
+            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT_S", "10")),
+        )
+    # hk 6378: count one statement per before_cursor_execute in this
+    # request's context. Fail-open and text-free; a registration failure
+    # only loses the count, never the engine.
+    try:
+        from app.monitoring.db_call_count import before_cursor_execute
+
+        sqlalchemy_event.listen(
+            engine.sync_engine, "before_cursor_execute", before_cursor_execute
+        )
+    except Exception:  # noqa: BLE001 - engine must survive telemetry failure
+        logger.exception("Failed to attach Sentry db.call_count listener")
+    return engine
 
 
 # ROB-964: defer engine + sessionmaker construction to first use.
