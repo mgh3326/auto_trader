@@ -17,12 +17,17 @@ def test_dag_schedule_entrypoint_and_pattern() -> None:
     assert doc["schedule"] == ["CRON_TZ=America/New_York */30 9-16 * * 1-5"]
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
-    assert doc["env"] == {"BENZINGA_NEWS_SHADOW_ENABLED": "true"}
+    # The gate must reach the container: DAG-level `env:` only sets the host
+    # step shell, so the flag goes on `docker run -e` instead.
+    assert "env" not in doc
     (step,) = doc["steps"]
     script = step["script"]
     assert "-m scripts.benzinga_news_shadow poll" in script
     assert "--symbols NVDA,AMD,QQQ,SMH" in script
-    assert "--out-dir /root/at-run/benzinga-shadow" in script
+    assert "-e BENZINGA_NEWS_SHADOW_ENABLED=true" in script
+    # `--rm` discards container paths: output must land on a host mount.
+    assert "-v /root/at-run/benzinga-shadow:/out" in script
+    assert "--out-dir /out" in script
     assert '"$(cat /root/at-run/deployed-digest)"' in script
     assert "--env-file /root/at-secrets/.env.api" in script
     assert "--rm --init" in script
@@ -40,6 +45,7 @@ def test_readme_says_copy_not_registered() -> None:
         or "등록하지 않는다" in readme
     )
     assert "at-news-shadow" in readme
+    assert "-v /root/at-run/benzinga-shadow:/out" in readme
     assert {p.name for p in ROOT.glob("*.yaml")} == {"at-news-shadow.yaml"}
 
 

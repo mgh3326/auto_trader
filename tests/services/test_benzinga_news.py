@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -58,10 +59,12 @@ def test_normalize_record_preserves_raw_and_uses_injected_clock() -> None:
     record = bz.normalize_record(
         BENZINGA_ITEM, poll_id="poll-1", first_received_at=FIXED_NOW
     )
+    assert record["record_type"] == "article"
     assert record["source"] == "benzinga"
     assert record["provider_id"] == "44901111"
     assert record["created_raw"] == "Tue, 25 Nov 2025 09:30:00 -0400"
     assert record["updated_raw"] == "Tue, 25 Nov 2025 10:15:00 -0400"
+    assert record["created_basis"] == "provider_rfc2822"
     assert record["created_utc"] == "2025-11-25T13:30:00+00:00"
     assert record["updated_utc"] == "2025-11-25T14:15:00+00:00"
     assert record["first_received_at"] == "2025-11-25T14:00:00+00:00"
@@ -154,13 +157,66 @@ def test_api_key_missing_never_echoes_value(monkeypatch: pytest.MonkeyPatch) -> 
     assert bz.API_KEY_ENV in str(excinfo.value)
 
 
+def test_normalize_url_keeps_identifying_query_but_strips_tracking() -> None:
+    kept = bz.normalize_url("https://finnhub.io/api/news?id=abc123&utm_source=x")
+    assert kept == "finnhub.io/api/news?id=abc123"
+    assert bz.normalize_url("https://finnhub.io/api/news?id=abc123") == kept
+    assert bz.normalize_url("https://finnhub.io/api/news?id=other") != kept
+    assert bz.normalize_url("HTTPS://X.com/A/?gclid=1") == "x.com/A"
+    assert bz.normalize_url("https://X.com/A/?utm_x=1") == "x.com/A"
+    assert bz.normalize_url(None) is None
+    assert bz.normalize_url("") is None
+
+
+def test_finnhub_naive_local_time_is_converted_to_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-UTC host (Kiritimati, UTC+14) must not record local time as UTC."""
+    monkeypatch.setenv("TZ", "Pacific/Kiritimati")
+    time.tzset()
+    try:
+        record = bz.normalize_finnhub_record(
+            {
+                "headline": "H",
+                "url": "https://finnhub.io/api/news?id=h1",
+                "source": "Finnhub",
+                "datetime": "2025-11-25T14:00:00",
+                "summary": "s",
+            },
+            poll_id="p1",
+            first_received_at=FIXED_NOW,
+        )
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+    assert record["created_raw"] == "2025-11-25T14:00:00"
+    assert record["created_basis"] == "finnhub_naive_interpreted_as_local"
+    assert record["created_utc"] == "2025-11-25T00:00:00+00:00"
+
+
 def _record(source: str, url: str | None, title: str, poll: str, seen: str) -> dict:
     return {
+        "record_type": "article",
         "source": source,
+        "provider_id": url or title,
+        "query_symbol": "NVDA",
         "url": url,
         "title": title,
         "poll_id": poll,
         "first_received_at": seen,
+    }
+
+
+def _status(source: str, symbol: str, poll: str, status: str) -> dict:
+    return {
+        "record_type": "poll_status",
+        "source": source,
+        "query_symbol": symbol,
+        "poll_id": poll,
+        "status": status,
+        "count": 0,
+        "error_class": "BenzingaNewsHTTPError" if status == "error" else None,
+        "first_received_at": "2025-11-25T14:00:00+00:00",
     }
 
 
@@ -188,6 +244,8 @@ def test_summarize_overlap_unique_and_latency() -> None:
             "2025-11-25T14:00:11+00:00",
         ),
     ]
+    # Same provider_id as the second row: a cross-symbol re-observation.
+    ben[2]["provider_id"] = ben[1]["provider_id"]
     fin = [
         _record(
             "finnhub",
@@ -205,17 +263,70 @@ def test_summarize_overlap_unique_and_latency() -> None:
         ),
     ]
     summary = bz.summarize_shadow(ben, fin)
-    assert summary["benzinga_count"] == 3
+    assert summary["benzinga_count"] == 2
     assert summary["finnhub_count"] == 2
     assert summary["overlap_articles"] == 1
-    assert summary["benzinga_unique"] == 2
+    assert summary["benzinga_unique"] == 1
     assert summary["finnhub_unique"] == 1
     assert summary["latency_pairs_same_poll"] == 1
     assert summary["latency_seconds"]["min"] == 10.0
     assert summary["latency_seconds"]["p50"] == 10.0
     assert summary["latency_seconds"]["max"] == 10.0
+    assert summary["benzinga_duplicates_removed"] == 1
     assert summary["benzinga_duplicate_rate"] == pytest.approx(1 / 3)
     assert summary["finnhub_duplicate_rate"] == 0.0
+    assert summary["unreliable_symbol_polls"] == []
+
+
+def test_summarize_matches_by_title_across_different_urls() -> None:
+    ben = [
+        _record(
+            "benzinga",
+            "https://www.benzinga.com/news/25/11/1/x",
+            "Same headline here",
+            "p1",
+            "2025-11-25T14:00:10+00:00",
+        )
+    ]
+    fin = [
+        _record(
+            "finnhub",
+            "https://finnhub.io/api/news?id=hash9",
+            "Same  headline   here",
+            "p1",
+            "2025-11-25T14:00:00+00:00",
+        )
+    ]
+    summary = bz.summarize_shadow(ben, fin)
+    assert summary["overlap_articles"] == 1
+    assert summary["benzinga_unique"] == 0
+    assert summary["finnhub_unique"] == 0
+    assert summary["latency_pairs_same_poll"] == 1
+
+
+def test_summarize_excludes_unreliable_cells() -> None:
+    ben = [
+        _record(
+            "benzinga",
+            "https://x.com/a",
+            "Shared",
+            "p1",
+            "2025-11-25T14:00:10+00:00",
+        ),
+        _status("benzinga", "NVDA", "p1", "error"),
+    ]
+    fin = [
+        _record(
+            "finnhub", "https://x.com/a", "Shared", "p1", "2025-11-25T14:00:00+00:00"
+        ),
+        _status("finnhub", "NVDA", "p1", "ok"),
+    ]
+    summary = bz.summarize_shadow(ben, fin)
+    assert summary["overlap_articles"] == 0
+    assert summary["benzinga_unique"] == 0
+    assert summary["finnhub_unique"] == 0
+    assert summary["unreliable_symbol_polls"] == [{"poll_id": "p1", "symbol": "NVDA"}]
+    assert summary["excluded_unreliable_articles"] == {"benzinga": 1, "finnhub": 1}
 
 
 def test_summarize_cross_poll_pairs_have_no_latency() -> None:

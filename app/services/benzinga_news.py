@@ -36,6 +36,18 @@ Safety:
   stored, never written to output. Error text is scrubbed of ``token=...``.
 - ``httpx`` with ``follow_redirects=False``.
 - No DB, no MCP, no scheduler. Pure fetch + pure parse + pure summary.
+
+Record semantics:
+- ``normalize_url`` keeps identifying query parameters and strips only
+  tracking ones (``utm_*`` + a closed list). Finnhub company-news URLs are
+  normally ``https://finnhub.io/api/news?id=<hash>`` where the query is the
+  only article identifier.
+- Matching is two-phase: first by normalized URL, then the still-unmatched
+  records by normalized title. Records are deduplicated by
+  (source, provider_id) first, keeping the earliest sighting.
+- ``summary`` reads per-symbol per-source ``poll_status`` records: a cell
+  where either source errored is reported and excluded from coverage counts,
+  so a failed fetch is never counted as "no news".
 """
 
 from __future__ import annotations
@@ -46,7 +58,7 @@ import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 
@@ -165,20 +177,48 @@ def normalize_record(
     updated_utc = parse_provider_time(updated_raw)
     symbols = sorted({s.upper() for s in _names(item.get("stocks")) if s})
     return {
+        "record_type": "article",
         "source": "benzinga",
         "provider_id": str(item.get("id")),
         "url": item.get("url") if isinstance(item.get("url"), str) else None,
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "teaser": item.get("teaser") if isinstance(item.get("teaser"), str) else None,
         "symbols": symbols,
+        "query_symbol": None,
         "channels": _names(item.get("channels")),
         "created_raw": created_raw,
         "updated_raw": updated_raw,
+        "created_basis": "provider_rfc2822" if created_utc else None,
+        "updated_basis": "provider_rfc2822" if updated_utc else None,
         "created_utc": created_utc.isoformat() if created_utc else None,
         "updated_utc": updated_utc.isoformat() if updated_utc else None,
         "first_received_at": first_received_at.astimezone(UTC).isoformat(),
         "poll_id": poll_id,
     }
+
+
+def _finnhub_created_utc(raw: Any) -> tuple[str | None, str | None]:
+    """Interpret a ``fetch_news_finnhub`` datetime as UTC.
+
+    The provider value is a naive host-local string
+    (``datetime.fromtimestamp(ts).isoformat()``), so a manual run on a KST
+    host would otherwise record values 9 hours off labelled UTC. A naive
+    value is read as host-local time and converted; an aware value is
+    converted as-is. Returns ``(utc_iso, basis)``.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None, None
+    if parsed.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        parsed = parsed.replace(tzinfo=local_tz)
+        basis = "finnhub_naive_interpreted_as_local"
+    else:
+        basis = "provider_offset_aware"
+    return parsed.astimezone(UTC).isoformat(), basis
 
 
 def normalize_finnhub_record(
@@ -188,17 +228,25 @@ def normalize_finnhub_record(
     first_received_at: datetime,
 ) -> dict[str, Any]:
     """Project one ``fetch_news_finnhub`` item onto the shadow record shape."""
+    created_raw = (
+        item.get("datetime") if isinstance(item.get("datetime"), str) else None
+    )
+    created_utc, created_basis = _finnhub_created_utc(item.get("datetime"))
     return {
+        "record_type": "article",
         "source": "finnhub",
         "provider_id": item.get("url") or item.get("title"),
         "url": item.get("url"),
         "title": item.get("title"),
         "teaser": item.get("summary"),
         "symbols": [],
+        "query_symbol": None,
         "channels": [item["source"]] if isinstance(item.get("source"), str) else [],
-        "created_raw": item.get("datetime"),
+        "created_raw": created_raw,
         "updated_raw": None,
-        "created_utc": item.get("datetime"),
+        "created_basis": created_basis,
+        "updated_basis": None,
+        "created_utc": created_utc,
         "updated_utc": None,
         "first_received_at": first_received_at.astimezone(UTC).isoformat(),
         "poll_id": poll_id,
@@ -302,8 +350,40 @@ async def fetch_benzinga_news(
     ]
 
 
+# Query parameters that never identify an article — stripped from the
+# canonical URL key. Everything else in the query is kept: Finnhub
+# company-news URLs are normally ``https://finnhub.io/api/news?id=<hash>``
+# where the query is the only identifier.
+_TRACKING_QUERY_PARAMS = frozenset(
+    {
+        "utm",
+        "gclid",
+        "fbclid",
+        "msclkid",
+        "mc_cid",
+        "mc_eid",
+        "igshid",
+        "vero_id",
+        "_hsenc",
+        "_hsmi",
+        "srsltid",
+        "wickedsource",
+        "wickedid",
+    }
+)
+
+
+def _is_tracking_param(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.startswith("utm_") or lowered in _TRACKING_QUERY_PARAMS
+
+
 def normalize_url(url: Any) -> str | None:
-    """Canonical URL key: lowercase host+path, no scheme/query/fragment."""
+    """Canonical URL key: lowercase host+path, identifying query kept.
+
+    Scheme, fragment, and tracking parameters are dropped; remaining query
+    parameters are sorted for a canonical order.
+    """
     if not isinstance(url, str) or not url.strip():
         return None
     try:
@@ -313,7 +393,19 @@ def normalize_url(url: Any) -> str | None:
     if not parts.netloc:
         return None
     path = parts.path.rstrip("/") or "/"
-    return urlunsplit(("", parts.netloc.lower(), path, "", ""))
+    try:
+        pairs = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k and not _is_tracking_param(k)
+        ]
+    except ValueError:
+        return None
+    pairs.sort()
+    key = f"{parts.netloc.lower()}{path}"
+    if pairs:
+        key += f"?{urlencode(pairs)}"
+    return key
 
 
 def normalize_title(title: Any) -> str | None:
@@ -323,12 +415,43 @@ def normalize_title(title: Any) -> str | None:
     return re.sub(r"\s+", " ", title.strip().lower())
 
 
-def _match_key(record: dict[str, Any]) -> str | None:
-    return normalize_url(record.get("url")) or (
-        f"title:{normalize_title(record.get('title'))}"
-        if normalize_title(record.get("title"))
-        else None
-    )
+def _seen_at(record: dict[str, Any]) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(record.get("first_received_at")))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _dedupe_articles(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Dedupe by (source, provider_id), keeping the earliest sighting.
+
+    The CLI queries each symbol separately, so one story tagged NVDA and AMD
+    is written twice; each poll also writes its own file. Counting those as
+    separate unique items would inflate coverage. Returns (kept, removed).
+    """
+    best: dict[tuple[Any, Any], dict[str, Any]] = {}
+    removed = 0
+    for record in records:
+        key = (record.get("source"), record.get("provider_id"))
+        seen = _seen_at(record)
+        prior = best.get(key)
+        if prior is None:
+            best[key] = record
+            continue
+        removed += 1
+        prior_seen = _seen_at(prior)
+        if seen is not None and (prior_seen is None or seen < prior_seen):
+            best[key] = record
+    return list(best.values()), removed
+
+
+def _cell(record: dict[str, Any]) -> tuple[Any, Any]:
+    return (record.get("poll_id"), record.get("query_symbol"))
 
 
 def summarize_shadow(
@@ -337,66 +460,148 @@ def summarize_shadow(
 ) -> dict[str, Any]:
     """Compare two shadow streams over the same window (pure function).
 
-    - Overlap: same article in both sources, by normalized URL then title.
-    - Unique: per-source items with no counterpart.
+    Inputs may mix ``article`` rows with ``poll_status`` rows (anything whose
+    ``record_type`` is not ``"article"`` is a status row). A (poll_id, symbol)
+    cell where either source reports ``status="error"`` is unreliable: its
+    articles are excluded from coverage counts and reported separately, so a
+    failed fetch is never counted as "no news".
+
+    - Dedupe: by (source, provider_id), keeping the earliest sighting.
+    - Overlap: same article in both sources — first by normalized URL, then
+      the still-unmatched records by normalized title, paired greedily in
+      sighting order.
+    - Unique: per-source articles with no counterpart.
     - Latency: ``first_received_at`` difference in seconds, only for matched
       pairs observed in the same poll window (same ``poll_id``); pairs from
       different polls report no latency (window policy: the benchmark judges
       latency only where both sources were observed at the same time).
-    - Duplicate rate: per source, share of records beyond the first per key.
+    - Duplicate rate: per source, share of removed duplicates over articles.
     """
-    ben_keys: dict[str, list[int]] = {}
-    for i, record in enumerate(benzinga_records):
-        key = _match_key(record)
-        if key is not None:
-            ben_keys.setdefault(key, []).append(i)
-    fin_keys: dict[str, list[int]] = {}
-    for i, record in enumerate(finnhub_records):
-        key = _match_key(record)
-        if key is not None:
-            fin_keys.setdefault(key, []).append(i)
+    statuses = [
+        r
+        for r in list(benzinga_records) + list(finnhub_records)
+        if r.get("record_type") != "article"
+    ]
+    unreliable: set[tuple[Any, Any]] = set()
+    for status in statuses:
+        if (
+            status.get("record_type") == "poll_status"
+            and status.get("status") == "error"
+        ):
+            unreliable.add(_cell(status))
 
-    overlap_keys = sorted(set(ben_keys) & set(fin_keys))
+    ben_all = [r for r in benzinga_records if r.get("record_type") == "article"]
+    fin_all = [r for r in finnhub_records if r.get("record_type") == "article"]
+    ben_excluded = [r for r in ben_all if _cell(r) in unreliable]
+    fin_excluded = [r for r in fin_all if _cell(r) in unreliable]
+    ben, ben_dupes = _dedupe_articles(
+        [r for r in ben_all if _cell(r) not in unreliable]
+    )
+    fin, fin_dupes = _dedupe_articles(
+        [r for r in fin_all if _cell(r) not in unreliable]
+    )
+
+    def by_url(
+        records: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for record in records:
+            key = normalize_url(record.get("url"))
+            if key is not None:
+                groups.setdefault(key, []).append(record)
+        return groups
+
+    def by_title(
+        records: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for record in records:
+            key = normalize_title(record.get("title"))
+            if key is not None:
+                groups.setdefault(f"title:{key}", []).append(record)
+        return groups
+
+    def order(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            records, key=lambda r: _seen_at(r) or datetime.max.replace(tzinfo=UTC)
+        )
+
+    ben_url, fin_url = by_url(ben), by_url(fin)
+    overlap_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    ben_leftover: list[dict[str, Any]] = []
+    fin_leftover: list[dict[str, Any]] = []
+    for key in sorted(set(ben_url) & set(fin_url)):
+        ben_side, fin_side = order(ben_url[key]), order(fin_url[key])
+        overlap_pairs.extend(zip(ben_side, fin_side, strict=False))
+        ben_leftover.extend(ben_side[len(fin_side) :])
+        fin_leftover.extend(fin_side[len(ben_side) :])
+    for key in sorted(set(ben_url) - set(fin_url)):
+        ben_leftover.extend(ben_url[key])
+    for key in sorted(set(fin_url) - set(ben_url)):
+        fin_leftover.extend(fin_url[key])
+
+    ben_leftover.extend(r for r in ben if normalize_url(r.get("url")) is None)
+    fin_leftover.extend(r for r in fin if normalize_url(r.get("url")) is None)
+    ben_unique = sum(1 for r in ben_leftover if normalize_title(r.get("title")) is None)
+    fin_unique = sum(1 for r in fin_leftover if normalize_title(r.get("title")) is None)
+    ben_title = by_title(
+        [r for r in ben_leftover if normalize_title(r.get("title")) is not None]
+    )
+    fin_title = by_title(
+        [r for r in fin_leftover if normalize_title(r.get("title")) is not None]
+    )
+    for key in sorted(set(ben_title) & set(fin_title)):
+        ben_side, fin_side = order(ben_title[key]), order(fin_title[key])
+        overlap_pairs.extend(zip(ben_side, fin_side, strict=False))
+        ben_unique += max(0, len(ben_side) - len(fin_side))
+        fin_unique += max(0, len(fin_side) - len(ben_side))
+    for key in sorted(set(ben_title) - set(fin_title)):
+        ben_unique += len(ben_title[key])
+    for key in sorted(set(fin_title) - set(ben_title)):
+        fin_unique += len(fin_title[key])
+
     latencies: list[float] = []
     latency_pairs = 0
-    for key in overlap_keys:
-        ben_first = benzinga_records[ben_keys[key][0]]
-        fin_first = finnhub_records[fin_keys[key][0]]
+    for ben_first, fin_first in overlap_pairs:
         if ben_first.get("poll_id") != fin_first.get("poll_id"):
             continue
-        try:
-            ben_seen = datetime.fromisoformat(str(ben_first["first_received_at"]))
-            fin_seen = datetime.fromisoformat(str(fin_first["first_received_at"]))
-        except (ValueError, TypeError, KeyError):
+        ben_seen, fin_seen = _seen_at(ben_first), _seen_at(fin_first)
+        if ben_seen is None or fin_seen is None:
             continue
         latency_pairs += 1
         latencies.append((ben_seen - fin_seen).total_seconds())
 
-    def duplicate_rate(
-        records: list[dict[str, Any]], keys: dict[str, list[int]]
-    ) -> float | None:
-        if not records:
-            return None
-        extra = sum(len(v) - 1 for v in keys.values())
-        return extra / len(records)
-
-    ben_overlap = sum(len(ben_keys[k]) for k in overlap_keys)
-    fin_overlap = sum(len(fin_keys[k]) for k in overlap_keys)
     lat_sorted = sorted(latencies)
+
+    def duplicate_rate(count: int, removed: int) -> float | None:
+        if not count:
+            return None
+        return removed / count
+
     return {
-        "benzinga_count": len(benzinga_records),
-        "finnhub_count": len(finnhub_records),
-        "overlap_articles": len(overlap_keys),
-        "benzinga_unique": len(benzinga_records) - ben_overlap,
-        "finnhub_unique": len(finnhub_records) - fin_overlap,
+        "benzinga_count": len(ben),
+        "finnhub_count": len(fin),
+        "overlap_articles": len(overlap_pairs),
+        "benzinga_unique": ben_unique,
+        "finnhub_unique": fin_unique,
         "latency_pairs_same_poll": latency_pairs,
         "latency_seconds": {
             "min": lat_sorted[0] if lat_sorted else None,
             "p50": lat_sorted[len(lat_sorted) // 2] if lat_sorted else None,
             "max": lat_sorted[-1] if lat_sorted else None,
         },
-        "benzinga_duplicate_rate": duplicate_rate(benzinga_records, ben_keys),
-        "finnhub_duplicate_rate": duplicate_rate(finnhub_records, fin_keys),
+        "benzinga_duplicate_rate": duplicate_rate(len(ben) + ben_dupes, ben_dupes),
+        "finnhub_duplicate_rate": duplicate_rate(len(fin) + fin_dupes, fin_dupes),
+        "benzinga_duplicates_removed": ben_dupes,
+        "finnhub_duplicates_removed": fin_dupes,
+        "unreliable_symbol_polls": [
+            {"poll_id": poll, "symbol": symbol}
+            for poll, symbol in sorted(unreliable, key=str)
+        ],
+        "excluded_unreliable_articles": {
+            "benzinga": len(ben_excluded),
+            "finnhub": len(fin_excluded),
+        },
     }
 
 
