@@ -429,6 +429,8 @@ async def _repair_terminal_toss_proposal_projections(
 # re-fed identical evidence resolves through the qty-delta noop_already_booked
 # path).
 _TOSS_TERMINAL_LEDGER_STATUSES = frozenset({"expired"})
+# The statuses a reconcile scan selects (``list_open``).
+_TOSS_OPEN_LEDGER_STATUSES = frozenset({"accepted", "pending", "partial"})
 
 
 async def _recorded_positive_toss_fill_qty(row: TossLiveOrderLedger) -> Decimal:
@@ -629,6 +631,7 @@ async def _reconcile_one_toss_row(
     # the booked progress and every booking write share this one transaction;
     # update_reconcile_outcome commits it, and nothing else does.  A pass that
     # dies before that commit leaves no trade, journal or execution row.
+    scanned_qty, scanned_status = already, row.status
     async with _order_session_factory()() as db:
         svc = TossLiveOrderLedgerService(db)
         locked = await svc.lock_row_for_booking(row.id)
@@ -637,17 +640,16 @@ async def _reconcile_one_toss_row(
             # runs this kernel.  The next pass books what is still unbooked.
             base["action"] = "skipped_row_locked"
             return base
-        scanned = already
         already = locked.filled_qty or Decimal("0")
-        delta = broker_cum - already
+        # At the column's scale: what is booked is exactly what filled_qty will
+        # store, and a longer broker quantity is neither older nor new fill.
+        delta = broker_cum.quantize(_FILLED_QTY_STEP, rounding=ROUND_HALF_UP) - already
         base["delta_qty"] = float(delta)
-        # Compared at the column's scale: a longer broker quantity that the
-        # column rounded up is not older evidence.
-        if broker_cum.quantize(_FILLED_QTY_STEP, rounding=ROUND_HALF_UP) < already:
+        if delta < 0:
             # Writing this evidence would move filled_qty backwards and book
             # the difference a second time.
             base["action"] = "noop_stale_evidence"
-            if already == scanned:
+            if already == scanned_qty:
                 # No other pass moved the row, so the broker itself reports
                 # less than is booked: a person has to look.
                 detail = f"broker filled {broker_cum} is below booked {already}"
@@ -659,7 +661,12 @@ async def _reconcile_one_toss_row(
                     error={"reason_code": "evidence_contradiction", "detail": detail},
                 )
             return base
-        if delta <= 0 and locked.status in _TOSS_TERMINAL_LEDGER_STATUSES:
+        closed_since_scan = (
+            locked.status != scanned_status
+            and locked.status not in _TOSS_OPEN_LEDGER_STATUSES
+        )
+        if delta <= 0 and closed_since_scan:
+            # Another pass closed the row; this evidence must not reopen it.
             base["action"] = "noop_terminal"
             return base
 

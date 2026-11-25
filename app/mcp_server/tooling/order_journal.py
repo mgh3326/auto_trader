@@ -52,23 +52,6 @@ async def _own_or_caller_session(
         yield session
 
 
-@asynccontextmanager
-async def _own_or_savepoint_session(
-    db: AsyncSession | None,
-) -> AsyncIterator[AsyncSession]:
-    """``_own_or_caller_session`` for the helpers that swallow their errors.
-
-    Inside a caller transaction the statements run in a savepoint, so a
-    swallowed failure leaves that transaction usable.
-    """
-    if db is None:
-        async with _order_session_factory()() as session:
-            yield session
-        return
-    async with db.begin_nested():
-        yield db
-
-
 async def _record_trade_for_fill(
     db: AsyncSession,
     *,
@@ -137,12 +120,12 @@ async def _save_order_fill(
 
     Returns the trade ID if inserted, None if conflict (already exists).
 
-    ``db`` is the caller's transaction: the insert runs in a savepoint and is
-    never committed here, so a failed insert still returns None without
-    aborting the caller's transaction.
+    ``db`` is the caller's transaction: the insert is never committed here and
+    a failed insert raises, so the caller's booking rolls back with it.  Without
+    ``db`` a failure is logged and returns None.
     """
     try:
-        async with _own_or_savepoint_session(db) as session:
+        async with _own_or_caller_session(db) as session:
             stmt = (
                 pg_insert(Trade)
                 .values(
@@ -170,6 +153,8 @@ async def _save_order_fill(
                 return typing_cast(int, result.inserted_primary_key[0])
             return None
     except Exception as exc:
+        if db is not None:
+            raise
         logger.warning("Failed to save order fill: %s", exc)
         return None
 
@@ -183,11 +168,11 @@ async def _link_journal_to_fill(
 ) -> None:
     """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until.
 
-    With ``db`` the update runs in a savepoint of the caller's transaction and
-    is committed by the caller.
+    With ``db`` the caller commits the update and a failure raises, so the
+    caller's booking rolls back with it.  Without ``db`` a failure is logged.
     """
     try:
-        async with _own_or_savepoint_session(db) as session:
+        async with _own_or_caller_session(db) as session:
             stmt = select(TradeJournal).where(
                 TradeJournal.symbol == symbol,
                 TradeJournal.status == JournalStatus.draft,
@@ -221,6 +206,8 @@ async def _link_journal_to_fill(
                 account,
             )
     except Exception as exc:
+        if db is not None:
+            raise
         logger.warning("Failed to link journal to fill: %s", exc)
 
 

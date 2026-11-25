@@ -114,10 +114,17 @@ Row actions that book nothing:
 | `skipped_row_locked` | Another transaction holds the ledger row. The next pass books what is still unbooked. | none |
 | `noop_stale_evidence` | Another pass already booked past this pass's broker evidence. | none |
 | `noop_stale_evidence` with `requires_manual_review` (`reason_code: evidence_contradiction`) | No other pass moved the row, and the broker reports less filled quantity than is booked. The row stays open; `last_reconcile_error` records it. | check the Toss order detail |
-| `noop_terminal` | The row is already `expired` and there is nothing new to book. | none |
+| `noop_terminal` | Another pass closed the row after this pass scanned it, and there is nothing new to book. | none |
 
-`scripts.toss_live_auto_reconcile --apply` counts these rows as not clean and
-exits 3.
+`scripts.toss_live_auto_reconcile --apply` counts `skipped_row_locked` and
+`noop_stale_evidence` rows as not clean and exits 3; a `noop_terminal` row is
+clean there.
+
+A failed trade or journal write rolls the whole row booking back (nothing is
+committed) and takes the same error path as any other booking failure. A
+database error is not classified as transient, so the row is marked `anomaly`
+with `requires_manual_review` and `last_reconcile_error`, and it is not
+reopened automatically: check that row.
 
 **3. Verification query** (run against the DB the process pointed at):
 

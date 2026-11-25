@@ -10,13 +10,14 @@ import asyncio
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
 from app.core.db import AsyncSessionLocal, engine
+from app.mcp_server.tooling import order_journal
 from app.mcp_server.tooling import toss_live_ledger as mod
 from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
 from app.models.execution_ledger import ExecutionLedger
@@ -262,7 +263,7 @@ async def test_concurrent_passes_book_the_fill_once(order, side):
     # A pass still holding the pre-booking scan row books nothing: its delta
     # comes from the row re-read under the lock.
     late = await _pass(late_row)
-    assert late["action"] == "noop_already_booked"
+    assert late["action"] == "noop_terminal"
     assert late["delta_qty"] == 0.0
     await _assert_booked_exactly_once(target)
 
@@ -368,6 +369,44 @@ async def test_broker_reporting_less_than_booked_is_flagged_not_written(order):
     assert state.ledger.last_reconcile_error["reason_code"] == "evidence_contradiction"
     assert len(state.journals) == 1
     assert len(state.fills) == 1
+
+
+@pytest.mark.parametrize(
+    ("side", "fails_at"),
+    [("buy", "pg_insert"), ("buy", "desc"), ("sell", "pg_insert")],
+    ids=["buy-trade-insert", "buy-journal-link", "sell-trade-insert"],
+)
+async def test_failed_trade_or_link_write_rolls_the_whole_booking_back(
+    order, side, fails_at
+):
+    target = await order(side)
+    broken = MagicMock(side_effect=RuntimeError("write failed"))
+
+    with patch.object(order_journal, fails_at, new=broken):
+        with pytest.raises(RuntimeError, match="write failed"):
+            await _pass(await _scan(target.order_id))
+
+    broken.assert_called_once()
+    await _assert_nothing_booked(target)
+
+    assert (await _pass(await _scan(target.order_id)))["action"] == "booked"
+    await _assert_booked_exactly_once(target)
+
+
+async def test_older_partial_evidence_does_not_reopen_a_cancelled_row(order):
+    target = await order("buy")
+    assert (await _pass(await _scan(target.order_id), cum="1"))["action"] == "booked"
+    older_row = await _scan(target.order_id)
+    newer_row = await _scan(target.order_id)
+    closed = await _pass(newer_row, cum="1", local_status="cancelled")
+    assert closed["action"] == "noop_already_booked"
+
+    older = await _pass(older_row, cum="1")
+
+    assert older["action"] == "noop_terminal"
+    state = await _booked(target)
+    assert state.ledger.status == "cancelled"
+    assert state.ledger.filled_qty == Decimal("1")
 
 
 async def test_row_expired_by_another_pass_is_not_reopened(order):
