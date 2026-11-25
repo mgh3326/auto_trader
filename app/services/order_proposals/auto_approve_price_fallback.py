@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.services.kr_quote_price import PRICE_KIND_EXPECTED
+
 PRICE_SOURCE_TOSS_PREVIEW = "toss_preview"
 PRICE_SOURCE_KIS_QUOTE_FALLBACK = "kis_quote_fallback"
 PRICE_SOURCES = frozenset({PRICE_SOURCE_TOSS_PREVIEW, PRICE_SOURCE_KIS_QUOTE_FALLBACK})
@@ -55,6 +57,7 @@ PRICE_FALLBACK_FAILURE_REASONS = frozenset(
         "freshness_unavailable",
         "session_not_live",
         "price_invalid",
+        "expected_price_not_order_basis",
     }
 )
 
@@ -105,6 +108,9 @@ def classify_kis_quote(quote: Any, *, symbol: str, market: str) -> PriceFallback
         return PriceFallback.failed("market_mismatch")
     if quote.get("source") != "kis":
         return PriceFallback.failed("source_mismatch")
+    if quote.get("price_kind") == PRICE_KIND_EXPECTED:
+        # hk 6498: an expected (예상체결가) price is never an order basis.
+        return PriceFallback.failed("expected_price_not_order_basis")
     stale = quote.get("is_stale_price")
     if stale is True:
         return PriceFallback.failed("quote_stale")

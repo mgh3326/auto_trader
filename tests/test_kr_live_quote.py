@@ -410,12 +410,13 @@ def _nxt_snapshot_for_asof_tests(
 @pytest.mark.parametrize(
     ("expected_price", "asks", "bids", "expected_source", "expected_value"),
     [
-        pytest.param(
-            54500, [(54800, 10)], [(54200, 12)], "nxt_expected_price", 54500.0
-        ),
+        # hk 6498: pre-market is continuous, so expected (54500) is kept as its
+        # own field and the two-sided mid is the price.
+        pytest.param(54600, [(54800, 10)], [(54200, 12)], "nxt_mid", 54500.0),
         pytest.param(None, [(54800, 10)], [(54200, 12)], "nxt_mid", 54500.0),
-        pytest.param(None, [(54800, 10)], [], "nxt_best_ask", 54800.0),
-        pytest.param(None, [], [(54200, 12)], "nxt_best_bid", 54200.0),
+        # One-sided books are never a price (hk 6498).
+        pytest.param(None, [(54800, 10)], [], None, None),
+        pytest.param(None, [], [(54200, 12)], None, None),
     ],
 )
 async def test_fetch_nxt_quote_overlay_propagates_as_of_to_all_price_branches(
@@ -446,8 +447,14 @@ async def test_fetch_nxt_quote_overlay_propagates_as_of_to_all_price_branches(
     assert overlay is not None
     assert overlay["price"] == expected_value
     assert overlay["price_source"] == expected_source
-    assert overlay["price_as_of"] == "2026-08-24T08:01:35+09:00"
-    assert overlay["price_as_of_source"] == "broker"
+    assert overlay["expected_price"] == expected_price
+    if expected_value is None:
+        assert overlay["price_kind"] == "unavailable"
+        assert overlay["price_as_of"] is None
+    else:
+        assert overlay["price_kind"] == "mid"
+        assert overlay["price_as_of"] == "2026-08-24T08:01:35+09:00"
+        assert overlay["price_as_of_source"] == "broker"
 
 
 @pytest.mark.asyncio
