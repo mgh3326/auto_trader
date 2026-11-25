@@ -35,6 +35,7 @@ tests/mcp_server/test_intraday_support_resistance_recompute.py
 tests/mcp_server/test_investment_report_delta_tool.py
 tests/mcp_server/test_investment_report_generate_from_bundle_handler.py
 tests/mcp_server/test_investment_report_tool_descriptions.py
+tests/mcp_server/test_investor_flow_close_basis.py
 tests/mcp_server/test_kis_live_daily_orders_db.py
 tests/mcp_server/test_kis_live_place_order_routing_surface.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py

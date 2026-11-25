@@ -16,6 +16,27 @@ from app.mcp_server.tooling.fundamentals_sources_naver import (
 # Ownership-rate delta below this magnitude (pp) reads as flat, not up/down.
 _OWNERSHIP_FLAT_EPS = 0.01
 
+# hk 6317: the trend payload's `closePrice` is a Naver-side value. It is NOT the
+# KRX settled regular-session close (e.g. 2026-11-24: 005930 182,900 here vs
+# 189,400 settled; the next session's own compare field implies 189,400). Every
+# row that carries a close is labelled with its source and basis so the value
+# is never presented as the KRX close unlabelled. Settled closes come from
+# public.kr_candles_1d.
+CLOSE_SOURCE_NAVER_TREND = "naver_trend_closePrice"
+CLOSE_BASIS_PROVIDER_UNVERIFIED = "provider_unverified"
+
+
+def label_provider_close(row: dict[str, Any]) -> dict[str, Any]:
+    """Attach ``close_source``/``close_basis`` to a flow row (mutates + returns).
+
+    The ``close`` value itself is left untouched (back-compat). A row without a
+    close gets null labels so the key set is stable across rows.
+    """
+    has_close = row.get("close") is not None
+    row["close_source"] = CLOSE_SOURCE_NAVER_TREND if has_close else None
+    row["close_basis"] = CLOSE_BASIS_PROVIDER_UNVERIFIED if has_close else None
+    return row
+
 
 def derive_individual_net(institutional_net: Any, foreign_net: Any) -> int | None:
     """개인 순매수 = -(기관 + 외인). 한쪽이라도 None이면 None."""
@@ -87,21 +108,23 @@ async def build_confirmed_block(
         )
 
     history = [
-        {
-            "date": row.get("date"),
-            "foreign_net": row.get("foreign_net"),
-            "institutional_net": row.get("institutional_net"),
-            # The trend JSON carries individualPureBuyQuant directly; derive only
-            # as a fallback for sources that lack it.
-            "individual_net": (
-                row.get("individual_net")
-                if row.get("individual_net") is not None
-                else derive_individual_net(
-                    row.get("institutional_net"), row.get("foreign_net")
-                )
-            ),
-            "close": row.get("close"),
-        }
+        label_provider_close(
+            {
+                "date": row.get("date"),
+                "foreign_net": row.get("foreign_net"),
+                "institutional_net": row.get("institutional_net"),
+                # The trend JSON carries individualPureBuyQuant directly; derive
+                # only as a fallback for sources that lack it.
+                "individual_net": (
+                    row.get("individual_net")
+                    if row.get("individual_net") is not None
+                    else derive_individual_net(
+                        row.get("institutional_net"), row.get("foreign_net")
+                    )
+                ),
+                "close": row.get("close"),
+            }
+        )
         for row in rows
     ]
     block = {
