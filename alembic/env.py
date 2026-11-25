@@ -31,6 +31,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         compare_type=True,
         compare_server_default=True,
+        transaction_per_migration=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -43,6 +44,10 @@ def do_run_migrations(connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
+        # Each revision commits before the next one starts (hk 6322, review r3): the
+        # expand revision's ACCESS EXCLUSIVE locks end with its own transaction, so
+        # the follow-up VALIDATE never scans under them.
+        transaction_per_migration=True,
     )
     with context.begin_transaction():
         context.run_migrations()

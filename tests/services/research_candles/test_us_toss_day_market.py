@@ -448,14 +448,6 @@ def test_migration_chain_revision_length_and_expand_contract_marker() -> None:
         assert "# expand-contract: contract-step 6322" in path.read_text()
 
 
-class _NullBlock:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
 def test_venue_check_is_added_not_valid_and_validated_in_the_follow_up() -> None:
     a = _load(MIGRATION_A, "hk6322_a_sql")
     captured: list[str] = []
@@ -469,10 +461,7 @@ def test_venue_check_is_added_not_valid_and_validated_in_the_follow_up() -> None
 
     b = _load(MIGRATION_B, "hk6322_b_sql")
     captured_b: list[str] = []
-    b.op = SimpleNamespace(
-        execute=lambda sql: captured_b.append(str(sql)),
-        get_context=lambda: SimpleNamespace(autocommit_block=lambda: _NullBlock()),
-    )
+    b.op = SimpleNamespace(execute=lambda sql: captured_b.append(str(sql)))
     b.upgrade()
     assert any(
         "VALIDATE CONSTRAINT ck_research_us_candles_1m_venue" in s for s in captured_b
@@ -604,32 +593,16 @@ def test_kis_tail_is_still_read_in_the_first_grace_minutes_after_day_market_open
     assert bar.session_segment == US_POST
 
 
-def test_validation_runs_after_the_expand_transaction_commits() -> None:
-    """Commit order of the two revisions (review r2): the VALIDATE must run inside an
-    autocommit block, which first commits the pending expand transaction. The DB
-    order is checked in CI; this pins the call order the runner will use."""
-    b = _load(MIGRATION_B, "hk6322_b_order")
-    events: list[str] = []
-
-    class _Block:
-        def __enter__(self):
-            events.append("commit_then_autocommit")
-
-        def __exit__(self, *exc):
-            events.append("back_to_transaction")
-            return False
-
-    context = SimpleNamespace(autocommit_block=lambda: _Block())
-    b.op = SimpleNamespace(
-        get_context=lambda: context,
-        execute=lambda sql: events.append(f"execute:{' '.join(str(sql).split())}"),
-    )
-    b.upgrade()
-    assert events[0] == "commit_then_autocommit"
-    assert events[-1] == "back_to_transaction"
-    assert any(
-        "VALIDATE CONSTRAINT ck_research_us_candles_1m_venue" in e for e in events[1:-1]
-    )
+def test_runner_commits_each_revision_before_the_next() -> None:
+    """Commit order (review r3): env.py must set transaction_per_migration in both the
+    offline and the online configure call, so the expand revision commits before the
+    VALIDATE revision starts. The DB order is checked in CI; this pins the setting."""
+    source = (REPO / "alembic/env.py").read_text()
+    assert source.count("transaction_per_migration=True") == 2
+    assert source.count("context.configure(") == 2
+    # the VALIDATE revision itself is a plain statement (no autocommit block)
+    validate = (MIGRATION_B).read_text()
+    assert "autocommit_block" not in validate
 
 
 def test_unbuildable_toss_reader_counts_as_a_run_error_in_collect() -> None:
