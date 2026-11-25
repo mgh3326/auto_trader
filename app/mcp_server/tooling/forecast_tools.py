@@ -32,6 +32,7 @@ from app.services.trade_journal.forecast_service import (
     list_due_quarantined_forecasts,
     list_forecasts,
     resolve_forecast,
+    resolve_forecasts_batch,
     save_forecast,
     serialize_forecast,
 )
@@ -291,16 +292,19 @@ async def forecast_resolve(
                 }
             quarantined = await list_due_quarantined_forecasts(db, limit=limit)
             due = await list_due_forecasts(db, limit=limit)
+            rows = [*quarantined, *due]
+            # One batched resolve: forecasts are already loaded (two listing
+            # queries above), US partitions resolve in one query and candles
+            # load in one query per (market, partition) group.
+            batch = await resolve_forecasts_batch(
+                db,
+                rows,
+                persist=persist,
+                backfill_missing=backfill_missing,
+            )
             results: list[dict[str, Any]] = []
             changed_any = False
-            for row in [*quarantined, *due]:
-                r = await resolve_forecast(
-                    db,
-                    forecast_id=row.forecast_id,
-                    persist=persist,
-                    backfill_missing=backfill_missing,
-                )
-
+            for row, r in zip(rows, batch, strict=True):
                 changed_any = changed_any or bool(r.get("changed"))
                 item: dict[str, Any] = {
                     "forecast_id": str(row.forecast_id),
