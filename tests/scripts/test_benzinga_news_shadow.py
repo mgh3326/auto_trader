@@ -224,13 +224,30 @@ def test_poll_explicit_zero_counts(
 def test_poll_error_writes_status_and_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
 ) -> None:
-    """A total Benzinga outage must not look like a clean collection."""
+    """A total Benzinga outage must not look like a clean collection —
+    even when Finnhub still returns rows."""
     _enable(monkeypatch)
 
     async def _boom(ticker, **kwargs):
         raise bz.BenzingaNewsHTTPError("benzinga news HTTP 401", status_code=401)
 
+    async def _fake_finnhub(symbol, market, limit):
+        return {
+            "news": [
+                {
+                    "title": "F story",
+                    "url": "https://f.io/1",
+                    "source": "Finnhub",
+                    "datetime": "2025-11-25T14:00:00",
+                    "summary": "s",
+                }
+            ]
+        }
+
     monkeypatch.setattr(bz, "fetch_benzinga_news", _boom)
+    import app.services.finnhub_news as finnhub_news
+
+    monkeypatch.setattr(finnhub_news, "fetch_news_finnhub", _fake_finnhub)
     code = cli.main(
         [
             "poll",
@@ -240,7 +257,6 @@ def test_poll_error_writes_status_and_exits_nonzero(
             str(tmp_path),
             "--poll-id",
             "p-err",
-            "--skip-finnhub",
         ]
     )
     assert code == 1
@@ -248,18 +264,14 @@ def test_poll_error_writes_status_and_exits_nonzero(
         json.loads(line)
         for line in (tmp_path / "p-err.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert rows == [
-        {
-            "record_type": "poll_status",
-            "source": "benzinga",
-            "query_symbol": "NVDA",
-            "poll_id": "p-err",
-            "status": "error",
-            "count": 0,
-            "error_class": "BenzingaNewsHTTPError",
-            "first_received_at": rows[0]["first_received_at"],
-        }
-    ]
+    by_source = {}
+    for row in rows:
+        by_source.setdefault((row.get("record_type"), row.get("source")), []).append(
+            row
+        )
+    assert by_source[("poll_status", "benzinga")][0]["status"] == "error"
+    assert by_source[("poll_status", "benzinga")][0]["count"] == 0
+    assert by_source[("article", "finnhub")][0]["title"] == "F story"
 
 
 def test_poll_filters_finnhub_to_requested_window(
