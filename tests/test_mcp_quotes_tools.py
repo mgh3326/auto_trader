@@ -9,6 +9,7 @@ This module contains tests for:
 These tests were extracted from tests/test_mcp_server_tools.py for better organization.
 """
 
+import datetime as dt
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -1365,6 +1366,8 @@ async def test_get_quote_us_include_extended_hours_premarket_overlays_yahoo_prep
 ):
     tools = build_tools()
     _setup_us_kis_premarket_quote(monkeypatch, "premarket")
+    # hk 6521: a 20-second-old bar is fresh; the bar time is relative to now.
+    bar_asof = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=20)).isoformat()
     monkeypatch.setattr(
         yahoo_service,
         "fetch_prepost_quote",
@@ -1372,7 +1375,7 @@ async def test_get_quote_us_include_extended_hours_premarket_overlays_yahoo_prep
             return_value={
                 "symbol": "NVDA",
                 "price": 210.5,
-                "quote_asof": "2026-07-16T12:01:00+00:00",
+                "quote_asof": bar_asof,
                 "volume": 5000,
             }
         ),
@@ -1382,9 +1385,13 @@ async def test_get_quote_us_include_extended_hours_premarket_overlays_yahoo_prep
 
     assert result["price"] == pytest.approx(210.5)
     assert result["price_source"] == "yahoo_prepost_last"
-    assert result["quote_asof"] == "2026-07-16T12:01:00+00:00"
+    assert result["quote_asof"] == bar_asof
     assert result["session"] == "premarket"
     assert result["data_state"] == "fresh"
+    assert result["is_stale_price"] is False
+    assert "data_state_reason" not in result
+    assert result["quote_age_seconds"] in (19, 20, 21)
+    assert result["received_at"]
     # previous_close must be preserved from the base source for gap math.
     assert result["previous_close"] == pytest.approx(194.83)
 
@@ -1490,6 +1497,163 @@ async def test_get_quote_us_include_extended_hours_closed_session_is_noop(
     assert result["session"] == "closed"
     assert result["data_state"] == "stale"
     assert result["price_source"] == "kis_overseas_last"
+
+
+# ---------------------------------------------------------------------------
+# hk 6521: overlay freshness is decided from the bar age, not assumed fresh.
+# ---------------------------------------------------------------------------
+
+_REQUEST_AT = dt.datetime(2026, 11, 25, 10, 0, 0, tzinfo=dt.UTC)
+
+
+def _us_premarket_base_quote() -> dict:
+    return {
+        "symbol": "NVDA",
+        "instrument_type": "equity_us",
+        "price": 195.29,
+        "previous_close": 194.83,
+        "volume": 123456,
+        "source": "kis_overseas",
+        "delayed": True,
+        "venue": "NASD",
+        "price_source": "kis_overseas_last",
+        "session": "premarket",
+        "data_state": "fresh",
+        "quote_asof": "2026-11-25T08:45:12-04:00",
+    }
+
+
+def _prepost_payload(quote_asof):
+    return {"symbol": "NVDA", "price": 210.5, "quote_asof": quote_asof, "volume": 5000}
+
+
+@pytest.mark.asyncio
+async def test_extended_overlay_bar_32_minutes_old_is_stale_with_age_reason(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import market_data_quotes
+
+    old = (_REQUEST_AT - dt.timedelta(minutes=32)).isoformat()
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(return_value=_prepost_payload(old)),
+    )
+
+    result = await market_data_quotes._apply_extended_hours_overlay(
+        _us_premarket_base_quote(),
+        "NVDA",
+        True,
+        clock=lambda: _REQUEST_AT,
+    )
+
+    assert result["price"] == pytest.approx(210.5)
+    assert result["price_source"] == "yahoo_prepost_last"
+    assert result["data_state"] == "stale"
+    assert result["data_state_reason"] == "extended_quote_age_1920s_exceeds_300s"
+    assert result["is_stale_price"] is True
+    assert result["quote_asof"] == old
+    assert result["quote_age_seconds"] == 1920
+    assert result["received_at"] == _REQUEST_AT.isoformat()
+    assert result["delayed"] is True
+
+
+@pytest.mark.asyncio
+async def test_extended_overlay_bar_20_seconds_old_is_fresh(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    recent = (_REQUEST_AT - dt.timedelta(seconds=20)).isoformat()
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(return_value=_prepost_payload(recent)),
+    )
+
+    result = await market_data_quotes._apply_extended_hours_overlay(
+        _us_premarket_base_quote(),
+        "NVDA",
+        True,
+        clock=lambda: _REQUEST_AT,
+    )
+
+    assert result["data_state"] == "fresh"
+    assert "data_state_reason" not in result
+    assert result["is_stale_price"] is False
+    assert result["quote_asof"] == recent
+    assert result["quote_age_seconds"] == 20
+    assert result["received_at"] == _REQUEST_AT.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_extended_overlay_missing_quote_asof_is_unknown(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(return_value=_prepost_payload(None)),
+    )
+
+    result = await market_data_quotes._apply_extended_hours_overlay(
+        _us_premarket_base_quote(),
+        "NVDA",
+        True,
+        clock=lambda: _REQUEST_AT,
+    )
+
+    assert result["data_state"] == "unknown"
+    assert result["data_state_reason"] == "quote_asof_missing"
+    assert result["is_stale_price"] is True
+    # The base quote's KIS timestamp must not be attached to the prepost price.
+    assert result["quote_asof"] is None
+    assert result["quote_age_seconds"] is None
+    assert result["price"] == pytest.approx(210.5)
+
+
+@pytest.mark.asyncio
+async def test_extended_overlay_unparsable_quote_asof_is_unknown(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(return_value=_prepost_payload("not-a-timestamp")),
+    )
+
+    result = await market_data_quotes._apply_extended_hours_overlay(
+        _us_premarket_base_quote(),
+        "NVDA",
+        True,
+        clock=lambda: _REQUEST_AT,
+    )
+
+    assert result["data_state"] == "unknown"
+    assert result["data_state_reason"] == "quote_asof_unparsable"
+    assert result["quote_age_seconds"] is None
+
+
+@pytest.mark.asyncio
+async def test_extended_overlay_never_copies_bar_volume_into_quote_volume(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import market_data_quotes
+
+    recent = (_REQUEST_AT - dt.timedelta(seconds=5)).isoformat()
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(return_value=_prepost_payload(recent)),
+    )
+
+    result = await market_data_quotes._apply_extended_hours_overlay(
+        _us_premarket_base_quote(),
+        "NVDA",
+        True,
+        clock=lambda: _REQUEST_AT,
+    )
+
+    # The 1-minute prepost bar volume (5000) is not the quote volume (123456).
+    assert result["volume"] == 123456
 
 
 @pytest.mark.asyncio
