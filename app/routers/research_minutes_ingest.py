@@ -191,9 +191,11 @@ async def ingest_research_minutes(
                     )
         except Exception as exc:  # noqa: BLE001 - reported per item
             logger.warning(
-                "research minute ingest refused one bar: market=%s symbol=%s error=%s",
+                "research minute ingest refused one bar: market=%s symbol=%s "
+                "venue=%s error=%s",
                 request.market,
                 bar.symbol,
+                item.venue,
                 type(exc).__name__,
             )
             results.append(
