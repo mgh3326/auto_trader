@@ -116,20 +116,64 @@ async def test_us_targets_are_distributed_and_each_symbol_uses_one_source() -> N
     result = await service.sync_market_universe(market="us", horizon_bars=10)
 
     assert result["status"] == "ok"
-    assert kis_symbols == ["S0", "S2"]
-    assert toss_symbols == ["S1", "S3"]
-    assert {row.symbol: row.source for row in repo.rows} == {
-        "S0": "kis",
-        "S1": "toss_fallback",
-        "S2": "kis",
-        "S3": "toss_fallback",
+    expected_by_symbol = {
+        target.symbol: (
+            "kis"
+            if service._assigned_lane_index(target.symbol, 2) == 0
+            else "toss_fallback"
+        )
+        for target in targets
     }
+    assert set(kis_symbols) == {
+        symbol for symbol, source in expected_by_symbol.items() if source == "kis"
+    }
+    assert set(toss_symbols) == {
+        symbol
+        for symbol, source in expected_by_symbol.items()
+        if source == "toss_fallback"
+    }
+    assert {row.symbol: row.source for row in repo.rows} == expected_by_symbol
     assert len(repo.rows) == 4
     assert repo.session.commit.await_count == 1
-    assert kis_limiter.calls == 2
-    assert toss_limiter.calls == 2
-    assert result["lane_counts"]["kis"]["attempted"] == 2
-    assert result["lane_counts"]["toss"]["attempted"] == 2
+    assert kis_limiter.calls == result["lane_counts"]["kis"]["attempted"]
+    assert toss_limiter.calls == result["lane_counts"]["toss"]["attempted"]
+    assert (
+        result["lane_counts"]["kis"]["attempted"]
+        + result["lane_counts"]["toss"]["attempted"]
+        == 4
+    )
+
+
+@pytest.mark.asyncio
+async def test_us_lane_assignment_is_stable_when_universe_membership_changes() -> None:
+    repo = _Repo()
+    service = _service(repo, [])
+
+    before = [_target("AAPL")]
+    after = [_target("MSFT"), _target("AAPL")]
+    assert service._assigned_lane_index(
+        before[0].symbol, 4
+    ) == service._assigned_lane_index(after[1].symbol, 4)
+
+
+@pytest.mark.asyncio
+async def test_us_fetch_and_write_progress_is_committed_per_bounded_chunk() -> None:
+    repo = _Repo()
+    fetch_started_after_commit: list[bool] = []
+
+    async def kis(target, _n):
+        fetch_started_after_commit.append(repo.session.commit.await_count > 0)
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [_target(f"S{i}") for i in range(101)]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["rows_upserted"] == 101
+    assert repo.session.commit.await_count == 2
+    assert fetch_started_after_commit[:100] == [False] * 100
+    assert fetch_started_after_commit[100:] == [True]
 
 
 @pytest.mark.asyncio
@@ -165,7 +209,9 @@ async def test_empty_assigned_lane_tries_other_lane_then_yahoo() -> None:
 
     result = await service.sync_market_universe(market="us", horizon_bars=10)
 
-    assert calls == ["kis:YHOO", "toss:YHOO", "yahoo:YHOO"]
+    first = "kis" if service._assigned_lane_index("YHOO", 2) == 0 else "toss"
+    second = "toss" if first == "kis" else "kis"
+    assert calls == [f"{first}:YHOO", f"{second}:YHOO", "yahoo:YHOO"]
     assert result["status"] == "ok"
     assert {row.symbol: row.source for row in repo.rows} == {"YHOO": "yahoo_fallback"}
 
@@ -221,6 +267,23 @@ async def test_single_symbol_us_sync_uses_the_same_lane_dispatcher() -> None:
 
 
 @pytest.mark.asyncio
+async def test_single_symbol_us_no_data_returns_skip_result() -> None:
+    repo = _Repo()
+
+    async def empty(target, _n):
+        return pd.DataFrame()
+
+    service = _service(repo, [UsDailyLane("kis", "kis", empty, 10, 10)])
+
+    result = await service.sync_one(target=_target("EMPTY"), horizon_bars=10)
+
+    assert result.rows_upserted == 0
+    assert result.skipped_reason == "no_data"
+    assert repo.rows == []
+    repo.session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_lane_error_does_not_stop_other_lane_or_symbols() -> None:
     repo = _Repo()
 
@@ -255,6 +318,7 @@ async def test_job_wide_database_failure_still_aborts_us_sync() -> None:
         raise OperationalError("insert", {}, RuntimeError("connection lost"))
 
     repo = _Repo(write=fail_write)
+
     async def kis(target, _n):
         return _frame(target.symbol)
 
@@ -268,7 +332,9 @@ async def test_job_wide_database_failure_still_aborts_us_sync() -> None:
 
 
 @pytest.mark.asyncio
-async def test_symbol_local_database_failure_is_reported_and_other_symbol_commits() -> None:
+async def test_symbol_local_database_failure_is_reported_and_other_symbol_commits() -> (
+    None
+):
     repo = _Repo()
 
     async def write(rows):
@@ -336,7 +402,8 @@ async def test_yahoo_empty_daily_result_is_a_normal_empty_fallback(monkeypatch) 
         lambda frame, _period: frame,
     )
 
-    assert await yahoo_us_fallback.fetch_us_daily_yahoo_fallback(
-        symbol="EMPTY", n=10
-    ) == []
+    assert (
+        await yahoo_us_fallback.fetch_us_daily_yahoo_fallback(symbol="EMPTY", n=10)
+        == []
+    )
     assert fetch_thread and fetch_thread[0] != calling_thread

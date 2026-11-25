@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import urllib.error
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ from app.core.symbol import to_yahoo_symbol
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
 logger = logging.getLogger(__name__)
+_YFINANCE_LOCK = threading.Lock()
 
 
 def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,11 +94,12 @@ def yfinance_tracing_session() -> Iterator[Any]:
     Keep this wrapper local so tests and retry paths that monkeypatch
     build_yfinance_tracing_session still exercise fresh-session behavior.
     """
-    session = build_yfinance_tracing_session()
-    try:
-        yield session
-    finally:
-        close_yfinance_session(session)
+    with _YFINANCE_LOCK:
+        session = build_yfinance_tracing_session()
+        try:
+            yield session
+        finally:
+            close_yfinance_session(session)
 
 
 def _is_crumb_auth_error(exc: BaseException) -> bool:
@@ -121,7 +124,8 @@ async def fetch_ohlcv(
     # cache is built from regular-session-only data (_filter_closed_buckets_nyse),
     # so mixing in extended-hours candles would silently corrupt it.
     if (
-        not prepost
+        not empty_ok
+        and not prepost
         and normalized_period in {"day", "week", "month"}
         and settings.yahoo_ohlcv_cache_enabled
     ):
@@ -131,13 +135,7 @@ async def fetch_ohlcv(
             ticker,
             count=days,
             period=normalized_period,
-            raw_fetcher=lambda raw_ticker, raw_days, raw_period, raw_end: _fetch_ohlcv_raw(
-                ticker=raw_ticker,
-                days=raw_days,
-                period=raw_period,
-                end_date=raw_end,
-                empty_ok=empty_ok,
-            ),
+            raw_fetcher=_fetch_cache_raw,
             end_date=end_date,
         )
         if cached is not None:
@@ -154,6 +152,15 @@ async def fetch_ohlcv(
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
     return raw
+
+
+async def _fetch_cache_raw(
+    *, ticker: str, days: int, period: str, end_date: datetime | None
+) -> pd.DataFrame:
+    """Fetch cache data with the cache flow's keyword-only callback contract."""
+    return await _fetch_ohlcv_raw(
+        ticker=ticker, days=days, period=period, end_date=end_date
+    )
 
 
 async def fetch_52w_high_date(ticker: str) -> date | None:
@@ -201,6 +208,7 @@ async def _fetch_ohlcv_raw(
     last_exc: BaseException | None = None
     for attempt in range(_CRUMB_RETRY_MAX + 1):
         try:
+
             def _download() -> pd.DataFrame:
                 with yfinance_tracing_session() as session:
                     return yf.download(

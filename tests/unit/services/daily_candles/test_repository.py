@@ -31,6 +31,17 @@ def test_upbit_daily_candle_partition_rejects_ambiguous_symbols(symbol: str) -> 
         upbit_daily_candle_partition(symbol)
 
 
+def test_us_upsert_accepts_primary_toss_rows_over_existing_sources() -> None:
+    from app.services.candles_sync_common import SyncTableConfig
+
+    statement = DailyCandlesRepository._build_market_upsert(
+        SyncTableConfig(table_name="us_candles_1d", partition_col="exchange"),
+        with_adj_close=True,
+    )
+
+    assert "OR EXCLUDED.source = 'toss_fallback'" in str(statement)
+
+
 def _row(
     symbol: str, partition: str, t: datetime, close: float, source: str = "kis"
 ) -> DailyCandleRow:

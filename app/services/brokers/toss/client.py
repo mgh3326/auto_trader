@@ -189,13 +189,15 @@ class TossReadClient:
         pre_send_hook: PreSendHook | None = None,
     ) -> Any:
         assert_broker_credentials_allowed("Toss request")
-        await self._rate_limiter.acquire(group)
         token = await self._token_manager.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
 
         async def send() -> tuple[httpx.Response, TossRateLimitHeaders]:
+            # Retries consume provider capacity too; charge every HTTP attempt
+            # through the same group limiter before any pre-send hook or send.
+            await self._rate_limiter.acquire(group)
             if pre_send_hook is not None:
                 # The hook sees the account this very request carries (hk 3795 I15).
                 account_token = PRE_SEND_ACCOUNT.set(

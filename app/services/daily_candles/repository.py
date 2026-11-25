@@ -414,6 +414,7 @@ class DailyCandlesRepository:
             SET {update_clause}, ingested_at = now()
             WHERE public.{cfg.table_name}.source = 'yahoo_fallback'
                OR EXCLUDED.source = 'kis'
+               OR EXCLUDED.source = 'toss_fallback'
                OR EXCLUDED.source = public.{cfg.table_name}.source
             """
         )
