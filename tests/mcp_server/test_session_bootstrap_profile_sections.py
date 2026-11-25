@@ -28,11 +28,6 @@ from tests.mcp_server._registration_recorder import (
             McpProfile.FILL_WATCH_CONTEXT,
             # SHADOW_REPLAY exposes only its exact seven observation/replay tools.
             McpProfile.SHADOW_REPLAY,
-            # #1171 — the H3-CRYPTO paper surface is the runner's exact 20
-            # tools; session_bootstrap_pack is not one of them.
-            McpProfile.H3_CRYPTO_PAPER,
-            # #1257 — likewise the H3-US paper surface (runner's exact 20).
-            McpProfile.H3_US_PAPER,
         )
     ],
 )

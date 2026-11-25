@@ -206,7 +206,7 @@ def test_non_c_registration_preserves_callable_identity_and_options():
     assert inner.options["get_quote"]["tags"] == {"read"}
     # Same C name on a profile the audit did not assign is untouched.
     assert (
-        NicheMCP(inner, profile="h3-us-paper").tool(
+        NicheMCP(inner, profile="alpaca-paper-clean").tool(
             name="discover_buy_candidates_fanout"
         )(quote)
         is quote

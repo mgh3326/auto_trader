@@ -22,13 +22,12 @@ DRAFT_DIR = REPO_ROOT / "lane-allowlists.draft"
 
 # Exact Lane -> Profiles and Draft tools columns; no inferred server mapping.
 LANE_PROFILES: dict[str, tuple[str, ...]] = {
-    "claude-mock": ("hermes-paper-kis", "kiwoom", "us-paper"),
+    "claude-mock": ("hermes-paper-kis", "us-paper"),
     "crypto": ("crypto", "default"),
     "fill-handoff": ("crypto", "default"),
     "kr": ("default",),
-    "krb1-cycle": ("kiwoom",),
     "orch-live": ("default",),
-    "orch-mock": ("hermes-paper-kis", "kiwoom", "us-paper"),
+    "orch-mock": ("hermes-paper-kis", "us-paper"),
     "shadow-crypto": ("default",),
     "us": ("default",),
     "watch-alert-relay": ("default",),
@@ -38,7 +37,6 @@ LANE_COUNTS = {
     "crypto": 67,
     "fill-handoff": 56,
     "kr": 69,
-    "krb1-cycle": 35,
     "orch-live": 55,
     "orch-mock": 10,
     "shadow-crypto": 1,
@@ -50,7 +48,6 @@ LANE_SHA256 = {
     "crypto": "50adf2dd9f9660e18e3db3b361d1018ef81aa1e1cd4d65f07e8056d236c673ed",
     "fill-handoff": "bd1dbe0d34836f9b0e74890a10c27e21589b14f2dc3beea46b5dee9dfcffdc52",
     "kr": "793aa091b8811f4fe97af565110e7350727ea56a85390821ace5baf6f8108cc5",
-    "krb1-cycle": "6b5d6fdbc6076e1f88ddf6203893a10601b9698d3b98d3ac13fac960db4fc73c",
     "orch-live": "de00e7848570616f70c90641a2bb70299d1a8befdeade65719e9647d7e0e2895",
     "orch-mock": "e942cf3f43f184fb6c5893e53582ad027d2e9abd50a19126d6e52c1fd905cd36",
     "shadow-crypto": "ca565c27d6d8bfb34386f1fa0bc3457afa194961c9a1797d1d1c94e59195500a",
@@ -88,7 +85,7 @@ def _read_allowlist(lane: str) -> set[str]:
 def test_all_audited_lane_manifests_are_present() -> None:
     assert set(LANE_PROFILES) == set(LANE_COUNTS) == set(LANE_SHA256)
     assert {path.stem for path in ALLOWLIST_DIR.glob("*.txt")} == set(LANE_PROFILES), (
-        "promoted allowlists must contain exactly the audit's 11 lanes"
+        "promoted allowlists must contain exactly the audit's retained lanes"
     )
 
 

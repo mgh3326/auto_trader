@@ -1,4 +1,4 @@
-"""B-HOST uses the DEFAULT blue/green pair and a one-shot host witness only."""
+"""B-HOST uses the DEFAULT MCP service and a one-shot host witness only."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 
 import app.services.nhplug_mock.lease_host as lease_host
 import scripts.nhplug_t14_host_witness as witness
 from app.services.nhplug_mock.lease_host import INIT_PID_NS
-from tests.scripts.test_deploy_ncp_pull_rollback import OLD, _run
 
 MOUNT = "/etc/machine-id:/etc/machine-id:ro"
-DEFAULT_COLORS = {"at-mcp-blue", "at-mcp-green"}
+PI = Path(__file__).resolve().parents[2] / "deploy" / "shiftgate" / "pi"
 
 
 def _pid_modes(argv: Sequence[str]) -> list[str]:
@@ -58,51 +58,23 @@ def _docker_run_options(command: str) -> list[str]:
     return options
 
 
-def _runs(calls: list[list[str]]) -> list[list[str]]:
-    return [call for call in calls if call and call[0] == "run" and "--name" in call]
-
-
-def _name(call: list[str]) -> str:
-    return call[call.index("--name") + 1]
-
-
-@pytest.mark.parametrize("args", [(), ("--rollback",)])
-@pytest.mark.parametrize("active_color", ["blue", "green"])
-def test_only_default_mcp_color_gets_machine_id_on_promotion(
-    tmp_path: Path, args: tuple[str, ...], active_color: str
-) -> None:
-    result, calls, _, _ = _run(tmp_path, args=args, active_mcp_color=active_color)
-    assert result.returncode == 0, result.stderr
-    runs = _runs(calls)
-    mounted = {_name(call) for call in runs if MOUNT in call}
-    assert mounted <= DEFAULT_COLORS
-    assert len(mounted) == 1
-    color = next(iter(mounted))
-    call = next(call for call in runs if _name(call) == color)
-    assert call.count(MOUNT) == 1
+@pytest.mark.parametrize("name", ["services.yaml", "services.cutover.yaml"])
+def test_only_the_default_mcp_service_gets_machine_id(name: str) -> None:
+    services = yaml.safe_load((PI / name).read_text())["services"]
+    mounted = [s["name"] for s in services if MOUNT in s.get("run_args", [])]
+    assert mounted == ["at-mcp"]
+    mcp = next(s for s in services if s["name"] == "at-mcp")
+    assert mcp["env"]["MCP_PROFILE"] == "default"
+    assert mcp["run_args"].count(MOUNT) == 1
     # Every long-running container keeps its own PID namespace.
-    _assert_no_host_pid(runs)
+    _assert_no_host_pid([["run", *s.get("run_args", [])] for s in services])
 
 
-@pytest.mark.parametrize("active_color", ["blue", "green"])
-def test_switch_and_failure_rollback_keeps_mount(
-    tmp_path: Path, active_color: str
-) -> None:
-    result, calls, _, _ = _run(
-        tmp_path,
-        fail_name="at-mcp-kiwoom",
-        active_mcp_color=active_color,
-        both_mcp_colors_present=True,
-    )
-    assert result.returncode != 0
-    runs = _runs(calls)
-    mounted = {_name(call) for call in runs if MOUNT in call}
-    target = f"at-mcp-{'green' if active_color == 'blue' else 'blue'}"
-    assert mounted == {target}
-    assert any(_name(call) == target and OLD in call for call in runs)
-    assert sum(_name(call) == target and MOUNT in call for call in runs) == 2
-    assert all(MOUNT not in call for call in runs if _name(call) not in DEFAULT_COLORS)
-    _assert_no_host_pid(runs)
+def test_singleton_containers_get_neither_machine_id_nor_host_pid() -> None:
+    script = (PI / "swap-singletons.sh").read_text()
+    assert "docker run" in script
+    assert "machine-id" not in script
+    assert "--pid" not in script
 
 
 def test_host_witness_command_is_ephemeral_host_pid_only() -> None:

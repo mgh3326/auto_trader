@@ -4,10 +4,9 @@
 ``route_request`` (gates on and off), the sha256 of the exact JSON response
 (key order preserved) for every intent x market x purpose case. It was
 generated from main before #1244 changed any route code (recaptured on main 49d56cc0b in round 3), by
-running this module as a script. The test then pins every profile except
-``h3-crypto-paper`` to those bytes; on ``h3-crypto-paper`` only the crypto
-buy/sell routes may move (to the paper-execution contract) and every other
-h3 case stays byte-identical too.
+running this module as a script. The test then pins every profile to those
+bytes. hk 6456 retired the two H3 paper profiles and their paper-execution
+route contract, so their golden cases are gone and no profile's route may move.
 
 hk 1040 (operator 10-16 dr-1040-1 A) moves exactly one tool on kr/us routes:
 ``toss_get_orderable_cash`` leaves ``blocked_actions`` for ``allowed_tools``
@@ -47,13 +46,6 @@ GOLDEN_PATH = Path(__file__).with_name("route_request_profile_golden.json")
 INTENTS = ("market_brief", "profit_taking", "buy_analysis", "discovery")
 MARKETS = ("kr", "us", "crypto")
 PURPOSES = (None, "account_cleanup")
-H3_PROFILE = McpProfile.H3_CRYPTO_PAPER.value
-H3_US_PROFILE = McpProfile.H3_US_PAPER.value
-# The only cases #1244 lets move: buy/sell of each paper profile's own market.
-H3_MOVED_CASES: dict[str, frozenset[str]] = {
-    H3_PROFILE: frozenset({"profit_taking|crypto|-", "buy_analysis|crypto|-"}),
-    H3_US_PROFILE: frozenset({"profit_taking|us|-", "buy_analysis|us|-"}),
-}
 # sha256 of the route_request tool description registered by main (f24eb3a7f
 # route_request_registration.py, loaded from git and registered once; the
 # file is unchanged on main through 49d56cc0b).
@@ -190,7 +182,7 @@ def _golden() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
-def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
+def test_route_request_is_byte_identical_to_main(
     monkeypatch: pytest.MonkeyPatch, gates_enabled: bool
 ) -> None:
     key = "gates_enabled" if gates_enabled else "gates_disabled"
@@ -211,15 +203,9 @@ def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
     assert any(moved.values()), "hk 1040 moved no route; the supplement is dead"
     actual = _digests(undone)
     assert set(actual) == set(expected), "profiles registering route_request changed"
-    assert set(H3_MOVED_CASES) <= set(actual), "h3 profiles must register route_request"
     for profile, cases in expected.items():
         assert set(actual[profile]) == set(cases)
         for case, digest in cases.items():
-            if case in H3_MOVED_CASES.get(profile, frozenset()):
-                assert actual[profile][case] != digest, (
-                    f"{profile} {case} must no longer be the proposal-led response"
-                )
-                continue
             assert actual[profile][case] == digest, (
                 f"{profile} ({key}) {case}: route_request output drifted from main"
             )
@@ -231,9 +217,7 @@ def test_route_request_is_byte_identical_to_main_off_the_h3_routes(
 )
 def test_regenerate_golden(monkeypatch: pytest.MonkeyPatch) -> None:
     # Regenerate exactly what the byte-identity test compares: the hk 1040 and
-    # hk 3717 moves undone, and the h3 moved cases kept at their recorded
-    # pre-#1244 digests (the test requires those to differ, not to match).
-    previous = _golden() if GOLDEN_PATH.is_file() else {}
+    # hk 3717 moves undone.
     golden: dict[str, Any] = {
         "generated_from": "main (pre-#1244 route code)",
         "encoding": "sha256 of json.dumps(response, ensure_ascii=False), key order kept",
@@ -242,188 +226,17 @@ def test_regenerate_golden(monkeypatch: pytest.MonkeyPatch) -> None:
         key = "gates_enabled" if gates_enabled else "gates_disabled"
         responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
         undone, _moved = _undo_1040(responses)
-        digests = _digests(_undo_3717(undone))
-        for profile, cases in H3_MOVED_CASES.items():
-            for case in cases:
-                kept = previous.get(key, {}).get(profile, {}).get(case)
-                if kept is not None:
-                    digests[profile][case] = kept
-        golden[key] = digests
+        golden[key] = _digests(_undo_3717(undone))
     GOLDEN_PATH.write_text(
         json.dumps(golden, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
-def test_route_request_description_is_main_off_the_h3_profile(
+def test_route_request_description_is_main_on_every_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.mcp_server.tooling.route_request_registration import (
-        ALPACA_PAPER_SURFACE_DESCRIPTION,
-        PAPER_SURFACE_DESCRIPTION,
-    )
-
-    suffixes = {
-        H3_PROFILE: PAPER_SURFACE_DESCRIPTION,
-        H3_US_PROFILE: ALPACA_PAPER_SURFACE_DESCRIPTION,
-    }
     descriptions = collect_route_descriptions(monkeypatch)
-    assert set(suffixes) <= set(descriptions)
+    assert McpProfile.DEFAULT.value in descriptions
     for profile, description in descriptions.items():
-        if profile in suffixes:
-            continue
         digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
         assert digest == MAIN_DESCRIPTION_SHA256, f"{profile}: description drifted"
-    for profile, suffix in suffixes.items():
-        base = descriptions[profile].removesuffix(suffix)
-        assert base != descriptions[profile], f"{profile} must carry its suffix"
-        digest = hashlib.sha256(base.encode("utf-8")).hexdigest()
-        assert digest == MAIN_DESCRIPTION_SHA256
-
-
-@pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
-@pytest.mark.parametrize("intent", ["profit_taking", "buy_analysis"])
-def test_h3_crypto_buy_sell_report_the_paper_contract_not_degraded(
-    monkeypatch: pytest.MonkeyPatch, gates_enabled: bool, intent: str
-) -> None:
-    from app.mcp_server.tooling.h3_crypto_paper_registration import (
-        H3_CRYPTO_PAPER_TOOL_NAMES,
-    )
-    from app.mcp_server.tooling.route_request_lanes import (
-        HARD_CONSTRAINTS,
-        PAPER_EXECUTION_HARD_CONSTRAINTS,
-        PAPER_EXECUTION_TOOLS,
-        PROPOSAL_CHANNEL_HARD_CONSTRAINTS,
-    )
-
-    responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
-    out = responses[H3_PROFILE][case_key(intent, "crypto", None)]
-    # The runner's bootstrap_health reads exactly these three top-level keys.
-    assert out["success"] is True
-    assert out["degraded"] is False
-    assert "error" not in out
-    assert out["intent"] == intent
-    contract = out["route_contract"]
-    assert contract == {
-        "version": "paper-execution-v1",
-        "state": "ready",
-        "execution_mode": "paper_simulator",
-        "execution_ready": True,
-        "proposal_tool": None,
-        "approval_channel": "runner_intent_guard",
-        "human_approval_required": False,
-        "preview_owner": "runner_decision",
-        "reconcile_requirement": "paper_reconcile",
-        "execution_tools": ["paper_cancel_pending_order", "paper_place_limit_order"],
-        "required_tools": [
-            "paper_cancel_pending_order",
-            "paper_list_pending_orders",
-            "paper_place_limit_order",
-            "paper_reconcile_orders",
-        ],
-        "missing_required_tools": [],
-        "foreign_execution_tools": [],
-    }
-    # Everything the route names is on the h3 allowlist; the only order tools
-    # it allows are the two paper simulator tools.
-    named = set(out["allowed_tools"]) | {
-        s["tool"] for s in out["standard_tool_sequence"]
-    }
-    assert named <= H3_CRYPTO_PAPER_TOOL_NAMES
-    assert set(contract["required_tools"]) <= H3_CRYPTO_PAPER_TOOL_NAMES
-    assert PAPER_EXECUTION_TOOLS <= set(out["allowed_tools"])
-    assert out["blocked_actions"] == []
-    # Exactly the proposal-channel lines are replaced by the paper lines; the
-    # remaining lane constraints (loss guard scope included) are kept verbatim.
-    lane = "sell" if intent == "profit_taking" else "buy"
-    replaced = PROPOSAL_CHANNEL_HARD_CONSTRAINTS[lane]
-    assert replaced <= set(HARD_CONSTRAINTS[lane]), "replaced lines drifted"
-    assert out["hard_constraints"] == [
-        c for c in HARD_CONSTRAINTS[lane] if c not in replaced
-    ] + list(PAPER_EXECUTION_HARD_CONSTRAINTS)
-
-
-@pytest.mark.parametrize("gates_enabled", [True, False], ids=["gates-on", "gates-off"])
-@pytest.mark.parametrize("intent", ["profit_taking", "buy_analysis"])
-def test_h3_us_buy_sell_report_the_alpaca_paper_contract_not_degraded(
-    monkeypatch: pytest.MonkeyPatch, gates_enabled: bool, intent: str
-) -> None:
-    from app.mcp_server.tooling.h3_us_paper_registration import (
-        H3_US_PAPER_TOOL_NAMES,
-    )
-
-    responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
-    out = responses[H3_US_PROFILE][case_key(intent, "us", None)]
-    assert out["success"] is True
-    assert out["degraded"] is False
-    assert "error" not in out
-    assert out["intent"] == intent
-    contract = out["route_contract"]
-    assert contract == {
-        "version": "paper-execution-v1",
-        "state": "ready",
-        "execution_mode": "alpaca_paper",
-        "execution_ready": True,
-        "proposal_tool": None,
-        "approval_channel": "runner_intent_guard",
-        "human_approval_required": False,
-        "preview_owner": "runner_decision",
-        "reconcile_requirement": "paper_reconcile",
-        "execution_tools": ["alpaca_paper_cancel_order", "alpaca_paper_submit_order"],
-        "required_tools": [
-            "alpaca_paper_cancel_order",
-            "alpaca_paper_get_order",
-            "alpaca_paper_list_orders",
-            "alpaca_paper_list_positions",
-            "alpaca_paper_submit_order",
-            "market_quote_snapshot_ensure",
-        ],
-        "missing_required_tools": [],
-        "foreign_execution_tools": [],
-    }
-    named = set(out["allowed_tools"]) | {
-        s["tool"] for s in out["standard_tool_sequence"]
-    }
-    assert named <= H3_US_PAPER_TOOL_NAMES
-    assert {"alpaca_paper_submit_order", "alpaca_paper_cancel_order"} <= set(
-        out["allowed_tools"]
-    )
-    assert out["blocked_actions"] == []
-
-
-# Literal text oracles (#1244 r3, CodeRabbit on route_request_lanes.py and
-# tester r2 NICE): written here, not read from the production constants.
-BROKER_RECONCILE_LINE = (
-    "accepted/resting is not a fill; broker evidence reconcile is required"
-)
-RUNNER_APPROVAL_LINE = (
-    "each paper order call must equal a runner-approved intent; the runner's "
-    "per-call guard owns approval and the session never improvises an order"
-)
-PAPER_FILL_LINES = {
-    H3_PROFILE: "accepted/resting is not a fill; confirm a fill only from the "
-    "paper account's own order read: paper_reconcile_orders, then an "
-    "all-status paper_list_pending_orders read",
-    H3_US_PROFILE: "accepted/resting is not a fill; confirm a fill only from "
-    "the Alpaca paper account's own order read (alpaca_paper_get_order / "
-    "alpaca_paper_list_orders) and alpaca_paper_list_positions",
-}
-PAPER_MARKETS = {H3_PROFILE: "crypto", H3_US_PROFILE: "us"}
-
-
-@pytest.mark.parametrize("profile", sorted(PAPER_MARKETS))
-@pytest.mark.parametrize("intent", ["profit_taking", "buy_analysis"])
-def test_paper_routes_carry_the_paper_fill_line_not_the_broker_one(
-    monkeypatch: pytest.MonkeyPatch, profile: str, intent: str
-) -> None:
-    responses = collect_route_responses(monkeypatch, gates_enabled=True)
-    out = responses[profile][case_key(intent, PAPER_MARKETS[profile], None)]
-    constraints = out["hard_constraints"]
-    assert BROKER_RECONCILE_LINE not in constraints
-    assert constraints.count(PAPER_FILL_LINES[profile]) == 1
-    assert constraints.count(RUNNER_APPROVAL_LINE) == 1
-    assert not any("order_proposal_create only" in c for c in constraints)
-    # The proposal-led routes keep the broker line (golden keeps the bytes).
-    default = responses[McpProfile.DEFAULT.value][
-        case_key(intent, PAPER_MARKETS[profile], None)
-    ]
-    assert BROKER_RECONCILE_LINE in default["hard_constraints"]

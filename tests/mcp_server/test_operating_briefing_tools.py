@@ -1369,3 +1369,105 @@ async def test_general_session_context_query_cancelled_error_propagates(
             market="kr",
             account_scope="kis_live",
         )
+
+
+# #1171 — the DB-paper briefing scope. These moved here from the H3 paper
+# profile suites hk 6456 removed: ``account_scope="db_simulated"`` is still a
+# public argument of get_operating_briefing and must never read a broker account.
+
+
+def _trap_broker_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.action_report.snapshot_backed.collectors import registry
+    from app.services.brokers.kis import client as kis_client
+    from app.services.brokers.upbit import client as upbit_client
+
+    hits: list[str] = []
+
+    def trap(label: str):
+        def raising(*_args, **_kwargs):
+            hits.append(label)
+            raise AssertionError(f"credential-backed broker read: {label}")
+
+        return raising
+
+    def async_trap(label: str):
+        async def raising(*_args, **_kwargs):
+            hits.append(label)
+            raise AssertionError(f"credential-backed broker read: {label}")
+
+        return raising
+
+    monkeypatch.setattr(kis_client.KISClient, "__init__", trap("KISClient"))
+    monkeypatch.setattr(upbit_client, "_request_with_auth", async_trap("upbit_auth"))
+    monkeypatch.setattr(upbit_client, "fetch_my_coins", async_trap("upbit_coins"))
+    for name in (
+        "_collect_kis_positions",
+        "_collect_upbit_positions",
+        "_collect_manual_positions",
+        "_collect_toss_api_positions",
+        "_collect_whole_portfolio_positions",
+    ):
+        monkeypatch.setattr(portfolio_holdings, name, async_trap(name))
+    monkeypatch.setattr(
+        registry,
+        "production_collector_registry",
+        trap("pending_orders_collector_registry"),
+    )
+    return hits
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["crypto", "us"])
+async def test_db_simulated_briefing_reads_no_broker_account(
+    monkeypatch: pytest.MonkeyPatch, market: str
+) -> None:
+    from app.mcp_server.tooling import operating_briefing, paper_portfolio_handler
+
+    hits = _trap_broker_reads(monkeypatch)
+    paper_calls: list[dict] = []
+
+    async def fake_paper_positions(**kwargs) -> tuple[list, list]:
+        paper_calls.append(kwargs)
+        return [], []
+
+    class _DeadSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+        def __getattr__(self, name: str):
+            raise RuntimeError("db unavailable in this test")
+
+    monkeypatch.setattr(
+        paper_portfolio_handler, "collect_paper_positions", fake_paper_positions
+    )
+    monkeypatch.setattr(operating_briefing, "AsyncSessionLocal", _DeadSession)
+    mcp = FakeMCP()
+    register_operating_briefing_tools(mcp)  # type: ignore[arg-type]
+
+    result = await mcp.tools["get_operating_briefing"](  # type: ignore[operator]
+        market=market, account_scope="db_simulated"
+    )
+
+    assert hits == []
+    assert len(paper_calls) == 1
+    assert result["success"] is True
+    assert result["account_scope"] == "db_simulated"
+    assert result["pending_orders"]["unavailable_reason"] == (
+        "db_simulated_scope_uses_paper_list_pending_orders"
+    )
+
+
+def test_briefing_holdings_scope_per_account_scope() -> None:
+    from app.mcp_server.tooling.operating_briefing import (
+        _default_account_scope,
+        _holdings_kwargs,
+    )
+
+    assert _default_account_scope("crypto", None) == "upbit_live"
+    assert _holdings_kwargs("crypto", "upbit_live", False)["account"] == "upbit"
+    assert "account" not in _holdings_kwargs("kr", "kis_live", False)
+    assert _holdings_kwargs("crypto", "db_simulated", False)["account"] == "paper"

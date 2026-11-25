@@ -11,7 +11,6 @@ an explicit profile so the refusal breaks none of them.
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from pathlib import Path
 
@@ -28,7 +27,6 @@ from app.mcp_server.profiles import (
 pytestmark = pytest.mark.unit
 
 REPO = Path(__file__).resolve().parents[2]
-DEPLOY = REPO / "scripts" / "deploy-ncp-pull.sh"
 
 BLANK_VALUES = [None, "", " ", "   ", "\t", "\n", " \t\r\n "]
 
@@ -78,7 +76,6 @@ REVIEWED_LAUNCHERS = {
     # shiftgate services for at-mcp (AT-1, hk 4194); its explicit, non-empty
     # MCP_PROFILE is checked in tests/scripts/test_shiftgate_services_at.py.
     "ops/ncp/shiftgate/services.at.yaml",
-    "scripts/deploy-ncp-pull.sh",
     "scripts/mcp_server.sh",
     "scripts/mock_session_mcp.py",
     "scripts/shadow_replay_mcp.json",
@@ -127,23 +124,6 @@ def test_compose_mcp_services_each_set_an_explicit_profile() -> None:
     }
     for value in launched.values():
         assert "$" not in value  # a literal, never an interpolated fallback
-        require_mcp_profile(value)
-
-
-def test_deploy_script_passes_an_explicit_profile_to_every_unit() -> None:
-    source = DEPLOY.read_text()
-    calls = re.findall(r"\brun_mcp (?!\(\))[^;|>]*", source)
-    assert len(calls) == 4  # deploy color, deploy unit, restore color, restore unit
-    for call in calls:
-        assert (" default MCP_AUTH_TOKEN " in call) != (
-            ' "${MCP_PROFILES[$i]}" "${MCP_TOKENS[$i]}" ' in call
-        ), call
-    profiles = re.search(r"^declare -a MCP_PROFILES=\((.*)\)$", source, re.M)
-    names = re.search(r"^declare -a MCP_NAMES=\((.*)\)$", source, re.M)
-    assert profiles and names
-    assert len(profiles.group(1).split()) == len(names.group(1).split())
-    for value in profiles.group(1).split():
-        assert value.strip("'\"").strip(), "blank profile in MCP_PROFILES"
         require_mcp_profile(value)
 
 

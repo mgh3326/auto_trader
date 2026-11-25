@@ -2324,10 +2324,6 @@ class TestGetFxRateToolRegistration:
                 McpProfile.ALPACA_PAPER_CLEAN,
                 # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
                 McpProfile.FILL_WATCH_CONTEXT,
-                # #1171 — the H3-CRYPTO paper runner does not use get_fx_rate.
-                McpProfile.H3_CRYPTO_PAPER,
-                # #1257 — the H3-US paper runner does not use get_fx_rate.
-                McpProfile.H3_US_PAPER,
             )
         ],
     )

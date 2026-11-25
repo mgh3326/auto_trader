@@ -34,7 +34,6 @@ tests/mcp_server/test_analyze_batch_universe_prefetch.py
 tests/mcp_server/test_analyze_halted_suspect.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
-tests/mcp_server/test_h3_crypto_paper_profile.py
 tests/mcp_server/test_investment_report_context_get_description.py
 tests/mcp_server/test_kis_live_daily_orders.py
 tests/mcp_server/test_kis_live_order_history_expired.py
@@ -116,10 +115,6 @@ tests/scripts/test_binance_trend_ncp_playbook.py
 tests/scripts/test_binance_trend_tick_export.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_deploy_ci_gate.py
-tests/scripts/test_deploy_ncp_pull_digest_pin.py
-tests/scripts/test_deploy_ncp_pull_gate_python.py
-tests/scripts/test_deploy_ncp_pull_kis_ws_absent.py
-tests/scripts/test_deploy_ncp_pull_rollback.py
 tests/scripts/test_diagnose_krx_after_market_eligibility.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py

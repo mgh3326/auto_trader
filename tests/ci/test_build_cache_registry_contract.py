@@ -131,8 +131,10 @@ def test_deploy_checks_has_no_docker_cache_because_it_cannot_authenticate() -> N
 
 
 def test_buildcache_tag_is_never_one_a_host_pulls_or_the_deploy_resolves() -> None:
+    pi = SCRIPTS.parent / "deploy" / "shiftgate" / "pi"
     for script in (
-        SCRIPTS / "deploy-ncp-pull.sh",
+        pi / "deploy.sh",
+        pi / "follow.sh",
         SCRIPTS / "deploy_ci_gate.py",
     ):
         assert "buildcache" not in script.read_text(encoding="utf-8"), script.name

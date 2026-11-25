@@ -61,8 +61,7 @@ class TestProfileResolution:
     def test_kiwoom_kr_is_a_resolvable_profile(self) -> None:
         assert resolve_mcp_profile("kiwoom_kr") is McpProfile.KIWOOM_KR
 
-    def test_kiwoom_kr_is_distinct_from_kiwoom(self) -> None:
-        assert McpProfile.KIWOOM_KR is not McpProfile.KIWOOM
+    def test_kiwoom_kr_value_is_stable(self) -> None:
         assert McpProfile.KIWOOM_KR.value == "kiwoom_kr"
 
 
@@ -138,9 +137,7 @@ class TestWholeProfileClosedWorld:
         """Keep the reviewed closed-world base inventory count pinned."""
 
         # Closed world: the 126-tool count moves only with a reviewed addition. ROB-1303
-        # added get_spike_attribution (read-only attribution reader), which the
-        # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
-        # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact. ROB-1309
+        # added get_spike_attribution (read-only attribution reader). ROB-1309
         # added screen_stocks_enrich alongside screen_stocks_snapshot.
         # ROB-1348 added the pure decision-table validator to every profile.
         assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES

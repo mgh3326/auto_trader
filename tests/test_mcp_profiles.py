@@ -291,20 +291,9 @@ class TestCryptoProfile:
         assert KIS_MOCK_ORDER_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
-class TestKiwoomProfile:
-    def test_registers_kiwoom_mock_tools(self) -> None:
-        mcp = _build_mcp(McpProfile.KIWOOM)
-        assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
-
-    def test_registers_kiwoom_mock_us_tools(self) -> None:
-        # ROB-867: KIWOOM profile registers both KR and US namespaces.
-        mcp = _build_mcp(McpProfile.KIWOOM)
-        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
-
-
 class TestKiwoomKrProfile:
-    """ROB-1159 — MCP_PROFILE=kiwoom_kr is MCP_PROFILE=kiwoom minus the whole
-    kiwoom_mock_us_* namespace (4 mutations + 3 reads)."""
+    """ROB-1159 — MCP_PROFILE=kiwoom_kr carries the KR Kiwoom mock tools and
+    none of the kiwoom_mock_us_* namespace (4 mutations + 3 reads)."""
 
     def test_registers_exact_kr_kiwoom_namespace(self) -> None:
         mcp = _build_mcp(McpProfile.KIWOOM_KR)
@@ -352,9 +341,8 @@ class TestKiwoomKrProfile:
             MIRROR_COUNTERFACTUAL_TOOL_NAMES,
         )
 
-        # The split narrows registration only; the KR place/cancel/modify
-        # surface a KR session needs stays present and identical to KIWOOM's.
-        kiwoom = _build_mcp(McpProfile.KIWOOM)
+        # The profile narrows registration only; the KR place/cancel/modify
+        # surface a KR session needs stays present.
         kiwoom_kr = _build_mcp(McpProfile.KIWOOM_KR)
         kr_names = {
             "kiwoom_mock_preview_order",
@@ -365,16 +353,7 @@ class TestKiwoomKrProfile:
         assert kr_names <= kiwoom_kr.tools.keys()
         assert KIWOOM_MOCK_TOOL_NAMES <= kiwoom_kr.tools.keys()
         # ROB-1173 also removes the shared KIS mock mirror broker mutation.
-        assert kiwoom.tools.keys() - kiwoom_kr.tools.keys() == (
-            KIWOOM_MOCK_US_TOOL_NAMES | MIRROR_COUNTERFACTUAL_TOOL_NAMES
-        )
-        assert kiwoom_kr.tools.keys() - kiwoom.tools.keys() == set()
-
-    def test_kiwoom_profile_still_registers_us_namespace(self) -> None:
-        # The split is additive: MCP_PROFILE=kiwoom is deliberately unchanged by
-        # ROB-1159, so a regression there is a separate, explicit decision.
-        mcp = _build_mcp(McpProfile.KIWOOM)
-        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+        assert MIRROR_COUNTERFACTUAL_TOOL_NAMES.isdisjoint(kiwoom_kr.tools.keys())
 
 
 class TestKiwoomUsDefaultProfileGate:
@@ -392,7 +371,7 @@ class TestKiwoomUsDefaultProfileGate:
 class TestKiwoomDefaultProfileGate:
     """ROB-601: kiwoom_mock_* tools surface in the operator DEFAULT profile when
     ``settings.kiwoom_mock_enabled`` is true, so analyze→approval→order can run
-    through kiwoom mock in the everyday session (the isolated KIWOOM profile
+    through kiwoom mock in the everyday session (an isolated Kiwoom profile
     drops every other broker's order surface and cannot substitute it).
 
     The flag defaults to ``False`` so the out-of-box DEFAULT surface is
@@ -431,8 +410,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
     McpProfile.US_PAPER: set(_ALPACA_MUTATING) | ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
     McpProfile.DB_PAPER: set(),
-    McpProfile.KIWOOM: KIWOOM_MOCK_TOOL_NAMES | KIWOOM_MOCK_US_TOOL_NAMES,
-    # ROB-1159 — KR-only split: the US namespace is physically absent.
+    # ROB-1159 — KR-only Kiwoom: the US namespace is physically absent.
     McpProfile.KIWOOM_KR: set(KIWOOM_MOCK_TOOL_NAMES),
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
     # (frozen-context read + policy + route_request only, early-return).
@@ -446,13 +424,6 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.WATCH_REPRICING: set(),
     # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
     McpProfile.FILL_WATCH_CONTEXT: set(),
-    # #1171 — the H3-CRYPTO paper pilot's only order surface is the ROB-703
-    # paper simulator (no broker call); every live order tool is absent.
-    McpProfile.H3_CRYPTO_PAPER: set(PAPER_LIMIT_ORDER_TOOL_NAMES),
-    # #1257 — the H3-US paper pilot's only order surface is the manual Alpaca
-    # paper submit/cancel pair (paper endpoint, account_mode alpaca_paper);
-    # no reconcile writer, no automated submit, every live order tool absent.
-    McpProfile.H3_US_PAPER: {"alpaca_paper_submit_order", "alpaca_paper_cancel_order"},
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -505,10 +476,6 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.WATCH_REPRICING,
         # FILL_WATCH_CONTEXT is its own two-tool, context-only closed world.
         McpProfile.FILL_WATCH_CONTEXT,
-        # #1171 — the H3-CRYPTO paper surface is the runner's exact 20 tools.
-        McpProfile.H3_CRYPTO_PAPER,
-        # #1257 — the H3-US paper surface is the runner's exact 20 tools.
-        McpProfile.H3_US_PAPER,
     )
 ]
 
@@ -614,8 +581,8 @@ class TestResolveMcpProfile:
     def test_crypto(self) -> None:
         assert resolve_mcp_profile("crypto") is McpProfile.CRYPTO
 
-    def test_kiwoom(self) -> None:
-        assert resolve_mcp_profile("kiwoom") is McpProfile.KIWOOM
+    def test_kiwoom_kr(self) -> None:
+        assert resolve_mcp_profile("kiwoom_kr") is McpProfile.KIWOOM_KR
 
     def test_shadow_replay(self) -> None:
         assert resolve_mcp_profile("shadow-replay") is McpProfile.SHADOW_REPLAY
@@ -632,6 +599,11 @@ class TestResolveMcpProfile:
         ],
     )
     def test_profiles_retired_by_rob1436_are_rejected(self, retired: str) -> None:
+        with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
+            resolve_mcp_profile(retired)
+
+    @pytest.mark.parametrize("retired", ["kiwoom", "h3-crypto-paper", "h3-us-paper"])
+    def test_profiles_retired_by_hk6456_are_rejected(self, retired: str) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
             resolve_mcp_profile(retired)
 

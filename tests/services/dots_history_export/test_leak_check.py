@@ -283,7 +283,7 @@ def test_legitimate_labels_and_symbols_pass() -> None:
     assert scan_table(ORDERS, ORDERS.column_names, [row]) == []
     for symbol in ("005930", "KRW-BTC", "BTC/USD", "Q500001", "AAPL"):
         assert scan_table(ORDERS, ORDERS.column_names, [{"symbol": symbol}]) == []
-    for tag in ("risk-reward", "sk-hynix-momentum", "h3-crypto-paper", "dip-v2"):
+    for tag in ("risk-reward", "sk-hynix-momentum", "h3-pilot-crypto", "dip-v2"):
         cell = {"strategy_tag": tag}
         assert scan_table(ORDERS, ORDERS.column_names, [cell]) == []
 

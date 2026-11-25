@@ -395,12 +395,9 @@ def test_haproxy_check_rejects_retired_port_and_names_line(
     assert not (tmp_path / "haproxy-call.log").exists()
 
 
-def test_haproxy_check_validates_with_the_deploy_scripts_pinned_image() -> None:
-    deploy = (ROOT / "scripts" / "deploy-ncp-pull.sh").read_text()
+def test_haproxy_check_validates_with_a_pinned_image() -> None:
     check = CHECK_SCRIPT.read_text()
-    match = re.search(r'^readonly HAPROXY_IMAGE="([^"]+)"$', deploy, re.MULTILINE)
-    assert match is not None
-    assert f'readonly HAPROXY_IMAGE="{match.group(1)}"' in check
+    assert re.search(r'^readonly HAPROXY_IMAGE="[^"]+"$', check, re.MULTILINE)
     # The NCP host has no haproxy binary; the check must not depend on one.
     assert "exec haproxy" not in check
     assert "command -v haproxy" not in check
