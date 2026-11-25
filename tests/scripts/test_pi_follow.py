@@ -452,7 +452,7 @@ def test_exit_zero_without_the_marker_is_a_failure(host: dict) -> None:
 # --- the host lock -------------------------------------------------------------------------------
 
 
-def test_a_busy_host_lock_is_exit_75_without_a_backup_or_install(host: dict) -> None:
+def test_a_busy_host_lock_is_exit_75_without_an_install(host: dict) -> None:
     holder = subprocess.Popen(["sleep", "60"])
     try:
         lock = host["run"] / "shiftgate-deploy.lock"
