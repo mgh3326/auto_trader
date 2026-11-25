@@ -489,3 +489,78 @@ def test_dart_migration_upgrade_accepts_a_metadata_created_column():
         "ALTER TABLE market_event_values ADD COLUMN IF NOT EXISTS value_details JSONB"
         in output.getvalue()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replay", ["empty_detail", "failed_detail", "paced_backfill"])
+async def test_dart_list_replay_preserves_typed_event_evidence(monkeypatch, replay):
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql.dml import Insert
+
+    from app.services.market_events.repository import MarketEventsRepository
+
+    insider = {
+        **FILING,
+        "rcept_no": "20261124000002",
+        "report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+    }
+    insider_response = response(
+        {
+            "rcept_dt": "20261125",
+            "sp_stock_lmp_rate": "7.10",
+            "sp_stock_lmp_irds_rate": "-0.50",
+        }
+    ).replace(RECEIPT.encode(), insider["rcept_no"].encode())
+    bodies = [response(CB), insider_response]
+    if replay == "empty_detail":
+        bodies += [b'{"status":"013"}', b'{"status":"013"}']
+    elif replay == "failed_detail":
+        bodies += [b'{"status":"800"}', b'{"status":"800"}']
+
+    transport = Mock(side_effect=bodies)
+    monkeypatch.setattr(dart_capital, "_get_bytes", transport)
+    result = Mock()
+    result.scalar_one.return_value = 1
+    db = AsyncMock(execute=AsyncMock(return_value=result))
+    repo = MarketEventsRepository(db)
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    monkeypatch.setattr(repo, "get_or_create_partition", AsyncMock())
+    monkeypatch.setattr(repo, "mark_partition_running", AsyncMock())
+    monkeypatch.setattr(repo, "mark_partition_succeeded", AsyncMock())
+    monkeypatch.setattr(repo, "mark_partition_failed", AsyncMock())
+    write_value = AsyncMock()
+    monkeypatch.setattr(repo, "_upsert_value", write_value)
+    fetch_rows = AsyncMock(return_value=[FILING, insider])
+
+    def event_inserts():
+        return [
+            call.args[0].compile(dialect=postgresql.dialect())
+            for call in db.execute.await_args_list
+            if isinstance(call.args[0], Insert)
+        ]
+
+    first = await ingestion.ingest_kr_disclosures_for_date(
+        db, date(2026, 11, 24), fetch_rows=fetch_rows, enrich_capital=True
+    )
+    assert first.status == "succeeded"
+    bond_insert, insider_insert = event_inserts()
+    assert "dart_reset_floor_basis" in bond_insert.params["raw_payload_json"]
+    assert insider_insert.params["event_date"] == date(2026, 11, 25)
+    assert write_value.await_count > 0
+
+    db.execute.reset_mock()
+    write_value.reset_mock()
+    # The paced backfill calls ingestion with a custom fetcher and no enrichment option.
+    kwargs = {} if replay == "paced_backfill" else {"enrich_capital": True}
+    second = await ingestion.ingest_kr_disclosures_for_date(
+        db, date(2026, 11, 24), fetch_rows=fetch_rows, **kwargs
+    )
+    assert second.status == ("failed" if replay == "failed_detail" else "succeeded")
+    bond_replay, insider_replay = event_inserts()
+    for sql in (bond_replay, insider_replay):
+        assert "raw_payload_json" in sql.params  # Still insert when the receipt is new.
+        conflict_update = str(sql).split("DO UPDATE SET ", 1)[1]
+        assert "raw_payload_json =" not in conflict_update
+        assert "event_date =" not in conflict_update
+    write_value.assert_not_awaited()
+    assert transport.call_count == len(bodies)
