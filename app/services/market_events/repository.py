@@ -171,6 +171,7 @@ class MarketEventsRepository:
                 "surprise",
                 "surprise_pct",
                 "released_at",
+                "value_details",
             )
             if k in payload
         }

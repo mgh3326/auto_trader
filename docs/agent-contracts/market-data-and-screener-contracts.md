@@ -82,6 +82,29 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 퍼지 매칭은 하지 않으며 `corp_code`는 심볼로 대체하지 않는다. 행에 기존 `stock_code`가 있으면 기존 정규화 동작을
 유지한다. 레지스트리 실패는 공시 수집을 실패시키지 않는다.
 
+**DART 구조화 자본 이벤트 (hk 6582)**: 기존 날짜별 공시 수집은 주요사항보고서의 유상·무상증자, 감자,
+전환·신주인수권·교환사채 및 자기주식 취득·처분 결정과 5% 보유·임원/주요주주 소유 공시에 대해
+[주요사항보고서 API](https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS005)와
+[지분공시 API](https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS004)의 해당 응답을 조회한다.
+공시 이벤트는 기존 접수번호를 유지하고, 동일 접수번호와 회사 고유번호의 행만 결합한다. 주요사항보고서 조회는
+최초접수일 구간을 최대 366일(양 끝 포함)로 제한한다. 유상증자 결정 응답에는 발행가와 납입일이 없다.
+임원·주요주주 공시일은 접수번호의 날짜와 응답의 접수일 중 늦은 날짜를 반영한다.
+
+- 금액·주식수·보유비율·비율 증감은 단위와 함께 `market_event_values`에 저장한다.
+  `value_details`의 출처 기반 십진 문자열은 공용 Numeric 열의 소수점 자릿수 제약을 받지 않는다.
+  보유비율 전 값은 공시된 이후 비율에서 증감(퍼센트포인트)을 뺀다. CB/BW 최저 조정가 기준 희석률(%)은
+  권면총액 ÷ 최저 조정가 ÷ 발행주식수 × 100이다. 발행주식수는 공시 신주 수와 총수 대비 비율에서 역산하므로
+  공시 반올림을 계승한다. 양수 입력이 하나라도 없으면 값은 `null`이고 누락 항목을 `reason`에 남긴다.
+  최저 조정가 근거는 이벤트 원본에 보존한다.
+- 배당 공시에 명시된 배당기준일을 [공시 원문 API](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019003)에서
+  읽어 `YYYYMMDD` 값으로 저장한다. 확인 가능한 회계연도 종료월은
+  [기업개황 `acc_mt`](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019002)를 따른다.
+- HTTP 200의 본문 상태 `013/014`는 정상 빈 결과다. `020`은 1초·2초 백오프 후 재시도하고,
+  `010/011/012/901`(인증 거절), `800`(서비스 불가), `021/100`(요청 제약/인자 오류)은 유형별 실패다.
+  상세 조회 실패는 해당 파티션을 실패 처리한다.
+- 기존 시장 이벤트 조회의 `values`에 구조화 수치가 포함되고 MCP `get_disclosures(include_values=True)`는
+  저장된 수치를 접수번호별로 조회한다. MCP 기본 응답은 기존과 동일하다.
+
 ### Benzinga calendar ingestion (hk 6513)
 
 운영자 결정 `hk:doc decision/2026-11-25/at-benzinga-trial-front-use`: 체험 요금제 기간에는 Benzinga 캘린더를 결정

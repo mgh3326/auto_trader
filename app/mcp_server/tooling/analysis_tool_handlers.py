@@ -641,6 +641,7 @@ async def get_disclosures_impl(
     days: int = 30,
     limit: int = 20,
     report_type: str | None = None,
+    include_values: bool = False,
 ) -> dict[str, Any]:
     if list_filings is None:
         return {
@@ -651,7 +652,24 @@ async def get_disclosures_impl(
         }
 
     try:
-        return await list_filings(symbol, days, limit, report_type)
+        result = await list_filings(symbol, days, limit, report_type)
+        if not include_values or not result["success"] or not result["filings"]:
+            return result
+        from app.core.db import AsyncSessionLocal
+        from app.services.market_events.query_service import MarketEventsQueryService
+
+        filings = result["filings"]
+        async with AsyncSessionLocal() as db:
+            values = await MarketEventsQueryService(db).dart_values_by_receipt(
+                [filing["rcp_no"] for filing in filings]
+            )
+        return {
+            **result,
+            "filings": [
+                {**filing, "values": values.get(filing["rcp_no"], [])}
+                for filing in filings
+            ],
+        }
     except Exception as exc:
         return {
             "success": False,
