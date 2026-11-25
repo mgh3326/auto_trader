@@ -42,6 +42,7 @@ tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_kis_mock_shadow_order_history.py
+tests/mcp_server/test_kr_quote_price_kind.py
 tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_parking_exclusion.py
@@ -118,7 +119,6 @@ tests/scripts/b0x/test_cycle.py
 tests/scripts/b0x/test_derivation.py
 tests/scripts/b0x/test_sidecar.py
 tests/scripts/b0x/us/test_alpaca.py
-tests/scripts/test_binance_h5_heartbeat_watch.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_build_market_valuation_cli_gates.py
 tests/scripts/test_correct_journal_exit_fields_cli.py
@@ -126,6 +126,7 @@ tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_dagu_at_pg_backup_dag.py
 tests/scripts/test_dagu_futures_minutes_dags.py
 tests/scripts/test_dagu_intraday_movers_dag.py
+tests/scripts/test_dagu_kr_trading_flags_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
 tests/scripts/test_dagu_session_minutes_dags.py
 tests/scripts/test_diagnose_investment_reports.py
@@ -134,7 +135,6 @@ tests/scripts/test_execution_intent_upbit_resolve.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
 tests/scripts/test_list_recent_fill_events_cli.py
-tests/scripts/test_ncp_mcp_watchdog.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_bhost_deploy.py
@@ -171,10 +171,6 @@ tests/services/brokers/binance/demo_scalping_exec/test_executor_monitored.py
 tests/services/brokers/binance/demo_scalping_exec/test_executor_realized_pnl.py
 tests/services/brokers/binance/demo_strategy_loop/test_bars.py
 tests/services/brokers/binance/futures_demo/test_preflight.py
-tests/services/brokers/binance/h5/test_alerting.py
-tests/services/brokers/binance/h5/test_alerting_mutants.py
-tests/services/brokers/binance/h5/test_sizing_holding.py
-tests/services/brokers/binance/h5/test_state_exposure.py
 tests/services/brokers/binance/spot_demo/test_audit_no_live_host.py
 tests/services/brokers/binance/spot_demo/test_config_env.py
 tests/services/brokers/binance/spot_demo/test_host_allowlist.py
@@ -256,6 +252,15 @@ tests/services/kis_mock_runner/test_domestic_route.py
 tests/services/kis_mock_runner/test_envelope.py
 tests/services/kis_websocket/test_client.py
 tests/services/kis_websocket/test_parsers_execution_classification.py
+tests/services/kr_trading_flags/test_gate.py
+tests/services/kr_trading_flags/test_kis_master.py
+tests/services/kr_trading_flags/test_lookup_offline.py
+tests/services/kr_trading_flags/test_naver_status.py
+tests/services/kr_trading_flags/test_store_db.py
+tests/services/kr_trading_flags/test_store_offline.py
+tests/services/kr_trading_flags/test_sync_guard.py
+tests/services/kr_trading_flags/test_wiring_import.py
+tests/services/kr_trading_flags/test_wrapper_offline.py
 tests/services/market_close_digest/test_service.py
 tests/services/market_events/test_dart_today_pending.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py
@@ -337,16 +342,12 @@ tests/services/test_alpaca_paper_final_review.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py
 tests/services/test_alpaca_paper_market_evidence.py
 tests/services/test_analyst_consensus_snapshot_builder.py
-tests/services/test_broker_risk_detector.py
 tests/services/test_decision_history.py
-tests/services/test_fill_event_handoff.py
-tests/services/test_fill_event_handoff_kick_filter.py
-tests/services/test_fill_event_handoff_watch_kick.py
-tests/services/test_fill_handoff_lookback.py
 tests/services/test_kis_mock_preopen_approval_bridge.py
 tests/services/test_kis_us_inference_expiry.py
 tests/services/test_kis_us_inference_expiry_db.py
 tests/services/test_kr_preopen_news_brief_service.py
+tests/services/test_kr_quote_price.py
 tests/services/test_live_place_provenance.py
 tests/services/test_live_reconcile_metrics.py
 tests/services/test_manual_holdings_leftover.py

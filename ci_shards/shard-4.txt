@@ -104,9 +104,8 @@ tests/scripts/b0x/kr/test_submission_ast_guard.py
 tests/scripts/b0x/test_contract_stamp.py
 tests/scripts/b0x/us/test_run_b0x_us_cycle_cli.py
 tests/scripts/test_backfill_kr_candles_1m_toss.py
-tests/scripts/test_binance_h5_runner_alerts.py
-tests/scripts/test_binance_h5_scripts_mutants.py
 tests/scripts/test_compare_go_py_minutes.py
+tests/scripts/test_dagu_upbit_intraday_shadow_dag.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_execution_mandates_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
@@ -136,8 +135,6 @@ tests/services/brokers/binance/futures_demo/test_canonical_credentials.py
 tests/services/brokers/binance/futures_demo/test_execution_client_submit_cancel.py
 tests/services/brokers/binance/futures_demo/test_sizing.py
 tests/services/brokers/binance/futures_demo/test_testnet_env_does_not_activate_demo.py
-tests/services/brokers/binance/h5/test_client.py
-tests/services/brokers/binance/h5/test_strategy.py
 tests/services/brokers/binance/paper/test_binance_adapter.py
 tests/services/brokers/binance/spot_demo/test_cross_environment_leakage.py
 tests/services/brokers/binance/spot_demo/test_d2_root_reconcile_db.py
@@ -306,7 +303,7 @@ tests/services/test_alpaca_paper_ledger_lifecycle_fixture.py
 tests/services/test_alpaca_paper_snapshot_attestation.py
 tests/services/test_alpaca_paper_submit_coordinator.py
 tests/services/test_analyst_consensus_cache.py
-tests/services/test_b0x_lane_consumer.py
+tests/services/test_b0x_source_event.py
 tests/services/test_deployment_cap.py
 tests/services/test_downside_watch_service_no_broker_imports.py
 tests/services/test_enrichment_negative_cache.py
@@ -356,6 +353,11 @@ tests/services/test_trading_decision_service_committee.py
 tests/services/test_underwater_support_net.py
 tests/services/test_upbit_market_event.py
 tests/services/test_us_symbol_universe_names.py
+tests/services/upbit_intraday_shadow/test_candidates.py
+tests/services/upbit_intraday_shadow/test_fixture_day.py
+tests/services/upbit_intraday_shadow/test_outcomes.py
+tests/services/upbit_intraday_shadow/test_recorder_cli.py
+tests/services/upbit_intraday_shadow/test_static_boundary.py
 tests/services/us_dual_paper/test_alpaca_adapter.py
 tests/services/us_dual_paper/test_smoke_cli_preflight.py
 tests/services/watch_trigger_repricing/test_live_spawner_contract.py
@@ -397,6 +399,7 @@ tests/test_forecast_web_read.py
 tests/test_fundamentals_screener.py
 tests/test_fundamentals_sources_naver.py
 tests/test_hermes_roundtrip_smoke.py
+tests/test_hk6036_upbit_shadow_migration_db.py
 tests/test_ingest_validated_run_card_cli.py
 tests/test_invest_api_scalping_router.py
 tests/test_invest_app_spa_router_safety.py
@@ -469,7 +472,6 @@ tests/test_mcp_alpaca_paper_tools.py
 tests/test_mcp_analyst_consensus.py
 tests/test_mcp_correlation_tools.py
 tests/test_mcp_get_market_news_quality_gate.py
-tests/test_mcp_heartbeat.py
 tests/test_mcp_kis_order_variants.py
 tests/test_mcp_orderbook_tools.py
 tests/test_mcp_screen_stocks_tvscreener_contract.py

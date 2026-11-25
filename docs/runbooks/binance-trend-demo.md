@@ -1,8 +1,7 @@
 # TREND-TSMOM-v1 데모 러너 — NCP 수동 운영 런북
 
 TREND-TSMOM-v1 Futures Demo 러너(hk 4753, 3796 CT-5a)를 NCP에서 운영자가 손으로
-띄우고 관찰·정지하는 절차다. 같은 계정·같은 클라이언트를 쓰는 H5 런북
-[binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md)의 형태를 따르며,
+띄우고 관찰·정지하는 절차다. 같은 계정·같은 클라이언트를 쓰던 H5 런북(hk 6457에서 은퇴, 파일 삭제)의 형태를 따르며,
 러너의 설계는 `docs/design/3796-crypto-trend-demo.md` §4가 정본이다.
 
 **이 문서는 어떤 권한도 주지 않는다.** 병합은 러너를 시작하지 않는다. 별도 운영자

@@ -70,15 +70,19 @@ COPY --from=builder /app/.venv /app/.venv
 # 앱 소스 코드 복사
 COPY app/ ./app/
 COPY research_contracts/ ./research_contracts/
-# scripts/binance_h5_*.py (H5 demo runner, truth gate, heartbeat watcher) import
-# research.nautilus_scalping.rob974_features through the H5 modules. Ship that one
-# package, never the rest of research/ (a namespace package: no __init__.py chain).
+# scripts/binance_demo_strategy_loop.py and scripts/binance_trend_demo.py import
+# research.nautilus_scalping.rob974_features through their strategy-loop modules.
+# Ship that package, never the rest of research/ (a namespace package: no
+# __init__.py chain). The retired H5 runner (hk 6457) no longer needs it on its own.
 COPY research/nautilus_scalping/ ./research/nautilus_scalping/
 # The explicit ROB-1474 paper consumer builds frozen lists from mounted local
 # bars. Include its pure research dependency closure, never cached datasets.
 COPY research/stock_selection/__init__.py research/stock_selection/forward.py research/stock_selection/dataset.py research/stock_selection/io.py research/stock_selection/models.py ./research/stock_selection/
 COPY research/data_plane/__init__.py research/data_plane/calendars.py research/data_plane/contract.py ./research/data_plane/
-COPY research/crypto_universe/__init__.py research/crypto_universe/universe.py ./research/crypto_universe/
+COPY research/crypto_universe/__init__.py research/crypto_universe/universe.py research/crypto_universe/public_http.py ./research/crypto_universe/
+# hk 6036: the intraday shadow recorder imports the hash-pinned hk 6035 rules, their
+# allowlisted public GET code and the frozen selection. No cached datasets.
+COPY research/upbit_intraday/__init__.py research/upbit_intraday/rules.py research/upbit_intraday/fetch.py research/upbit_intraday/public_http.py research/upbit_intraday/frozen_selection.json ./research/upbit_intraday/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
 # The pi runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /

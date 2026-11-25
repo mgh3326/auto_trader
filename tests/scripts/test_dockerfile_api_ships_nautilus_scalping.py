@@ -1,12 +1,12 @@
-"""Dockerfile.api ships only the H5 and ROB-1474 paper research dependencies.
+"""Dockerfile.api ships only the ROB-993/TREND, ROB-1474 paper and hk 6036 recorder research dependencies.
 
-The H5 entry scripts (``scripts/binance_h5_*.py``: the demo runner, the read-only
-truth gate and the heartbeat watcher) import
-``research.nautilus_scalping.rob974_features`` through the H5 modules
-(``demo_strategy_loop/strategy.py``, ``h5/strategy``, ``h5/state``, ``h5/client``).
-While the final stage did not copy that package, every ``python -m
-scripts.binance_h5_*`` in the deployed image ended with
-``ModuleNotFoundError: No module named 'research'`` before argparse ran.
+The ROB-993 demo strategy loop (``scripts/binance_demo_strategy_loop.py``) and the
+TREND-TSMOM runner (``scripts/binance_trend_demo.py``) import
+``research.nautilus_scalping.rob974_features`` through their strategy-loop modules
+(``demo_strategy_loop/bars.py``, ``trend/history.py``). While the final stage did
+not copy that package, every ``python -m scripts.binance_*`` entry in the deployed
+image ended with ``ModuleNotFoundError: No module named 'research'`` before
+argparse ran. The retired H5 runner (hk 6457) was one more such entry.
 
 The image is simulated, not built. The final stage's COPY directives are applied to
 a throwaway directory, honouring ``.dockerignore`` with Docker's root-relative
@@ -19,9 +19,6 @@ matching, and the result is checked two ways:
 
 Third-party packages come from the interpreter running the tests, standing in for
 the image's ``/app/.venv``; they are not part of what is being decided here.
-
-Every entry script that exists is covered (glob), so the truth gate and the
-heartbeat watcher join the check by existing, not by a list edit.
 """
 
 from __future__ import annotations
@@ -47,15 +44,13 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIRST_PARTY = ("app", "research", "research_contracts", "scripts")
-ENTRY_SCRIPTS = tuple(
-    sorted(
-        p.relative_to(REPO_ROOT).as_posix()
-        for p in REPO_ROOT.glob("scripts/binance_h5_*.py")
-    )
-) + (
+ENTRY_SCRIPTS = (
+    "scripts/binance_demo_strategy_loop.py",
+    "scripts/binance_trend_demo.py",
     "scripts/mock_strategy.py",
     "scripts/mock_strategy_crypto.py",
     "scripts/mock_data_refresh.py",
+    "scripts/upbit_intraday_shadow.py",
 )
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
 SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
@@ -70,6 +65,12 @@ PAPER_RESEARCH_FILES = {
     "research/data_plane/contract.py",
     "research/crypto_universe/__init__.py",
     "research/crypto_universe/universe.py",
+    "research/crypto_universe/public_http.py",
+    "research/upbit_intraday/__init__.py",
+    "research/upbit_intraday/rules.py",
+    "research/upbit_intraday/fetch.py",
+    "research/upbit_intraday/public_http.py",
+    "research/upbit_intraday/frozen_selection.json",
 }
 
 
@@ -279,7 +280,7 @@ def missing_from_image(files: dict[str, Path], workdir: str) -> list[str]:
 
 
 def research_scope_violations(files: dict[str, Path], workdir: str) -> list[str]:
-    """Reject research outside H5 and the exact paper-list dependency closure."""
+    """Reject research outside the loop and the exact paper-list dependency closure."""
     return sorted(
         rel
         for rel in under_workdir(files, workdir)
@@ -432,9 +433,8 @@ def real_runtime(real_image, tmp_path_factory) -> RuntimeReport:
 
 
 def test_entry_scripts_include_the_runner() -> None:
-    # The glob must not be vacuous. Once they exist, the truth gate and the heartbeat
-    # watcher are picked up by the same glob.
-    assert "scripts/binance_h5_demo.py" in ENTRY_SCRIPTS
+    # The ROB-993 loop CLI is the entry that pulls rob974_features into the image.
+    assert "scripts/binance_demo_strategy_loop.py" in ENTRY_SCRIPTS
 
 
 def test_the_scripts_do_reach_research() -> None:
@@ -453,7 +453,7 @@ def test_image_ships_every_first_party_module_the_entry_scripts_reach(
 def test_entry_scripts_import_from_the_image_file_set_alone(real_runtime) -> None:
     assert real_runtime.errors == {}
     assert real_runtime.leaks == []
-    # the import really went through the H5 modules into the shipped package
+    # the import really went through the strategy-loop modules into the shipped package
     assert RESEARCH_MODULE in real_runtime.loaded
 
 
@@ -497,8 +497,19 @@ def test_only_execution_research_dependencies_are_added(real_image) -> None:
             (
                 "research/crypto_universe/__init__.py",
                 "research/crypto_universe/universe.py",
+                "research/crypto_universe/public_http.py",
             ),
             "/app/research/crypto_universe",
+        ),
+        (
+            (
+                "research/upbit_intraday/__init__.py",
+                "research/upbit_intraday/rules.py",
+                "research/upbit_intraday/fetch.py",
+                "research/upbit_intraday/public_http.py",
+                "research/upbit_intraday/frozen_selection.json",
+            ),
+            "/app/research/upbit_intraday",
         ),
     ]
 

@@ -192,7 +192,6 @@ a "filter dropped" mutant):
   `position_before_fill`
 - `app/services/execution_ledger/query_service.py` `list_recent`,
   `list_by_symbol`, `list_fills_today`, `list_sell_history` (both queries)
-- `app/services/fill_event_handoff/broker_risk.py` `list_fills_for_order`
 - `app/services/protected_quantity_service.py` `_net_execution_quantity_since`
 - `app/services/market_close_digest/queries.py` `_execution_fills`
 - `app/services/quotes_consumer/repository.py` `fills_after`

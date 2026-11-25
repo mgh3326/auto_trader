@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from app.services.b0x_lane_consumer import validate_source_event
+from app.services.b0x_source_event import validate_source_event
 
 MAX_ARTIFACT_BYTES = 1_000_000
 DETERMINISTIC_COMPARISON_DOMAINS = (

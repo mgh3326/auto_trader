@@ -265,6 +265,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with
             # objects materialized by Base.metadata.create_all.
+            # hk 6503 KR trading flags table is later than the boundary; create_all
+            # built it, so drop it or the migration collides with it.
+            await connection.execute(text("DROP TABLE kr_symbol_trading_flags"))
             await connection.execute(
                 text("DROP TABLE review.order_proposal_approval_events")
             )
@@ -321,19 +324,6 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "funding_advisory_revisions",
                 "funding_advisories",
                 "external_cash_declarations",
-            ):
-                await connection.execute(text(f"DROP TABLE review.{table}"))
-            # Task 847 H5 durable state is later than this reconstructed
-            # boundary and already in Base.metadata; drop it so the head
-            # migration is exercised instead of colliding with create_all.
-            # binance_h5_intents references binance_h5_signals, so the intent
-            # table must drop first.
-            for table in (
-                "binance_h5_intents",
-                "binance_h5_signals",
-                "binance_h5_lane_state",
-                "binance_h5_opportunities",
-                "binance_h5_nav_samples",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
             # #925 KRX after-market eligibility (public schema) is later than

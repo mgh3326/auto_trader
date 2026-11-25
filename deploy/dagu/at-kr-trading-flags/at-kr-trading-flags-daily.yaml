@@ -1,0 +1,22 @@
+# KR 관리·시장경고·정리매매·거래정지 일 기준값 (KIS 종목정보 파일): 월–금 07:00 KST. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# KIS kospi/kosdaq 종목정보 zip 을 받아 kr_symbol_trading_flags 에 가드된 쓰기로 반영한다. 장중 보조(at-kr-trading-flags-intraday)는 네이버 목록에 있는 종목만 갱신하므로 이 기준값이 빠지면 해제된 상태가 남는다.
+# 시장경고 매핑이 대부분 unmapped 이면 스크립트가 쓰기 전에 거부하고 종료 코드 1로 끝난다. 등록과 스위치 변경은 설계 세션이 한다.
+description: "KR trading flags daily baseline from the KIS 종목정보 files"
+schedule:
+  - "CRON_TZ=Asia/Seoul 0 7 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: baseline
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.sync_kr_trading_flags --source kis-master || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-kr-trading-flags "dag=at-kr-trading-flags-daily status=success"'
+  failure:
+    command: 'logger -t at-dagu-kr-trading-flags "dag=at-kr-trading-flags-daily status=failure"'
