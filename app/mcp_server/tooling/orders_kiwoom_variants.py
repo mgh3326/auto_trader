@@ -57,6 +57,7 @@ from app.services.kiwoom_mock_place import (
 from app.services.kiwoom_mock_place import (
     preflight_to_response as _preflight_to_response,
 )
+from app.services.kr_quote_price import PRICE_KIND_EXPECTED
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -325,6 +326,9 @@ async def _fetch_kr_quote_for_preflight(symbol: str) -> tuple[int | None, str]:
         from app.mcp_server.tooling.market_data_quotes import _get_quote_impl
 
         quote = await _get_quote_impl(symbol, "kr")
+        if quote.get("price_kind") == PRICE_KIND_EXPECTED:
+            # hk 6498: refuse the expected price as the preflight basis.
+            return None, "unavailable"
         raw_price = quote.get("price")
         freshness = str(quote.get("price_freshness") or "unavailable")
         if raw_price is not None:

@@ -620,10 +620,14 @@ def _patch_nxt_eligible(monkeypatch, market_data_quotes) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
+async def test_get_quote_korean_equity_premarket_keeps_expected_out_of_price(
     monkeypatch,
 ):
-    """ROB-511: pre-market KR quote uses NXT expected price when available."""
+    """hk 6498: NXT pre-market is continuous, so an expected-only book is no price.
+
+    The expected price stays in its own field; the representative price is
+    unavailable (no trade, no two-sided book) and the quote is not order basis.
+    """
     from app.mcp_server.tooling import market_data_quotes
     from app.mcp_server.tooling.market_session import (
         DATA_STATE_PREMARKET_UNAVAILABLE,
@@ -659,15 +663,20 @@ async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
     get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
-    assert result["price"] == pytest.approx(114300.0)
+    assert result["price"] is None
+    assert result["expected_price"] == 114300
+    assert result["price_kind"] == "unavailable"
+    assert result["price_kind_reason"] == "no_trade_and_no_book"
+    assert result["price_usable"] is False
     assert result["previous_close"] == pytest.approx(100.0)
     assert result["data_state"] == "fresh"
     assert result["regular_session_data_state"] == "premarket_unavailable"
     assert result["session"] == "nxt_premarket"
+    assert result["price_session"] == "nxt_pre"
     assert result["venue"] == "nxt"
     assert result["venue_label"] == "NXT"
     assert result["kis_market_code"] == "NX"
-    assert result["price_source"] == "nxt_expected_price"
+    assert result["price_source"] is None
 
 
 @pytest.mark.asyncio
@@ -790,12 +799,16 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
     result = await tools["get_quote"]("005930")
 
     get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
-    assert result["price"] == pytest.approx(113900.0)
+    # hk 6498: NXT post is continuous; an expected-only book is not the price.
+    assert result["price"] is None
+    assert result["expected_price"] == 113900
+    assert result["price_kind"] == "unavailable"
+    assert result["price_session"] == "nxt_post"
     assert result["data_state"] == "fresh"
     assert result["regular_session_data_state"] == "market_closed"
     assert result["session"] == "nxt_after"
     assert result["venue"] == "nxt"
-    assert result["price_source"] == "nxt_expected_price"
+    assert result["price_source"] is None
 
 
 @pytest.mark.asyncio

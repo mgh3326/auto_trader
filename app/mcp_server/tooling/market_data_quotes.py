@@ -66,7 +66,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
-from app.services import kis_ohlcv_cache, krx_after_market
+from app.services import kis_ohlcv_cache, kr_quote_price, krx_after_market
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.toss.market_calendar import get_kr_nxt_session_from_toss
 from app.services.daily_candles.read_service import rows_to_frame
@@ -577,25 +577,52 @@ def _annotate_nxt_session_change(
         quote["change_pct"] = None
 
 
-def _nxt_price_from_orderbook(
-    snapshot: market_data_service.OrderbookSnapshot,
-) -> tuple[float | None, str | None, datetime.datetime | None]:
-    if snapshot.is_empty_book:
-        return None, None, None
+_NXT_PRICE_SOURCE_BY_KIND = {
+    kr_quote_price.PRICE_KIND_LAST_TRADE: "nxt_last_trade",
+    kr_quote_price.PRICE_KIND_MID: "nxt_mid",
+    # Historical name kept: the value is the NXT expected (예상체결가).
+    kr_quote_price.PRICE_KIND_EXPECTED: "nxt_expected_price",
+}
 
-    expected_price = _positive_price(snapshot.expected_price)
-    if expected_price is not None:
-        return expected_price, "nxt_expected_price", snapshot.as_of
 
-    best_ask = _positive_price(snapshot.asks[0].price if snapshot.asks else None)
-    best_bid = _positive_price(snapshot.bids[0].price if snapshot.bids else None)
-    if best_ask is not None and best_bid is not None:
-        return (best_ask + best_bid) / 2.0, "nxt_mid", snapshot.as_of
-    if best_ask is not None:
-        return best_ask, "nxt_best_ask", snapshot.as_of
-    if best_bid is not None:
-        return best_bid, "nxt_best_bid", snapshot.as_of
-    return None, None, None
+def _trade_datetime(date_val: Any, time_val: Any) -> datetime.datetime | None:
+    """hk 6498: KST-aware trade time from a provider date and time, else None."""
+    if (
+        date_val is None
+        or pd.isna(date_val)
+        or not isinstance(time_val, datetime.time)
+        or pd.isna(time_val)
+    ):
+        return None
+    try:
+        day = pd.Timestamp(date_val).to_pydatetime().date()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return datetime.datetime.combine(day, time_val, tzinfo=_KST)
+
+
+async def _fetch_venue_last_trade(
+    symbol: str, *, venue: str, kis_market_code: str
+) -> kr_quote_price.LastTrade | None:
+    """hk 6498: the venue's latest trade from KIS inquire-price, else None.
+
+    Fail-open: any error or a missing trade time returns None, so the selector
+    falls back to the firm mid. The trade time comes from the provider only.
+    """
+    try:
+        kis = KISClient()
+        df = await kis.inquire_price(code=symbol, market=kis_market_code)
+        if df is None or df.empty:
+            return None
+        row = df.iloc[0].to_dict()
+    except Exception as exc:  # noqa: BLE001 - last trade is optional evidence
+        logger.info("KR last trade unavailable for %s (%s): %s", symbol, venue, exc)
+        return None
+    price = kr_quote_price.positive_price(row.get("close"))
+    traded_at = _trade_datetime(row.get("date"), row.get("time"))
+    if price is None or traded_at is None:
+        return None
+    return kr_quote_price.LastTrade(venue=venue, price=price, traded_at=traded_at)
 
 
 async def _fetch_nxt_quote_overlay(
@@ -603,24 +630,67 @@ async def _fetch_nxt_quote_overlay(
     *,
     session: str,
 ) -> dict[str, Any] | None:
+    """Read the NXT book and select the representative price (hk 6498).
+
+    Returns None when the NXT book is empty (no overlay). Otherwise returns the
+    overlay even when the selection is unavailable (price None), so a one-sided
+    or expected-only book never falls back to the KRX prior close as a price.
+    """
     try:
         snapshot = await market_data_service.get_orderbook(symbol, "kr", venue="nxt")
     except Exception as exc:
         logger.warning("NXT quote overlay failed for %s: %s", symbol, exc)
         return None
-
-    price, price_source, as_of = _nxt_price_from_orderbook(snapshot)
-    if price is None or price_source is None:
+    if snapshot.is_empty_book:
         return None
 
+    price_session, session_start_time = kr_quote_price.nxt_price_session(session)
+    now = _current_kst_datetime()
+    session_start: datetime.datetime | None = None
+    trade: kr_quote_price.LastTrade | None = None
+    if price_session is not None and session_start_time is not None:
+        session_start = datetime.datetime.combine(
+            now.date(), session_start_time, tzinfo=_KST
+        )
+        trade = await _fetch_venue_last_trade(
+            symbol,
+            venue="nxt",
+            kis_market_code=snapshot.kis_market_code or "NX",
+        )
+
+    book = kr_quote_price.VenueBook(
+        venue="nxt",
+        best_bid=snapshot.bids[0].price if snapshot.bids else None,
+        best_ask=snapshot.asks[0].price if snapshot.asks else None,
+        observed_at=snapshot.as_of,
+        expected_price=snapshot.expected_price,
+    )
+    selection = kr_quote_price.select_kr_price(
+        session=price_session,
+        session_start=session_start,
+        now=now,
+        venue_books={"nxt": book},
+        last_trades={"nxt": trade} if trade is not None else {},
+        primary_venue="nxt",
+    )
+    trade_used = selection.price_kind == kr_quote_price.PRICE_KIND_LAST_TRADE
     overlay: dict[str, Any] = {
-        "price": price,
+        "price": selection.price,
+        "price_kind": selection.price_kind,
+        "price_session": selection.price_session,
+        "expected_price": selection.expected_price,
+        "expected_price_venue": selection.expected_price_venue,
+        "venues": selection.venues,
         "session": session,
         "venue": snapshot.venue or "nxt",
-        "price_source": price_source,
-        "price_as_of": as_of.isoformat() if as_of is not None else None,
-        "price_as_of_source": snapshot.price_as_of_source,
+        "price_source": _NXT_PRICE_SOURCE_BY_KIND.get(selection.price_kind),
+        "price_as_of": selection.price_as_of.isoformat()
+        if selection.price_as_of is not None
+        else None,
+        "price_as_of_source": "broker" if trade_used else snapshot.price_as_of_source,
     }
+    if selection.reason is not None:
+        overlay["price_kind_reason"] = selection.reason
     if snapshot.venue_label is not None:
         overlay["venue_label"] = snapshot.venue_label
     if snapshot.kis_market_code is not None:
@@ -661,7 +731,40 @@ async def _apply_nxt_quote_overlay(
         quote.get("price_as_of"),
         require_trading_date=True,
     )
+    if quote.get("price_kind") == kr_quote_price.PRICE_KIND_EXPECTED:
+        # hk 6498: an expected price is a representative price only in an auction.
+        # It is never an order basis, so it is marked unusable whatever its time.
+        quote.update(
+            {
+                "is_stale_price": True,
+                "price_freshness": "unavailable",
+                "price_usable": False,
+                "price_unavailable_reason": kr_quote_price.REASON_EXPECTED_NOT_ORDER_BASIS,
+            }
+        )
     return True
+
+
+def _with_base_price_kind(quote: dict[str, Any], data_state: str) -> dict[str, Any]:
+    """hk 6498: label the KRX base price without changing any existing key.
+
+    A fresh regular-session quote carries the KIS daily-chart close, which is the
+    last trade of the session. Other states carry no live price kind.
+    """
+    if "price_kind" in quote:
+        return quote
+    if data_state == DATA_STATE_FRESH:
+        quote["price_kind"] = kr_quote_price.PRICE_KIND_LAST_TRADE
+        quote["price_session"] = kr_quote_price.PRICE_SESSION_REGULAR
+        return quote
+    quote["price_kind"] = kr_quote_price.PRICE_KIND_UNAVAILABLE
+    quote["price_session"] = None
+    quote["price_kind_reason"] = (
+        "premarket_unavailable"
+        if data_state == DATA_STATE_PREMARKET_UNAVAILABLE
+        else "krx_market_closed"
+    )
+    return quote
 
 
 def _price_as_of_kind(as_of: Any) -> str:
@@ -1885,14 +1988,15 @@ async def _get_quote_impl(
         if data_state == DATA_STATE_PREMARKET_UNAVAILABLE:
             # hk 6300: before the KRX open only NXT-tradable symbols may take the
             # NXT orderbook price; everything else is carried and unusable.
-            return await _kr_premarket_quote(
+            premarket_quote = await _kr_premarket_quote(
                 symbol, quote, nxt_tradable=quote.get("nxt_tradable") is True
             )
+            return _with_base_price_kind(premarket_quote, data_state)
         if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
             return quote
 
         quote["data_state"] = data_state
-        return quote
+        return _with_base_price_kind(quote, data_state)
     except Exception as exc:
         return _error_payload_from_exception(
             source=source,

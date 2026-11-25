@@ -658,6 +658,17 @@ CLI `fetch`/`build`/`evaluate`/`forward`/`score`는 수동이다. ML 의존성�
 
 `get_quote`의 KR 응답은 KRX 정규장 개장(09:00 KST) 전(`data_state: premarket_unavailable`)에 전일 이월 봉을 쓴다. 이때 `open`/`high`/`low`는 `krx_ohlcv_basis: "carried_previous_close"`로 표시하고 `volume`/`value`는 `null`로 둔다(0 체결 수로 읽지 않는다). NXT 호가를 가격으로 쓰는 것은 `nxt_tradable: true`인 종목뿐이며, 그 경우 `nxt_trade_state: "no_trade_observed"`를 남긴다. 그 밖의 종목은 `price_usable: false`다. 날짜만 있는 `price_as_of`(KST 자정, 일봉 날짜)는 장전 경로에서 fresh가 아니며 `price_as_of_kind: "date_only"`와 `price_unavailable_reason: "date_only_price_asof"`를 준다. 정규장 KR 응답의 형태는 바뀌지 않았다. 이 필드를 읽는 앱 내부 소비자는 `order_preflight`(`price_freshness`가 `fresh`가 아니면 거부, 키움 모의 경로 `kiwoom_mock_place`·`orders_kiwoom_variants`가 공급)와 `auto_approve_price_fallback`(`is_stale_price`·`data_state`)이다.
 
+### KR get_quote 가격 종류 (hk 6498)
+
+KR `get_quote`의 대표가(`price`)는 `price_kind`로 어떤 근거인지 밝힌다: `last_trade`(세션 안 마지막 체결), `mid`(양쪽 호가가 모두 있는 중간가), `expected`(예상체결가, 동시호가 구간에서만), `unavailable`(판단 불가, 사유 `price_kind_reason`). 예상체결가는 **연속매매 중에는 대표가가 되지 않는다**(장전 NXT `nxt_pre`, NXT 애프터 `nxt_post`, KRX 애프터 포함). 한쪽 호가만 있으면 가격이 아니다. 세션을 알 수 없으면 `unavailable`이며 추측하지 않는다.
+
+- 예상체결가는 항상 `expected_price`(와 `expected_price_venue`) 필드에 따로 남는다. 같은 값이 `price`로 복사되는 것은 `price_kind=expected`(동시호가)뿐이다.
+- `venues`는 읽은 시장마다 `best_bid`·`best_ask`·`observed_at`(호가 시각)·`expected_price`와, 체결이 있으면 `last_trade_price`·`last_trade_at`을 싣는다. 현재 `get_quote`는 NXT 호가만 읽으므로 `venues`에는 `nxt`만 나온다.
+- 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:30 KST) 이후이면서 현재 시각 이전이어야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다.
+- `price_kind`가 `expected`이면 `is_stale_price: true`, `price_freshness: "unavailable"`, `price_usable: false`, `price_unavailable_reason: "expected_price_not_order_basis"`다. 주문 근거로 쓰지 않는다. `order_preflight`(키움 모의 `fetch_kr_quote_for_preflight`)와 `auto_approve_price_fallback`(`classify_kis_quote`)은 이 값을 거부한다.
+- 정규장 KRX 기본 경로(`data_state: fresh`, NXT 오버레이 없음)는 `price_kind: "last_trade"`, `price_session: "regular"`를 더한다. 그 밖의 기본 경로(장전·장마감)는 `price_kind: "unavailable"`과 사유 `premarket_unavailable` 또는 `krx_market_closed`를 더한다. 다른 키의 값과 형태는 그대로다.
+- 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. NXT 마지막 체결은 KIS `inquire-price`를 `FID_COND_MRKT_DIV_CODE=NX`로 한 번 더 읽어 얻는다(`[unverified]` 장후 응답의 시장 코드와 체결 시각 필드는 운영자 스모크로 확인한다). 읽기가 실패하면 체결 없음으로 보고 `mid`로 내려간다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
