@@ -847,10 +847,19 @@ class TestUsMomentumCandidates:
             rank=1,
             change_rate=Decimal("-1"),
             volume=42,
-            trade_value=Decimal("750000"),
+            trade_value=Decimal("100000"),
             asset_type="common_stock",
             first_received_at=None,
             snapshot_at=captured,
+        )
+        later_row = SimpleNamespace(
+            **{
+                **vars(row),
+                "rank": 2,
+                "trade_value": Decimal("750000"),
+                "first_received_at": captured + dt.timedelta(minutes=5),
+                "snapshot_at": captured + dt.timedelta(minutes=5),
+            }
         )
 
         class _FakeRepo:
@@ -858,7 +867,7 @@ class TestUsMomentumCandidates:
                 pass
 
             async def list_us_momentum_events(self, *, trading_date):
-                return [row]
+                return [row, later_row]
 
             async def list_us_momentum_run_statuses(self, *, trading_date):
                 return []
@@ -884,7 +893,31 @@ class TestUsMomentumCandidates:
         )
 
         assert [item["symbol"] for item in result["items"]] == ["DELL"]
+        assert result["items"][0]["best_rank"] == 1
         assert result["source_statuses"][0]["source"] == "alpaca_screener"
         assert {s["status"] for s in result["source_statuses"][0]["surfaces"]} == {
+            "not_collected"
+        }
+        ranking = result["items"][0]["rankings"][0]
+        assert ranking["best_rank"] == 1
+        assert ranking["dollar_volume"] == "750000"
+        assert ranking["dollar_volume_at"] == (
+            (captured + dt.timedelta(minutes=5)).isoformat()
+        )
+
+        active_result = await mod.get_momentum_candidates_impl(
+            market="us", date="2026-11-25", side="active"
+        )
+        active_statuses = {
+            entry["source"]: entry["surfaces"]
+            for entry in active_result["source_statuses"]
+        }
+        assert {
+            entry["status"] for entry in active_statuses["kis_overseas_ranking"]
+        } == {"unsupported"}
+        assert {entry["status"] for entry in active_statuses["benzinga_pro"]} == {
+            "unsupported"
+        }
+        assert {entry["status"] for entry in active_statuses["alpaca_screener"]} == {
             "not_collected"
         }

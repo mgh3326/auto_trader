@@ -18,6 +18,11 @@ _ET = ZoneInfo("America/New_York")
 _US_SOURCES = ("kis_overseas_ranking", "alpaca_screener", "benzinga_pro")
 _US_SESSIONS = ("us_pre", "us_regular", "us_post")
 _US_SIDES = ("up", "down", "active")
+_US_SIDES_BY_SOURCE = {
+    "kis_overseas_ranking": ("up", "down"),
+    "alpaca_screener": _US_SIDES,
+    "benzinga_pro": ("up", "down"),
+}
 
 
 def _candidate_to_dict(candidate) -> dict[str, Any]:
@@ -146,19 +151,34 @@ def _us_collection_statuses(
     statuses = []
     for source_name in sources:
         surfaces = []
+        supported_sides = _US_SIDES_BY_SOURCE[source_name]
+        source_sides = (
+            sides
+            if len(sides) == 1 and sides[0] not in supported_sides
+            else tuple(side_name for side_name in sides if side_name in supported_sides)
+        )
         for session_name in sessions:
-            for side_name in sides:
+            for side_name in source_sides:
                 surface = f"us:{source_name}:{session_name}:{side_name}"
                 run = latest_by_surface.get(surface)
+                status = (
+                    "unsupported"
+                    if side_name not in supported_sides
+                    else run.status
+                    if run
+                    else "not_collected"
+                )
                 surfaces.append(
                     {
                         "session": session_name,
                         "side": side_name,
-                        "status": run.status if run else "not_collected",
-                        "reason": run.reason if run else None,
+                        "status": status,
+                        "reason": run.reason
+                        if run and status != "unsupported"
+                        else None,
                         "latest_run_at": (
                             run.snapshot_at.astimezone(dt.UTC).isoformat()
-                            if run
+                            if run and status != "unsupported"
                             else None
                         ),
                     }
@@ -218,10 +238,27 @@ async def _get_us_momentum_candidates(
         observation = by_surface.get(key)
         captured_at = row.first_received_at or row.snapshot_at
         if observation is None:
-            by_surface[key] = {"best": row, "first_captured_at": captured_at}
+            by_surface[key] = {
+                "best": row,
+                "first_captured_at": captured_at,
+                "max_dollar_volume": row.trade_value,
+                "max_dollar_volume_at": captured_at
+                if row.trade_value is not None
+                else None,
+            }
             continue
         if captured_at < observation["first_captured_at"]:
             observation["first_captured_at"] = captured_at
+        if row.trade_value is not None and (
+            observation["max_dollar_volume"] is None
+            or row.trade_value > observation["max_dollar_volume"]
+            or (
+                row.trade_value == observation["max_dollar_volume"]
+                and captured_at < observation["max_dollar_volume_at"]
+            )
+        ):
+            observation["max_dollar_volume"] = row.trade_value
+            observation["max_dollar_volume_at"] = captured_at
         previous = observation["best"]
         if (
             row.rank,
@@ -236,10 +273,16 @@ async def _get_us_momentum_candidates(
 
     candidates = []
     for symbol, observations in grouped.items():
+        if minimum is not None and not any(
+            observation["max_dollar_volume"] is not None
+            and observation["max_dollar_volume"] >= minimum
+            for observation in observations.values()
+        ):
+            continue
         rankings = []
         for (row_source, row_session, row_side), observation in observations.items():
             row = observation["best"]
-            dollar_volume = row.trade_value
+            dollar_volume = observation["max_dollar_volume"]
             rankings.append(
                 {
                     "source": row_source,
@@ -249,6 +292,7 @@ async def _get_us_momentum_candidates(
                     "session": row_session,
                     "side": row_side,
                     "best_rank": row.rank,
+                    "rank_observed_at": row.snapshot_at.astimezone(dt.UTC).isoformat(),
                     "change_rate": (
                         float(row.change_rate) if row.change_rate is not None else None
                     ),
@@ -256,18 +300,19 @@ async def _get_us_momentum_candidates(
                     "dollar_volume": (
                         str(dollar_volume) if dollar_volume is not None else None
                     ),
+                    "dollar_volume_at": (
+                        observation["max_dollar_volume_at"]
+                        .astimezone(dt.UTC)
+                        .isoformat()
+                        if observation["max_dollar_volume_at"] is not None
+                        else None
+                    ),
                     "asset_type": row.asset_type,
                     "first_captured_at": (
                         observation["first_captured_at"].astimezone(dt.UTC).isoformat()
                     ),
                 }
             )
-        if minimum is not None and not any(
-            item["dollar_volume"] is not None
-            and Decimal(item["dollar_volume"]) >= minimum
-            for item in rankings
-        ):
-            continue
         rankings.sort(
             key=lambda item: (
                 item["best_rank"],

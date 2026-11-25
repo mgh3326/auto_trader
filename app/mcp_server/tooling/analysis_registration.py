@@ -112,6 +112,8 @@ def register_analysis_tools(
     @mcp.tool(
         name="get_momentum_candidates",
         description=(
+            "일반 필터 후보 탐색에는 screen_stocks 또는 screen_stocks_snapshot을, "
+            "단순 시장 순위에는 get_top_stocks를 사용하세요. "
             "저장된 관측만 읽습니다. market='kr'는 네이버 국내주식 급등 조기 포착 후보를 "
             "기존 점수로 반환하고, market='us'는 오늘 ET 거래일의 KIS 해외 순위, "
             "Alpaca 스크리너, 시험 출처 Benzinga Pro 상승·하락·활발 종목을 반환합니다. "
