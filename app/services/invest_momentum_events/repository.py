@@ -395,6 +395,45 @@ class InvestMomentumEventSnapshotsRepository:
         candidates.sort(key=lambda item: (-item.score, item.symbol))
         return candidates[:limit]
 
+    async def list_us_momentum_events(
+        self, *, trading_date: dt.date
+    ) -> list[InvestMomentumEventSnapshot]:
+        """Return today's non-excluded US observations for read-only MCP views."""
+        stmt = (
+            select(InvestMomentumEventSnapshot)
+            .where(
+                InvestMomentumEventSnapshot.market == "us",
+                InvestMomentumEventSnapshot.trading_date == trading_date,
+                InvestMomentumEventSnapshot.order_type != "excluded",
+            )
+            .order_by(
+                InvestMomentumEventSnapshot.rank.asc(),
+                InvestMomentumEventSnapshot.symbol.asc(),
+                InvestMomentumEventSnapshot.surface.asc(),
+                InvestMomentumEventSnapshot.snapshot_at.asc(),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_us_momentum_run_statuses(
+        self, *, trading_date: dt.date
+    ) -> list[InvestMomentumEventRun]:
+        """Return today's US surfaces newest first, for explicit collection status."""
+        stmt = (
+            select(InvestMomentumEventRun)
+            .where(
+                InvestMomentumEventRun.trading_date == trading_date,
+                InvestMomentumEventRun.surface.startswith("us:", autoescape=True),
+            )
+            .order_by(
+                InvestMomentumEventRun.snapshot_at.desc(),
+                InvestMomentumEventRun.surface.asc(),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_theme_events(
         self,
         *,

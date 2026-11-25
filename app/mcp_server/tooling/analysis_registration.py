@@ -112,24 +112,33 @@ def register_analysis_tools(
     @mcp.tool(
         name="get_momentum_candidates",
         description=(
-            "Use for KR-only intraday 급등 early-catch scoring; for general filtered "
-            "discovery use screen_stocks or screen_stocks_snapshot, and for simple "
-            "market rankings use get_top_stocks. Read-only early-catch candidates "
-            "for 급등 Korean stocks from persisted "
-            "Naver Stock momentum snapshots. Scores cross-surface signals such as "
-            "searchTop, quantTop, up, priceTop, KRX/NXT confirmation, rank deltas, "
-            "and theme leadership. Does not fetch Naver or mutate broker/order state."
+            "일반 필터 후보 탐색에는 screen_stocks 또는 screen_stocks_snapshot을, "
+            "단순 시장 순위에는 get_top_stocks를 사용하세요. "
+            "저장된 관측만 읽습니다. market='kr'는 네이버 국내주식 급등 조기 포착 후보를 "
+            "기존 점수로 반환하고, market='us'는 오늘 ET 거래일의 KIS 해외 순위, "
+            "Alpaca 스크리너, 시험 출처 Benzinga Pro 상승·하락·활발 종목을 반환합니다. "
+            "US 조회는 session, side, source, min_dollar_volume, limit으로 필터링할 수 "
+            "있으며 출처별 수집 상태도 포함합니다. 네이버·브로커 요청이나 주문 상태 변경은 없습니다."
         ),
     )
     async def get_momentum_candidates(
         market: str = "kr",
         date: str | None = None,
         limit: int = 20,
+        session: Literal["us_pre", "us_regular", "us_post"] | None = None,
+        side: Literal["up", "down", "active"] | None = None,
+        source: Literal["kis_overseas_ranking", "alpaca_screener", "benzinga_pro"]
+        | None = None,
+        min_dollar_volume: float | None = None,
     ) -> dict[str, Any]:
         return await get_momentum_candidates_impl(
             market=market,
             date=date,
             limit=limit,
+            session=session,
+            side=side,
+            source=source,
+            min_dollar_volume=min_dollar_volume,
         )
 
     @mcp.tool(
