@@ -24,6 +24,7 @@ Downgrade refuses when ``us`` rows exist: they violate the restored ``kr``-only
 CHECK, and silently deleting observations is not a downgrade.
 """
 
+# expand-contract: contract-step 6510
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -55,10 +56,12 @@ def upgrade() -> None:
     op.add_column(TABLE, sa.Column("field_reasons", postgresql.JSONB(), nullable=True))
     op.drop_constraint(MARKET_CHECK, TABLE, type_="check")
     op.drop_constraint(SOURCE_CHECK, TABLE, type_="check")
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {MARKET_CHECK} "
         "CHECK (market IN ('kr', 'us')) NOT VALID"
     )
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {SOURCE_CHECK} "
         "CHECK (source IN ('naver_stock', 'alpaca_screener', "
@@ -73,6 +76,7 @@ def upgrade() -> None:
     # the closed reason vocabulary of the status row grows by that one value. The
     # runs table holds one day of a manual job, so the ADD scans it directly.
     op.drop_constraint(RUNS_CHECK, RUNS_TABLE, type_="check")
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} CHECK ("
         "(status = 'ok' AND reason IS NULL AND row_count > 0)"
@@ -98,6 +102,7 @@ def downgrade() -> None:
     )
     op.drop_index(INDEX, table_name=TABLE)
     op.drop_constraint(RUNS_CHECK, RUNS_TABLE, type_="check")
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {RUNS_TABLE} ADD CONSTRAINT {RUNS_CHECK} CHECK ("
         "(status = 'ok' AND reason IS NULL AND row_count > 0)"
@@ -111,6 +116,7 @@ def downgrade() -> None:
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {MARKET_CHECK} CHECK (market = 'kr')"
     )
+    # expand-contract: contract-step 6510
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {SOURCE_CHECK} "
         "CHECK (source = 'naver_stock')"
