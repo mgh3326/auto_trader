@@ -186,8 +186,10 @@ tests/services/fnguide_consensus/test_cli.py
 tests/services/fnguide_consensus/test_client.py
 tests/services/fnguide_consensus/test_collector.py
 tests/services/fnguide_consensus/test_fnguide_db.py
+tests/services/fnguide_consensus/test_migration.py
 tests/services/fnguide_consensus/test_parser.py
 tests/services/fnguide_consensus/test_query.py
+tests/services/fnguide_consensus/test_sink.py
 tests/services/fnguide_consensus/test_static_boundary.py
 tests/services/fnguide_consensus/test_writer.py
 tests/services/funding_advisory/test_containment.py

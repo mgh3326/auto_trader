@@ -1,8 +1,11 @@
 """hk 6508: FnGuide public CompanyInfo snapshots (consensus, invest, finance).
 
-Revision ID: 20261125_hk6508_fnguide_snapshots
+Revision ID: 20261125_hk6508_fnguide
 Revises: 20261125_hk6036_upbit_shadow
 Create Date: 2026-11-25
+
+Revision ids must fit alembic_version.version_num, which is VARCHAR(32); this id is
+23 characters.
 
 Additive. Three new tables, no existing object is touched:
 
@@ -29,7 +32,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "20261125_hk6508_fnguide_snapshots"
+revision: str = "20261125_hk6508_fnguide"
 down_revision: str | Sequence[str] | None = "20261125_hk6036_upbit_shadow"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

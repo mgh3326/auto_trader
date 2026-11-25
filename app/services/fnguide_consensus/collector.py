@@ -26,6 +26,20 @@ from app.services.fnguide_consensus.parser import (
 PageSink = Callable[[ParsedPage], Awaitable[None]]
 
 
+class SinkAborted(RuntimeError):
+    """The sink gave up (for example after consecutive write failures).
+
+    ``partial`` carries the :class:`CollectResult` gathered before the abort, so the
+    caller can still report it. The pending fetch tasks are cancelled, so a database
+    outage stops the scraping instead of running out the clock.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.partial: CollectResult | None = None
+
+
 @dataclass(frozen=True)
 class PageFailure:
     symbol: str
@@ -114,7 +128,11 @@ async def collect_pages(
                 continue
             result.summaries.append(summarize_page(outcome))
             if on_parsed is not None:
-                await on_parsed(outcome)
+                try:
+                    await on_parsed(outcome)
+                except SinkAborted as aborted:
+                    aborted.partial = result
+                    raise
     finally:
         for task in tasks:
             if not task.done():

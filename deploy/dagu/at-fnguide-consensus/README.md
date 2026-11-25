@@ -2,7 +2,7 @@
 
 Copy, NOT registered. The repository does not register this DAG; the design
 session registers it after the PR merges and the migration
-`20261125_hk6508_fnguide_snapshots` is applied.
+`20261125_hk6508_fnguide` is applied.
 
 - Source: public `wcomp.fnguide.com/CompanyInfo/{Consensus,Invest,Finance}`
   (operator decision `decision/2026-11-25/at-public-scraping-fnguide`).

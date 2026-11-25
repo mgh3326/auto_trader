@@ -845,6 +845,7 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 - **유니버스·실행**: 기본 대상은 `kr_symbol_universe`의 활성 KOSPI·KOSDAQ 중 `security_type='STOCK'`이다. 수동 CLI `uv run python -m scripts.collect_fnguide_consensus [--symbols …|--limit N] [--pages …] [--dry-run|--commit]`이며 기본은 dry-run이다. `--symbols`를 주면 DB를 열지 않는다. 스케줄은 `deploy/dagu/at-fnguide-consensus/`의 사본이며 저장소가 등록하지 않는다.
 - **테스트**: `tests/services/fnguide_consensus/`(저장된 HTML 픽스처 005930·000660·028300·005930 invest, 네트워크 없음), DB 왕복은 CI(`test_fnguide_db.py`). 정적 테스트가 패키지의 주문·브로커·MCP·승인 모듈 import가 없음을 고정한다.
 - **운영 주의**: 원시 JSON 보관량은 종목·페이지·일 단위로 늘어난다. 보존 기간 정책은 이 PR 범위 밖이며 운영자 결정 대상이다.
+- **쓰기 실패 분류**: 일시 오류(OperationalError, 연결 무효화, SQLSTATE 40001/40P01)만 2회까지 재시도한다. 재시도는 writer 가 세 자연키 `ON CONFLICT DO NOTHING` 이라 안전하다. 그 밖의 오류(무결성·CHECK)는 즉시 기록한다. 연속 5회 쓰기 실패면 수집을 멈추고(대기 중인 가져오기 취소) 종료 코드 1 로 끝나며, 그때까지 쓴 행은 남는다. 유니버스는 `cmp_cd` 로 쓸 수 있는 6자리 숫자 코드만 받고, 그 밖의 행은 제외 수를 보고서에 남긴다.
 
 ### Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
 

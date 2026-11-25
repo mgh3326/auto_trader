@@ -86,3 +86,29 @@ async def test_a_sink_failure_stops_the_run_only_through_the_caller() -> None:
         await collect_pages(
             FakeClient({}), ["005930"], ("Consensus",), OBSERVED, on_parsed=sink
         )
+
+
+@pytest.mark.asyncio
+async def test_sink_abort_cancels_remaining_fetches_and_keeps_the_partial_result() -> (
+    None
+):
+    from app.services.fnguide_consensus.collector import SinkAborted
+
+    calls = 0
+
+    async def sink(parsed) -> None:
+        nonlocal calls
+        calls += 1
+        raise SinkAborted("consecutive_write_failures")
+
+    with pytest.raises(SinkAborted) as excinfo:
+        await collect_pages(
+            FakeClient({}),
+            ["005930", "000660"],
+            ("Consensus",),
+            OBSERVED,
+            on_parsed=sink,
+        )
+    assert excinfo.value.reason == "consecutive_write_failures"
+    assert excinfo.value.partial is not None
+    assert calls == 1
