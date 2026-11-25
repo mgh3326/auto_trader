@@ -107,13 +107,17 @@ construction: `_reconcile_one_toss_row` in
 `filled_qty` under that lock, and books only `delta = broker_cum -
 filled_qty` when it is positive).
 
-Row actions that write nothing and need no operator step:
+Row actions that book nothing:
 
-| `action` | Meaning |
-|---|---|
-| `skipped_row_locked` | Another transaction holds the ledger row. The next pass books what is still unbooked. |
-| `noop_stale_evidence` | Another pass already booked past this pass's broker evidence. |
-| `noop_terminal` | The row is already `expired` and there is nothing new to book. |
+| `action` | Meaning | Operator step |
+|---|---|---|
+| `skipped_row_locked` | Another transaction holds the ledger row. The next pass books what is still unbooked. | none |
+| `noop_stale_evidence` | Another pass already booked past this pass's broker evidence. | none |
+| `noop_stale_evidence` with `requires_manual_review` (`reason_code: evidence_contradiction`) | No other pass moved the row, and the broker reports less filled quantity than is booked. The row stays open; `last_reconcile_error` records it. | check the Toss order detail |
+| `noop_terminal` | The row is already `expired` and there is nothing new to book. | none |
+
+`scripts.toss_live_auto_reconcile --apply` counts these rows as not clean and
+exits 3.
 
 **3. Verification query** (run against the DB the process pointed at):
 

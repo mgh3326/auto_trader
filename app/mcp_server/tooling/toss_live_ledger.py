@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
 
 import httpx
@@ -53,6 +53,8 @@ from app.services.toss_execution_ledger import (
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 _TOSS_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us"}
+# review.toss_live_order_ledger.filled_qty is Numeric(20, 8).
+_FILLED_QTY_STEP = Decimal("0.00000001")
 
 logger = logging.getLogger(__name__)
 
@@ -635,19 +637,33 @@ async def _reconcile_one_toss_row(
             # runs this kernel.  The next pass books what is still unbooked.
             base["action"] = "skipped_row_locked"
             return base
+        scanned = already
         already = locked.filled_qty or Decimal("0")
         delta = broker_cum - already
         base["delta_qty"] = float(delta)
-        if delta < 0:
-            # Another pass already booked past this evidence.  Writing it would
-            # move filled_qty backwards and book the difference a second time.
+        # Compared at the column's scale: a longer broker quantity that the
+        # column rounded up is not older evidence.
+        if broker_cum.quantize(_FILLED_QTY_STEP, rounding=ROUND_HALF_UP) < already:
+            # Writing this evidence would move filled_qty backwards and book
+            # the difference a second time.
             base["action"] = "noop_stale_evidence"
+            if already == scanned:
+                # No other pass moved the row, so the broker itself reports
+                # less than is booked: a person has to look.
+                detail = f"broker filled {broker_cum} is below booked {already}"
+                base["requires_manual_review"] = True
+                base["reason_code"] = "evidence_contradiction"
+                base["reason"] = detail
+                await svc.record_transient_reconcile_error(
+                    ledger_id=row.id,
+                    error={"reason_code": "evidence_contradiction", "detail": detail},
+                )
             return base
-        if delta == 0 and locked.status in _TOSS_TERMINAL_LEDGER_STATUSES:
+        if delta <= 0 and locked.status in _TOSS_TERMINAL_LEDGER_STATUSES:
             base["action"] = "noop_terminal"
             return base
 
-        if delta == 0:
+        if delta <= 0:
             await svc.update_reconcile_outcome(
                 ledger_id=row.id,
                 status=evidence.local_status,

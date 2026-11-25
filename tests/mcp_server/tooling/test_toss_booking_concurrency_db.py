@@ -348,7 +348,26 @@ async def test_older_evidence_never_moves_booked_progress_backwards(order):
     older = await _pass(older_row, cum="1")
 
     assert older["action"] == "noop_stale_evidence"
+    # The row moved under this pass: an ordinary race, nothing to review.
+    assert "requires_manual_review" not in older
     await _assert_booked_exactly_once(target)
+
+
+async def test_broker_reporting_less_than_booked_is_flagged_not_written(order):
+    target = await order("buy")
+    assert (await _pass(await _scan(target.order_id), cum="2"))["action"] == "booked"
+
+    lower = await _pass(await _scan(target.order_id), cum="1")
+
+    assert lower["action"] == "noop_stale_evidence"
+    assert lower["requires_manual_review"] is True
+    assert lower["reason_code"] == "evidence_contradiction"
+    state = await _booked(target)
+    assert state.ledger.status == "partial"
+    assert state.ledger.filled_qty == Decimal("2")
+    assert state.ledger.last_reconcile_error["reason_code"] == "evidence_contradiction"
+    assert len(state.journals) == 1
+    assert len(state.fills) == 1
 
 
 async def test_row_expired_by_another_pass_is_not_reopened(order):
