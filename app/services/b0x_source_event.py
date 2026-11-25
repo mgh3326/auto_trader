@@ -74,7 +74,6 @@ class B0XConsumerContractError(ValueError):
     """The supplied event violates the fail-closed source-event contract."""
 
 
-
 def _payload(event: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     if set(event) != {"type", "owner_lane", "event_id", "text"}:
         raise B0XConsumerContractError(
