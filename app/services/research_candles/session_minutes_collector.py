@@ -300,6 +300,40 @@ class SqlMinuteWriter:
         self._session = session
         self._statement = _KR_INSERT if market == "kr" else _US_INSERT
 
+    async def insert_one(
+        self,
+        bar: MinuteBar,
+        *,
+        batch_id: str,
+        retrieved_at: datetime,
+    ) -> bool:
+        """Insert one bar and return whether a row was created.
+
+        No commit: the caller owns the transaction (hk 6343's HTTP ingest wraps
+        each bar in its own savepoint so one refused row cannot discard the
+        rest of the batch).
+        """
+        outcome = await self._session.execute(
+            self._statement,
+            {
+                "time_utc": bar.time_utc,
+                "session_date": bar.session_date,
+                "symbol": bar.symbol,
+                "venue": bar.venue,
+                "session_segment": bar.session_segment,
+                "source": bar.source,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "value": bar.value,
+                "retrieved_at": retrieved_at,
+                "batch_id": batch_id,
+            },
+        )
+        return (getattr(outcome, "rowcount", 0) or 0) > 0
+
     async def insert(
         self,
         bars: Sequence[MinuteBar],
@@ -310,26 +344,10 @@ class SqlMinuteWriter:
         inserted = 0
         try:
             for bar in bars:
-                outcome = await self._session.execute(
-                    self._statement,
-                    {
-                        "time_utc": bar.time_utc,
-                        "session_date": bar.session_date,
-                        "symbol": bar.symbol,
-                        "venue": bar.venue,
-                        "session_segment": bar.session_segment,
-                        "source": bar.source,
-                        "open": bar.open,
-                        "high": bar.high,
-                        "low": bar.low,
-                        "close": bar.close,
-                        "volume": bar.volume,
-                        "value": bar.value,
-                        "retrieved_at": retrieved_at,
-                        "batch_id": batch_id,
-                    },
+                created = await self.insert_one(
+                    bar, batch_id=batch_id, retrieved_at=retrieved_at
                 )
-                inserted += 1 if (getattr(outcome, "rowcount", 0) or 0) > 0 else 0
+                inserted += 1 if created else 0
             await self._session.commit()
         except Exception:
             await self._session.rollback()

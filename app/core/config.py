@@ -1085,6 +1085,26 @@ class Settings(BaseSettings):
     SESSION_MINUTES_BUDGET_FIXED: int = 50
     SESSION_MINUTES_BUDGET_INTRADAY: int = 40
     SESSION_MINUTES_BUDGET_SCREENER: int = 60
+    # hk 6343 — research 분봉 HTTP ingest(Go 수집기 → auto_trader)와 수집 대상
+    # 읽기 엔드포인트. 기본 off 이며 정확히 "true" 일 때만 열린다. 게이트가 꺼져
+    # 있으면 어떤 경로든 DB 접근 전에 404 다. 토큰이 비어 있으면 403, 틀리면 401
+    # 이며 세션 쿠키로 대체할 수 없다. 값은 로그·응답에 남기지 않는다.
+    RESEARCH_MINUTES_INGEST_ENABLED: bool = False
+    RESEARCH_MINUTES_INGEST_TOKEN: str = ""
+    RESEARCH_MINUTES_INGEST_TOKEN_HEADER: str = "X-Research-Minutes-Ingest-Token"
+
+    @field_validator("RESEARCH_MINUTES_INGEST_ENABLED", mode="before")
+    @classmethod
+    def _exact_true_research_minutes_gate(cls, value: object) -> bool:
+        """Only exactly ``"true"`` (or a real bool) opens the gate.
+
+        pydantic's bool coercion accepts ``1`` / ``yes`` / ``on`` / ``TRUE``;
+        the contract says the surface opens only on exactly ``"true"``.
+        """
+        if isinstance(value, bool):
+            return value
+        return isinstance(value, str) and value == "true"
+
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""

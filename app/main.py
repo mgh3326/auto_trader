@@ -67,6 +67,7 @@ from app.routers import (
     order_previews,
     portfolio_actions,
     preopen,
+    research_minutes_ingest,
     research_pipeline,
     research_reports,
     research_retrospective,
@@ -247,6 +248,10 @@ def create_app() -> FastAPI:
     app.include_router(news_issues.router)
     app.include_router(alpaca_paper_ledger.router)
     app.include_router(execution_ledger_ingest.router)
+    # hk 6343 — research minute-bar ingest + target read. Always mounted; the
+    # AuthMiddleware gate answers 404 (DB untouched) unless
+    # RESEARCH_MINUTES_INGEST_ENABLED is exactly true.
+    app.include_router(research_minutes_ingest.router)
     app.include_router(market_calendar.router)
     app.include_router(market_events.router)
     app.include_router(mock_auto_read_model.router)
