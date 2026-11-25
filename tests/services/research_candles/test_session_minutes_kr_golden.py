@@ -20,8 +20,11 @@ from app.services.research_candles import session_minutes_collector as sc
 pytestmark = pytest.mark.unit
 
 NOW = datetime(2026, 11, 24, 1, 0, tzinfo=UTC)
-GOLDEN = Path(__file__).resolve().parents[2] / "fixtures" / "session_minutes" / (
-    "kr_targets_golden.json"
+GOLDEN = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "session_minutes"
+    / ("kr_targets_golden.json")
 )
 
 
