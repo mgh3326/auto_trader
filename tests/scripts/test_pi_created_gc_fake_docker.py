@@ -80,7 +80,9 @@ def _setup_state(tmp_path: Path) -> Path:
     return state
 
 
-def _run(state: Path, *args: str, ps_fail: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(
+    state: Path, *args: str, ps_fail: bool = False
+) -> subprocess.CompletedProcess[str]:
     env = dict(
         os.environ,
         PATH=f"{state.parent / 'bin'}{os.pathsep}{os.environ['PATH']}",
