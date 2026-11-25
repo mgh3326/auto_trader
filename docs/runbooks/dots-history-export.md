@@ -428,8 +428,8 @@ external AI to MCP is an operator decision that this export does not make.
 | Exposes | Holdings, Toss positions, cash balance, orderable cash, order history for KIS and Toss, Kiwoom mock positions, cash and order history | Market data, screening, analysis, policy, briefing, holdings, Toss positions, journal, forecast and retrospective reads, and order history for each broker |
 | Order tools | None: place, modify, cancel, preview and reconcile are not registered | None: the same tools are not registered |
 | Writes | None | **Some:** `analysis_artifact_save`, `forecast_save`, `session_context_append`, and side effects such as `get_news` storing articles and `screen_stocks_enrich` filling sectors |
-| Token at startup | Required in every transport | Not required by the profile's startup check; the NCP deployment supplies `MCP_ANALYSIS_READONLY_AUTH_TOKEN` |
-| NCP endpoint | `http://100.122.100.56:8769/mcp` | `http://100.122.100.56:8768/mcp` |
+| Token at startup | Required in every transport | Not required by the profile's startup check; the retired NCP deployment supplied `MCP_ANALYSIS_READONLY_AUTH_TOKEN` |
+| Endpoint (retired, ROB-1436) | `http://100.122.100.56:8769/mcp` (retired) | `http://100.122.100.56:8768/mcp` (retired) |
 
 The tool lists are in `app/mcp_server/tooling/account_read_registration.py` and
 `app/mcp_server/tooling/analysis_readonly_registration.py`. See also

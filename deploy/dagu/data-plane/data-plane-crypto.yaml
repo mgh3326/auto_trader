@@ -1,6 +1,6 @@
 # Dagu DAG for the point-in-time data plane (ROB-1443). REGISTERED on the OCI
-# Dagu coordinator and run on the NCP worker (hk:doc report/2026-11-10/
-# ncp-schedule-inventory §4). Registering or editing a DAG on a host is an
+# Dagu coordinator and run on the pi worker (hk:doc report/2026-11-10/
+# ncp-schedule-inventory §4; the registered copies select worker host: pi). Registering or editing a DAG on a host is an
 # operator action; this file is the repo copy and is not applied by any deploy
 # step, so changing it here changes nothing on the host until the operator re-registers it.
 #
@@ -24,7 +24,7 @@ schedule: "20 0 * * *"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
-  data-plane: "true"
+  host: pi
 steps:
   - name: collect
     working_dir: ${AUTO_TRADER_DIR}

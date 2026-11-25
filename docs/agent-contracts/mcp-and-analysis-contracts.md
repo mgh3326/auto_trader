@@ -20,9 +20,9 @@
 등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
 live 프롬프트↔서빙 표면 계약(#1003, ROB-1436 이후 DEFAULT): `tests/mcp_server/test_live_prompt_profile_contract.py` + 핀 `tests/fixtures/live_prompt_tool_requirements.yaml` — live 프롬프트가 served/required 로 기록한 도구가 DEFAULT(게이트 on)에 등록돼 있지 않으면 실패한다(strict, xfail 없음). 도구 정리로 프롬프트 필수 도구를 등록 해제하면 이 테스트가 막는다. 절차: 운영자 레포 프롬프트가 바뀌면 핀을 새 operator commit 으로 재고정.
 
-**MCP 유닛 은퇴 (ROB-1436, 2026-11-01, 운영자 결정)**: NCP 고정 유닛 `at-mcp-analysis-readonly`(8768)·
+**MCP 유닛 은퇴 (ROB-1436, 2026-11-01, 운영자 결정)**: 고정 유닛 `at-mcp-analysis-readonly`(8768)·
 `at-mcp-account-read`(8769)·`at-mcp-tradingcodex-execution`(8770)·`at-mcp-paper-001`(8771)·
-`at-mcp-live-kr/-us/-crypto`(8773-8775)를 당시 NCP 배포 정의에서
+`at-mcp-live-kr/-us/-crypto`(8773-8775)를 당시 배포 정의에서
 제거했다(근거·소비자 표·정지 순서·롤백은
 `docs/runbooks/mcp-unit-retirement-rob1436.md`). 프로필 `analysis_readonly`·`account_read`·`tradingcodex_execution`·
 `live-kr`·`live-us`·`live-crypto` 와 그 registrar·`config/mcp_profiles/live.yaml`·fable-workbench 레인 allowlist 는 삭제됐고
@@ -36,8 +36,8 @@ claude-mock/orch-mock 계약, 운영자 H3-KR 선언, Task 881 도구). 은퇴�
 paper-execution route 계약·`krb1-cycle` 레인 allowlist(전용 프로필이 은퇴한 Kiwoom 프로필, KR-B1 은 2026-09-24 정지)를
 삭제했다. 그 이름의 `MCP_PROFILE` 은 미지 프로필로 기동 거부된다(#1189). `kiwoom_kr` 은 8772 유닛이 쓰던 프로필이 아니고
 `scripts/mock_session_mcp.py`(세션 소유 stdio)가 쓰므로 남는다. DEFAULT 의 `kiwoom_mock_*`·`kiwoom_mock_us_*` 게이트 등록,
-Kiwoom 모의 서비스·원장·제안 경로는 그대로다. 같은 task 의 설계 세션 결정으로 NCP pull-deploy 스크립트와 그 테스트도
-삭제했다(배포는 `deploy/shiftgate/pi/`, 남은 `ops/ncp/` 는 hk 6448 몫). 8772·8776·8777 도 새 리뷰 없이 재사용 금지.
+Kiwoom 모의 서비스·원장·제안 경로는 그대로다. 같은 task 의 설계 세션 결정으로 그 배포 스크립트와 테스트도
+삭제했다(배포는 `deploy/shiftgate/pi/`; `ops/ncp/` 는 hk 6448 에서 삭제됨). 8772·8776·8777 도 새 리뷰 없이 재사용 금지.
 🔴 `app/services/brokers/credential_firewall` 검사는 KIS·Toss·Upbit 클라이언트에 남는다(지금 켜는 표면은 없다) —
 이 방화벽 검사를 KIS/Toss/Upbit 클라이언트에서 제거하지 마라. 계약 테스트:
 `tests/services/brokers/test_credential_firewall.py`.

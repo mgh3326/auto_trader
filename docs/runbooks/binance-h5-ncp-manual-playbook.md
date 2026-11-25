@@ -45,8 +45,8 @@ image="$(cat /root/at-run/deployed-digest)"
 env_file=/root/at-secrets/.env.api
 ```
 
-`deployed-digest` is the image `scripts/deploy-ncp-pull.sh` last promoted (see
-[ncp-pull-deploy.md](ncp-pull-deploy.md)). The deploy script manages only its
+`deployed-digest` is the image `deploy/shiftgate/pi/deploy.sh` last promoted (see
+[pi-shiftgate-deploy.md](pi-shiftgate-deploy.md)). The deploy script manages only its
 own named units. `at-h5-demo` and `at-h5-watch` are not among them, so a deploy
 neither stops nor replaces them; a runner keeps the image it started with
 until you stop it.

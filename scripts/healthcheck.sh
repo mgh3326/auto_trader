@@ -13,10 +13,10 @@ cat >&2 <<'EOF'
 The Raspberry Pi Docker production stack was decommissioned in ROB-263.
 Do not use legacy Docker container health checks for production API/worker/MCP/websocket services.
 
-Use the NCP pull-deploy runbook instead, or inspect the NCP host directly.
+Use the pi shiftgate runbook instead, or inspect the pi host directly.
 Helpful entrypoints:
-  - scripts/deploy-ncp-pull.sh
-  - docs/runbooks/ncp-pull-deploy.md
+  - deploy/shiftgate/pi/deploy.sh
+  - docs/runbooks/pi-shiftgate-deploy.md
 EOF
 
 exit 1

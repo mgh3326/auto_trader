@@ -81,7 +81,7 @@ class _Recorder:
 
 
 def _rss_mb():
-    # Linux (the NCP host): resident set size from /proc. macOS: the
+    # Linux (the pi host): resident set size from /proc. macOS: the
     # physical footprint (what Activity Monitor shows). Plain RSS on macOS
     # leaves out compressed pages, so under memory pressure it under-reports
     # and a before/after pair is meaningless.

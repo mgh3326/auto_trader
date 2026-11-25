@@ -214,7 +214,7 @@ def read_facts() -> dict:
         run_truth_gate(client=_Client(), state=_State(), ledger=_Ledger())
     )
     handoff = (REPO_ROOT / "docs/runbooks/fill-event-handoff.md").read_text()
-    pull = (REPO_ROOT / "docs/runbooks/ncp-pull-deploy.md").read_text()
+    pull = (REPO_ROOT / "docs/runbooks/pi-shiftgate-deploy.md").read_text()
     return {
         "image_missing": image_missing(),
         "send_test_line": send_test,

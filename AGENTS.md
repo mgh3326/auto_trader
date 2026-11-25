@@ -401,8 +401,8 @@ PR 은 자기가 바꾼 것만 검사받고 `lint` + `PR gate` 로 머지된다.
 main 에서 skip 될 수 있게 바꾸지 마라(`tests/ci/test_pr_gate_workflow_contract.py`).
 
 🔴 **배포는 그 SHA 에서 전체 스위트가 초록이어야 한다** —
-`scripts/deploy_ci_gate.py`가 NCP forward deploy와 이미지 게시 전에 강제한다
-(`docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate).
+`scripts/deploy_ci_gate.py`가 pi 전진 배포(`deploy/shiftgate/pi/deploy.sh`)와 이미지 게시 전에 강제한다
+(`docs/runbooks/pi-shiftgate-deploy.md` §8 Exact-SHA full-suite gate).
 PR 의 `PR gate` 초록은 이 증거가 아니며, branch protection 편집은 운영자 전용이다.
 
 ## 주요 워크플로우
