@@ -1,0 +1,22 @@
+# 등록 대상(hk 6436, 운영자 결정 508(b), hk 6425): 매일 한 번, 한 번도 시작되지 않은 24시간 초과 auto_trader 잡 컨테이너(상태 created)만 지운다.
+# 실행 중·종료된 컨테이너, 이미지, 볼륨은 건드리지 않는다. 이름이 shiftgate-* / at-* 인 서비스 컨테이너는 제외한다.
+# 스크립트는 레포 deploy/shiftgate/pi/created-gc.sh 를 pi /root/at-run/shiftgate-pi/ 에 설치한 사본이다(인자 없으면 목록만).
+# 05:30 KST: 잡이 거의 없는 시간. 이 파일은 사본이며 저장소가 등록하지 않는다.
+description: "Daily removal of never-started auto_trader job containers older than 24h (decision 508(b))"
+schedule: "CRON_TZ=Asia/Seoul 30 5 * * *"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: gc
+    script: |
+      rc=0
+      bash /root/at-run/shiftgate-pi/created-gc.sh --apply || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-maintenance "dag=at-pi-created-gc status=success"'
+  failure:
+    command: 'logger -t at-dagu-maintenance "dag=at-pi-created-gc status=failure"'
