@@ -153,6 +153,7 @@ def upgrade() -> None:
         ),
     )
     # hk 6508 — conditional least-privilege grants for the app role (hard rule 18).
+    # expand-contract: contract-step 6508
     op.execute(
         """
         DO $$
@@ -173,6 +174,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # hk 6508 — refuse rather than drop collected history.
+    # expand-contract: contract-step 6508
     op.execute(
         """
         DO $$
@@ -187,6 +189,9 @@ def downgrade() -> None:
         $$
         """
     )
+    # expand-contract: contract-step 6508
     op.drop_table("fnguide_reports")
+    # expand-contract: contract-step 6508
     op.drop_table("fnguide_values")
+    # expand-contract: contract-step 6508
     op.drop_table("fnguide_snapshots")
