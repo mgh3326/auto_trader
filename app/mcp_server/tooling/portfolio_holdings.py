@@ -785,13 +785,16 @@ async def _prefetch_kr_candle_frames(kr_symbols: list[str]) -> None:
                     frames[sym] = None
             _kr_read_service.install_kr_batch_cache(frames)
     except Exception:
-        logger.debug("KR candle batch prefetch failed; per-symbol fallback", exc_info=True)
+        logger.debug(
+            "KR candle batch prefetch failed; per-symbol fallback", exc_info=True
+        )
         try:
             from app.services.daily_candles import read_service as _rs
 
             _rs.clear_kr_batch_cache()
         except Exception:
             pass
+
 
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
@@ -1344,17 +1347,27 @@ async def _apply_protection_to_live_positions(
             _it = str(_pos.get("instrument_type") or "")
             _mkt = str(_pos.get("market") or "")
             _scope: str | None = None
-            if _broker == "kis" and _source == "kis_api" and _it in {"equity_kr", "equity_us"}:
+            if (
+                _broker == "kis"
+                and _source == "kis_api"
+                and _it in {"equity_kr", "equity_us"}
+            ):
                 _scope = "kis_live"
             elif _broker == "upbit" and _source == "upbit_api" and _it == "crypto":
                 _scope = "upbit_live"
-            elif _broker == "toss" and _source == "toss_api" and _it in {"equity_kr", "equity_us"}:
+            elif (
+                _broker == "toss"
+                and _source == "toss_api"
+                and _it in {"equity_kr", "equity_us"}
+            ):
                 _scope = "toss_live"
             if _scope is not None:
                 try:
                     _prefetch_keys.append(
                         _pqs.normalize_protection_key(
-                            account_scope=_scope, market=_mkt, symbol=str(_pos.get("symbol") or "")
+                            account_scope=_scope,
+                            market=_mkt,
+                            symbol=str(_pos.get("symbol") or ""),
                         )
                     )
                 except Exception:
@@ -1362,7 +1375,9 @@ async def _apply_protection_to_live_positions(
         if _prefetch_keys:
             await _pqs.prefetch_protection_heads(_prefetch_keys)
     except Exception:
-        logger.debug("protection head prefetch failed; per-symbol fallback", exc_info=True)
+        logger.debug(
+            "protection head prefetch failed; per-symbol fallback", exc_info=True
+        )
 
     protected_positions: list[dict[str, Any]] = []
     try:
@@ -1382,7 +1397,9 @@ async def _apply_protection_to_live_positions(
             ):
                 account_scope = "kis_live"
             elif (
-                broker == "upbit" and source == "upbit_api" and instrument_type == "crypto"
+                broker == "upbit"
+                and source == "upbit_api"
+                and instrument_type == "crypto"
             ):
                 account_scope = "upbit_live"
             elif (

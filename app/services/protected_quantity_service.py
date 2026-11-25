@@ -148,6 +148,7 @@ class ProtectionKey:
     market: ProtectionMarket
     symbol: str
 
+
 # hk 6376: request-scoped head prefetch for get_holdings. When
 # prefetch_protection_heads populates this map, per-symbol _read_head_snapshot
 # serves from it without opening a session, so N symbols cost one SELECT per
@@ -158,8 +159,8 @@ _HEAD_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object] | None] = _ContextVar
 )
 _HEAD_BATCH_MISSING: object = object()
 
-_ALIAS_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object | None] | None] = _ContextVar(
-    "protection_alias_batch", default=None
+_ALIAS_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object | None] | None] = (
+    _ContextVar("protection_alias_batch", default=None)
 )
 
 _DRIFT_NET_CACHE: _ContextVar[dict[ProtectionKey, Decimal] | None] = _ContextVar(
@@ -269,7 +270,9 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
                     merged[key] = snap
                     snapshots[key] = snap
     except Exception:
-        logger.debug("protection head prefetch failed; falling back per-symbol", exc_info=True)
+        logger.debug(
+            "protection head prefetch failed; falling back per-symbol", exc_info=True
+        )
         return
     install_protection_head_cache(merged)
     # Alias: one SELECT for all upbit base assets, resolved in memory like the
@@ -277,7 +280,13 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
     upbit_keys = [k for k in unique if k.account_scope == "upbit_live"]
     if upbit_keys:
         try:
-            base_assets = sorted({k.symbol.partition("-")[2] for k in upbit_keys if k.symbol.partition("-")[2]})
+            base_assets = sorted(
+                {
+                    k.symbol.partition("-")[2]
+                    for k in upbit_keys
+                    if k.symbol.partition("-")[2]
+                }
+            )
             alias_map: dict[ProtectionKey, object | None] = dict.fromkeys(upbit_keys)
             if base_assets:
                 async with AsyncSessionLocal() as db:
@@ -287,7 +296,9 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
                                 ProtectedPosition.account_scope == "upbit_live",
                                 ProtectedPosition.market == "crypto",
                                 ProtectedPosition.protected_quantity > 0,
-                                func.split_part(ProtectedPosition.symbol, "-", 2).in_(base_assets),
+                                func.split_part(ProtectedPosition.symbol, "-", 2).in_(
+                                    base_assets
+                                ),
                             )
                         )
                     ).scalars()
@@ -298,21 +309,34 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
                         rows_in_base.sort(key=lambda r: str(r.symbol))
                     for key in upbit_keys:
                         base = key.symbol.partition("-")[2]
-                        candidates = [r for r in by_base.get(base, []) if str(r.symbol) != key.symbol]
+                        candidates = [
+                            r
+                            for r in by_base.get(base, [])
+                            if str(r.symbol) != key.symbol
+                        ]
                         if candidates:
                             alias_map[key] = _snapshot(candidates[0])
             install_protection_alias_cache(alias_map)
         except Exception:
-            logger.debug("protection alias prefetch failed; falling back per-symbol", exc_info=True)
+            logger.debug(
+                "protection alias prefetch failed; falling back per-symbol",
+                exc_info=True,
+            )
     else:
         install_protection_alias_cache({})
     # Drift: one ledger SELECT per broker/currency group since the minimum
     # confirmation time, summed per key in Python with each key's own since.
-    drift_keys = [k for k, snap in snapshots.items() if snap is not None and snap.protected_quantity > 0]
+    drift_keys = [
+        k
+        for k, snap in snapshots.items()
+        if snap is not None and snap.protected_quantity > 0
+    ]
     if drift_keys:
         try:
             drift_nets: dict[ProtectionKey, Decimal] = {}
-            by_ledger_group: dict[tuple[str, str, bool], list[ProtectionKey]] = defaultdict(list)
+            by_ledger_group: dict[tuple[str, str, bool], list[ProtectionKey]] = (
+                defaultdict(list)
+            )
             for key in drift_keys:
                 snap = snapshots[key]
                 assert snap is not None
@@ -321,28 +345,38 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
                 currency = _CURRENCY_BY_SCOPE_MARKET[(key.account_scope, key.market)]
                 by_ledger_group[(broker, currency, is_crypto)].append(key)
             for (broker, currency, is_crypto), group_keys in by_ledger_group.items():
-                min_since = min(snapshots[k].last_confirmed_at for k in group_keys if snapshots[k] is not None)
+                min_since = min(
+                    snapshots[k].last_confirmed_at
+                    for k in group_keys
+                    if snapshots[k] is not None
+                )
                 symbols_in_group = sorted({k.symbol for k in group_keys})
-                ledger_col = ExecutionLedger.raw_symbol if is_crypto else ExecutionLedger.symbol
+                ledger_col = (
+                    ExecutionLedger.raw_symbol if is_crypto else ExecutionLedger.symbol
+                )
                 async with AsyncSessionLocal() as db:
                     ledger_rows = (
-                        await db.execute(
-                            select(
-                                ledger_col.label("sym"),
-                                ExecutionLedger.filled_qty,
-                                ExecutionLedger.side,
-                                ExecutionLedger.filled_at,
-                            ).where(
-                                ExecutionLedger.broker == broker,
-                                ExecutionLedger.account_mode == "live",
-                                ledger_col.in_(symbols_in_group),
-                                ExecutionLedger.currency == currency,
-                                ExecutionLedger.filled_at >= min_since,
-                                ExecutionLedger.source != "manual_import",
-                                execution_ledger_in_effect(),
+                        (
+                            await db.execute(
+                                select(
+                                    ledger_col.label("sym"),
+                                    ExecutionLedger.filled_qty,
+                                    ExecutionLedger.side,
+                                    ExecutionLedger.filled_at,
+                                ).where(
+                                    ExecutionLedger.broker == broker,
+                                    ExecutionLedger.account_mode == "live",
+                                    ledger_col.in_(symbols_in_group),
+                                    ExecutionLedger.currency == currency,
+                                    ExecutionLedger.filled_at >= min_since,
+                                    ExecutionLedger.source != "manual_import",
+                                    execution_ledger_in_effect(),
+                                )
                             )
                         )
-                    ).mappings().all()
+                        .mappings()
+                        .all()
+                    )
                     for key in group_keys:
                         snap = snapshots[key]
                         assert snap is not None
@@ -358,7 +392,10 @@ async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
                         drift_nets[key] = total
             install_protection_drift_cache(drift_nets)
         except Exception:
-            logger.debug("protection drift prefetch failed; falling back per-symbol", exc_info=True)
+            logger.debug(
+                "protection drift prefetch failed; falling back per-symbol",
+                exc_info=True,
+            )
     else:
         install_protection_drift_cache({})
 
@@ -618,6 +655,7 @@ async def _read_head_snapshot(key: ProtectionKey) -> ProtectedPositionSnapshot |
             return None if row is None else _snapshot(row)
     except Exception as exc:
         raise ProtectionStateUnavailable("protected position lookup failed") from exc
+
 
 _ORIG_READ_HEAD_SNAPSHOT = _read_head_snapshot
 

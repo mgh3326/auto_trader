@@ -26,6 +26,7 @@ forming bar and DB-first must not silently drop it. After the cutoff and on
 non-session days the DB-first path proceeds. The US path needs no such gate:
 the Yahoo daily path is already closed-bucket only.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -59,6 +60,7 @@ def install_kr_batch_cache(frames: dict[str, object | None]) -> None:
 def clear_kr_batch_cache() -> None:
     """Clear the request-scoped KR frame map."""
     _KR_BATCH_CACHE.set(None)
+
 
 # Canonical OHLCV column ordering produced by ``rows_to_frame``. Kept here so
 # consumers (``market_data_indicators`` and ``get_ohlcv``) share one source of
