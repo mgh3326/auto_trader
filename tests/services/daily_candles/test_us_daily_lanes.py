@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -7,8 +8,8 @@ import pandas as pd
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from app.services.brokers.toss.rate_limiter import TossApiGroup, _BASE_LIMITS
 from app.core.config import DEFAULT_KIS_API_RATE_LIMITS
+from app.services.brokers.toss.rate_limiter import _BASE_LIMITS, TossApiGroup
 from app.services.daily_candles.repository import MarketKey
 from app.services.daily_candles.sync_service import (
     DailyCandleSyncService,
@@ -62,7 +63,9 @@ def _target(symbol: str) -> SyncTarget:
     return SyncTarget(MarketKey.US, symbol, "NASD")
 
 
-def _service(repo: _Repo, lanes: list[UsDailyLane], yahoo=None) -> DailyCandleSyncService:
+def _service(
+    repo: _Repo, lanes: list[UsDailyLane] | None, yahoo=None
+) -> DailyCandleSyncService:
     service = DailyCandleSyncService(
         repository=repo,
         kis_kr_fetcher=AsyncMock(),
@@ -191,6 +194,22 @@ async def test_yahoo_empty_is_reported_as_no_data_after_each_lane_once() -> None
 
 
 @pytest.mark.asyncio
+async def test_single_symbol_us_sync_uses_the_same_lane_dispatcher() -> None:
+    repo = _Repo()
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+
+    result = await service.sync_one(target=_target("ONE"), horizon_bars=10)
+
+    assert result.rows_upserted == 1
+    assert result.fallback_used is False
+    assert [row.source for row in repo.rows] == ["kis"]
+
+
+@pytest.mark.asyncio
 async def test_lane_error_does_not_stop_other_lane_or_symbols() -> None:
     repo = _Repo()
 
@@ -269,14 +288,24 @@ def test_us_daily_lane_rate_budgets_match_provider_limits() -> None:
         "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice"
     ] == {"rate": 10, "period": 1.0}
     assert _BASE_LIMITS[TossApiGroup.MARKET_DATA_CHART] == 15
+    service = _service(_Repo(), None)
+    service._toss_us = AsyncMock()
+    assert [(lane.name, lane.rate_per_second) for lane in service._us_lanes()] == [
+        ("kis", 10),
+        ("toss", 15),
+    ]
 
 
 @pytest.mark.asyncio
 async def test_yahoo_empty_daily_result_is_a_normal_empty_fallback(monkeypatch) -> None:
     from app.services.daily_candles import yahoo_us_fallback
 
+    calling_thread = threading.get_ident()
+    fetch_thread = []
+
     async def raw(**kwargs):
         assert kwargs["empty_ok"] is True
+        fetch_thread.append(threading.get_ident())
         return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
     monkeypatch.setattr(yahoo_us_fallback.yahoo_service, "_fetch_ohlcv_raw", raw)
@@ -289,3 +318,4 @@ async def test_yahoo_empty_daily_result_is_a_normal_empty_fallback(monkeypatch) 
     assert await yahoo_us_fallback.fetch_us_daily_yahoo_fallback(
         symbol="EMPTY", n=10
     ) == []
+    assert fetch_thread and fetch_thread[0] != calling_thread

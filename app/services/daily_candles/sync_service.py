@@ -23,10 +23,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
-from app.core.async_rate_limiter import AsyncSlidingWindowRateLimiter
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from app.core.async_rate_limiter import AsyncSlidingWindowRateLimiter
 from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.core.timezone import KST, today_kst
 from app.services.daily_candles.converters import frame_to_rows
@@ -230,76 +230,19 @@ class DailyCandleSyncService:
         )
 
     async def _sync_us(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
-        frame = await self._kis_us(
-            symbol=target.symbol, exchange_code=target.partition, n=horizon_bars
+        result = await self._sync_us_universe(
+            targets=[target], horizon_bars=horizon_bars
         )
-        rows = frame_to_rows(
-            frame, symbol=target.symbol, partition=target.partition, source="kis"
+        if result["failed_symbols"]:
+            error_class = result["failed_symbols"][0]["error_class"]
+            if error_class == NoDataError.__name__:
+                raise NoDataError(f"no US daily rows for {target.symbol}")
+            raise RuntimeError(f"US daily sync failed: {error_class}")
+        return SyncOneResult(
+            target=target,
+            rows_upserted=result["rows_upserted"],
+            fallback_used=bool(result["fallback_count"]),
         )
-        if rows:
-            upserted = await self._repository.upsert_rows(
-                market=target.market, rows=rows
-            )
-            await self._commit_or_rollback()
-            return SyncOneResult(
-                target=target, rows_upserted=upserted, fallback_used=False
-            )
-
-        logger.warning(
-            "KIS returned no rows for US symbol; attempting Yahoo fallback symbol=%s exchange=%s",
-            target.symbol,
-            target.partition,
-        )
-        fallback_rows = await self._yahoo_us(symbol=target.symbol, n=horizon_bars)
-        if not fallback_rows:
-            if self._toss_us is not None:
-                logger.warning(
-                    "Yahoo returned no rows for US symbol; attempting Toss fallback symbol=%s exchange=%s",
-                    target.symbol,
-                    target.partition,
-                )
-                toss_frame = await self._toss_us(symbol=target.symbol, n=horizon_bars)
-                repo_rows = frame_to_rows(
-                    toss_frame,
-                    symbol=target.symbol,
-                    partition=target.partition,
-                    source="toss_fallback",
-                )
-                if repo_rows:
-                    upserted = await self._repository.upsert_rows(
-                        market=target.market, rows=repo_rows
-                    )
-                    await self._commit_or_rollback()
-                    return SyncOneResult(
-                        target=target, rows_upserted=upserted, fallback_used=True
-                    )
-            return SyncOneResult(
-                target=target,
-                rows_upserted=0,
-                fallback_used=True,
-                skipped_reason="both_sources_empty",
-            )
-        repo_rows = [
-            DailyCandleRow(
-                time_utc=r.time_utc,
-                symbol=r.symbol,
-                partition=target.partition,
-                open=r.open,
-                high=r.high,
-                low=r.low,
-                close=r.close,
-                adj_close=r.adj_close,
-                volume=r.volume,
-                value=r.value,
-                source="yahoo_fallback",
-            )
-            for r in fallback_rows
-        ]
-        upserted = await self._repository.upsert_rows(
-            market=target.market, rows=repo_rows
-        )
-        await self._commit_or_rollback()
-        return SyncOneResult(target=target, rows_upserted=upserted, fallback_used=True)
 
     async def _sync_crypto(
         self, target: SyncTarget, horizon_bars: int
@@ -424,6 +367,7 @@ class DailyCandleSyncService:
                     rate_per_second=15,
                 )
             )
+        self._us_daily_lanes = lanes
         return lanes
 
     async def _sync_us_universe(
@@ -750,6 +694,7 @@ async def _build_default_service() -> DailyCandleSyncService:
     from app.core.config import settings
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.kis.client import KISClient
+    from app.services.brokers.toss.client import TossReadClient
     from app.services.daily_candles.kis_daily_fetcher import (
         fetch_kr_daily_unclamped,
         fetch_us_daily_unclamped,
@@ -758,7 +703,6 @@ async def _build_default_service() -> DailyCandleSyncService:
     from app.services.daily_candles.yahoo_us_fallback import (
         fetch_us_daily_yahoo_fallback,
     )
-    from app.services.brokers.toss.client import TossReadClient
 
     session = AsyncSessionLocal()
     kis = KISClient()
