@@ -40,7 +40,7 @@ closed, and `Persistent=false` forbids implicit catch-up.
 | `LANE_EVENT_EMIT_BIN` | `panewire` | Host `panewire` executable visible inside the unit container. |
 | `LANE_EVENT_EMIT_HOST` | local hostname | Producer host sent to `panewire`. |
 | `LANE_EVENT_EMIT_PANE` | empty | Producer pane. Empty or `-` means no pane, so `--pane` is omitted. |
-| `LANE_EVENT_EMIT_INBOX_ROOT` | `~/work/herdr-inbox` | Inbox root used by the producer. NCP units override this. |
+| `LANE_EVENT_EMIT_INBOX_ROOT` | `~/work/herdr-inbox` | Inbox root used by the producer. The deleted NCP units overrode this. |
 | `LANE_EVENT_EMIT_TIMEOUT_S` | `3` | Emitter timeout in seconds; values at or below one are rejected with exit 2. |
 | `LANE_EVENT_KICKOFF_LANE_KR` | unset | Admiral-supplied destination for KR slots. |
 | `LANE_EVENT_KICKOFF_LANE_CRYPTO` | unset | Admiral-supplied destination for crypto slots. |
@@ -69,7 +69,9 @@ Only the consumer's durable disposition proves execution. All other emitter
 failures exit 1 with `reason`. `--dry-run`, either disabled B0X gate, unsafe
 arguments, and text over 2048 bytes never start the emitter.
 
-## NCP unit boundary
+## NCP unit boundary (historical)
+
+The units below were deleted with `ops/ncp` in hk 6441. This repository no longer ships them, and their pi-host equivalent is not recorded here.
 
 The admiral owns panewire lane registration, resident-session startup, and the
 values of the three lane variables above. The operator lanes might be described
@@ -83,7 +85,7 @@ mounts for the producer binary, daemon inbox, or daemon socket.
 | Required container mount | Why it is required |
 | --- | --- |
 | `/root/pw-s2pilot/bin/panewire:/root/pw-s2pilot/bin/panewire:ro` | Runs the host-compatible producer binary. |
-| `/root/pw-s2pilot/inbox:/root/pw-s2pilot/inbox` | Reaches the NCP daemon inbox namespace. |
+| `/root/pw-s2pilot/inbox:/root/pw-s2pilot/inbox` | Reaches the daemon inbox namespace of the unit's host. |
 | `"/root/Library/Application Support/panewire":"/root/Library/Application Support/panewire"` | Reaches the daemon socket at the same absolute path. |
 
 The service sets `PANEWIRE_SOCKET`, `LANE_EVENT_EMIT_BIN`,

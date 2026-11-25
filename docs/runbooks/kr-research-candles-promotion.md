@@ -103,7 +103,7 @@ re-run with a wider window; re-collect the missing range from the providers
 
 ## 6. Applying the migration
 
-The NCP pull-deploy script intentionally does not run migrations. Run an
+The deploy script (`deploy/shiftgate/pi/deploy.sh`, which replaced the NCP pull-deploy script retired in hk 6456) intentionally does not run migrations. Run an
 operator-reviewed migration procedure before promotion; do not improvise a
 production-database migration from this runbook.
 

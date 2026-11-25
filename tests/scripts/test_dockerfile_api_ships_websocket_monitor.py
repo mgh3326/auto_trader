@@ -1,6 +1,6 @@
-"""The NCP websocket units run websocket_monitor.py from the API image.
+"""The pi websocket units run websocket_monitor.py from the API image.
 
-The first NCP deployment of at-upbit-ws/at-kis-ws crash-looped with
+The first deployment of at-upbit-ws/at-kis-ws crash-looped with
 "can't open file '/app/websocket_monitor.py'" because Dockerfile.api only
 copied app/, alembic/ and research_contracts/. Pin the COPY so the image keeps
 shipping the root-level monitor script.

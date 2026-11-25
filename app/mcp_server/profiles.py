@@ -40,11 +40,11 @@ class McpProfile(StrEnum):
     FILL_WATCH_CONTEXT = "fill-watch-context"
     # ROB-1436 (2026-11-01, operator decision) retired analysis_readonly,
     # account_read, tradingcodex_execution and live-kr/live-us/live-crypto with
-    # their NCP units; a surface that is needed later is added back then. Live
+    # their units; a surface that is needed later is added back then. Live
     # sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared). Resolving
     # one of those names now fails like any unknown profile.
     # hk 6456 (2026-11-25, operator decision) likewise retired the full
-    # "kiwoom" profile and the two H3 paper pilot profiles with their NCP
+    # "kiwoom" profile and the two H3 paper pilot profiles with their
     # units.
 
 

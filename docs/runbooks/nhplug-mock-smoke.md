@@ -98,7 +98,7 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 
 ### B-HOST 재실측과 T14 호스트 증언
 
-desk가 배포 후 NCP 호스트에서 다음을 실행한다. DEFAULT 프로필에만 `nh_mock_*`가 등록되므로 DEFAULT MCP 색상(green·blue)에만 machine-id 읽기 전용 마운트가 있어야 한다. live MCP와 나머지 컨테이너에는 이 마운트가 없어야 한다. 출력에 계좌·키·토큰은 포함되지 않는다. 증언 스크립트는 배포 스크립트처럼 먼저 설치한다.
+desk가 배포 후 pi 호스트에서 다음을 실행한다. DEFAULT 프로필에만 `nh_mock_*`가 등록되므로 DEFAULT MCP 색상(green·blue)에만 machine-id 읽기 전용 마운트가 있어야 한다. live MCP와 나머지 컨테이너에는 이 마운트가 없어야 한다. 출력에 계좌·키·토큰은 포함되지 않는다. 증언 스크립트는 배포 스크립트처럼 먼저 설치한다.
 
 ```bash
 install -m 0750 scripts/nhplug-t14-host-witness.sh /root/at-run/nhplug-t14-host-witness.sh

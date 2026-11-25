@@ -32,7 +32,7 @@ front paths already forward every path on the hostname to the app:
 - cloudflared: `trader.robinco.dev` → `127.0.0.1:8000`
   (`~/.cloudflared/config.yml` ingress, per
   docs/superpowers/plans/2026-05-17-rob-259-haproxy-blue-green.md)
-- HAProxy `ops/ncp/haproxy/haproxy.cfg.tmpl`: `ft_api_loopback` → `bk_api`
+- HAProxy (`ops/ncp/haproxy/haproxy.cfg.tmpl`, deleted in hk 6441 and not in this repo): `ft_api_loopback` → `bk_api`
 - Caddy (`Caddyfile`, dev/self-host path): catch-all `handle` →
   `host.docker.internal:8000`
 

@@ -1191,14 +1191,12 @@ def test_row_epoch_must_match_the_reviewed_source_binding_epoch(
     assert event_rows(state_db) == []
 
 
-def test_public_config_unit_timer_are_real_default_off_entries(
+def test_public_config_is_a_real_default_off_entry(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # The consumer unit files were retired with the NCP units (hk 6441); only the
+    # public binding config is still a checked-in input.
     config = ROOT / "config/b0x_ingress_binding.json.in"
-    service_path = ROOT / "ops/ncp/systemd/b0x-lane-event-consumer.service.in"
-    timer_path = ROOT / "ops/ncp/systemd/b0x-lane-event-consumer.timer"
-    service = service_path.read_text(encoding="utf-8")
-    timer = timer_path.read_text(encoding="utf-8")
     payload = json.loads(config.read_text(encoding="utf-8"))
     assert payload["status"] == "DRAFT_NOT_INSTALLED"
     assert payload["gates"] == {
@@ -1209,26 +1207,6 @@ def test_public_config_unit_timer_are_real_default_off_entries(
     assert payload["activation"]["start_after_id"] is None
     assert payload["activation"]["code_head"] is None
     assert payload["route_readback"]["verified"] is False
-    assert "scripts.b0x_lane_event_poller" in service
-    assert "--binding @B0X_INGRESS_BINDING@" in service
-    assert "--state-db @B0X_INGRESS_STATE_DB@" in service
-    assert "--once" in service
-    assert "Type=oneshot" in service
-    assert "B0X_INGRESS_UNIT_TEMPLATE_RENDERED" not in service
-    assert "TimeoutStartSec=@B0X_INGRESS_SERVICE_TIMEOUT_SECONDS@" in service
-    assert "EnvironmentFile=@B0X_INGRESS_CREDENTIAL_ENV_FILE@" in service
-    assert "OnBootSec=5s" in timer
-    assert "OnUnitInactiveSec=5s" in timer
-    assert "Persistent=false" in timer
-    assert "AccuracySec=1s" in timer
-    assert service_path.name.removesuffix(".in") == "b0x-lane-event-consumer.service"
-    assert timer_path.name == "b0x-lane-event-consumer.timer"
-    timer_target = next(
-        line.removeprefix("Unit=")
-        for line in timer.splitlines()
-        if line.startswith("Unit=")
-    )
-    assert timer_target == service_path.name.removesuffix(".in")
 
     rc = cli.main(
         [
@@ -1243,18 +1221,7 @@ def test_public_config_unit_timer_are_real_default_off_entries(
     output = json.loads(capsys.readouterr().out)
     assert rc == 2
     assert output["reason"] == "binding_retains_private_placeholder"
-    public_added = config.read_text(encoding="utf-8") + service + timer
-    for unresolved_private_input in (
-        "@B0X_INGRESS_LANE@",
-        "@HANDOFFKEEP_HTTP_BASE_URL@",
-        "@HANDOFFKEEP_CREDENTIAL_SOURCE@",
-        "@B0X_INGRESS_STATE_DB@",
-        "@B0X_INGRESS_LOCK_PATH@",
-        "@B0X_INGRESS_OS_OWNER@",
-        "@B0X_INGRESS_BINDING@",
-        "@B0X_INGRESS_CREDENTIAL_ENV_FILE@",
-    ):
-        assert unresolved_private_input in public_added
+    public_added = config.read_text(encoding="utf-8")
     assert "fixture-" not in public_added
 
 

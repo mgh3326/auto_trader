@@ -478,8 +478,8 @@ uv run python -m scripts.backfill_dart_disclosures \
 The schedule definition for the daily market-events ingestion does **not**
 live in this repository. The `daily market events` Prefect deployment is
 defined in `robin-prefect-automations` (`market_events_ingestion.py`; see the
-excluded-B table in `docs/runbooks/ncp-job-timers.md` — it was deliberately
-kept out of the `ops/ncp/systemd` migration because its rolling-window and
+excluded-B table in `docs/runbooks/ncp-job-timers.md` (deleted in hk 6441) — it was deliberately
+kept out of the `ops/ncp/systemd` migration (deleted in hk 6441) because its rolling-window and
 notification behavior is not a static argv). This PR therefore adds **no**
 scheduler wiring of any kind — merging it registers nothing.
 

@@ -73,9 +73,6 @@ REVIEWED_LAUNCHERS = {
     # checked in tests/scripts/test_pi_shiftgate_deploy.py.
     "deploy/shiftgate/pi/services.yaml",
     "docker-compose.prod.yml",
-    # shiftgate services for at-mcp (AT-1, hk 4194); its explicit, non-empty
-    # MCP_PROFILE is checked in tests/scripts/test_shiftgate_services_at.py.
-    "ops/ncp/shiftgate/services.at.yaml",
     "scripts/mcp_server.sh",
     "scripts/mock_session_mcp.py",
     "scripts/shadow_replay_mcp.json",

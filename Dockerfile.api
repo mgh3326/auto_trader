@@ -81,8 +81,8 @@ COPY research/data_plane/__init__.py research/data_plane/calendars.py research/d
 COPY research/crypto_universe/__init__.py research/crypto_universe/universe.py ./research/crypto_universe/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
-# NCP runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /
-# at-kis-ws, deploy-ncp-pull.sh); the script lives at the repo root.
+# The pi runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /
+# at-kis-ws, deploy/shiftgate/pi); the script lives at the repo root.
 COPY websocket_monitor.py ./
 COPY scripts/ ./scripts/
 COPY static/ ./static/

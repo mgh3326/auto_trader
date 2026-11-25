@@ -86,6 +86,8 @@ client.
 
 ## 3. Desk runbook (NCP)
 
+> Historical (hk 6441, hk 6456): the NCP host was returned and `deploy-ncp-pull.sh` was deleted. The commands in this section and in §3.2 to §3.4 ran on the NCP host during the ROB-1436 stage and describe the deleted script. For the current deploy and rollback on the pi host, use [pi-shiftgate-deploy.md](pi-shiftgate-deploy.md).
+
 Run these on the NCP host. Never print a token or an env value: the commands
 below only count matches. `UNITS` below is the stop order, lowest risk first:
 
@@ -147,7 +149,7 @@ crypto sessions). Rollback for stage 1 is immediate:
 
 Install the merged `scripts/deploy-ncp-pull.sh` and
 `ops/ncp/haproxy/haproxy.cfg.tmpl` as described in
-[ncp-pull-deploy.md](ncp-pull-deploy.md), then run the normal deploy with the
+[pi-shiftgate-deploy.md](pi-shiftgate-deploy.md), then run the normal deploy with the
 merged image tag:
 
     /root/at-run/deploy-ncp-pull.sh sha-<short7>
@@ -216,7 +218,7 @@ To restore one:
   - The H3-KR declaration (`hermes-paper-kis`, 8771) has no unit to point at.
     Drop it, or give H3-KR a closed-world profile before it is rendered.
   - `scripts/e2_runner_preparation.py` names deleted registrar paths (§1.1).
-- `/root/at-operator/.mcp.live-*.json`, if present on NCP, can be deleted.
+- `/root/at-operator/.mcp.live-*.json`, if present on the NCP host (returned in hk 6441), can be deleted.
 - Local Claude configs: remove `auto_trader_readonly` (desk, §3.0 step 2).
 
 ## 4. Memory: lazy imports on the low-traffic units

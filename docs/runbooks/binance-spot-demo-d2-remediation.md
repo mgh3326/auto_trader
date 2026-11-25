@@ -309,7 +309,7 @@ refused. Nothing is deleted; no order, cancel or other signed call is
 reachable. The client must point at the Spot Demo host and carry the sealed D2
 credential, or nothing is read.
 
-Operator commands on NCP (preview first; ids from the desk's #1122 note). Set
+Operator commands on the pi host (preview first; ids from the desk's #1122 note). Set
 `image` and `env_file` exactly as in
 [binance-h5-ncp-manual-playbook.md](binance-h5-ncp-manual-playbook.md) §2. The
 Spot Demo flag goes on this one-off container only, never into the env file:

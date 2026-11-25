@@ -53,7 +53,7 @@ Writer entrypoints, all of them:
 | `investment_report_create` (MCP) | none — out-of-process caller | 0 calls / 30d |
 | `investment_report_generate_from_bundle` | none | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` default **false** |
 | Hermes HTTP ingest (`/trading/api/investment-reports/hermes/`) | none | gate default off + `HERMES_INGEST_TOKEN`; `review.investment_snapshot_*` tables **empty** in this measurement; prior runs are not proved |
-| `scripts/invest_reports_us_schedule.py` | none — default-disabled manual CLI (`INVEST_REPORTS_US_SCHEDULE_ENABLED`) | not referenced by any TaskIQ/Prefect flow or `ops/ncp/systemd/*.timer` |
+| `scripts/invest_reports_us_schedule.py` | none — default-disabled manual CLI (`INVEST_REPORTS_US_SCHEDULE_ENABLED`) | not referenced by any TaskIQ/Prefect flow or systemd timer (the former `ops/ncp/systemd/*.timer` units were retired, hk 6441) |
 
 There is no TaskIQ task, Prefect flow, or desk timer that writes these tables. The 68 rows are
 the trace of sessions that called the tool from 2026-05-19 to 2026-07-28; the last one
@@ -95,7 +95,7 @@ manufacture reports from watch activity.
 
 ## 5. After-deploy verification (read-only)
 
-Run from the active API container (`ssh ncp 'C=at-api-$(cat /root/at-run/api-active-color); docker exec $C ...'`):
+Run from the active API container (`ssh pi 'C=at-api-$(cat /root/at-run/api-active-color); docker exec $C ...'`):
 
 ```sql
 -- 1. writer heartbeat + 30-day cadence (diagnostic deployment alone must not move last_created or create rows)

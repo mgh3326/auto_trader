@@ -2,9 +2,9 @@
 
 This is the 2026-09-04 Prefect deployment inventory (54 deployments). The
 inventory snapshot itself lives outside this repository; the checked-in
-authorities for current timer state are
+authorities for timer state at the time of this map were
 `tests/fixtures/ncp_job_timers_prefect_argv.json` and the `job-*` unit tree
-under `ops/ncp/systemd/`, both enforced by `scripts/ncp_job_timers_check.py`. It is a
+under `ops/ncp/systemd/`, both enforced by `scripts/ncp_job_timers_check.py` (neither file is in the repository any more). It is a
 migration map, not a cutover: the first pass itself paused, deleted, or
 changed no Prefect deployment and installed no NCP unit. Salvaged from PR
 #2040 (document only; its checker script and tests were not carried over) and
@@ -114,13 +114,13 @@ The table above is the frozen 2026-09-04 snapshot. The status below is only
 what this repository can prove — a checked-in unit is not evidence that its
 timer is enabled on the host or that the matching Prefect deployment was
 paused. Live host/deployment state is operator-runbook territory
-(`docs/runbooks/ncp-job-timers.md`, `docs/runbooks/lane-event-kickoff.md`) and
+(`docs/runbooks/ncp-job-timers.md`, deleted in hk 6441, and `docs/runbooks/lane-event-kickoff.md`) and
 is **unconfirmed** here.
 
 | inventory rows | class | status on main |
 | --- | --- | --- |
-| 2, 3, 4, 5, 6, 7, 10, 11, 12 | B | `job-*` service/timer pairs checked in under `ops/ncp/systemd/` (#2044, #2048) and contract-validated by `scripts/ncp_job_timers_check.py`; per-unit cutover sequence in `docs/runbooks/ncp-job-timers.md`. Timer enablement and Prefect pause state unconfirmed. |
-| 1, 14, 15, 17, 19, 20, 21, 22, 24, 27, 30, 31 | B | excluded, no unit — see "Explicitly excluded B inventory" in `docs/runbooks/ncp-job-timers.md` |
+| 2, 3, 4, 5, 6, 7, 10, 11, 12 | B | `job-*` service/timer pairs checked in under `ops/ncp/systemd/` (#2044, #2048; deleted in hk 6441) and contract-validated by `scripts/ncp_job_timers_check.py` (no longer in the repository); per-unit cutover sequence in `docs/runbooks/ncp-job-timers.md` (deleted in hk 6441). Timer enablement and Prefect pause state unconfirmed. |
+| 1, 14, 15, 17, 19, 20, 21, 22, 24, 27, 30, 31 | B | excluded, no unit — see "Explicitly excluded B inventory" in `docs/runbooks/ncp-job-timers.md` (deleted in hk 6441) |
 | 44–54 | C | `job-kickoff-<slot>` resident service/timer pairs checked in (#2054). These emit lane events, not argv replays of the flows. Retirement of the eleven legacy `KR Live Session Kickoff` deployments is the admiral-only checklist in `docs/runbooks/lane-event-kickoff.md` — unconfirmed. |
 | 36 | C | paused manual-smoke deployment of the same kickoff flow — covered by that admiral checklist; no timer. |
 | 37–40 | C | `job-kickoff-b0x-*` `.service.in` templates only — unrendered, all gates false; the legacy Prefect sources remain the live owner until the approved cutover in `docs/runbooks/lane-event-kickoff.md`. |
@@ -129,11 +129,13 @@ is **unconfirmed** here.
 | 9, 13, 18, 25, 26, 28, 29, 32, 33, 35, 43 | D | unchanged — paused/retired candidates, no unit. |
 | 16, 23, 34 | E | unchanged — owner still not confirmed in this repository. |
 
-`ops/ncp/systemd/` also carries units that are not Prefect migrations and are
+`ops/ncp/systemd/` (deleted in hk 6441) also carried units that are not Prefect migrations and are
 outside this map: `at-mcp-watchdog`, `at-pg-backup`, `fill-event-handoff`, and
 `b0x-lane-event-consumer`.
 
 ## Future A-job format and validation
+
+> The `ops/ncp/` paths in this section were deleted with `ops/ncp` in hk 6441. The format is kept as the migration record; no unit or checker under those paths is committed.
 
 When a future flow calls a static kick entry and its body is byte-identical to
 the deployment parameters, add all three files together:

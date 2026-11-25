@@ -669,7 +669,7 @@ def render_markdown(
         '- Usage source of truth: Sentry `spans`, filter `transaction:"tools/call *"`.',
         "- A = live-used (30d); B = seasonal-or-rare (90d only); C = referenced-unused; D = dead; U = unknown.",
         "- Registry extraction executes each profile registrar against an in-memory recorder with feature gates enabled; it starts no server or client.",
-        "- NCP `tools/list` byte measurements are intentionally left for orchestration: this audit does not access NCP secrets or hosts.",
+        "- Production `tools/list` byte measurements are intentionally left for orchestration: this audit does not access production secrets or hosts.",
         "",
         "## Profile summary",
         "",
