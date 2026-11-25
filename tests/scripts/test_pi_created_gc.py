@@ -16,9 +16,15 @@ DAG = ROOT / "deploy/dagu/at-maintenance/at-pi-created-gc.yaml"
 
 def test_script_only_targets_never_started_auto_trader_job_containers() -> None:
     text = SCRIPT.read_text()
-    assert "docker ps -aq --filter status=created" in text
+    assert "ids=$(docker ps -aq --filter status=created)" in text
+    assert "exit 1" in text
     assert "ghcr.io/mgh3326/auto_trader@*|ghcr.io/mgh3326/auto_trader:*" in text
-    assert "shiftgate-*|at-*) continue" in text
+    assert (
+        "shiftgate-*|at-api*|at-mcp*|at-upbit-ws*|at-worker*|at-scheduler*"
+        "|at-pg|at-redis|at-trend-*|factortrail|broker-edge|gatewayd"
+    ) in text
+    # The old broad at-* exclusion also skipped named job containers; it must be gone.
+    assert "shiftgate-*|at-*) continue" not in text
     assert '[ "${started:0:4}" = "0001" ] || continue' in text
     assert "86400" in text
     # Removal only with --apply, one container at a time; never images or volumes.

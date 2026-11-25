@@ -160,8 +160,8 @@ register schedules, enable trading switches or authorize an order.
 
 pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main push → Test(전체 스위트) → `deploy.yml` 이
 `ghcr.io/mgh3326/auto_trader:sha-<7>` 빌드 → `promote` 잡(`promote-deploy.yml`, `scripts/ci/promote_deploy.py`)이 `deploy` 태그를
-같은 digest 로 옮김(재빌드 없음) → pi 의 systemd 타이머가 `deploy/shiftgate/pi/follow.sh` 를 실행 → 백업 → 기존
-`deploy/shiftgate/pi/deploy.sh sha-<7>`. 🔴 pi 로 들어오는 경로(ssh·터널·배포 키)는 없다. 🔴 `shiftgate follow` 는 여전히 쓰지 않는다
+같은 digest 로 옮김(재빌드 없음) → pi 의 systemd 타이머가 `deploy/shiftgate/pi/follow.sh` 를 실행 → 기존
+`deploy/shiftgate/pi/deploy.sh sha-<7>`. 설치 전 DB 백업은 없다(hk 6466) — 백업은 Dagu 일일 잡 `at-pg-backup`(매일 04:30 KST)이 돌린다. 🔴 pi 로 들어오는 경로(ssh·터널·배포 키)는 없다. 🔴 `shiftgate follow` 는 여전히 쓰지 않는다
 (게이트를 우회한다). 타이머 파일은 레포에 있으나 **설치·enable 은 운영자(설계 세션)만 한다** — 레포 코드가 스스로 타이머를 설치하지 않는다.
 
 - **승격 판정(promote)**: 후보 SHA 가 main 의 조상이고 전체 스위트 6개 job 이 초록(`deploy_ci_gate.py --main-ancestor --expect-sha`)이며
@@ -174,9 +174,9 @@ pi(shiftgate)의 AT 앱은 `main` 커밋이 스스로 배포된다. 흐름: main
   글롭은 mergewake 와 같은 규칙(픽스처 `tests/fixtures/mergewake_deploy_approval_paths.json` 로 고정)이며 더 느슨하게 만들지 않는다.
 - **follow(pi)**: `deploy` 태그 → digest → SHA 를 레지스트리에서 읽고, digest 가 `/root/at-run/deployed-digest` 와 같으면 조용히 끝난다(GitHub 호출 없음).
   바뀌었으면 태그를 옮긴 쪽을 믿지 않고 스스로 `deploy_ci_gate.py --github anonymous --main-ancestor` 로 다시 확인한다(공개 레포의 인증 없는 GitHub 읽기, 시간당 60회).
-  호스트 배포 잠금(`host-lock.sh`) → `systemctl start at-pg-backup.service`(성공해야만 진행) → `deploy.sh sha-<7>`(`--allow-unverified` 는 이 경로에 없다).
+  호스트 배포 잠금(`host-lock.sh`) → `deploy.sh sha-<7>`(`--allow-unverified` 는 이 경로에 없다).
   방금 검증한 digest 는 `AT_FOLLOW_VERIFIED_DIGEST` 로 deploy.sh 에 넘겨 같은 틱에 GitHub 를 두 번 묻지 않는다(deploy.sh 는 태그가 그 digest 인지만 레지스트리에서 확인하고, 변수가 없거나 어긋나면 전체 게이트 — 수동 실행은 불변).
-  거부·실패한 digest 는 `/root/at-run/follow-hold` 로 묶여 매 틱 재시도하지 않는다. 게이트 자신의 문구(`GitHub evidence unavailable`·`unverified (`)로 알 수 있는 일시 장애만 retry-after 뒤 digest 마다 최대 3번 다시 시도하고(`follow-transient`) 그 뒤 영구 hold 다. 성공한 백업은 digest 별로 기록해 일시 장애 재시도에서 다시 돌리지 않는다(`follow-backup-ok`, 1시간 이내). 결과는 `follow.log`·`follow-status.json`
+  거부·실패한 digest 는 `/root/at-run/follow-hold` 로 묶여 매 틱 재시도하지 않는다. 게이트 자신의 문구(`GitHub evidence unavailable`·`unverified (`)로 알 수 있는 일시 장애만 retry-after 뒤 digest 마다 최대 3번 다시 시도하고(`follow-transient`) 그 뒤 영구 hold 다. 결과는 `follow.log`·`follow-status.json`
   (+ 있으면 panewire `info`)에 남는다. 롤백은 `follow.sh --hold` 후 `deploy.sh --rollback`.
 - **신뢰 경계**: `deploy` 태그 쓰기 권한(Actions `GITHUB_TOKEN`, GHCR 패키지 쓰기)은 신뢰 경계다. follow 의 재확인은 "main 조상 + 전체 스위트 초록"까지다.
   hk 쪽 자동 재승격(결정에 A 로 답하면 dispatch)은 후속 작업이다. 런북: `docs/runbooks/pi-shiftgate-deploy.md` §4.1.

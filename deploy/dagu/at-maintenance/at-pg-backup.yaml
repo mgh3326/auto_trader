@@ -1,0 +1,21 @@
+# 매일 04:30 KST: pi 의 PostgreSQL 백업(at-pg-backup.service, oneshot)을 한 번 돌린다. 설치 전 백업은 더 이상 없다(hk 6466, 운영자 결정 decision/2026-11-25/at-pg-backup-dagu-only).
+# systemctl start 는 oneshot 이 끝날 때까지 기다리고, 유닛이 실패하면 0 이 아닌 코드로 끝나 이 단계가 실패한다.
+# 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다. 등록과 pi 의 at-pg-backup.timer 비활성화는 설계 세션이 한다.
+description: "Daily PostgreSQL backup on pi (at-pg-backup.service, one oneshot run)"
+schedule: "CRON_TZ=Asia/Seoul 30 4 * * *"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: backup
+    script: |
+      rc=0
+      systemctl start at-pg-backup.service || rc=$?
+      exit "$rc"
+    timeout_sec: 3600
+handler_on:
+  success:
+    command: 'logger -t at-dagu-maintenance "dag=at-pg-backup status=success"'
+  failure:
+    command: 'logger -t at-dagu-maintenance "dag=at-pg-backup status=failure"'
