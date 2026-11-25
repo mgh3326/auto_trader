@@ -92,7 +92,8 @@ TOSS_FILL_POLL_ENABLED=true uv run python -m scripts.toss_fill_reconcile_poller 
 ```
 
 > ⚠️ **동시 실행 금지**: ROB-757 TaskIQ 폴러 스케줄이 armed(워커+스케줄러 가동
-> 중)일 때 `--commit`을 돌리지 말 것. dedupe는 delta 기반이라 **직렬** 재실행만
+> 중)일 때 `--commit`을 돌리지 말 것. Dagu 잡 `at-toss-fill-poll`(hk 6277)도 같다 —
+> 먼저 OCI 에서 잡을 일시정지하고 진행 중 실행이 끝난 뒤 돌리고, 끝나면 재개한다. dedupe는 delta 기반이라 **직렬** 재실행만
 > 보호한다 — 두 reconcile 패스가 겹치면(둘 다 `already=0`을 읽은 뒤 커밋)
 > 이중 부기 가능성이 있다(`update_reconcile_outcome`에 row lock 없음). 수동
 > reps 기간엔 TaskIQ 폴러가 off인 것을 먼저 확인하라.
@@ -131,6 +132,41 @@ scan itself is always both-market, matching the existing TaskIQ poller).
   no-op-or-success outcomes — a closed market window is not a failure).
 - Exit `1` only when an unhandled exception occurs (`status: "error"` with
   `error.type` / `error.message`); nothing is swallowed.
+
+## Scheduled run on pi (hk 6277, 2026-11-25)
+
+The operator answered yes to `decision-request/2026-11-24/at-toss-fill-poll`
+(question 1). `deploy/dagu/at-reconcile/at-toss-fill-poll.yaml` runs
+`--commit` every 5 minutes on the pi worker over the union of the KR and US
+windows. The script's market gate still decides whether a pass calls Toss.
+`TOSS_FILL_POLL_ENABLED=true` is set only on that job's `docker run -e`; the
+shared `.env.api` is unchanged. The OCI Dagu copy is the registered one; the
+repo file is its copy. To stop the poller, suspend the DAG on OCI.
+
+Overlap is prevented by the container name, not by Dagu. Each pass runs in a
+container named `at-toss-fill-poll`. If one is still there at the next tick,
+that run starts no pass, logs `status=previous_pass_still_running` and fails,
+so the failure handler records it. A normal pass takes tens of seconds, so a
+container still present five minutes later is a stalled pass for a person to
+look at. A race between the check and the start is caught by docker refusing
+a second container with the same name (exit 125).
+
+A booking pass is never signalled. Booking one row commits in separate steps
+(fill save, then journal/FIFO, then the progress update), so a pass killed in
+between can book the same delta again on the next pass. There is no timeout
+inside the container, and `--sig-proxy=false` keeps Dagu's timeout signal
+(`timeout_sec` only lets go of the docker client) away from the container.
+A kill from outside the job (deploy, OOM, reboot) can still split a row;
+a deadline checked between rows and idempotent row booking are hk 6288.
+
+Before any manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll`
+on OCI. Check that `docker ps --filter name=at-toss-fill-poll` on pi is empty.
+Then run the manual pass with the same `--name at-toss-fill-poll`, so docker
+refuses it if a scheduled pass is still running, and resume the DAG afterwards.
+A manual `toss_reconcile_orders(dry_run=False)` call needs the same suspend
+and check.
+
+The launchd section below is superseded by this job and kept for history.
 
 ## Future: launchd promotion (not applied by this issue)
 
