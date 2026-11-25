@@ -37,7 +37,7 @@ init_sentry(
 # tool is registered.
 _mcp_profile = require_mcp_profile(_env("MCP_PROFILE"))
 
-# ROB-1436: the low-traffic units (kiwoom, h3-*) defer pandas, numpy,
+# ROB-1436: the low-traffic profile (kiwoom_kr) defers pandas, numpy,
 # yfinance and the calendar packages until a tool first uses them. This must
 # run before the tooling package is imported below; DEFAULT stays eager.
 from app.mcp_server.lazy_imports import install_lazy_imports  # noqa: E402
@@ -78,16 +78,9 @@ def _validate_profile_auth_token(
         )
     if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
         return
-    # Profiles served over the tailnet from dedicated units; a network
-    # listener never runs tokenless.
-    if profile in {
-        McpProfile.KIWOOM,
-        McpProfile.KIWOOM_KR,
-        # #1171: the H3 paper pilot surface carries paper order mutations.
-        McpProfile.H3_CRYPTO_PAPER,
-        # #1257: the H3-US paper pilot surface carries Alpaca paper orders.
-        McpProfile.H3_US_PAPER,
-    }:
+    # The Kiwoom KR profile carries order mutations: a network listener never
+    # runs tokenless.
+    if profile is McpProfile.KIWOOM_KR:
         raise RuntimeError(
             f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN "
             "for network transports"
@@ -127,9 +120,7 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
     restricted_profiles = {
         # ROB-1159 — the KR-only Kiwoom profile is mock-pinned by construction,
         # so it fails closed at startup on incomplete mock config or a base URL
-        # that is not the mock host, instead of only at first tool call. This
-        # tightening applies to the new profile only; MCP_PROFILE=kiwoom startup
-        # behavior is deliberately left unchanged.
+        # that is not the mock host, instead of only at first tool call.
         McpProfile.KIWOOM_KR,
     }
     if profile in restricted_profiles and bool(

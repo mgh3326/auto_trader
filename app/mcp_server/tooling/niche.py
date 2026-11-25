@@ -36,7 +36,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "db-paper",
                 "default",
                 "hermes-paper-kis",
-                "kiwoom",
                 "kiwoom_kr",
                 "us-paper",
                 "watch_repricing",
@@ -51,7 +50,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "db-paper",
                 "default",
                 "hermes-paper-kis",
-                "kiwoom",
                 "kiwoom_kr",
                 "us-paper",
                 "watch_repricing",
@@ -87,7 +85,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "kiwoom",
                 "db-paper",
                 "default",
                 "kiwoom_kr",
@@ -105,7 +102,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "kiwoom",
                 "db-paper",
                 "default",
                 "kiwoom_kr",
@@ -137,7 +133,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "kiwoom",
                 "db-paper",
                 "default",
                 "kiwoom_kr",
@@ -156,7 +151,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "kiwoom",
                 "db-paper",
                 "default",
                 "kiwoom_kr",
@@ -200,7 +194,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "kiwoom",
                 "db-paper",
                 "default",
                 "kiwoom_kr",
@@ -217,9 +210,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset(
-            {"kiwoom", "db-paper", "default", "us-paper", "hermes-paper-kis", "crypto"}
-        ),
+        frozenset({"db-paper", "default", "us-paper", "hermes-paper-kis", "crypto"}),
         frozenset(
             {
                 "kis_mock_mirror_execute_report",
@@ -279,7 +270,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "kiwoom"}),
+        frozenset({"default"}),
         frozenset(
             {
                 "kiwoom_mock_us_cancel_order",
@@ -290,7 +281,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "kiwoom", "kiwoom_kr"}),
+        frozenset({"default", "kiwoom_kr"}),
         frozenset(
             {
                 "kiwoom_mock_get_order_detail",
@@ -298,7 +289,7 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset({"default", "kiwoom", "kiwoom_kr"}),
+        frozenset({"default", "kiwoom_kr"}),
         frozenset(
             {
                 "kiwoom_mock_cancel_order",

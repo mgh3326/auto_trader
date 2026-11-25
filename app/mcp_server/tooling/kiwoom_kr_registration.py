@@ -1,23 +1,13 @@
 """KR-only Kiwoom mock MCP profile registration (ROB-1159).
 
-Least-privilege split of ``MCP_PROFILE=kiwoom``.
+``MCP_PROFILE=kiwoom_kr`` carries the Kiwoom KR mock namespace without the US
+namespace or any foreign direct broker mutation. The US namespace
+(``KIWOOM_MOCK_US_MUTATION_TOOL_NAMES``, four mutations) stays behind
+``settings.kiwoom_mock_us_enabled`` on DEFAULT (ROB-867); this profile never
+registers it.
 
-``MCP_PROFILE=kiwoom`` registers **both** Kiwoom mock namespaces
-unconditionally (``app/mcp_server/tooling/registry.py``, KIWOOM branch): the
-eight KR ``kiwoom_mock_*`` tools **and** the seven US ``kiwoom_mock_us_*``
-tools, four of which are mutations
-(``KIWOOM_MOCK_US_MUTATION_TOOL_NAMES``). Unlike the DEFAULT profile — where
-the US namespace is behind ``settings.kiwoom_mock_us_enabled`` (ROB-867) — the
-KIWOOM branch has no such gate, so selecting that profile *physically exposes*
-the US mutation surface even for a session that only needs KR reads/orders
-(for example KR-B1, whose forced profile it is).
-
-``MCP_PROFILE=kiwoom_kr`` is that profile minus the whole US namespace and
-every foreign direct broker mutation:
-
-- Same shared read-only research/account surface (this profile does **not**
-  early-return before the "Always" block), so it is a drop-in replacement for
-  ``kiwoom`` in a KR session.
+- Shared read-only research/account surface (this profile does **not**
+  early-return before the "Always" block).
 - Exactly the eight KR ``kiwoom_mock_*`` tools as its order surface, including
   the ROB-1155 ``kiwoom_mock_get_order_detail`` (kt00007) read.
 - The broad shared block's KIS mock mirror executor is physically absent; the

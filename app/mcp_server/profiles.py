@@ -22,9 +22,8 @@ class McpProfile(StrEnum):
     CRYPTO = "crypto"
     US_PAPER = "us-paper"
     DB_PAPER = "db-paper"
-    KIWOOM = "kiwoom"
-    # ROB-1159 — least-privilege split of KIWOOM: KR namespace only, the whole
-    # kiwoom_mock_us_* namespace (4 mutations + 3 reads) physically absent.
+    # ROB-1159 — KR-only Kiwoom mock surface: the whole kiwoom_mock_us_*
+    # namespace (4 mutations + 3 reads) is physically absent.
     KIWOOM_KR = "kiwoom_kr"
     # Task 191: exact seven-capability supplied-artifact observation/replay
     # boundary. It is physically disjoint from live/default registrars.
@@ -44,16 +43,9 @@ class McpProfile(StrEnum):
     # their NCP units; a surface that is needed later is added back then. Live
     # sessions run on DEFAULT (prefect KR_LIVE_MCP_MODE=shared). Resolving
     # one of those names now fails like any unknown profile.
-    # #1171 (operator hk 1135 = A) — closed-world H3-CRYPTO paper pilot
-    # surface: the runner's 20 tools exactly (crypto paper simulator orders +
-    # the prompt's reads + record writes). No live order tool, no live
-    # account read; get_holdings is pinned to DB paper accounts.
-    H3_CRYPTO_PAPER = "h3-crypto-paper"
-    # #1257 (#1245) — closed-world H3-US paper pilot surface: the runner's 20
-    # tools exactly (Alpaca paper orders on account_mode alpaca_paper + the
-    # prompt's US reads + record writes). No live order tool; every listed
-    # tool is pinned to market us / account_mode alpaca_paper.
-    H3_US_PAPER = "h3-us-paper"
+    # hk 6456 (2026-11-25, operator decision) likewise retired the full
+    # "kiwoom" profile and the two H3 paper pilot profiles with their NCP
+    # units.
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

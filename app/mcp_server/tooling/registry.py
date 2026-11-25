@@ -44,21 +44,13 @@ Profile → tool surface mapping
 "db-paper" (McpProfile.DB_PAPER):
   Default research/read-only surface plus internal DB paper simulator tools.
 
-"kiwoom" (McpProfile.KIWOOM):
-  Default research/read-only surface plus BOTH typed Kiwoom mock namespaces:
-  the eight KR kiwoom_mock_* tools and — unconditionally, unlike DEFAULT's
-  ROB-867 ``kiwoom_mock_us_enabled`` gate — the seven US kiwoom_mock_us_*
-  tools, four of which are mutations. Prefer "kiwoom_kr" for any KR-only
-  session (ROB-1159).
-
 "kiwoom_kr" (McpProfile.KIWOOM_KR):
-  ROB-1159 least-privilege KR-only split of "kiwoom". Default research/read-only
-  surface plus EXACTLY the eight KR kiwoom_mock_* tools (including the ROB-1155
-  kiwoom_mock_get_order_detail kt00007 read). The whole kiwoom_mock_us_*
-  namespace is physically absent — the US registrar is never invoked, and both
-  the whole profile and KR registrar run through closed-world exact-set
-  proxies. KR order-path behavior is byte-identical to "kiwoom"; only the
-  registered set is narrower.
+  ROB-1159 least-privilege KR-only Kiwoom mock surface. Default
+  research/read-only surface plus EXACTLY the eight KR kiwoom_mock_* tools
+  (including the ROB-1155 kiwoom_mock_get_order_detail kt00007 read). The whole
+  kiwoom_mock_us_* namespace is physically absent — the US registrar is never
+  invoked, and both the whole profile and KR registrar run through closed-world
+  exact-set proxies.
 
 "shadow-replay" (McpProfile.SHADOW_REPLAY):
   Task 191 closed-world B0X observation/replay. Registers the exact seven
@@ -74,25 +66,10 @@ Profile → tool surface mapping
   watch mutation, signatures/capabilities, shell, bootstrap, and scheduler
   surfaces are physically absent.
 
-"h3-crypto-paper" (McpProfile.H3_CRYPTO_PAPER):
-  #1171 closed-world H3-CRYPTO paper pilot surface. Registers exactly the 20
-  names in h3_crypto_paper_registration.H3_CRYPTO_PAPER_TOOL_NAMES (the
-  auto_trader-operator runner's registered_tools("crypto")): read-only
-  bootstrap/research/account reads, the four ROB-703 paper simulator tools,
-  and the two record writes. Returns before the "Always" block; get_holdings
-  is pinned to DB paper accounts. No live order tool or live account read.
-
-"h3-us-paper" (McpProfile.H3_US_PAPER):
-  #1257 (#1245) closed-world H3-US paper pilot surface. Registers exactly the
-  20 names in h3_us_paper_registration.H3_US_PAPER_TOOL_NAMES (the
-  auto_trader-operator runner's registered_tools("us")): read-only
-  bootstrap/research reads pinned to market us, the three Alpaca paper reads
-  and two Alpaca paper order tools pinned to account_mode alpaca_paper, the
-  quote-snapshot builder pinned to market us, and the two record writes.
-  Returns before the "Always" block. No live order tool or live account read.
-
 ROB-1436 retired "analysis_readonly", "account_read", "tradingcodex_execution"
-and "live-kr" / "live-us" / "live-crypto" with their NCP units.
+and "live-kr" / "live-us" / "live-crypto" with their NCP units. hk 6456
+retired the full Kiwoom mock profile and the two H3 paper pilot profiles with
+theirs.
 
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
@@ -138,12 +115,6 @@ from app.mcp_server.tooling.fill_watch_context_registration import (
 )
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
-from app.mcp_server.tooling.h3_crypto_paper_registration import (
-    register_h3_crypto_paper_tools,
-)
-from app.mcp_server.tooling.h3_us_paper_registration import (
-    register_h3_us_paper_tools,
-)
 from app.mcp_server.tooling.investment_hermes_handlers import (
     register_investment_hermes_tools,
 )
@@ -327,22 +298,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_fill_watch_context_tools(mcp)
         return
 
-    if profile is McpProfile.H3_CRYPTO_PAPER:
-        # #1171 — H3-CRYPTO paper pilot. Closed world before the broad
-        # "Always" block: an exact-set proxy registers the runner's 20 tools
-        # and fails the boot unless the registered set equals that list. No
-        # bootstrap pack, no live order/account surface.
-        register_h3_crypto_paper_tools(mcp)
-        return
-
-    if profile is McpProfile.H3_US_PAPER:
-        # #1257 (#1245) — H3-US paper pilot. Closed world before the broad
-        # "Always" block: an exact-set proxy registers the runner's 20 tools
-        # and fails the boot unless the registered set equals that list. No
-        # bootstrap pack, no live order/account surface.
-        register_h3_us_paper_tools(mcp)
-        return
-
     if profile is McpProfile.WATCH_REPRICING:
         # ROB-1286 — the spawned re-judgement session's surface. Allowlist-only
         # and returns before the broad "Always" block, so every broker order
@@ -475,7 +430,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_toss_manual_activity_tools(mcp)
         # ROB-601: optionally surface kiwoom_mock_* in the operator DEFAULT
         # session so analyze→approval→order can run through kiwoom mock without
-        # switching to the isolated KIWOOM profile (which drops every other
+        # switching to an isolated Kiwoom profile (which drops every other
         # broker's order surface). Gated by ``settings.kiwoom_mock_enabled`` so
         # the tools are physically absent unless the operator opts in; each tool
         # still fail-closes on missing credentials at call time.
@@ -548,22 +503,15 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
-    elif profile is McpProfile.KIWOOM:
-        orders_kiwoom_variants.register(mcp)
-        from app.mcp_server.tooling.orders_kiwoom_us_variants import (
-            register as register_kiwoom_us,
-        )
-
-        register_kiwoom_us(mcp)
     elif profile is McpProfile.KIWOOM_KR:
-        # ROB-1159 — KR-only Kiwoom mock surface. Same shared read-only
-        # research/account block as KIWOOM above, but the kiwoom_mock_us_*
-        # namespace (4 mutations + 3 reads) is physically absent: this branch
-        # never invokes its registrar. The entire profile and the KR registrar
-        # run through nested exact-set proxies, so any future unreviewed tool is
-        # dropped instead of widening this profile. KR order-path behavior (KRX
-        # pinning, dry_run/confirm double gate) is unchanged — only the
-        # registered set differs.
+        # ROB-1159 — KR-only Kiwoom mock surface. Shared read-only
+        # research/account block above plus the KR namespace; the
+        # kiwoom_mock_us_* namespace (4 mutations + 3 reads) is physically
+        # absent: this branch never invokes its registrar. The entire profile
+        # and the KR registrar run through nested exact-set proxies, so any
+        # future unreviewed tool is dropped instead of widening this profile.
+        # The KR order path (KRX pinning, dry_run/confirm double gate) is the
+        # same one DEFAULT registers.
         from app.mcp_server.tooling.kiwoom_kr_registration import (
             register_kiwoom_kr_tools,
         )
