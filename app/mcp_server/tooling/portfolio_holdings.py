@@ -748,6 +748,54 @@ def _mark_price_refresh_failed(position: dict[str, Any], error: str) -> None:
         position["profit_rate_price_source"] = "kis_holdings_snapshot"
 
 
+async def _prefetch_kr_candle_frames(kr_symbols: list[str]) -> None:
+    """Batch the KR daily-candle DB read to one SELECT (hk 6376). Fail-open."""
+    symbols = sorted({str(s).strip() for s in kr_symbols if str(s).strip()})
+    if not symbols:
+        return
+    try:
+        from app.services.daily_candles import read_service as _kr_read_service
+
+        # DB-free unit contract: tests stub portfolio_holdings.cache_first_kr.
+        # A stubbed per-symbol reader means the caller wants no DB.
+        if cache_first_kr is not _kr_read_service.cache_first_kr:
+            return
+        from app.core.db import AsyncSessionLocal
+        from app.services.daily_candles.repository import (
+            DailyCandlesRepository,
+            MarketKey,
+        )
+
+        if _kr_read_service.kr_daily_bar_may_be_forming(None):
+            return
+
+        async with AsyncSessionLocal() as session:
+            repo = DailyCandlesRepository(session=session)
+            batched = await repo.fetch_recent_batch(
+                market=MarketKey.KR, symbols=symbols, partition="KRX", count=2
+            )
+            frames: dict[str, object | None] = {}
+            for sym in symbols:
+                rows = batched.get(sym, batched.get(sym.upper(), []))
+                if len(rows) >= 2 and _kr_read_service.cache_is_fresh_equity(
+                    rows, "XKRX", now=None
+                ):
+                    frames[sym] = _kr_read_service.rows_to_frame(rows)
+                else:
+                    frames[sym] = None
+            _kr_read_service.install_kr_batch_cache(frames)
+    except Exception:
+        logger.debug(
+            "KR candle batch prefetch failed; per-symbol fallback", exc_info=True
+        )
+        try:
+            from app.services.daily_candles import read_service as _rs
+
+            _rs.clear_kr_batch_cache()
+        except Exception:
+            pass
+
+
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
 ) -> tuple[
@@ -945,27 +993,41 @@ async def _fetch_price_map_for_positions(
     )
 
     if equity_pairs:
-        # ROB-1487: resolve the US exchanges for the whole fan-out up front. The
-        # KIS quote arm otherwise opened its own AsyncSessionLocal per symbol —
-        # at _EQUITY_PRICE_CONCURRENCY concurrent slots that overran
-        # DB_POOL_SIZE and made the pool dial fresh connections (Sentry connect
-        # spans) on every refresh.
-        from app.services.us_symbol_universe_service import us_exchange_prefetch
+        # hk 6376: one batched KR candle SELECT for the whole fan-out. The
+        # per-symbol cache_first_kr calls below then hit the request cache
+        # (0 statements), so output is identical with constant statements.
+        await _prefetch_kr_candle_frames(
+            [sym for it, sym in equity_pairs if it == "equity_kr"]
+        )
+        try:
+            # ROB-1487: resolve the US exchanges for the whole fan-out up front. The
+            # KIS quote arm otherwise opened its own AsyncSessionLocal per symbol —
+            # at _EQUITY_PRICE_CONCURRENCY concurrent slots that overran
+            # DB_POOL_SIZE and made the pool dial fresh connections (Sentry connect
+            # spans) on every refresh.
+            from app.services.us_symbol_universe_service import us_exchange_prefetch
 
-        async with us_exchange_prefetch(
-            [
-                sym
-                for instrument_type, sym in equity_pairs
-                if instrument_type == "equity_us"
-            ]
-        ):
-            results = await bounded_gather(
-                _EQUITY_PRICE_CONCURRENCY,
+            async with us_exchange_prefetch(
                 [
-                    lambda it=it, sym=sym: fetch_equity_price(it, sym)
-                    for it, sym in equity_pairs
-                ],
-            )
+                    sym
+                    for instrument_type, sym in equity_pairs
+                    if instrument_type == "equity_us"
+                ]
+            ):
+                results = await bounded_gather(
+                    _EQUITY_PRICE_CONCURRENCY,
+                    [
+                        lambda it=it, sym=sym: fetch_equity_price(it, sym)
+                        for it, sym in equity_pairs
+                    ],
+                )
+        finally:
+            try:
+                from app.services.daily_candles import read_service as _rs
+
+                _rs.clear_kr_batch_cache()
+            except Exception:
+                pass
         for instrument_type, symbol, price, error, source, metadata in results:
             if price is not None:
                 key = (instrument_type, symbol)
@@ -1271,47 +1333,103 @@ async def _apply_protection_to_live_positions(
     if is_mock:
         return positions
 
-    protected_positions: list[dict[str, Any]] = []
-    for position in positions:
-        broker = str(position.get("broker") or "").lower()
-        source = str(position.get("source") or "").lower()
-        instrument_type = str(position.get("instrument_type") or "")
-        market = str(position.get("market") or "")
-        if (
-            broker == "kis"
-            and source == "kis_api"
-            and instrument_type
-            in {
-                "equity_kr",
-                "equity_us",
-            }
-        ):
-            account_scope = "kis_live"
-        elif (
-            broker == "upbit" and source == "upbit_api" and instrument_type == "crypto"
-        ):
-            account_scope = "upbit_live"
-        elif (
-            broker == "toss"
-            and source == "toss_api"
-            and instrument_type
-            in {
-                "equity_kr",
-                "equity_us",
-            }
-        ):
-            account_scope = "toss_live"
-        else:
-            protected_positions.append(position)
-            continue
-        protected_positions.append(
-            await apply_position_protection(
-                position,
-                account_scope=account_scope,
-                market=market,
-                symbol=str(position.get("symbol") or ""),
-            )
+    # hk 6376: one SELECT per (account_scope, market) for the whole fan-out.
+    # The per-position apply_position_protection calls below then hit the
+    # request cache (0 statements), so output is identical with constant
+    # statements. Call counts are unchanged for existing tests.
+    try:
+        from app.services import protected_quantity_service as _pqs
+
+        _prefetch_keys: list[Any] = []
+        for _pos in positions:
+            _broker = str(_pos.get("broker") or "").lower()
+            _source = str(_pos.get("source") or "").lower()
+            _it = str(_pos.get("instrument_type") or "")
+            _mkt = str(_pos.get("market") or "")
+            _scope: str | None = None
+            if (
+                _broker == "kis"
+                and _source == "kis_api"
+                and _it in {"equity_kr", "equity_us"}
+            ):
+                _scope = "kis_live"
+            elif _broker == "upbit" and _source == "upbit_api" and _it == "crypto":
+                _scope = "upbit_live"
+            elif (
+                _broker == "toss"
+                and _source == "toss_api"
+                and _it in {"equity_kr", "equity_us"}
+            ):
+                _scope = "toss_live"
+            if _scope is not None:
+                try:
+                    _prefetch_keys.append(
+                        _pqs.normalize_protection_key(
+                            account_scope=_scope,
+                            market=_mkt,
+                            symbol=str(_pos.get("symbol") or ""),
+                        )
+                    )
+                except Exception:
+                    continue
+        if _prefetch_keys:
+            await _pqs.prefetch_protection_heads(_prefetch_keys)
+    except Exception:
+        logger.debug(
+            "protection head prefetch failed; per-symbol fallback", exc_info=True
         )
+
+    protected_positions: list[dict[str, Any]] = []
+    try:
+        for position in positions:
+            broker = str(position.get("broker") or "").lower()
+            source = str(position.get("source") or "").lower()
+            instrument_type = str(position.get("instrument_type") or "")
+            market = str(position.get("market") or "")
+            if (
+                broker == "kis"
+                and source == "kis_api"
+                and instrument_type
+                in {
+                    "equity_kr",
+                    "equity_us",
+                }
+            ):
+                account_scope = "kis_live"
+            elif (
+                broker == "upbit"
+                and source == "upbit_api"
+                and instrument_type == "crypto"
+            ):
+                account_scope = "upbit_live"
+            elif (
+                broker == "toss"
+                and source == "toss_api"
+                and instrument_type
+                in {
+                    "equity_kr",
+                    "equity_us",
+                }
+            ):
+                account_scope = "toss_live"
+            else:
+                protected_positions.append(position)
+                continue
+            protected_positions.append(
+                await apply_position_protection(
+                    position,
+                    account_scope=account_scope,
+                    market=market,
+                    symbol=str(position.get("symbol") or ""),
+                )
+            )
+    finally:
+        try:
+            from app.services import protected_quantity_service as _pqs2
+
+            _pqs2.clear_protection_batch_caches()
+        except Exception:
+            pass
     return protected_positions
 
 

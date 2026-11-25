@@ -52,6 +52,7 @@ tests/mcp_server/test_route_request_profile_golden.py
 tests/mcp_server/test_tool_call_observability.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
 tests/mcp_server/tooling/test_decision_table_apply.py
+tests/mcp_server/tooling/test_get_holdings_batch_reads.py
 tests/mcp_server/tooling/test_get_holdings_n1_residuals.py
 tests/mcp_server/tooling/test_live_order_ledger.py
 tests/mcp_server/tooling/test_order_proposal_create_post_commit.py

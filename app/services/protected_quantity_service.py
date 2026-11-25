@@ -20,6 +20,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar as _ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -146,6 +147,257 @@ class ProtectionKey:
     account_scope: AccountScope
     market: ProtectionMarket
     symbol: str
+
+
+# hk 6376: request-scoped head prefetch for get_holdings. When
+# prefetch_protection_heads populates this map, per-symbol _read_head_snapshot
+# serves from it without opening a session, so N symbols cost one SELECT per
+# (account_scope, market) instead of N. Fail-open: miss means "not prefetched".
+
+_HEAD_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object] | None] = _ContextVar(
+    "protection_head_batch", default=None
+)
+_HEAD_BATCH_MISSING: object = object()
+
+_ALIAS_BATCH_CACHE: _ContextVar[dict[ProtectionKey, object | None] | None] = (
+    _ContextVar("protection_alias_batch", default=None)
+)
+
+_DRIFT_NET_CACHE: _ContextVar[dict[ProtectionKey, Decimal] | None] = _ContextVar(
+    "protection_drift_batch", default=None
+)
+
+
+def install_protection_head_cache(
+    heads: dict[ProtectionKey, object | None],
+) -> None:
+    """Install a request-scoped head map (None = proven absent)."""
+    _HEAD_BATCH_CACHE.set(dict(heads))
+
+
+def clear_protection_head_cache() -> None:
+    """Clear the request-scoped head map."""
+    _HEAD_BATCH_CACHE.set(None)
+
+
+def install_protection_alias_cache(
+    aliases: dict[ProtectionKey, object | None],
+) -> None:
+    """Install a request-scoped Upbit alias map (None = proven absent)."""
+    _ALIAS_BATCH_CACHE.set(dict(aliases))
+
+
+def clear_protection_alias_cache() -> None:
+    """Clear the request-scoped alias map."""
+    _ALIAS_BATCH_CACHE.set(None)
+
+
+def install_protection_drift_cache(nets: dict[ProtectionKey, Decimal]) -> None:
+    """Install request-scoped drift nets (signed ledger sum since confirmation)."""
+    _DRIFT_NET_CACHE.set(dict(nets))
+
+
+def clear_protection_drift_cache() -> None:
+    """Clear the request-scoped drift map."""
+    _DRIFT_NET_CACHE.set(None)
+
+
+def clear_protection_batch_caches() -> None:
+    """Clear all request-scoped protection prefetch maps."""
+    _HEAD_BATCH_CACHE.set(None)
+    _ALIAS_BATCH_CACHE.set(None)
+    _DRIFT_NET_CACHE.set(None)
+
+
+async def prefetch_protection_heads(keys: list[ProtectionKey]) -> None:
+    """Read all heads in one SELECT per (account_scope, market). Fail-open.
+
+    Also batches the Upbit alias lookup (one SELECT for all crypto keys) and
+    the drift ledger sums (one SELECT per broker/currency group). Miss means
+    "not prefetched", never a DB statement on the per-symbol path.
+    """
+    unique: dict[ProtectionKey, None] = {}
+    for key in keys:
+        unique[key] = None
+    if not unique:
+        return
+    # DB-free unit contract: pin_environment stubs _read_head_snapshot to keep
+    # the golden DB-free. A stubbed reader means the caller wants no DB, so
+    # populate the cache via the stub itself and do no sessions.
+    try:
+        _orig = globals().get("_ORIG_READ_HEAD_SNAPSHOT")
+        if _orig is not None and _read_head_snapshot is not _orig:
+            stubbed: dict[ProtectionKey, object | None] = {}
+            for key in unique:
+                try:
+                    stubbed[key] = await _read_head_snapshot(key)
+                except Exception:
+                    stubbed[key] = None
+            install_protection_head_cache(stubbed)
+            install_protection_alias_cache(dict.fromkeys(unique))
+            install_protection_drift_cache({})
+            return
+    except Exception:
+        pass
+    from collections import defaultdict
+
+    from app.core.db import AsyncSessionLocal
+
+    grouped: dict[tuple[str, str], list[ProtectionKey]] = defaultdict(list)
+    for key in unique:
+        grouped[(key.account_scope, key.market)].append(key)
+    merged: dict[ProtectionKey, object | None] = {}
+    snapshots: dict[ProtectionKey, ProtectedPositionSnapshot | None] = {}
+    try:
+        for (scope, market), group_keys in grouped.items():
+            symbols = sorted({k.symbol for k in group_keys})
+            async with AsyncSessionLocal() as db:
+                rows = (
+                    await db.execute(
+                        select(ProtectedPosition).where(
+                            ProtectedPosition.account_scope == scope,
+                            ProtectedPosition.market == market,
+                            ProtectedPosition.symbol.in_(symbols),
+                        )
+                    )
+                ).scalars()
+                by_symbol: dict[str, ProtectedPosition] = {}
+                for row in rows:
+                    by_symbol.setdefault(str(row.symbol), row)
+                for key in group_keys:
+                    row = by_symbol.get(key.symbol)
+                    snap = None if row is None else _snapshot(row)
+                    merged[key] = snap
+                    snapshots[key] = snap
+    except Exception:
+        logger.debug(
+            "protection head prefetch failed; falling back per-symbol", exc_info=True
+        )
+        return
+    install_protection_head_cache(merged)
+    # Alias: one SELECT for all upbit base assets, resolved in memory like the
+    # per-symbol ORDER BY symbol LIMIT 1.
+    upbit_keys = [k for k in unique if k.account_scope == "upbit_live"]
+    if upbit_keys:
+        try:
+            base_assets = sorted(
+                {
+                    k.symbol.partition("-")[2]
+                    for k in upbit_keys
+                    if k.symbol.partition("-")[2]
+                }
+            )
+            alias_map: dict[ProtectionKey, object | None] = dict.fromkeys(upbit_keys)
+            if base_assets:
+                async with AsyncSessionLocal() as db:
+                    alias_rows = (
+                        await db.execute(
+                            select(ProtectedPosition).where(
+                                ProtectedPosition.account_scope == "upbit_live",
+                                ProtectedPosition.market == "crypto",
+                                ProtectedPosition.protected_quantity > 0,
+                                func.split_part(ProtectedPosition.symbol, "-", 2).in_(
+                                    base_assets
+                                ),
+                            )
+                        )
+                    ).scalars()
+                    by_base: dict[str, list[ProtectedPosition]] = defaultdict(list)
+                    for row in alias_rows:
+                        by_base[str(row.symbol).partition("-")[2]].append(row)
+                    for rows_in_base in by_base.values():
+                        rows_in_base.sort(key=lambda r: str(r.symbol))
+                    for key in upbit_keys:
+                        base = key.symbol.partition("-")[2]
+                        candidates = [
+                            r
+                            for r in by_base.get(base, [])
+                            if str(r.symbol) != key.symbol
+                        ]
+                        if candidates:
+                            alias_map[key] = _snapshot(candidates[0])
+            install_protection_alias_cache(alias_map)
+        except Exception:
+            logger.debug(
+                "protection alias prefetch failed; falling back per-symbol",
+                exc_info=True,
+            )
+    else:
+        install_protection_alias_cache({})
+    # Drift: one ledger SELECT per broker/currency group since the minimum
+    # confirmation time, summed per key in Python with each key's own since.
+    drift_keys = [
+        k
+        for k, snap in snapshots.items()
+        if snap is not None and snap.protected_quantity > 0
+    ]
+    if drift_keys:
+        try:
+            drift_nets: dict[ProtectionKey, Decimal] = {}
+            by_ledger_group: dict[tuple[str, str, bool], list[ProtectionKey]] = (
+                defaultdict(list)
+            )
+            for key in drift_keys:
+                snap = snapshots[key]
+                assert snap is not None
+                is_crypto = key.market == "crypto"
+                broker = _BROKER_BY_SCOPE[key.account_scope]
+                currency = _CURRENCY_BY_SCOPE_MARKET[(key.account_scope, key.market)]
+                by_ledger_group[(broker, currency, is_crypto)].append(key)
+            for (broker, currency, is_crypto), group_keys in by_ledger_group.items():
+                min_since = min(
+                    snapshots[k].last_confirmed_at
+                    for k in group_keys
+                    if snapshots[k] is not None
+                )
+                symbols_in_group = sorted({k.symbol for k in group_keys})
+                ledger_col = (
+                    ExecutionLedger.raw_symbol if is_crypto else ExecutionLedger.symbol
+                )
+                async with AsyncSessionLocal() as db:
+                    ledger_rows = (
+                        (
+                            await db.execute(
+                                select(
+                                    ledger_col.label("sym"),
+                                    ExecutionLedger.filled_qty,
+                                    ExecutionLedger.side,
+                                    ExecutionLedger.filled_at,
+                                ).where(
+                                    ExecutionLedger.broker == broker,
+                                    ExecutionLedger.account_mode == "live",
+                                    ledger_col.in_(symbols_in_group),
+                                    ExecutionLedger.currency == currency,
+                                    ExecutionLedger.filled_at >= min_since,
+                                    ExecutionLedger.source != "manual_import",
+                                    execution_ledger_in_effect(),
+                                )
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    for key in group_keys:
+                        snap = snapshots[key]
+                        assert snap is not None
+                        total = Decimal("0")
+                        for row in ledger_rows:
+                            if str(row["sym"]) != key.symbol:
+                                continue
+                            filled_at = row["filled_at"]
+                            if filled_at is None or filled_at < snap.last_confirmed_at:
+                                continue
+                            qty = Decimal(str(row["filled_qty"]))
+                            total += qty if str(row["side"]) == "buy" else -qty
+                        drift_nets[key] = total
+            install_protection_drift_cache(drift_nets)
+        except Exception:
+            logger.debug(
+                "protection drift prefetch failed; falling back per-symbol",
+                exc_info=True,
+            )
+    else:
+        install_protection_drift_cache({})
 
 
 class BrokerPositionUnobserved(RuntimeError):
@@ -388,6 +640,13 @@ async def _read_head(
 
 
 async def _read_head_snapshot(key: ProtectionKey) -> ProtectedPositionSnapshot | None:
+    batched = _HEAD_BATCH_CACHE.get()
+    if batched is not None and key in batched:
+        cached = batched[key]
+        if cached is _HEAD_BATCH_MISSING:
+            return None
+        # None means the batch proved absence: no DB stmt.
+        return cached  # type: ignore[return-value]
     from app.core.db import AsyncSessionLocal
 
     try:
@@ -396,6 +655,9 @@ async def _read_head_snapshot(key: ProtectionKey) -> ProtectedPositionSnapshot |
             return None if row is None else _snapshot(row)
     except Exception as exc:
         raise ProtectionStateUnavailable("protected position lookup failed") from exc
+
+
+_ORIG_READ_HEAD_SNAPSHOT = _read_head_snapshot
 
 
 async def _read_upbit_asset_alias(
@@ -407,6 +669,10 @@ async def _read_upbit_asset_alias(
     balance/locked evidence is shared by every quote market of a base asset,
     so a sell through a different quote must not treat that balance as free.
     """
+    batched_alias = _ALIAS_BATCH_CACHE.get()
+    if batched_alias is not None and key in batched_alias:
+        cached_alias = batched_alias[key]
+        return cached_alias  # type: ignore[return-value]
 
     from app.core.db import AsyncSessionLocal
 
@@ -468,6 +734,11 @@ async def _net_execution_quantity_since(
 async def _is_drifted(
     *, snapshot: ProtectedPositionSnapshot, fresh_held: Decimal
 ) -> bool:
+    batched_nets = _DRIFT_NET_CACHE.get()
+    if batched_nets is not None and snapshot.key in batched_nets:
+        net = batched_nets[snapshot.key]
+        expected = snapshot.last_confirmed_broker_held + net
+        return fresh_held != expected
     from app.core.db import AsyncSessionLocal
 
     try:
