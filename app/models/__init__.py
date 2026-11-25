@@ -52,6 +52,7 @@ from .invalid_sample_eligibility import (
     SampleEligibilityDecision,
 )
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
+from .fnguide import FnguideReport, FnguideSnapshot, FnguideValue
 from .invest_kr_fundamentals_snapshot import InvestKrFundamentalsSnapshot
 from .invest_momentum_event_snapshot import (
     InvestMomentumEventRun,
@@ -323,6 +324,9 @@ __all__ = [
     "InvalidSampleCleanupLifecycleEvent",
     "SampleEligibilityDecision",
     "InvestCryptoScreenerSnapshot",
+    "FnguideReport",
+    "FnguideSnapshot",
+    "FnguideValue",
     "InvestKrFundamentalsSnapshot",
     "InvestScreenerSnapshot",
     "InvestMomentumEventRun",
