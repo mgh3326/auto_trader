@@ -228,3 +228,41 @@ async def test_revision_log_records_a_revert_as_a_third_revision(db_session):
         )
     ).scalar_one()
     assert row.raw_payload_json["eps"] == "2.18"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_provider_keyed_reingest_never_clears_a_resolved_symbol(db_session):
+    """An unresolved re-upsert must not erase what an earlier run resolved.
+
+    DART re-upserts the same ``rcept_no`` every day and emits ``symbol=None``
+    when the corp-code registry read fails; the stored symbol has to survive.
+    A genuinely moved value still updates.
+    """
+    repo = MarketEventsRepository(db_session)
+    base = {
+        "category": "disclosure",
+        "market": "kr",
+        "country": "KR",
+        "symbol": "005930",
+        "company_name": "삼성전자",
+        "title": "분기보고서",
+        "event_date": date(2026, 5, 13),
+        "time_hint": "unknown",
+        "status": "released",
+        "source": "dart",
+        "source_event_id": "20260513000001",
+    }
+
+    await repo.upsert_event_with_values(dict(base), [])
+    await repo.upsert_event_with_values({**base, "symbol": None}, [])
+
+    stmt = select(MarketEvent).where(MarketEvent.source_event_id == "20260513000001")
+    row = (await db_session.execute(stmt)).scalar_one()
+    assert row.symbol == "005930"
+
+    moved = {**base, "symbol": "000660", "event_date": date(2026, 5, 14)}
+    await repo.upsert_event_with_values(moved, [])
+    await db_session.refresh(row)
+    assert row.symbol == "000660"
+    assert row.event_date == date(2026, 5, 14)

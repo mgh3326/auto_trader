@@ -78,10 +78,17 @@ class MarketEventsRepository:
             # superseded date while the revision log records the new one.
             # Natural-key rows cannot move them: the natural key *is*
             # (symbol, event_date, fiscal_year, fiscal_quarter).
-            update_columns["event_date"] = payload.get("event_date")
-            update_columns["symbol"] = payload.get("symbol")
-            update_columns["fiscal_year"] = payload.get("fiscal_year")
-            update_columns["fiscal_quarter"] = payload.get("fiscal_quarter")
+            #
+            # A *None* value never clears a stored one (hk 6513 r2): writers
+            # resolve these fields best-effort, e.g. DART falls back to
+            # ``symbol=None`` when the corp-code registry read fails
+            # (``symbol_resolution_reason='registry_unavailable'``) and the day
+            # is re-upserted by the next DAG run. Treating that None as "now
+            # unknown, clear it" would erase evidence the earlier run proved.
+            for column in ("event_date", "symbol", "fiscal_year", "fiscal_quarter"):
+                value = payload.get(column)
+                if value is not None:
+                    update_columns[column] = value
             stmt = (
                 pg_insert(MarketEvent.__table__)
                 .values(**payload)
