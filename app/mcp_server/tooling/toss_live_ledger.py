@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -54,6 +55,10 @@ from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerServi
 _TOSS_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us"}
 
 logger = logging.getLogger(__name__)
+
+# Clock for the between-rows reconcile deadline; a name tests can replace
+# without touching the event loop's own clock.
+_monotonic = time.monotonic
 
 
 def _reconcile_error_payload(exc: Exception) -> dict[str, Any]:
@@ -602,102 +607,133 @@ async def _reconcile_one_toss_row(
         if converged is not None:
             base["proposal_rung"] = converged
 
-    if delta <= 0:
-        base["action"] = "noop_already_booked"
-        if not dry_run:
-            async with _order_session_factory()() as db:
-                await TossLiveOrderLedgerService(db).update_reconcile_outcome(
-                    ledger_id=row.id,
-                    status=evidence.local_status,
-                    broker_status=evidence.broker_status,
-                    filled_qty=broker_cum,
-                    avg_fill_price=avg_price,
-                    commission=evidence.commission,
-                    tax=evidence.tax,
-                    settlement_date=evidence.settlement_date,
-                    raw_response=evidence.raw_order,
-                    expired_at=evidence.expired_at,
-                )
-        if evidence.expired_at is not None:
-            base["expired_at"] = evidence.expired_at.isoformat()
-        return base
-
     if dry_run:
+        if delta <= 0:
+            base["action"] = "noop_already_booked"
+            if evidence.expired_at is not None:
+                base["expired_at"] = evidence.expired_at.isoformat()
+            return base
         base["action"] = "would_book"
         return base
 
-    # ROB-568 — US FX spot capture
+    # ROB-568 — US FX spot capture.  A network read, so it happens before the
+    # row lock.  Committed filled_qty only grows, so a delta that is positive
+    # under the lock is already positive here.
     fx_capture = None
-    if row.market == "us":
+    if row.market == "us" and delta > 0:
         fx_capture = await capture_reconcile_spot_fx()
 
-    trade_id = await _save_order_fill(
-        symbol=row.symbol,
-        instrument_type=("equity_kr" if row.market == "kr" else "equity_us"),
-        side=row.side,
-        price=float(avg_price),
-        quantity=float(delta),
-        total_amount=float(avg_price) * float(delta),
-        fee=float(evidence.fee_total),
-        currency=row.currency or ("KRW" if row.market == "kr" else "USD"),
-        account="toss",
-        order_id=row.broker_order_id,
-    )
-
-    journal_id = row.journal_id
-    fx_summary = None
-    if row.side == "buy" and row.journal_id is None:
-        jr = await _create_trade_journal_for_buy(
-            symbol=row.symbol,
-            market_type=("equity_kr" if row.market == "kr" else "equity_us"),
-            preview={
-                "price": float(avg_price),
-                "quantity": float(broker_cum),
-                "estimated_value": float(avg_price) * float(broker_cum),
-            },
-            thesis=(row.thesis or "").strip() or "toss reconciled fill",
-            strategy=(row.strategy or "").strip() or "toss reconciled fill",
-            target_price=float(row.target_price) if row.target_price else None,
-            stop_loss=float(row.stop_loss) if row.stop_loss else None,
-            min_hold_days=row.min_hold_days,
-            notes=row.notes,
-            indicators_snapshot=row.indicators_snapshot,
-            account_type="live",
-            account="toss",
-            correlation_id=getattr(row, "correlation_id", None),
-            buy_fx_rate=float(fx_capture.rate)
-            if fx_capture and fx_capture.rate
-            else None,
-            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
-            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
-        )
-        journal_id = jr.get("journal_id")
-        if trade_id and journal_id:
-            await _link_journal_to_fill(
-                symbol=row.symbol,
-                trade_id=trade_id,
-                account_type="live",
-                account="toss",
-            )
-    elif row.side == "sell":
-        fill_at, fill_basis = _parse_toss_fill_time(dict(evidence.raw_order or {}))
-        fx_summary = await _close_journals_on_sell(
-            exit_at=fill_at if fill_basis == "broker_fill_time" else None,
-            symbol=row.symbol,
-            sell_quantity=float(delta),
-            sell_price=float(avg_price),
-            exit_reason=(row.exit_reason or row.reason),
-            account_type="live",
-            account="toss",
-            sell_fx_rate=float(fx_capture.rate)
-            if fx_capture and fx_capture.rate
-            else None,
-            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
-            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
-        )
-
+    # hk 6288 — one booking per broker fill delta.  The row lock, the re-read of
+    # the booked progress and every booking write share this one transaction;
+    # update_reconcile_outcome commits it, and nothing else does.  A pass that
+    # dies before that commit leaves no trade, journal or execution row.
     async with _order_session_factory()() as db:
         svc = TossLiveOrderLedgerService(db)
+        locked = await svc.lock_row_for_booking(row.id)
+        if locked is None:
+            # Never wait: the auto-veto caller holds proposal locks while it
+            # runs this kernel.  The next pass books what is still unbooked.
+            base["action"] = "skipped_row_locked"
+            return base
+        already = locked.filled_qty or Decimal("0")
+        delta = broker_cum - already
+        base["delta_qty"] = float(delta)
+        if delta < 0:
+            # Another pass already booked past this evidence.  Writing it would
+            # move filled_qty backwards and book the difference a second time.
+            base["action"] = "noop_stale_evidence"
+            return base
+        if delta == 0 and locked.status in _TOSS_TERMINAL_LEDGER_STATUSES:
+            base["action"] = "noop_terminal"
+            return base
+
+        if delta == 0:
+            await svc.update_reconcile_outcome(
+                ledger_id=row.id,
+                status=evidence.local_status,
+                broker_status=evidence.broker_status,
+                filled_qty=broker_cum,
+                avg_fill_price=avg_price,
+                commission=evidence.commission,
+                tax=evidence.tax,
+                settlement_date=evidence.settlement_date,
+                raw_response=evidence.raw_order,
+                expired_at=evidence.expired_at,
+            )
+            base["action"] = "noop_already_booked"
+            if evidence.expired_at is not None:
+                base["expired_at"] = evidence.expired_at.isoformat()
+            return base
+
+        trade_id = await _save_order_fill(
+            symbol=row.symbol,
+            instrument_type=("equity_kr" if row.market == "kr" else "equity_us"),
+            side=row.side,
+            price=float(avg_price),
+            quantity=float(delta),
+            total_amount=float(avg_price) * float(delta),
+            fee=float(evidence.fee_total),
+            currency=row.currency or ("KRW" if row.market == "kr" else "USD"),
+            account="toss",
+            order_id=row.broker_order_id,
+            db=db,
+        )
+
+        journal_id = locked.journal_id
+        fx_summary = None
+        if row.side == "buy" and locked.journal_id is None:
+            jr = await _create_trade_journal_for_buy(
+                symbol=row.symbol,
+                market_type=("equity_kr" if row.market == "kr" else "equity_us"),
+                preview={
+                    "price": float(avg_price),
+                    "quantity": float(broker_cum),
+                    "estimated_value": float(avg_price) * float(broker_cum),
+                },
+                thesis=(row.thesis or "").strip() or "toss reconciled fill",
+                strategy=(row.strategy or "").strip() or "toss reconciled fill",
+                target_price=float(row.target_price) if row.target_price else None,
+                stop_loss=float(row.stop_loss) if row.stop_loss else None,
+                min_hold_days=row.min_hold_days,
+                notes=row.notes,
+                indicators_snapshot=row.indicators_snapshot,
+                account_type="live",
+                account="toss",
+                correlation_id=getattr(row, "correlation_id", None),
+                buy_fx_rate=float(fx_capture.rate)
+                if fx_capture and fx_capture.rate
+                else None,
+                fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+                fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
+                db=db,
+            )
+            journal_id = jr.get("journal_id")
+            if trade_id and journal_id:
+                await _link_journal_to_fill(
+                    symbol=row.symbol,
+                    trade_id=trade_id,
+                    account_type="live",
+                    account="toss",
+                    db=db,
+                )
+        elif row.side == "sell":
+            fill_at, fill_basis = _parse_toss_fill_time(dict(evidence.raw_order or {}))
+            fx_summary = await _close_journals_on_sell(
+                exit_at=fill_at if fill_basis == "broker_fill_time" else None,
+                symbol=row.symbol,
+                sell_quantity=float(delta),
+                sell_price=float(avg_price),
+                exit_reason=(row.exit_reason or row.reason),
+                account_type="live",
+                account="toss",
+                sell_fx_rate=float(fx_capture.rate)
+                if fx_capture and fx_capture.rate
+                else None,
+                fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+                fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
+                db=db,
+            )
+
         execution_status, execution_ledger_id = await upsert_toss_execution_fill(
             db,
             row,
@@ -892,7 +928,14 @@ async def toss_reconcile_orders_impl(
     limit: int = 100,
     project_proposal_rungs: bool = True,
     scope: Literal["full", "terminal_only"] = "full",
+    deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
+    """Reconcile open Toss live orders.
+
+    ``deadline_monotonic`` (a ``time.monotonic()`` value, default none) is
+    checked only between rows: no new row starts at or after it, and a started
+    row always runs to its end.  Rows left are reported under ``deadline``.
+    """
     if (
         scope == "terminal_only"
         and not dry_run
@@ -1010,8 +1053,12 @@ async def toss_reconcile_orders_impl(
             batch_build_error = {"type": type(exc).__name__, "message": str(exc)}
             evidence_source = None
 
+    rows_left = 0
     try:
-        for row in rows:
+        for index, row in enumerate(rows):
+            if deadline_monotonic is not None and _monotonic() >= deadline_monotonic:
+                rows_left = len(rows) - index
+                break
             try:
                 if scope == "terminal_only":
                     outcome = await _reconcile_one_toss_row(
@@ -1063,6 +1110,8 @@ async def toss_reconcile_orders_impl(
             f"(dry_run={dry_run}): {counts}"
         ),
     }
+    if rows_left:
+        result["deadline"] = {"reached": True, "rows_left": rows_left}
     if evidence_source is not None:
         result["window"] = {
             "from": evidence_source.window_from,

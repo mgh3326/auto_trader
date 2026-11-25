@@ -46,6 +46,7 @@ tests/mcp_server/tooling/test_protected_quantity_holdings.py
 tests/mcp_server/tooling/test_toss_live_order_mutation_safety.py
 tests/mcp_server/tooling/test_toss_loss_cut.py
 tests/mcp_server/tooling/test_toss_reconcile_account_seq.py
+tests/mcp_server/tooling/test_toss_reconcile_deadline.py
 tests/models/test_investment_report_news_models.py
 tests/models/test_trade_profile.py
 tests/models/test_trading_decision_service.py

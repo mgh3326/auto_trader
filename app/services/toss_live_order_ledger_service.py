@@ -199,6 +199,21 @@ class TossLiveOrderLedgerService:
         await self._db.refresh(row)
         return row
 
+    async def lock_row_for_booking(self, ledger_id: int) -> TossLiveOrderLedger | None:
+        """hk 6288 — try-lock one ledger row and re-read its committed values.
+
+        ``FOR UPDATE SKIP LOCKED`` never waits: ``None`` means another
+        transaction holds the row (or the row is gone), so the caller books
+        nothing.  The lock lasts until the caller's transaction ends, and
+        ``populate_existing`` replaces any values this session read earlier.
+        """
+        return await self._db.get(
+            TossLiveOrderLedger,
+            ledger_id,
+            with_for_update={"skip_locked": True},
+            populate_existing=True,
+        )
+
     async def mark_replaced(
         self, *, broker_order_id: str, replaced_by_order_id: str
     ) -> None:

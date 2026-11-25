@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from app.core.config import settings
@@ -40,6 +41,11 @@ from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerServi
 from app.tasks.toss_live_reconcile_tasks import _toss_fill_poll_market_gate
 
 logger = logging.getLogger(__name__)
+
+# hk 6288 — measured from the start of a commit pass, discovery included.  No
+# new ledger row starts after it, so a slow pass ends before the next
+# five-minute tick; the row in progress always finishes.
+PASS_DEADLINE_SECONDS = 240.0
 
 
 async def _preview_targets(*, market: str | None) -> dict[str, Any]:
@@ -79,6 +85,7 @@ async def _invalidate_sellable_cache(booked_symbols: list[str]) -> None:
 
 
 async def _run_commit(*, market: str | None) -> dict[str, Any]:
+    deadline = time.monotonic() + PASS_DEADLINE_SECONDS
     client = TossReadClient.from_settings()
     try:
         async with _order_session_factory()() as db:
@@ -93,6 +100,7 @@ async def _run_commit(*, market: str | None) -> dict[str, Any]:
             dry_run=False,
             market=market,
             limit=settings.TOSS_FILL_POLL_RECONCILE_LIMIT,
+            deadline_monotonic=deadline,
         )
         booked_symbols = sorted(
             {
