@@ -9,15 +9,18 @@ down_revision = "20261125_hk6513_benzinga"
 branch_labels = None
 depends_on = None
 
-_TABLE = "invest_momentum_event_snapshots"
-_CHECK = "ck_invest_momentum_event_snapshots_source"
-_OLD_SOURCES = "'naver_stock', 'alpaca_screener', 'kis_overseas_ranking'"
-
 
 def upgrade() -> None:
-    op.drop_constraint(_CHECK, _TABLE, type_="check")
+    # Replace the source CHECK in the same transaction with a wider vocabulary.
+    # expand-contract: contract-step 6579
+    op.execute(
+        "ALTER TABLE invest_momentum_event_snapshots "
+        "DROP CONSTRAINT ck_invest_momentum_event_snapshots_source"
+    )
     op.create_check_constraint(
-        _CHECK, _TABLE, f"source IN ({_OLD_SOURCES}, 'benzinga_pro')"
+        op.f("ck_invest_momentum_event_snapshots_source"),
+        "invest_momentum_event_snapshots",
+        "source IN ('naver_stock', 'alpaca_screener', 'kis_overseas_ranking', 'benzinga_pro')",
     )
 
 
@@ -36,5 +39,13 @@ def downgrade() -> None:
         )
     ):
         raise RuntimeError("Benzinga Pro capture rows exist")
-    op.drop_constraint(_CHECK, _TABLE, type_="check")
-    op.create_check_constraint(_CHECK, _TABLE, f"source IN ({_OLD_SOURCES})")
+    op.drop_constraint(
+        op.f("ck_invest_momentum_event_snapshots_source"),
+        "invest_momentum_event_snapshots",
+        type_="check",
+    )
+    op.create_check_constraint(
+        op.f("ck_invest_momentum_event_snapshots_source"),
+        "invest_momentum_event_snapshots",
+        "source IN ('naver_stock', 'alpaca_screener', 'kis_overseas_ranking')",
+    )
