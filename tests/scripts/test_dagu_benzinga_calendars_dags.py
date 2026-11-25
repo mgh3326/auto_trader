@@ -73,7 +73,10 @@ def test_short_interest_is_not_scheduled_without_a_symbol_list() -> None:
 def test_dag_uses_both_benzinga_env_files_in_order(name: str) -> None:
     command = _step(name)
     text = (ROOT / name).read_text(encoding="utf-8")
-    assert "--env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga" in command
+    assert (
+        "--env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga"
+        in command
+    )
     assert "PROPOSAL" not in text.splitlines()[0]
     assert "어디에도 등록되어 있지 않다" not in text.splitlines()[0]
 
