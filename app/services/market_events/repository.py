@@ -39,6 +39,28 @@ class MarketEventsRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def insert_provider_event(self, event_data: dict[str, Any]) -> bool:
+        """Keep the first observation of a provider-keyed event."""
+        if not event_data.get("source_event_id"):
+            raise ValueError("source_event_id is required")
+        payload = dict(event_data)
+        if payload.get("raw_payload_json") is not None:
+            payload["raw_payload_json"] = _redact_sensitive_keys(
+                payload["raw_payload_json"]
+            )
+        table = MarketEvent.__table__
+        stmt = (
+            pg_insert(table)
+            .values(**payload)
+            .on_conflict_do_nothing(
+                index_elements=["source", "category", "market", "source_event_id"],
+                index_where=table.c.source_event_id.isnot(None),
+            )
+            .returning(table.c.id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
     async def upsert_event_with_values(
         self,
         event_data: dict[str, Any],

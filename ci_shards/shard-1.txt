@@ -96,6 +96,7 @@ tests/research/us_stage_b/test_isolation.py
 tests/research/us_universe/test_us_universe_symdir.py
 tests/research_contracts/test_dfc_2c_4h_v21.py
 tests/routers/test_alpaca_paper_ledger_router.py
+tests/routers/test_benzinga_pro_ingest.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_manual_cash.py
 tests/routers/test_invest_session_context_router.py
@@ -435,6 +436,7 @@ tests/test_hermes_context_payload_intraday.py
 tests/test_hk6145_session_minutes_migration_db.py
 tests/test_hk6148_futures_minutes_migration_db.py
 tests/test_hk6510_us_movers_migration.py
+tests/test_hk6579_benzinga_pro_migration.py
 tests/test_import_contracts.py
 tests/test_integration.py
 tests/test_intraday_order_review_tasks.py

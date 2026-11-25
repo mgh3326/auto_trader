@@ -30,6 +30,7 @@ from app.monitoring.trade_notifier.runtime import (
 from app.routers import (
     agent_callback,
     alpaca_paper_ledger,
+    benzinga_pro_ingest,
     candidate_discovery,
     deprecated_pages,
     execution_ledger_ingest,
@@ -252,6 +253,7 @@ def create_app() -> FastAPI:
     # AuthMiddleware gate answers 404 (DB untouched) unless
     # RESEARCH_MINUTES_INGEST_ENABLED is exactly true.
     app.include_router(research_minutes_ingest.router)
+    app.include_router(benzinga_pro_ingest.router)
     app.include_router(market_calendar.router)
     app.include_router(market_events.router)
     app.include_router(mock_auto_read_model.router)
