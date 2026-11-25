@@ -1,9 +1,9 @@
 """Token-authenticated server-side capture ingest (hk 6579)."""
 
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -17,6 +17,15 @@ from app.services.invest_momentum_events.benzinga_pro import store_capture
 router = APIRouter(prefix="/trading", tags=["benzinga-pro-ingest"])
 
 
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
 async def _read_capture(request: Request) -> BenzingaProCapture:
     body = bytearray()
     async for chunk in request.stream():
@@ -24,8 +33,9 @@ async def _read_capture(request: Request) -> BenzingaProCapture:
             raise HTTPException(status_code=413, detail="Capture too large")
         body.extend(chunk)
     try:
-        return BenzingaProCapture.model_validate_json(body)
-    except ValidationError:
+        payload = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object)
+        return BenzingaProCapture.model_validate(payload)
+    except (ValueError, RecursionError):
         # A rejected payload may carry credentials in unexpected fields.
         raise HTTPException(status_code=422, detail="Invalid capture payload") from None
 

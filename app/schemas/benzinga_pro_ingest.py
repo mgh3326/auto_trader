@@ -49,8 +49,10 @@ class _CaptureModel(BaseModel):
     @field_validator("*")
     @classmethod
     def _postgres_text(cls, value: object) -> object:
-        if isinstance(value, str) and "\x00" in value:
-            raise ValueError("NUL is not allowed")
+        if isinstance(value, str):
+            value.encode("utf-8")
+            if "\x00" in value:
+                raise ValueError("NUL is not allowed")
         return value
 
 

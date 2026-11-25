@@ -1,5 +1,6 @@
 """DB-free ASGI tests for the Benzinga Pro capture route."""
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -153,6 +154,16 @@ async def test_unknown_fields_rejected_without_echo(capture, field, nested):
     target = capture["movers"]["up"][0] if nested else capture
     target[field] = "sensitive-input"
     response = await _post(capture)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid capture payload"}
+
+
+async def test_duplicate_object_cannot_hide_a_key_field(capture):
+    payload = '{"movers":{"apikey":"sensitive-input"},' + json.dumps(capture)[1:]
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="https://test"
+    ) as client:
+        response = await client.post(PATH, content=payload, headers={HEADER: TOKEN})
     assert response.status_code == 422
     assert response.json() == {"detail": "Invalid capture payload"}
 
