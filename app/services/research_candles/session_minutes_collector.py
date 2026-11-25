@@ -384,15 +384,17 @@ class TierSpec:
     """One selection tier. ``symbols`` are in priority order (may repeat).
 
     ``budget`` None = no per-tier budget (the run cap still applies). ``exempt``
-    tiers are never cut; their unused budget still spills to the next tier. ``keep``
-    leading symbols are protected from the tier budget (not from the run cap).
+    tiers are never cut; their unused budget still spills to the next tier.
+    ``protected`` symbols are kept ahead of the tier budget (not ahead of the run
+    cap). Only protected symbols that are still candidates of this tier count, so a
+    symbol a higher tier already took cannot raise this tier's allowance.
     """
 
     tier: str
     symbols: Sequence[str]
     budget: int | None
     exempt: bool = False
-    keep: int = 0
+    protected: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,17 +433,22 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
     cut_order: list[str] = []
     reports: list[tuple[TierSpec, list[str], list[str], int | None]] = []
     for spec in tiers:
-        candidates: list[str] = []
         listed: set[str] = set()
+        open_symbols: list[str] = []
         for symbol in spec.symbols:
             if symbol not in chosen_set and symbol not in listed:
                 listed.add(symbol)
-                candidates.append(symbol)
+                open_symbols.append(symbol)
+        # protected candidates first (stable), so the prefix slice keeps them
+        candidates = [s for s in open_symbols if s in spec.protected] + [
+            s for s in open_symbols if s not in spec.protected
+        ]
+        kept_count = sum(1 for s in candidates if s in spec.protected)
         pool = None if spec.budget is None else spec.budget + carry
         if spec.exempt:
             take = candidates
         else:
-            limit = remaining if pool is None else min(max(pool, spec.keep), remaining)
+            limit = remaining if pool is None else min(max(pool, kept_count), remaining)
             take = candidates[:limit]
         taken = set(take)
         cut = [symbol for symbol in candidates if symbol not in taken]
@@ -757,7 +764,7 @@ async def build_targets(
                 "intraday_movers",
                 mover_candidates,
                 budget=intraday_budget,
-                keep=len(protected),
+                protected=frozenset(protected),
             )
         )
     specs.append(

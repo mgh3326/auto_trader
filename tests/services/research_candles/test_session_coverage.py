@@ -250,8 +250,14 @@ def test_zero_row_reason_is_one_of_four_closed_codes() -> None:
     assert cov.classify_zero_row("000200", [run_a]) == "cut_by_budget"
     # an error on any run wins: a failed read is not proof of "no trades"
     assert cov.classify_zero_row("000300", [run_a, run_b]) == "fetch_error"
-    # cut in one run but requested (and read without error) in another
-    assert cov.classify_zero_row("000400", [run_b]) == "no_trades_reported"
+    # cut by budget in a run and also targeted in the same run: the cut is the answer
+    assert cov.classify_zero_row("000400", [run_b]) == "cut_by_budget"
+    # targeted by a pre-open run that could not store rows, cut in every in-session run
+    pre_open = _evidence(targeted={"000500", "000600"})
+    in_session = _evidence(cut={"000500"})
+    assert cov.classify_zero_row("000500", [pre_open, in_session]) == "cut_by_budget"
+    # targeted and read without error, never cut
+    assert cov.classify_zero_row("000600", [pre_open]) == "no_trades_reported"
     assert cov.classify_zero_row("000999", [run_a, run_b]) == "not_selected"
     assert cov.classify_zero_row("000100", []) == "not_selected"
 
@@ -321,22 +327,18 @@ def test_requested_zero_row_symbols_get_one_closed_reason() -> None:
     assert "requested_zero_row" not in plain
 
 
-def test_diagnostic_needs_run_reports_for_symbols_and_reads_one_market(
+def test_diagnostic_run_reports_are_optional_and_read_one_market(
     tmp_path,
 ) -> None:
     from scripts import diagnose_session_coverage as diag
 
-    with pytest.raises(SystemExit):
-        diag._parse_args(
-            ["--market", "kr", "--date", "2026-11-24", "--symbols", "005930"]
-        )
+    # --symbols without a run report parses (requested_zero_row is then omitted)
+    bare = diag._parse_args(
+        ["--market", "kr", "--date", "2026-11-24", "--symbols", "005930"]
+    )
+    assert bare.symbols == ["005930"] and bare.collect_report == []
     args = diag._parse_args(["--market", "kr", "--date", "2026-11-24"])
     assert args.collect_report == []
-    # futures has no collector run report: --symbols keeps working without one
-    futures = diag._parse_args(
-        ["--market", "futures", "--date", "2026-11-24", "--symbols", "MF200.2612"]
-    )
-    assert futures.symbols == ["MF200.2612"] and futures.collect_report == []
     kr = {
         "market": "kr",
         "batch_id": "session-minutes-kr-1",
@@ -353,3 +355,30 @@ def test_diagnostic_needs_run_reports_for_symbols_and_reads_one_market(
     bad.write_text("not json\n", encoding="utf-8")
     with pytest.raises(ValueError):
         diag._load_run_reports([bad], "kr")
+
+
+def test_dry_run_reports_give_no_zero_row_evidence() -> None:
+    dry = cov.run_evidence_from_report(
+        {
+            "dry_run": True,
+            "targeted_symbols": ["005930"],
+            "targets_cuts": [
+                {
+                    "symbol": "000660",
+                    "tier": "screener_pick_log",
+                    "reason": "budget_cut",
+                }
+            ],
+            "error_details": [{"symbol": "000770", "error_class": "Timeout"}],
+        }
+    )
+    assert dry == cov.RunEvidence(frozenset(), frozenset(), frozenset())
+    report = cov.coverage_report(
+        [],
+        market="kr",
+        session_date=KR_DATE,
+        as_of=_utc_kst(21, 0),
+        requested_symbols=["005930"],
+        run_evidence=[dry],
+    )
+    assert report["requested_zero_row"] == {"005930": "not_selected"}

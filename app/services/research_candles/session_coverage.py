@@ -126,7 +126,11 @@ class RunEvidence:
 
 
 def run_evidence_from_report(report: Mapping[str, object]) -> RunEvidence:
-    """Read a collector run report; fails when the run did not list its targets."""
+    """Read a collector run report; fails when the run did not list its targets.
+
+    A ``dry_run`` report writes nothing and proves no read of the day: it gives no
+    evidence at all (its target list is still validated).
+    """
     targeted = report.get("targeted_symbols")
     cuts = report.get("targets_cuts") or []
     errors = report.get("error_details") or []
@@ -134,6 +138,8 @@ def run_evidence_from_report(report: Mapping[str, object]) -> RunEvidence:
         raise ValueError("run report has no targeted_symbols list")
     if not isinstance(cuts, list) or not isinstance(errors, list):
         raise ValueError("run report has malformed targets_cuts or error_details")
+    if report.get("dry_run") is True:
+        return RunEvidence(frozenset(), frozenset(), frozenset())
     return RunEvidence(
         targeted=frozenset(str(s) for s in targeted),
         cut=frozenset(
@@ -150,14 +156,21 @@ def run_evidence_from_report(report: Mapping[str, object]) -> RunEvidence:
 
 
 def classify_zero_row(symbol: str, runs: Sequence[RunEvidence]) -> str:
-    """One of ``ZERO_ROW_REASONS``. An error on any run wins: a failed read is not
-    proof of "no trades"; a symbol cut by budget was never requested from KIS."""
+    """One of ``ZERO_ROW_REASONS``, by precedence:
+
+    * an error on any run: a failed read is not proof of "no trades";
+    * a budget cut on any run: the symbol was left out during the session, even if
+      an earlier (e.g. pre-open) run targeted it and could not have stored rows for
+      the date;
+    * targeted on some run, never cut: it was requested and read, no minute stored;
+    * otherwise it was never in a run's targets.
+    """
     if any(symbol in run.error_symbols for run in runs):
         return "fetch_error"
-    if any(symbol in run.targeted for run in runs):
-        return "no_trades_reported"
     if any(symbol in run.cut for run in runs):
         return "cut_by_budget"
+    if any(symbol in run.targeted for run in runs):
+        return "no_trades_reported"
     return "not_selected"
 
 

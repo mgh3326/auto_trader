@@ -180,8 +180,8 @@ def test_exempt_tier_is_never_cut_but_consumes_the_run_cap() -> None:
     assert (fixed.budget, fixed.allowance, fixed.selected, fixed.cut) == (2, None, 4, 0)
 
 
-def test_keep_protects_leading_symbols_from_the_budget_but_not_the_cap() -> None:
-    tiers = [TierSpec("m", [1, 2, 3, 4], budget=1, keep=2)]
+def test_protected_symbols_are_kept_past_the_budget_but_not_the_cap() -> None:
+    tiers = [TierSpec("m", [1, 2, 3, 4], budget=1, protected=frozenset({1, 2}))]
     assert sc.select_tiered(tiers, 10).selected == [1, 2]
     assert sc.select_tiered(tiers, 1).selected == [1]  # the cap still binds
 
@@ -280,6 +280,30 @@ async def test_a_mover_with_rows_today_is_not_demoted_by_the_budget() -> None:
     cut_movers = [c["symbol"] for c in targets.cuts if c["tier"] == "intraday_movers"]
     assert cut_movers == mover_symbols[39:44]  # ranks 40-44 go instead
     assert sticky not in targets.backfill  # it already has rows: no earlier page
+
+
+@pytest.mark.asyncio
+async def test_a_holding_that_is_also_a_protected_mover_does_not_raise_the_budget() -> (
+    None
+):
+    """A protected symbol the fixed tier already took is not an intraday candidate,
+    so it must not lift the intraday allowance (it would ratchet run after run)."""
+    holdings = _syms(200000, 50)  # fixed tier = 50 exactly, no spill
+    held_movers = holdings[:5]  # 5 holdings that are also movers with rows today
+    protected = _syms(310000, 40)  # 40 other movers already collected today
+    unprotected = _syms(311000, 10)  # 10 movers with no rows yet
+    ordered = [*held_movers, *protected, *unprotected]
+    movers = [_mover(s, rank=i + 1) for i, s in enumerate(ordered)]
+    targets = await _targets(
+        session=_Session(movers=movers, have_today=[*held_movers, *protected]),
+        kis=_Kis(kr=holdings),
+        fixed="",
+    )
+    tier = _tier(targets, "intraday_movers")
+    assert (tier.budget, tier.allowance, tier.selected, tier.cut) == (40, 40, 40, 10)
+    assert set(protected) <= set(targets.symbols)
+    assert not set(unprotected) & set(targets.symbols)
+    assert sorted(c["symbol"] for c in targets.cuts) == sorted(unprotected)
 
 
 @pytest.mark.asyncio

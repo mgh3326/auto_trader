@@ -2,7 +2,7 @@
 """hk 6145: READ-ONLY coverage and latency report for the session minute tables.
 
     uv run python -m scripts.diagnose_session_coverage --market kr|us|futures --date YYYY-MM-DD \\
-        [--symbols 005930 000660 --collect-report RUN.json [RUN2.json ...]]
+        [--symbols 005930 000660] [--collect-report RUN.json [RUN2.json ...]]
 
 One ``READ ONLY`` transaction with an 8 s statement timeout, SELECT only. Per
 symbol x venue x session_segment it reports rows, expected minutes, missing
@@ -14,8 +14,8 @@ not a first receipt). Writes nothing, registers nothing.
 object per line, same market). With it the output lists every run's tier counts
 and cut symbols, and each requested symbol with no stored minute gets one closed
 reason (hk 6299): ``not_selected``, ``cut_by_budget``, ``fetch_error`` or
-``no_trades_reported``. For KR and US, ``--symbols`` requires it; futures has no
-collector run report and keeps its plain output.
+``no_trades_reported``. Optional: without it the output is the plain coverage report
+(no ``requested_zero_row`` key). Reports of a ``dry_run`` give no evidence.
 
 Exit 0 = report printed, 1 = the read failed, 2 = usage or an unreadable run report.
 """
@@ -84,8 +84,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="collect_session_minutes JSON output (one object per line)",
     )
     args = parser.parse_args(argv)
-    if args.symbols and args.market != "futures" and not args.collect_report:
-        parser.error("--symbols requires --collect-report to classify zero-row symbols")
     return args
 
 
@@ -184,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
-    if args.symbols and args.market != "futures" and not reports:
+    if args.collect_report and not reports:
         print(json.dumps({"status": "no_matching_run_report", "market": args.market}))
         return 2
 
