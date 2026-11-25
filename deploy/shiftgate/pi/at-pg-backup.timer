@@ -1,5 +1,5 @@
 [Unit]
-Description=Run auto_trader NCP PostgreSQL backup daily at 04:10 KST
+Description=Run auto_trader pi PostgreSQL backup daily at 04:10 KST
 
 [Timer]
 OnCalendar=*-*-* 04:10:00 Asia/Seoul

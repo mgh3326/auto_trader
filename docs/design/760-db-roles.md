@@ -106,7 +106,7 @@ repository's templates describe production.
 | Dev-seed source URL | `make_dev_seed.py` requires `--source-database-url` and opens an asyncpg read-only transaction. | `scripts/make_dev_seed.py:L126-L137, L192-L213, L260-L305` |
 | Tracked host-job input | The NCP job wrapper passes its selected `AT_RUNTIME_ENV_FILE` to the deployed image as `--env-file`; the documented templates set that input for scheduled application jobs. This design inspected templates, not an environment file. | `ops/ncp/bin/at-job.sh:L153-L187`; `ops/ncp/systemd/job-toss-warnings-sync.service:L7-L16`; `ops/ncp/systemd/job-us-market-valuation-snapshots.service:L7-L16` |
 | Fill-handoff inputs | The tracked fill-handoff unit passes its application and handoff environment inputs to `scripts.fill_event_handoff`; that entrypoint opens the shared application session. | `ops/ncp/systemd/fill-event-handoff.service:L7-L16`; `scripts/fill_event_handoff.py:L18-L24, L98-L121` |
-| Backup libpq inputs | The tracked backup service calls `pg_dump` and `pg_dumpall` through `ops/ncp/pg-backup.sh`. The script requires `PGHOST`, `PGPORT`, `PGUSER`, and one of `PGPASSWORD` or `PGPASSFILE`, and can forward SSL/connect controls. These are key names only, not inspected values. | `ops/ncp/systemd/at-pg-backup.service:L6-L15`; `ops/ncp/pg-backup.sh:L57-L104, L149-L167` |
+| Backup libpq inputs | The tracked backup service calls `pg_dump` and `pg_dumpall` through `deploy/shiftgate/pi/pg-backup.sh`. The script requires `PGHOST`, `PGPORT`, `PGUSER`, and one of `PGPASSWORD` or `PGPASSFILE`, and can forward SSL/connect controls. These are key names only, not inspected values. | `deploy/shiftgate/pi/at-pg-backup.service:L6-L15`; `deploy/shiftgate/pi/pg-backup.sh:L57-L104, L149-L167` |
 | Test aliases | The test harness derives a run-owned `DATABASE_URL` from `AUTO_TRADER_TEST_DATABASE_URL` and records the xdist name, base URL, run UID, owner token, and shared-DB flags under its own aliases. | `tests/_run_owned_database.py:L12-L45, L135-L178` |
 
 Within `app/`, `scripts/`, and `alembic/`, the Python-source static constructor audit
@@ -236,8 +236,8 @@ installed. Their common wrapper is [ops/ncp/bin/at-job.sh:L153-L187]; representa
 unit bindings are [ops/ncp/systemd/job-toss-warnings-sync.service:L7-L16,
 ops/ncp/systemd/job-us-market-valuation-snapshots.service:L7-L16], the fill-handoff
 binding is [ops/ncp/systemd/fill-event-handoff.service:L7-L16], and the backup service
-and client are [ops/ncp/systemd/at-pg-backup.service:L6-L15,
-ops/ncp/pg-backup.sh:L57-L104, L149-L167]. The scheduled modules are transitive
+and client are [deploy/shiftgate/pi/at-pg-backup.service:L6-L15,
+deploy/shiftgate/pi/pg-backup.sh:L57-L104, L149-L167]. The scheduled modules are transitive
 shared-factory consumers rather than new connection factories; for example,
 `app.jobs.toss_warnings` and `app.jobs.market_valuation_snapshots` import
 `AsyncSessionLocal` [app/jobs/toss_warnings.py:L1-L25,

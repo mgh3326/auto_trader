@@ -1,9 +1,12 @@
-# NCP PostgreSQL daily backup and off-host replication
+# pi PostgreSQL daily backup and off-host replication
 
-`at-pg-backup.timer` creates PostgreSQL custom-format dumps on NCP at 04:10
+`at-pg-backup.timer` creates PostgreSQL custom-format dumps on the pi at 04:10
 KST, then mirrors them to the MacBook server through tailnet. It is a backup
 job, not a restore automation: all restores require the rehearsal procedure
 below.
+
+pi는 `PG_BACKUP_DIRECTORY`를 env 파일(`/root/at-secrets/.env.pg-backup`)에 설정하므로,
+스크립트 기본값(`/var/backups/at-pg`) 변경은 기존 백업을 이동하지 않는다.
 
 ## Environment file
 
@@ -12,14 +15,14 @@ this file, a database URL, or any credential in the repository.
 
 | Name | Required | Meaning |
 | --- | --- | --- |
-| `PGHOST` | yes | PostgreSQL host; NCP uses `127.0.0.1`. |
-| `PGPORT` | yes | PostgreSQL port; NCP uses `25432`. |
+| `PGHOST` | yes | PostgreSQL host; pi uses `127.0.0.1`. |
+| `PGPORT` | yes | PostgreSQL port; pi uses `25432`. |
 | `PGUSER` | yes | Backup role name. |
 | `PGPASSWORD` or `PGPASSFILE` | deployment-specific | Authentication material; never log its value. |
 | `PG_BACKUP_DATABASES` | no | Space-separated database names; default `auto_trader handoffkeep`. Missing databases are warned and skipped. `prefect` is deliberately excluded. |
-| `PG_BACKUP_DIRECTORY` | no | NCP archive directory; default `/var/backups/ncp-pg`. |
-| `PG_BACKUP_RETENTION_DAYS_LOCAL` | no | NCP retention; default `7`. |
-| `PG_BACKUP_REMOTE` | yes | Primary MacBook mirror, e.g. `mgh3326@100.73.173.44:/Users/mgh3326/backups/ncp-pg/`. |
+| `PG_BACKUP_DIRECTORY` | no | pi archive directory; default `/var/backups/at-pg`. |
+| `PG_BACKUP_RETENTION_DAYS_LOCAL` | no | Local retention; default `7`. |
+| `PG_BACKUP_REMOTE` | yes | Primary MacBook mirror, e.g. `mgh3326@100.73.173.44:/Users/mgh3326/backups/at-pg/`. |
 | `PG_BACKUP_REMOTE_SECONDARY` | no | Optional OCI mirror; empty means skipped. |
 | `PG_BACKUP_RETENTION_DAYS_REMOTE` | no | Each remote's retention; default `30`. |
 | `PG_BACKUP_SSH_KEY` | yes | Dedicated tailnet SSH private-key path, readable only by root. |
@@ -34,12 +37,12 @@ not export role passwords.
 
 ## Install and verify
 
-On NCP, after a reviewed pull of the versioned files:
+On the pi, after a reviewed pull of the versioned files:
 
 ```bash
-install -d -m 0700 /var/backups/ncp-pg /root/at-secrets
-install -m 0700 ops/ncp/pg-backup.sh /root/at-run/pg-backup.sh
-install -m 0644 ops/ncp/systemd/at-pg-backup.{service,timer} /etc/systemd/system/
+install -d -m 0700 /var/backups/at-pg /root/at-secrets
+install -m 0700 deploy/shiftgate/pi/pg-backup.sh /root/at-run/pg-backup.sh
+install -m 0644 deploy/shiftgate/pi/at-pg-backup.{service,timer} /etc/systemd/system/
 install -m 0600 /dev/null /root/at-secrets/.env.pg-backup
 # edit /root/at-secrets/.env.pg-backup without echoing credentials
 systemctl daemon-reload
@@ -53,14 +56,14 @@ safe metadata:
 ```bash
 systemctl start at-pg-backup.service
 systemctl status at-pg-backup.service --no-pager
-find /var/backups/ncp-pg -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
-sha256sum -c /var/backups/ncp-pg/backup-YYYYMMDD-HHMM.sha256
+find /var/backups/at-pg -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+sha256sum -c /var/backups/at-pg/backup-YYYYMMDD-HHMM.sha256
 ```
 
 The mirror is additive `rsync -a`, not `rsync --delete`: the MacBook's 30-day
-window is intentionally longer than NCP's seven-day window. Remote retention
+window is intentionally longer than the pi's seven-day window. Remote retention
 is independently enforced by an SSH `find -mtime` cleanup.
-If the MacBook is offline (or either configured remote fails), NCP dumps and
+If the MacBook is offline (or either configured remote fails), pi dumps and
 checksums remain intact, the final report says `status=remote_failed`, and the
 job exits `3`. Investigate and rerun manually; do not delete a local archive
 to make a failed remote look healthy.
@@ -72,19 +75,19 @@ Measure present logical database sizes before choosing storage:
 ```bash
 psql -h 127.0.0.1 -p 25432 -U "$PGUSER" -d postgres \
   -c "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database ORDER BY pg_database_size(datname) DESC;"
-du -sh /var/backups/ncp-pg
+du -sh /var/backups/at-pg
 ```
 
 Observed planning sizes are `auto_trader` about 961 MB plus a small
 `handoffkeep`; `prefect` is about 4 GB and remains excluded by default. A rough
-upper bound before custom-format compression is daily logical size × 7 on NCP
+upper bound before custom-format compression is daily logical size × 7 on the pi
 and × 30 on the MacBook. If `prefect` is explicitly added, budget its roughly
 4 GB/day contribution before enabling it. Recheck actual dump sizes after the
 first week rather than treating database size as a compression estimate.
 
 ## Restore rehearsal (OCI staging only)
 
-Do not restore into NCP production. Copy a selected dump and its checksum to
+Do not restore into pi production. Copy a selected dump and its checksum to
 an isolated OCI staging host, validate the checksum, restore into an empty
 staging database, then compare row counts to a read-only source query.
 
@@ -95,7 +98,7 @@ createdb auto_trader_restore_rehearsal
 pg_restore --exit-on-error --clean --if-exists \
   -d auto_trader_restore_rehearsal auto_trader-YYYYMMDD-HHMM.dump
 
-# On NCP source and OCI staging respectively; save both outputs with the drill.
+# On the pi source and OCI staging respectively; save both outputs with the drill.
 psql -h 127.0.0.1 -p 25432 -U "$PGUSER" -d auto_trader \
   -Atc "SELECT n.nspname||'.'||c.relname||'='||count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_tables t ON t.schemaname=n.nspname AND t.tablename=c.relname WHERE n.nspname NOT IN ('pg_catalog','information_schema') GROUP BY 1 ORDER BY 1;"
 psql -d auto_trader_restore_rehearsal \
@@ -108,4 +111,4 @@ the staging database only after the drill evidence is retained.
 
 ## Client selection
 
-`PG_BACKUP_CLIENT=auto|host|docker` (default `auto`): `docker` pins the containerised `postgres:17` client even when a host `pg_dump` exists — NCP sets `docker` so the client major always matches `PG_BACKUP_IMAGE`.
+`PG_BACKUP_CLIENT=auto|host|docker` (default `auto`): `docker` pins the containerised `postgres:17` client even when a host `pg_dump` exists — the pi sets `docker` so the client major always matches `PG_BACKUP_IMAGE`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create PostgreSQL logical backups on NCP and mirror them off-host.
+# Create PostgreSQL logical backups on the pi and mirror them off-host.
 #
 # Credentials are supplied by the systemd EnvironmentFile; this script never
 # writes them to an archive, command line, or report.
@@ -80,7 +80,7 @@ select_client() {
   fi
   # pg_dump writes --file inside the container namespace: the backup directory
   # must be bind-mounted at the same path or the dump fails with "could not
-  # open output file" (first NCP run, 2026-09-03).
+  # open output file" (first run, 2026-09-03).
   client_prefix+=(-v "${PG_BACKUP_DIRECTORY}:${PG_BACKUP_DIRECTORY}")
   client_prefix+=("$PG_BACKUP_IMAGE")
 }
@@ -134,7 +134,7 @@ sync_remote() {
     return 1
   }
   # Do not use rsync --delete here: the remote retention window is longer
-  # than NCP's local window and is enforced independently below.
+  # than the local window and is enforced independently below.
   rsync -a -e "$ssh_command" "${PG_BACKUP_DIRECTORY}/" "${target%/}/" || {
     report "pg-backup: remote=${label} rsync failed"
     return 1
@@ -154,7 +154,7 @@ main() {
   require_env PG_BACKUP_SSH_KEY
 
   PG_BACKUP_DATABASES="${PG_BACKUP_DATABASES:-$DEFAULT_DATABASES}"
-  PG_BACKUP_DIRECTORY="${PG_BACKUP_DIRECTORY:-/var/backups/ncp-pg}"
+  PG_BACKUP_DIRECTORY="${PG_BACKUP_DIRECTORY:-/var/backups/at-pg}"
   PG_BACKUP_RETENTION_DAYS_LOCAL="${PG_BACKUP_RETENTION_DAYS_LOCAL:-$DEFAULT_LOCAL_RETENTION_DAYS}"
   PG_BACKUP_RETENTION_DAYS_REMOTE="${PG_BACKUP_RETENTION_DAYS_REMOTE:-$DEFAULT_REMOTE_RETENTION_DAYS}"
   PG_BACKUP_IMAGE="${PG_BACKUP_IMAGE:-$DEFAULT_IMAGE}"

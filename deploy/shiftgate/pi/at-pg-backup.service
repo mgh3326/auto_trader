@@ -1,5 +1,5 @@
 [Unit]
-Description=auto_trader NCP PostgreSQL logical backup and off-host mirror
+Description=auto_trader pi PostgreSQL logical backup and off-host mirror
 Wants=network-online.target
 After=network-online.target docker.service
 
