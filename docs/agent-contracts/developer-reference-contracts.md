@@ -127,21 +127,24 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 
 ## Exact-SHA deployment gate (ROB-1456)
 
-`scripts/deploy-ncp-pull.sh` forward deploys and dry-runs call the stdlib-only
-`scripts/deploy_ci_gate.py` before mutation. Remote OCI revision identifies the
-exact commit; the verified registry digest is what is pulled and promoted.
-GitHub's newest exact-SHA `Test` push/dispatch run and latest attempt must have
-`lint`, `taskiq-smoke`, and all four `test (3.13, N)` jobs completed successfully.
+The pi deploy (`deploy/shiftgate/pi/deploy.sh`, run by hand or by `follow.sh`)
+calls the stdlib-only `scripts/deploy_ci_gate.py` before it touches a
+container. Remote OCI revision identifies the exact commit; the verified
+registry digest is what is pulled and promoted. GitHub's newest exact-SHA
+`Test` push/dispatch run and latest attempt must have `lint`, `taskiq-smoke`,
+and all four `test (3.13, N)` jobs completed successfully.
 Missing/red/skipped/unreadable evidence refuses with exit 78. ROB-1454's
 `PR gate` is not full-suite evidence. The image build workflow enforces the
 same gate on its pinned build SHA and follows completed main-push Test runs.
 
 `--allow-unverified REASON` is an explicit logged CI override, not permission
-to bypass immutable image identity or other safety checks. `--rollback` and
-automatic failure recovery stay unchecked emergency paths. Install the helper
-beside the host script; Python >= 3.11 (via `AT_DEPLOY_GATE_PYTHON`, uv, or python3; older refuses 78), Docker Buildx, and authenticated GitHub CLI
-Actions read access are prerequisites. Runbook:
-`docs/runbooks/ncp-pull-deploy.md` §Exact-SHA full-suite gate.
+to bypass immutable image identity or other safety checks. `--rollback` stays
+an unchecked emergency path. Install the helper beside the host script;
+Python >= 3.11 (via `AT_DEPLOY_GATE_PYTHON` or python3; older refuses 78),
+Docker Buildx, and authenticated GitHub CLI Actions read access for a manual
+run are prerequisites (`follow.sh` reads GitHub anonymously). Runbook:
+`docs/runbooks/pi-shiftgate-deploy.md`. The NCP pull-deploy script was deleted
+by hk 6456.
 
 ## Content-based rollout approval
 

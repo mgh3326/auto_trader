@@ -1,5 +1,8 @@
 # MCP surface cleanup — 2026-09-05
 
+> hk 6456 (2026-11-25) retired the `kiwoom` profile; its rows below are the
+> dated record and no longer describe a registrable profile.
+
 The sole classification authority is [Complete classification](../mcp-tool-usage-audit-20260903.md#complete-classification), dated 2026-09-03. Registration tests execute the real registrar in memory; no server or broker is started.
 
 The original 14 profiles / 228 distinct tools become 13 profiles / 206 distinct tools. **21 distinct D tools / 34 D profile registrations** are removed. **78 distinct C tools / 339 profile registrations** use the `niche` group. 6 modules and 5 dedicated test files are deleted.

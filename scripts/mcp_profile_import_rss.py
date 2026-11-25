@@ -14,8 +14,8 @@ an in-memory recorder and never called. The child gets fixed placeholder
 settings only and never reads a real env or credential file.
 
 Usage:
-    uv run python -m scripts.mcp_profile_import_rss h3-us-paper kiwoom
-    uv run python -m scripts.mcp_profile_import_rss --compare --repeat 3 h3-us-paper
+    uv run python -m scripts.mcp_profile_import_rss kiwoom_kr default
+    uv run python -m scripts.mcp_profile_import_rss --compare --repeat 3 kiwoom_kr
 """
 
 from __future__ import annotations

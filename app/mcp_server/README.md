@@ -784,7 +784,7 @@ ROB-755 exposes the same fill-event triage surface that powers the operator-host
 alert poller (`scripts/list_recent_fill_events.py`) over MCP. Read-only; no broker
 mutation; no order mutation; no watch mutation. Registered in the "Always" block
 of `register_all_tools` (default, crypto, hermes-paper-kis, us-paper, db-paper,
-kiwoom profiles).
+kiwoom_kr profiles).
 
 - `execution_ledger_fill_events_list_recent(after_id=None, market=None, side=None, source="websocket", broker=None, account_mode=None, limit=50)`
   - Read-only. Returns recent fills from `execution_ledger` rows newer than
@@ -2557,7 +2557,7 @@ Environment variables:
 - `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
 For `streamable-http` and `sse`, startup fails before FastMCP construction when
-`MCP_PROFILE=kiwoom` or `MCP_PROFILE=kiwoom_kr` has no non-empty
+`MCP_PROFILE=kiwoom_kr` has no non-empty
 `MCP_AUTH_TOKEN`. The same fail-closed
 rule applies to the default profile when `KIWOOM_MOCK_US_ENABLED=true` exposes
 the Kiwoom US mutation tools. An explicitly selected local `stdio` development
@@ -2588,8 +2588,7 @@ start instead of falling back to DEFAULT, so DEFAULT is `MCP_PROFILE=default`.
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
-| Kiwoom mock | `kiwoom` | Default read-only/research surface plus **both** typed Kiwoom mock namespaces (no KIS/generic order tools): the eight KR `kiwoom_mock_*` tools and — unconditionally, unlike DEFAULT's `KIWOOM_MOCK_US_ENABLED` gate — the seven US `kiwoom_mock_us_*` tools, four of which are mutations. Prefer `kiwoom_kr` for a KR-only session (ROB-1159). |
-| Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159/1173 least-privilege split of `kiwoom`: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole profile runs through an independent closed-world exact-set registration proxy (118 base names plus explicitly gated optional sets), and the KR registrar has a nested eight-name proxy. Thus the `kiwoom_mock_us_*` namespace, `kis_mock_mirror_execute_report`, and even a new alias missing from central mutation-name lists are physically absent. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
+| Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159/1173 least-privilege Kiwoom mock profile: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole profile runs through an independent closed-world exact-set registration proxy (118 base names plus explicitly gated optional sets), and the KR registrar has a nested eight-name proxy. Thus the `kiwoom_mock_us_*` namespace, `kis_mock_mirror_execute_report`, and even a new alias missing from central mutation-name lists are physically absent. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
