@@ -1,4 +1,4 @@
-"""Behavioral contracts for the NCP PostgreSQL backup operator script."""
+"""Behavioral contracts for the pi PostgreSQL backup operator script."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BACKUP = REPO_ROOT / "ops" / "ncp" / "pg-backup.sh"
+BACKUP = REPO_ROOT / "deploy" / "shiftgate" / "pi" / "pg-backup.sh"
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -147,8 +147,12 @@ def test_missing_required_environment_fails_closed(tmp_path: Path) -> None:
 
 
 def test_systemd_contract_uses_secret_env_daily_kst_and_optional_healthcheck() -> None:
-    service = (REPO_ROOT / "ops/ncp/systemd/at-pg-backup.service").read_text()
-    timer = (REPO_ROOT / "ops/ncp/systemd/at-pg-backup.timer").read_text()
+    service = (
+        REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.service"
+    ).read_text()
+    timer = (
+        REPO_ROOT / "deploy" / "shiftgate" / "pi" / "at-pg-backup.timer"
+    ).read_text()
     script = BACKUP.read_text()
 
     assert "EnvironmentFile=/root/at-secrets/.env.pg-backup" in service
@@ -162,7 +166,7 @@ def test_systemd_contract_uses_secret_env_daily_kst_and_optional_healthcheck() -
 def test_docker_fallback_bind_mounts_the_backup_directory(tmp_path: Path) -> None:
     """Without host pg_dump the script runs the client in a container; the
     ``--file`` target lives in the host backup directory, so that directory
-    must be bind-mounted at the same path (first NCP run failed otherwise)."""
+    must be bind-mounted at the same path (first run failed otherwise)."""
     stub_bin = _stub_bin(tmp_path)
     # A second PATH directory with docker/rsync/ssh stubs; PG_BACKUP_CLIENT=docker
     # pins the containerised client even where a host pg_dump exists (CI).
