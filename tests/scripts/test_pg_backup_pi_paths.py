@@ -16,6 +16,14 @@ TIMER = PI / "at-pg-backup.timer"
 SCRIPT = PI / "pg-backup.sh"
 
 
+def test_verifier_fallback_matches_writer_default() -> None:
+    writer = SCRIPT.read_text()
+    verifier = (
+        REPO_ROOT / "ops" / "ncp" / "bin" / "at-pre-deploy.py"
+    ).read_text()
+    assert 'PG_BACKUP_DIRECTORY:-/var/backups/at-pg' in writer
+    assert 'os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/at-pg")' in verifier
+
 def test_follow_backup_unit_default_is_at_pg_backup_service() -> None:
     follow = FOLLOW.read_text()
     assert 'BACKUP_UNIT="${AT_BACKUP_UNIT:-at-pg-backup.service}"' in follow
