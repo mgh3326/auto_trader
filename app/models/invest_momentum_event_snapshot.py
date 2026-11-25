@@ -43,7 +43,8 @@ class InvestMomentumEventSnapshot(Base):
             name="ck_invest_momentum_event_snapshots_market",
         ),
         CheckConstraint(
-            "source IN ('naver_stock', 'alpaca_screener', 'kis_overseas_ranking')",
+            "source IN ('naver_stock', 'alpaca_screener', "
+            "'kis_overseas_ranking', 'benzinga_pro')",
             name="ck_invest_momentum_event_snapshots_source",
         ),
         Index(

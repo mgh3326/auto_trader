@@ -75,6 +75,18 @@ class InvestMomentumEventSnapshotsRepository:
         result = await self._session.execute(stmt)
         return (getattr(result, "rowcount", 0) or 0) > 0
 
+    async def benzinga_capture_exists(self, run_id: uuid.UUID) -> bool:
+        """Serialize the capture claim across both sides and all session labels."""
+        lock_key = int.from_bytes(run_id.bytes[:8], "big", signed=True)
+        await self._session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+        captured = select(InvestMomentumEventRun.id).where(
+            InvestMomentumEventRun.run_id == run_id,
+            InvestMomentumEventRun.surface.startswith(
+                "us:benzinga_pro:", autoescape=True
+            ),
+        )
+        return bool(await self._session.scalar(select(captured.exists())))
+
     async def insert_run_status(
         self,
         *,

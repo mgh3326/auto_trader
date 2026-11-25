@@ -1018,3 +1018,11 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - **쓰기**: 두 표의 유일한 writer 는 `writer.py`, `ON CONFLICT DO NOTHING` 삽입뿐이라 재실행은 첫 수신 시각과 값을 바꾸지 않는다. 어떤 live·mock 체결 표와도 분리돼 있고 그 표를 읽거나 쓰지 않는다. 마이그레이션 `20261125_hk6036_upbit_shadow`(추가형, `at_app` 조건부 GRANT SELECT·INSERT·schema USAGE, downgrade 는 행이 있으면 거부).
 - **실행**: 기본은 드라이런(DB 접근 0, 후보·가상 행 출력), `--commit` 만 쓴다. `--catchup-bars`(기본 4, 최대 96), `--markets`. 시장 하나의 실패는 `errors` 에 남기고 계속하며 종료 코드 1. 실계좌·전략·게이트 변경 없음.
 - **테스트**: `tests/services/upbit_intraday_shadow/`(2026-11-25 BTC·XRP·SAHARA 녹화 봉 재생, 터치=진입 아님, 동결 해시), `tests/test_hk6036_upbit_shadow_migration_db.py`(DB 부분은 CI), `tests/scripts/test_dagu_upbit_intraday_shadow_dag.py`. 이미지에는 `research/upbit_intraday` 의 규칙·fetch·선택 파일과 `research/crypto_universe/public_http.py` 만 더 싣는다.
+
+## Benzinga Pro 캡처 수신 (hk 6579)
+
+- `POST /trading/api/research/benzinga-pro/ingest`는 `benzinga-pro-capture/v1` JSON을 받는다. `BENZINGA_PRO_INGEST_ENABLED` 기본값은 false이며 환경 변수 값이 정확히 `true`일 때만 열린다. DB 접근 전에 게이트 off는 404, 토큰 또는 헤더 이름 미설정은 403, 토큰 불일치는 401을 반환한다. 전용 토큰 `BENZINGA_PRO_INGEST_TOKEN`은 `BENZINGA_PRO_INGEST_TOKEN_HEADER`(기본 `X-Benzinga-Pro-Ingest-Token`)에서만 받는다.
+- Benzinga Pro 브라우저 세션 키는 auto_trader에 전달되지 않는다. 스키마에 키 필드가 없으며 중첩 객체를 포함해 `apikey`, `key` 등 미정의 필드를 422로 거부한다. 응답은 삽입 건수만 담는다.
+- `captured_at`은 수집기의 UTC 관측 시각이다. 해당 시각의 첫 캡처를 단일 트랜잭션으로 기록하고 재전송의 삽입 건수는 모두 0이다. 상승·하락 스냅샷은 각각 `us:benzinga_pro:<session>:<side>`에 기록하며 각 방향에 run을 하나 남긴다. 빈 배열은 `empty/no_rows`, 행이 있는 배열은 `ok`다. 쓰기 실패는 캡처 전체를 롤백한다. `no_session_price`는 `order_type=excluded`와 원본 사유로 남긴다.
+- 속보는 `market_events`에 `source=benzinga_pro`, `category=breaking_news`로 기록한다. 제공자 ID 단위로 최초 행을 유지하며 `first_received_at`은 캡처 시각이다. 이 캡처의 DB 행이 있으면 마이그레이션 다운그레이드가 중단된다.
+- `SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED`(기본 false)는 US 분봉 수집 대상 승격에만 적용된다. 켜면 제외 행을 뺀 Benzinga Pro movers가 기존 점수 규칙에 들어간다.

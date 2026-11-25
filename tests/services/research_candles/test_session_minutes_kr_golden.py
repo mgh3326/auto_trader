@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.config import settings
 from app.services.research_candles import session_minutes_collector as sc
 
 pytestmark = pytest.mark.unit
@@ -133,7 +134,13 @@ async def kr_golden_snapshot(monkeypatch) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_kr_target_selection_matches_the_golden(monkeypatch) -> None:
+@pytest.mark.parametrize("benzinga_enabled", [False, True])
+async def test_kr_target_selection_matches_the_golden(
+    monkeypatch, benzinga_enabled
+) -> None:
+    monkeypatch.setattr(
+        settings, "SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED", benzinga_enabled
+    )
     snapshot = await kr_golden_snapshot(monkeypatch)
     rendered = json.dumps(snapshot, sort_keys=True, indent=2, ensure_ascii=False)
     assert rendered + "\n" == GOLDEN.read_text(encoding="utf-8")
