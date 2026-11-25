@@ -339,6 +339,10 @@ null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `mi
 외부 provider로 우회하지 않는다.
 
 
+### get_market_index 추가 심볼·날짜 분리 (task 6301)
+
+`get_market_index`는 `SOX`(Yahoo `^SOX`), `KOSPI200`(기존 Naver 지수 소스, 코드 `KPI200` [unverified]), `NQ=F`·`ES=F`(Yahoo 연속 최근월, `contract.kind=continuous`, 지연 여부는 미검증이라 `delayed=null`), `USDKRW`(Yahoo `KRW=X`)를 받는다. `KOSPI200_NIGHT`(코스피200 야간선물)는 항상 `unsupported=true`와 `unsupported_reason`을 준다: KIS 공식 샘플에 야간 선물 시세 TR이 없고, hk 6148 view의 현재가 TR은 정규 `F` 시장이라 낮 세션 값이므로 야간 심볼 아래에 올리지 않는다(`KIS_FUTURES_QUOTES_ENABLED`가 켜져 있어도 KIS를 호출하지 않는다). 모든 행은 `as_of`(UTC)와 `as_of_basis`(`quote_time`|`fetched_at`)를 가진다. KR 행은 현재값의 시세 날짜를 `session_date`에, OHLC의 날짜를 `ohlc_date`에 따로 둔다. OHLC가 이전 세션의 것이면 최상위 `open/high/low/volume`은 null이고 그 세션 값은 `previous_session`(자기 `date`)에만 있어 한 레코드가 두 세션을 섞지 않는다. 이전 세션 OHLC가 있을 때의 ROB-464 frozen 판정은 `previous_session.open`으로 비교한다. 미지의 심볼은 `Unknown index symbol '<X>'. Supported: …`(지원 목록 정렬)로 거부한다.
+
 ### get_ohlcv end_date 컷오프 (hk 6030)
 
 `get_ohlcv`의 `end_date`는 모든 시장·period·데이터 경로(캐논컬 DB, OHLCV Redis 캐시 hit/miss, provider fetch)에서

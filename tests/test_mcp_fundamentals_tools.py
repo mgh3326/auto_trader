@@ -2945,12 +2945,20 @@ class TestGetMarketIndex:
         assert "indices" not in result or not result.get("indices")
         assert result.get("error") and result.get("source") == "coingecko"
 
-    async def test_usdkrw_is_not_market_index(self):
-        """FX pairs must stay on get_fx_rate, not get_market_index."""
+    async def test_usdkrw_is_served_as_market_index_row(self, monkeypatch):
+        """task 6301: USDKRW is accepted through Yahoo KRW=X as an index-style row
+        (it was previously rejected). get_fx_rate stays the conversion source."""
         tools = build_tools()
+        self._patch_yfinance(monkeypatch, last_price=1380.5, prev_close=1375.0)
+        self._patch_yf_download(monkeypatch, rows=3)
 
-        with pytest.raises(ValueError, match="Unknown index symbol 'USDKRW'"):
-            await tools["get_market_index"](symbol="USDKRW")
+        result = await tools["get_market_index"](symbol="USDKRW")
+
+        idx = result["indices"][0]
+        assert idx["symbol"] == "USDKRW"
+        assert idx["current"] == pytest.approx(1380.5)
+        assert idx["source"] == "yfinance"
+        assert idx["as_of"].endswith("+00:00")
 
 
 # ---------------------------------------------------------------------------

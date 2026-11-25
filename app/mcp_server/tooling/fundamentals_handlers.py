@@ -538,9 +538,16 @@ def _register_fundamentals_tools_impl(
     @mcp.tool(
         name="get_market_index",
         description=(
-            "Get market index data. Supports KOSPI/KOSDAQ, major US indices "
-            "(SPX/NASDAQ/DJI/VIX), and crypto market regime "
+            "Get market index data. Supports KOSPI/KOSDAQ, KOSPI200 (KPI200), "
+            "major US indices (SPX/NASDAQ/DJI/VIX/SOX), Yahoo continuous futures "
+            "(NQ=F, ES=F; carry contract=continuous and delayed=null), USDKRW "
+            "(Yahoo KRW=X), KOSPI200_NIGHT (always unsupported with a reason: KIS "
+            "documents no night-session futures quote), "
+            "and crypto market regime "
             "(CRYPTO=total market cap, BTC.D=BTC dominance via CoinGecko). "
+            "Every row carries as_of (UTC) and as_of_basis (quote_time or "
+            "fetched_at); KR rows carry session_date and, when OHLC is from an "
+            "earlier session, previous_session with its own date. "
             "Without symbol returns current major equity indices, with symbol "
             "adds OHLCV history (crypto has no history). KR (KOSPI/KOSDAQ) rows "
             "carry `quote_asof` (Naver quote timestamp) and a `data_state`; when "
