@@ -797,3 +797,7 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 - 확정 KRX 종가로 바꾸는 선택은 하지 않았다. 이 도구는 네이버만 읽고 DB 의존을 더하지 않는다. 확정 종가가 필요하면 `kr_candles_1d`를 같은 거래일로 읽는다.
 - 🔴 `investor_flow_snapshots.close`(18:10 KST job, `app/services/investor_flow_snapshots/builder.py:247-264`)는 같은 공급자 값이 레이블 없이 저장된다. 이 테이블을 읽는 리더는 같은 레이블을 붙이거나 확정 종가를 써야 하며, 현재 MCP 수급 도구는 이 열을 노출하지 않는다.
 - 테스트: `tests/mcp_server/test_investor_flow_close_basis.py`(실제 네이버 trend 페이로드 4행 픽스처 `tests/fixtures/investor_flow/005930_trend_2026-11-24_provider_close.json`).
+
+### Go↔Python 분봉 전환 비교 (hk 6345)
+
+`scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
