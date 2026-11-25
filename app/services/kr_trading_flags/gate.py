@@ -46,7 +46,7 @@ class GateOutcome:
     labelled_rows: int = 0
 
 
-def _evidence(record: FlagRecord) -> dict[str, Any]:
+def evidence_of(record: FlagRecord) -> dict[str, Any]:
     return {
         "category": record.category,
         "state": record.state,
@@ -83,7 +83,7 @@ def apply_trading_flag_gate(
                 reasons.append(
                     {
                         "reason": EXCLUSION_REASON_CODE[(category, record.state)],
-                        **_evidence(record),
+                        **evidence_of(record),
                     }
                 )
         if reasons:
@@ -91,7 +91,7 @@ def apply_trading_flag_gate(
             continue
 
         labels = [
-            _evidence(record)
+            evidence_of(record)
             for category, record in sorted(flags.items())
             if category == v.CATEGORY_MARKET_ALERT and record.state == "caution"
         ]

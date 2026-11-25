@@ -59,6 +59,7 @@ from app.services.halt_detection import (
     classify_ohlcv_frame,
 )
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
+from app.services.kr_trading_flags.lookup import confirmed_halt_flag
 from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 
 logger = logging.getLogger(__name__)
@@ -1090,6 +1091,12 @@ async def analyze_stock_impl(
         # ROB-1236 — must follow the freshness stamp (it overrides it) and
         # precede the recommendation (which then floors itself off null RSI).
         _apply_halt_suspect(analysis, halt_suspicion)
+        # hk 6503 — a stored KR 거래정지 flag is stated next to the suspicion; the
+        # suspicion logic itself is unchanged.
+        if halt_suspicion.suspected and market_type == "equity_kr":
+            confirmed = await confirmed_halt_flag(normalized_symbol)
+            if confirmed is not None and isinstance(analysis.get("halt_suspect"), dict):
+                analysis["halt_suspect"]["confirmed_halt_flag"] = confirmed
         analysis["errors"] = []
         _apply_recommendation(analysis, market_type)
 
