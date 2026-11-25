@@ -124,12 +124,38 @@ def test_poll_writes_append_only_jsonl(
     ]
     articles = [r for r in rows if r.get("record_type") == "article"]
     statuses = [r for r in rows if r.get("record_type") == "poll_status"]
-    assert len(articles) == 2
+    frames = [
+        r
+        for r in rows
+        if r.get("record_type") in ("poll_header", "poll_completion")
+    ]
+    # Two runs x two request params per symbol.
+    assert len(articles) == 4
     assert articles[0]["created_utc"] == "2025-11-25T13:30:00+00:00"
     assert articles[0]["poll_id"] == "p1"
     assert articles[0]["query_symbol"] == "NVDA"
+    assert [a["query_param"] for a in articles] == [
+        "primaryTickers",
+        "tickers",
+        "primaryTickers",
+        "tickers",
+    ]
     assert all(s["status"] == "ok" and s["source"] == "benzinga" for s in statuses)
-    assert len(statuses) == 2
+    assert sorted(s["query_param"] for s in statuses) == [
+        "primaryTickers",
+        "primaryTickers",
+        "tickers",
+        "tickers",
+    ]
+    assert len(statuses) == 4
+    assert [f["record_type"] for f in frames] == [
+        "poll_header",
+        "poll_completion",
+        "poll_header",
+        "poll_completion",
+    ]
+    assert frames[0]["symbols"] == ["NVDA"]
+    assert frames[1]["symbols_completed"] == ["NVDA"]
     assert "TEST-KEY" not in (out_dir / "p1.jsonl").read_text(encoding="utf-8")
 
 
@@ -218,7 +244,9 @@ def test_poll_explicit_zero_counts(
     )
     assert code == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["counts"] == {"NVDA": {"benzinga": 0, "finnhub": 0}}
+    assert report["counts"] == {
+        "NVDA": {"benzinga": 0, "benzinga_tickers": 0, "finnhub": 0}
+    }
 
 
 def test_poll_error_writes_status_and_exits_nonzero(
@@ -449,3 +477,90 @@ def test_summary_reads_several_files_and_reports_unreliable_cells(
     again = json.loads(capsys.readouterr().out)
     assert again["inputs"] == [str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")]
     assert again["overlap_articles"] == 1
+
+
+def test_poll_queries_both_params_and_records_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+) -> None:
+    """Acceptance 1: primaryTickers + tickers are queried and recorded separately."""
+    _enable(monkeypatch)
+    seen_params: list[str] = []
+
+    async def _fake_fetch(ticker, **kwargs):
+        param = kwargs["ticker_param"]
+        seen_params.append(param)
+        return [
+            bz.normalize_record(
+                _benzinga_item(f"{ticker} {param}", f"https://x.com/{ticker}-{param}"),
+                poll_id=kwargs["poll_id"],
+                first_received_at=kwargs["now"],
+            )
+        ]
+
+    monkeypatch.setattr(bz, "fetch_benzinga_news", _fake_fetch)
+    code = cli.main(
+        [
+            "poll",
+            "--symbols",
+            "NVDA",
+            "--out-dir",
+            str(tmp_path),
+            "--poll-id",
+            "p-params",
+            "--skip-finnhub",
+        ]
+    )
+    assert code == 0
+    assert seen_params == ["primaryTickers", "tickers"]
+    report = json.loads(capsys.readouterr().out)
+    assert report["counts"] == {
+        "NVDA": {"benzinga": 1, "benzinga_tickers": 1, "finnhub": 0}
+    }
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "p-params.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    articles = [r for r in rows if r.get("record_type") == "article"]
+    statuses = [r for r in rows if r.get("record_type") == "poll_status"]
+    assert sorted({a["query_param"] for a in articles}) == [
+        "primaryTickers",
+        "tickers",
+    ]
+    assert {a["title"] for a in articles} == {
+        "NVDA primaryTickers",
+        "NVDA tickers",
+    }
+    assert sorted(s["query_param"] for s in statuses) == [
+        "primaryTickers",
+        "tickers",
+    ]
+
+
+def test_summary_reports_killed_poll_as_unreliable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+) -> None:
+    """Acceptance 2: a poll with a header but no completion record is unreliable."""
+    _enable(monkeypatch)
+    _write(
+        tmp_path / "killed.jsonl",
+        [
+            {
+                "record_type": "poll_header",
+                "poll_id": "p-killed",
+                "symbols": ["NVDA"],
+                "started_at": "2025-11-25T14:00:00+00:00",
+            },
+        ],
+    )
+    assert cli.main(["summary", "--input", str(tmp_path / "killed.jsonl")]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["incomplete_polls"] == [
+        {
+            "poll_id": "p-killed",
+            "reason": "no_completion_record",
+            "symbols": ["NVDA"],
+        }
+    ]
+    assert summary["unreliable_symbol_polls"] == [
+        {"poll_id": "p-killed", "symbol": "NVDA"}
+    ]

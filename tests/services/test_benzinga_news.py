@@ -81,7 +81,8 @@ async def test_fetch_sends_token_as_query_param() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
-        assert request.url.params.get("tickers") == "NVDA"
+        assert request.url.params.get("primaryTickers") == "NVDA"
+        assert "tickers" not in request.url.params
         assert request.url.params.get("token") == "KEY-123"
         assert "Authorization" not in request.headers
         return httpx.Response(200, json=[BENZINGA_ITEM])
@@ -102,6 +103,32 @@ async def test_fetch_sends_token_as_query_param() -> None:
     assert records[0]["created_utc"] == "2025-11-25T13:30:00+00:00"
     assert "token=KEY-123" in seen["url"]  # on the wire only, never logged
 
+
+@pytest.mark.asyncio
+async def test_fetch_tickers_param_is_evidence_query() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        assert request.url.params.get("tickers") == "NVDA"
+        assert "primaryTickers" not in request.url.params
+        return httpx.Response(200, json=[])
+
+    def factory(timeout_s: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=False
+        )
+
+    records = await bz.fetch_benzinga_news(
+        "NVDA",
+        api_key="KEY-123",
+        poll_id="poll-1",
+        now=FIXED_NOW,
+        client_factory=factory,
+        ticker_param="tickers",
+    )
+    assert records == []
+    assert "tickers=NVDA" in seen["url"]
 
 @pytest.mark.asyncio
 async def test_fetch_http_error_never_carries_the_key() -> None:
@@ -352,3 +379,134 @@ def test_normalize_url_ignores_scheme_query_and_case() -> None:
     )
     assert bz.normalize_url(None) is None
     assert bz.normalize_url("") is None
+
+def test_normalize_record_missing_id_keeps_provider_id_none() -> None:
+    item = dict(BENZINGA_ITEM)
+    item.pop("id")
+    record = bz.normalize_record(item, poll_id="p1", first_received_at=FIXED_NOW)
+    assert record["provider_id"] is None
+
+
+def test_dedupe_keeps_empty_provider_id_rows() -> None:
+    rows = [
+        _record("benzinga", "https://x.com/a", "First", "p1", "2025-11-25T14:00:00+00:00"),
+        _record("benzinga", "https://x.com/b", "Second", "p1", "2025-11-25T14:00:00+00:00"),
+    ]
+    for row in rows:
+        row["provider_id"] = None
+    rows.append(
+        _record("benzinga", "https://x.com/c", "Third", "p1", "2025-11-25T14:00:00+00:00")
+    )
+    rows[-1]["provider_id"] = ""
+    kept, removed = bz._dedupe_articles(rows)
+    assert len(kept) == 3
+    assert removed == 0
+
+
+def test_finnhub_naive_time_uses_offset_at_record_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Across a US DST switch the July record must use EDT, not November's EST."""
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        july, _ = bz._finnhub_created_utc("2025-07-01T12:00:00")
+        january, _ = bz._finnhub_created_utc("2025-01-15T12:00:00")
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+    assert july == "2025-07-01T16:00:00+00:00"
+    assert january == "2025-01-15T17:00:00+00:00"
+
+
+def test_summarize_killed_poll_is_unreliable() -> None:
+    ben = [
+        _record(
+            "benzinga",
+            "https://x.com/a",
+            "Orphan story",
+            "p-killed",
+            "2025-11-25T14:00:00+00:00",
+        )
+    ]
+    frames = [
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-killed",
+            "symbols": ["NVDA", "AMD"],
+        }
+    ]
+    summary = bz.summarize_shadow(ben, [], frames)
+    assert summary["incomplete_polls"] == [
+        {
+            "poll_id": "p-killed",
+            "reason": "no_completion_record",
+            "symbols": ["AMD", "NVDA"],
+        }
+    ]
+    assert summary["unreliable_symbol_polls"] == [
+        {"poll_id": "p-killed", "symbol": "AMD"},
+        {"poll_id": "p-killed", "symbol": "NVDA"},
+    ]
+    assert summary["benzinga_count"] == 0
+    assert summary["excluded_unreliable_articles"] == {"benzinga": 1, "finnhub": 0}
+
+
+def test_summarize_completed_poll_with_unpolled_symbol() -> None:
+    frames = [
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-part",
+            "symbols": ["NVDA", "AMD"],
+        },
+        {
+            "record_type": "poll_completion",
+            "poll_id": "p-part",
+            "symbols_completed": ["NVDA"],
+        },
+    ]
+    summary = bz.summarize_shadow([], [], frames)
+    assert summary["incomplete_polls"] == [
+        {"poll_id": "p-part", "reason": "symbols_unpolled", "symbols": ["AMD"]}
+    ]
+    assert summary["unreliable_symbol_polls"] == [
+        {"poll_id": "p-part", "symbol": "AMD"}
+    ]
+
+
+def test_summarize_completed_poll_has_no_incomplete_entry() -> None:
+    frames = [
+        {"record_type": "poll_header", "poll_id": "p-ok", "symbols": ["NVDA"]},
+        {
+            "record_type": "poll_completion",
+            "poll_id": "p-ok",
+            "symbols_completed": ["NVDA"],
+        },
+    ]
+    summary = bz.summarize_shadow([], [], frames)
+    assert summary["incomplete_polls"] == []
+    assert summary["unreliable_symbol_polls"] == []
+
+
+def test_summarize_counts_benzinga_by_query_param() -> None:
+    ben = [
+        _record(
+            "benzinga",
+            "https://x.com/a",
+            "Primary story",
+            "p1",
+            "2025-11-25T14:00:00+00:00",
+        ),
+        _record(
+            "benzinga",
+            "https://x.com/b",
+            "Tickers story",
+            "p1",
+            "2025-11-25T14:00:10+00:00",
+        ),
+    ]
+    ben[0]["query_param"] = "primaryTickers"
+    ben[1]["query_param"] = "tickers"
+    summary = bz.summarize_shadow(ben, [])
+    assert summary["benzinga_by_query_param"] == {"primaryTickers": 1, "tickers": 1}
+    assert summary["incomplete_polls"] == []

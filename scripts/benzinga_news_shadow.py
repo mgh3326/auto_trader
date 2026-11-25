@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """hk 6395: Benzinga news shadow collector (JSONL, no DB writes).
 
-Manual CLI. Polls Benzinga /api/v2/news per symbol and Finnhub company-news
-for the same symbols in the same pass, appending JSON records to a JSONL file
-OUTSIDE the repo: one ``article`` row per story plus one ``poll_status`` row
-per symbol per source (ok/empty row count, or the error class). A ``summary``
+Manual CLI. Polls Benzinga /api/v2/news per symbol per request parameter
+(``primaryTickers`` for coverage, ``tickers`` as evidence — confirmed
+2026-11-25 the ``tickers`` filter misses secondary mentions) and Finnhub
+company-news for the same symbols in the same pass, appending JSON records
+to a JSONL file OUTSIDE the repo: one ``article`` row per story plus one
+``poll_status`` row per symbol per parameter per source (ok/empty row
+count, or the error class), plus one ``poll_header`` row (planned symbols)
+and one ``poll_completion`` row (polled symbols) per pass. A ``summary``
 subcommand compares the two streams over a window.
 
 Usage:
@@ -117,52 +121,66 @@ async def _poll_symbol(
     date_to: str | None,
     skip_finnhub: bool,
 ) -> tuple[list[dict], list[str]]:
-    """Poll one symbol, stamping each source after its own response."""
+    """Poll one symbol, stamping each source after its own response.
+
+    Benzinga is queried twice per symbol: ``primaryTickers`` (coverage)
+    and ``tickers`` (evidence). Both result sets are recorded with their
+    request parameter name in ``query_param`` so the comparison keeps the
+    evidence.
+    """
     rows: list[dict] = []
     errors: list[str] = []
-    try:
-        fetched = await bz.fetch_benzinga_news(
-            symbol,
-            api_key=api_key,
-            poll_id=poll_id,
-            now=datetime.now(UTC),
-            page_size=limit,
-            date_from=date_from,
-            date_to=date_to,
-        )
-        seen = datetime.now(UTC)
-        for record in fetched:
-            record["query_symbol"] = symbol
-            record["first_received_at"] = seen.astimezone(UTC).isoformat()
-        rows.extend(fetched)
-        rows.append(
-            _status_row(
-                source="benzinga",
-                symbol=symbol,
+    for ticker_param in ("primaryTickers", "tickers"):
+        try:
+            fetched = await bz.fetch_benzinga_news(
+                symbol,
+                api_key=api_key,
                 poll_id=poll_id,
-                status="ok" if fetched else "empty",
-                count=len(fetched),
-                error_class=None,
-                seen_at=seen,
+                now=datetime.now(UTC),
+                page_size=limit,
+                date_from=date_from,
+                date_to=date_to,
+                ticker_param=ticker_param,
             )
-        )
-    except Exception as exc:  # noqa: BLE001 - per-source failure must not kill the pass
-        seen = datetime.now(UTC)
-        errors.append(f"benzinga {symbol}: {type(exc).__name__}")
-        logger.warning(
-            "benzinga poll failed for %s: %s", symbol, bz.redact_token(str(exc))
-        )
-        rows.append(
-            _status_row(
-                source="benzinga",
-                symbol=symbol,
-                poll_id=poll_id,
-                status="error",
-                count=0,
-                error_class=type(exc).__name__,
-                seen_at=seen,
+            seen = datetime.now(UTC)
+            for record in fetched:
+                record["query_symbol"] = symbol
+                record["query_param"] = ticker_param
+                record["first_received_at"] = seen.astimezone(UTC).isoformat()
+            rows.extend(fetched)
+            rows.append(
+                _status_row(
+                    source="benzinga",
+                    symbol=symbol,
+                    poll_id=poll_id,
+                    status="ok" if fetched else "empty",
+                    count=len(fetched),
+                    error_class=None,
+                    seen_at=seen,
+                    query_param=ticker_param,
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 - per-source failure must not kill the pass
+            seen = datetime.now(UTC)
+            errors.append(f"benzinga {symbol} [{ticker_param}]: {type(exc).__name__}")
+            logger.warning(
+                "benzinga poll failed for %s [%s]: %s",
+                symbol,
+                ticker_param,
+                bz.redact_token(str(exc)),
+            )
+            rows.append(
+                _status_row(
+                    source="benzinga",
+                    symbol=symbol,
+                    poll_id=poll_id,
+                    status="error",
+                    count=0,
+                    error_class=type(exc).__name__,
+                    seen_at=seen,
+                    query_param=ticker_param,
+                )
+            )
     if not skip_finnhub:
         try:
             from app.services.finnhub_news import fetch_news_finnhub
@@ -249,11 +267,13 @@ def _status_row(
     count: int,
     error_class: str | None,
     seen_at: datetime,
+    query_param: str | None = None,
 ) -> dict:
     return {
         "record_type": "poll_status",
         "source": source,
         "query_symbol": symbol,
+        "query_param": query_param,
         "poll_id": poll_id,
         "status": status,
         "count": count,
@@ -295,7 +315,20 @@ async def _run_poll(args: argparse.Namespace) -> int:
 
     counts: dict[str, dict[str, int]] = {}
     errors: list[str] = []
+    completed: list[str] = []
     with open(out_path, "a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "record_type": "poll_header",
+                    "poll_id": poll_id,
+                    "symbols": symbols,
+                    "started_at": datetime.now(UTC).astimezone(UTC).isoformat(),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
         for symbol in symbols:
             rows, errs = await _poll_symbol(
                 symbol,
@@ -315,6 +348,14 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     for r in rows
                     if r.get("record_type") == "article"
                     and r.get("source") == "benzinga"
+                    and r.get("query_param") == "primaryTickers"
+                ),
+                "benzinga_tickers": sum(
+                    1
+                    for r in rows
+                    if r.get("record_type") == "article"
+                    and r.get("source") == "benzinga"
+                    and r.get("query_param") == "tickers"
                 ),
                 "finnhub": sum(
                     1
@@ -323,15 +364,29 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     and r.get("source") == "finnhub"
                 ),
             }
+            completed.append(symbol)
             # Explicit zeros stay visible: a symbol with no coverage is a
             # gap data point (the tickers=NVDA anomaly), not silence.
             logger.info(
-                "poll %s %s: benzinga=%d finnhub=%d",
+                "poll %s %s: benzinga=%d benzinga_tickers=%d finnhub=%d",
                 poll_id,
                 symbol,
                 counts[symbol]["benzinga"],
+                counts[symbol]["benzinga_tickers"],
                 counts[symbol]["finnhub"],
             )
+        fh.write(
+            json.dumps(
+                {
+                    "record_type": "poll_completion",
+                    "poll_id": poll_id,
+                    "symbols_completed": completed,
+                    "finished_at": datetime.now(UTC).astimezone(UTC).isoformat(),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
     report = {
         "poll_id": poll_id,
@@ -369,7 +424,7 @@ def _run_summary(args: argparse.Namespace) -> int:
     if not paths:
         print("no JSONL inputs", file=sys.stderr)
         return 2
-    ben, fin = [], []
+    ben, fin, frames = [], [], []
     for path in paths:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -382,11 +437,13 @@ def _run_summary(args: argparse.Namespace) -> int:
                     continue
                 if args.poll_id and record.get("poll_id") != args.poll_id:
                     continue
-                if record.get("source") == "benzinga":
+                if record.get("record_type") in ("poll_header", "poll_completion"):
+                    frames.append(record)
+                elif record.get("source") == "benzinga":
                     ben.append(record)
                 elif record.get("source") == "finnhub":
                     fin.append(record)
-    summary = bz.summarize_shadow(ben, fin)
+    summary = bz.summarize_shadow(ben, fin, frames)
     summary["poll_id"] = args.poll_id
     summary["inputs"] = [str(p) for p in paths]
     print(json.dumps(summary, sort_keys=True, indent=2))
