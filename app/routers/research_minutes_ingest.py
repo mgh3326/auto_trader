@@ -36,8 +36,12 @@ from app.schemas.research_minutes_ingest import (
     ResearchMinutesIngestRequest,
     ResearchMinutesIngestResponse,
 )
-from app.services.research_candles import minute_ingest
+from app.services.research_candles import futures_listing, minute_ingest
 from app.services.research_candles import session_minutes_collector as collector
+from app.services.research_candles.futures_minutes_collector import (
+    FuturesBar,
+    SqlFuturesMinuteWriter,
+)
 from app.services.research_candles.session_minutes_collector import SqlMinuteWriter
 
 logger = logging.getLogger(__name__)
@@ -103,26 +107,63 @@ async def ingest_research_minutes(
     # never a session user).
     now = datetime.now(UTC)
     batch_id = request.batch_id or minute_ingest.build_batch_id(request.market, now)
-    writer = SqlMinuteWriter(db, request.market)
+    # Futures: the master listing recomputes roll_state. Read once per batch; a
+    # failed read refuses every futures item, never stores a guessed state.
+    listing = (
+        await futures_listing.FUTURES_LISTING.listed_months_by_product()
+        if request.market == "futures"
+        else None
+    )
+    futures_writer = SqlFuturesMinuteWriter(db) if request.market == "futures" else None
+    stock_writer = (
+        None if request.market == "futures" else SqlMinuteWriter(db, request.market)
+    )
     results: list[ResearchMinutesIngestItemResult] = []
     inserted = already_present = 0
 
     for item in request.bars:
-        decision = minute_ingest.decide_bar(
-            market=request.market,
-            symbol=item.symbol,
-            venue=item.venue,
-            time_utc=item.time_utc,
-            open_price=item.open,
-            high_price=item.high,
-            low_price=item.low,
-            close_price=item.close,
-            volume=item.volume,
-            value=item.value,
-            received_at=item.received_at,
-            source=item.source,
-            now=now,
-        )
+        if request.market == "futures":
+            decision = minute_ingest.decide_futures_bar(
+                symbol=item.symbol,
+                venue=item.venue,
+                time_utc=item.time_utc,
+                open_price=item.open,
+                high_price=item.high,
+                low_price=item.low,
+                close_price=item.close,
+                volume=item.volume,
+                value=item.value,
+                received_at=item.received_at,
+                source=item.source,
+                product=item.product,
+                contract_month=item.contract_month,
+                roll_state=item.roll_state,
+                session_segment=item.session_segment,
+                session_date=item.session_date,
+                listing=listing,
+                now=now,
+            )
+        elif item.futures_fields_sent():
+            # Stock markets carry none of the futures-only fields.
+            decision = minute_ingest.BarDecision(
+                reason=minute_ingest.REASON_FIELD_NOT_APPLICABLE
+            )
+        else:
+            decision = minute_ingest.decide_bar(
+                market=request.market,
+                symbol=item.symbol,
+                venue=item.venue,
+                time_utc=item.time_utc,
+                open_price=item.open,
+                high_price=item.high,
+                low_price=item.low,
+                close_price=item.close,
+                volume=item.volume,
+                value=item.value,
+                received_at=item.received_at,
+                source=item.source,
+                now=now,
+            )
         bar = decision.bar
         retrieved_at = decision.retrieved_at
         if bar is None or retrieved_at is None:
@@ -138,16 +179,23 @@ async def ingest_research_minutes(
             # A per-item savepoint keeps one failing bar from discarding the
             # batch's already-applied rows.
             async with db.begin_nested():
-                created = await writer.insert_one(
-                    bar, batch_id=batch_id, retrieved_at=retrieved_at
-                )
+                if isinstance(bar, FuturesBar):
+                    assert futures_writer is not None
+                    created = await futures_writer.insert_one(
+                        bar, batch_id=batch_id, retrieved_at=retrieved_at
+                    )
+                else:
+                    assert stock_writer is not None
+                    created = await stock_writer.insert_one(
+                        bar, batch_id=batch_id, retrieved_at=retrieved_at
+                    )
         except Exception as exc:  # noqa: BLE001 - reported per item
             logger.warning(
                 "research minute ingest refused one bar: market=%s symbol=%s "
                 "venue=%s error=%s",
                 request.market,
                 bar.symbol,
-                bar.venue,
+                item.venue,
                 type(exc).__name__,
             )
             results.append(

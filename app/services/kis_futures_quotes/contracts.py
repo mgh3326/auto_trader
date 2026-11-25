@@ -142,6 +142,23 @@ def _candidates(
     return {month: codes[0] for month, codes in found.items() if len(set(codes)) == 1}
 
 
+def listed_months_by_product(
+    master_rows: list[dict[str, str]],
+) -> dict[str, tuple[str, ...]]:
+    """Product code -> every listed ``YYYY-MM`` of that closed product, ascending.
+
+    The same listing ``resolve_front_next`` ranks, exposed for ``roll_state``: the
+    ingest server recomputes a bar's roll state from the master because it has no
+    contract list of its own. A product with no matching master row is absent.
+    """
+    listing: dict[str, tuple[str, ...]] = {}
+    for product in CLOSED_QUOTE_PRODUCTS:
+        months = tuple(sorted(_candidates(master_rows, product)))
+        if months:
+            listing[product.code] = months
+    return listing
+
+
 def resolve_front_next(
     master_rows: list[dict[str, str]],
     as_of: date,

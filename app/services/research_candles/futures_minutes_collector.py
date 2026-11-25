@@ -195,10 +195,44 @@ _INSERT = text(
 
 
 class SqlFuturesMinuteWriter:
-    """Insert-only writer; commits once per call (one contract)."""
+    """Insert-only writer. ``insert`` commits once per call (one contract);
+    ``insert_one`` leaves the commit to its caller (the ingest route's savepoint)."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _execute_one(
+        self, bar: FuturesBar, *, batch_id: str, retrieved_at: datetime
+    ) -> bool:
+        outcome = await self._session.execute(
+            _INSERT,
+            {
+                "time_utc": bar.time_utc,
+                "symbol": bar.symbol,
+                "product": bar.product,
+                "contract_month": bar.contract_month,
+                "roll_state": bar.roll_state,
+                "session_segment": bar.session_segment,
+                "session_date": bar.session_date,
+                "source": bar.source,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "retrieved_at": retrieved_at,
+                "batch_id": batch_id,
+            },
+        )
+        return (getattr(outcome, "rowcount", 0) or 0) > 0
+
+    async def insert_one(
+        self, bar: FuturesBar, *, batch_id: str, retrieved_at: datetime
+    ) -> bool:
+        """True when the row was new. Never commits."""
+        return await self._execute_one(
+            bar, batch_id=batch_id, retrieved_at=retrieved_at
+        )
 
     async def insert(
         self, bars: Sequence[FuturesBar], *, batch_id: str, retrieved_at: datetime
@@ -206,27 +240,10 @@ class SqlFuturesMinuteWriter:
         inserted = 0
         try:
             for bar in bars:
-                outcome = await self._session.execute(
-                    _INSERT,
-                    {
-                        "time_utc": bar.time_utc,
-                        "symbol": bar.symbol,
-                        "product": bar.product,
-                        "contract_month": bar.contract_month,
-                        "roll_state": bar.roll_state,
-                        "session_segment": bar.session_segment,
-                        "session_date": bar.session_date,
-                        "source": bar.source,
-                        "open": bar.open,
-                        "high": bar.high,
-                        "low": bar.low,
-                        "close": bar.close,
-                        "volume": bar.volume,
-                        "retrieved_at": retrieved_at,
-                        "batch_id": batch_id,
-                    },
-                )
-                inserted += 1 if (getattr(outcome, "rowcount", 0) or 0) > 0 else 0
+                if await self._execute_one(
+                    bar, batch_id=batch_id, retrieved_at=retrieved_at
+                ):
+                    inserted += 1
             await self._session.commit()
         except Exception:
             await self._session.rollback()
