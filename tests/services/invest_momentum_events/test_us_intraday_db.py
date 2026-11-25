@@ -96,9 +96,7 @@ async def test_closed_market_and_source_vocabularies_are_enforced(db_session) ->
     await _clean(db_session)
     repo = InvestMomentumEventSnapshotsRepository(db_session)
     with pytest.raises(IntegrityError):
-        await repo.insert_momentum(
-            _us_row("URBN", extra=None).model_copy(update={"market": "jp"})
-        )
+        await repo.insert_momentum(_us_row("URBN").model_copy(update={"market": "jp"}))
     await db_session.rollback()
     with pytest.raises(IntegrityError):
         await repo.insert_momentum(
