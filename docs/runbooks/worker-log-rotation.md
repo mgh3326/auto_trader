@@ -1,6 +1,6 @@
 # Retired Mac worker launchd 로그 회전 및 25GB 기존 파일 처리
 
-> **2026-09-02 retired:** TaskIQ worker is now NCP `at-worker` (#2012). The
+> **2026-09-02 retired:** TaskIQ worker is now `at-worker` on the NCP host (#2012; the host was returned in hk 6441). The
 > Mac worker and its `worker-log-rotation` launchd plists are intentionally
 > absent; do not install or arm them, because reviving the Mac worker creates
 > competing TaskIQ consumers. The remaining material is historical incident
