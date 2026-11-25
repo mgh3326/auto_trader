@@ -429,7 +429,7 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
     chosen_set: set[str] = set()
     cut_by: dict[str, str] = {}
     cut_order: list[str] = []
-    reports: list[tuple[TierSpec, list[str], list[str], int | None, int]] = []
+    reports: list[tuple[TierSpec, list[str], list[str], int | None]] = []
     for spec in tiers:
         candidates: list[str] = []
         listed: set[str] = set()
@@ -453,7 +453,7 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
         chosen_set.update(take)
         remaining = max(remaining - len(take), 0)
         carry = 0 if pool is None else max(pool - len(take), 0)
-        reports.append((spec, candidates, take, pool, len(cut)))
+        reports.append((spec, candidates, take, pool))
 
     cuts = [
         {"symbol": symbol, "tier": cut_by[symbol], "reason": CUT_REASON_BUDGET}
@@ -472,7 +472,7 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
             selected=len(take),
             cut=cut_counts.get(spec.tier, 0),
         )
-        for spec, candidates, take, pool, _ in reports
+        for spec, candidates, take, pool in reports
     ]
     return TieredSelection(
         selected=chosen,
