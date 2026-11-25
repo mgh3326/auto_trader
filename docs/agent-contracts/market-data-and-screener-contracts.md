@@ -29,6 +29,7 @@
 - research 분봉 HTTP ingest·대상 읽기 (hk 6343)
 - 장중 급등·급락 관측 로그 (hk 6154)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
+- Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
 
 ## 기준 원문 계약
 
@@ -828,3 +829,16 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 ### Go↔Python 분봉 전환 비교 (hk 6345)
 
 `scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 비교할 근거가 없으면(한쪽 0행, 겹치는 봉 0개, 요청 종목이 양쪽에 없음) PASS 가 아니라 `INCONCLUSIVE`(종료 코드 4)다. Python 쪽은 세션 수집기 행(`batch_id` 접두어 `session-minutes-`)만 본다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
+
+### Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
+
+`app/services/upbit_intraday_shadow/` + 수동 CLI `scripts/upbit_intraday_shadow.py` 는 hk 6035 동결 규칙을 마감된 15분 봉에 적용해 **전향 증거만** 쌓는다. 6035 는 세 계열 모두 `NOT_SUPPORTED` 였으므로 이 행들은 매매 신호·알림·정책 입력이 아니다. 🔴 주문·미리보기·승인·원장 모듈을 import 하지 않고(정적 import 폐쇄 + 새 인터프리터 로드 검사 `tests/services/upbit_intraday_shadow/test_static_boundary.py`), 스케줄러 등록 없음(하드룰 6: `deploy/dagu/at-upbit-intraday-shadow/` 는 미등록 복사본, 등록은 마이그레이션 적용 뒤 설계 세션).
+
+- **데이터**: Upbit 공개 GET 두 경로(`/v1/market/all`, `/v1/candles/minutes/15`)만, 6035 의 허용 목록·파싱·페이서 재사용(키 없음, 요청 간격 0.15초, 429/5xx 재시도). websocket 대신 candles GET 인 이유: 규칙이 이 거래소 집계 봉으로 시험됐고, 상주 프로세스가 필요 없고, 놓친 회차가 있어도 같은 페이지를 다시 읽는다. 봉은 마감 10초 뒤부터만 읽고 형성 중 봉은 요청하지 않는다. 1분봉 저장은 이 기록기 범위가 아니다.
+- **규칙**: `research/upbit_intraday/rules.py` 를 import 해 12개 설정 전부를 평가한다(`selected_config` = `frozen_selection.json` 의 3개). 파일 sha256 이 6035 매니페스트 핀과 다르면 실행 전에 거부한다(종료 코드 2). 규칙·평가 파일은 고치지 않는다. 스테이블 제외·보유 집합 분할은 규칙의 것이고 제외 행을 만들지 않는다.
+- **후보 행** `research.upbit_shadow_candidates`(키 `rules_version, market, config_id, signal_bar_open_at`): 동결 신호, 또는 가격·거래량 배수 조건은 맞지만 거래대금 20,000,000 KRW 미만인 후보(16봉 쿨다운 밖)가 한 행이다. 쿨다운이 눌러 준 원 조건과 룩백 봉이 75% 미만인 시각(unknown)은 행이 없다. `disposition` ∈ `signal`|`excluded`, `exclusion_reasons` 는 닫힌 어휘 `market_event_warning`·`market_event_caution`·`market_event_unknown`·`market_event_stale`·`liquidity_below_floor`·`cooldown_unverified`(해당하는 것 전부, 이 순서). `cooldown_unverified` = 패널 안에 16봉을 넘는 공백이 없어 동결 쿨다운 결과를 보지 못한 봉으로부터 확정할 수 없는 경우. 신호 봉 OHLC·거래대금, 직전 N 고/저(`ref_level`)·이격, 중앙값·배수, 24시간 거래대금·구간, 수수료(편도 0.05%)·동결 왕복 비용·호가 단위(`app/core/upbit_tick.py`), 경보 상태·타입·관측 시각을 함께 남긴다. `signal_time` = 봉 마감, `first_received_at` = 마감 봉을 처음 받은 시각.
+- **경보 상태**: 그 회차의 `market/all` 의 `market_event` 를 `app/services/upbit_market_event.classify_market_event`(hk 6026 어휘)로 분류한다. 이 기록기에서는 `caution` 도 제외 사유다(구매측 리더 규칙은 바뀌지 않는다). 🔴 관측이 신호 시각보다 30분 넘게 늦으면(놓친 회차를 따라잡는 경우) 그 시각의 상태를 모르므로 `market_event_unknown` 이고 과거 상태를 지어내지 않는다.
+- **가상 왕복** `research.upbit_shadow_virtual_trades`(키 `candidate_id, horizon_bars` = 4·16·96, `is_virtual` 항상 true, `disposition` 은 복합 FK 로 후보와 결속 — 제외 후보의 행도 있으므로 소비자는 반드시 구분한다): 🔴 진입은 **신호 다음 봉의 시가뿐**이다. 저가·고가가 가격에 닿는 것은 체결이 아니며, 다음 15분에 봉이 없으면 진입 없이 `missing_reason=next_bar_no_trades` 다. 청산은 진입 봉부터 `h` 번째 봉 종가, 그 칸에 체결이 없으면 직전 체결 종가(`exit_basis`). `gross_return`(방향 부호 적용 — C 는 매도 뒤 재매수 이득)·`mae`·`mfe` 는 동결 함수 값, `net_return = gross - 왕복 비용`. 아직 판정할 수 없으면 행이 없고(다음 회차), 영원히 판정할 수 없으면(상장 목록에서 빠지고 404 = `market_unavailable`) 사유만 있고 숫자는 NULL 이다 — 0 으로 채우지 않는다(DB CHECK).
+- **쓰기**: 두 표의 유일한 writer 는 `writer.py`, `ON CONFLICT DO NOTHING` 삽입뿐이라 재실행은 첫 수신 시각과 값을 바꾸지 않는다. 어떤 live·mock 체결 표와도 분리돼 있고 그 표를 읽거나 쓰지 않는다. 마이그레이션 `20261125_hk6036_upbit_shadow`(추가형, `at_app` 조건부 GRANT SELECT·INSERT·schema USAGE, downgrade 는 행이 있으면 거부).
+- **실행**: 기본은 드라이런(DB 접근 0, 후보·가상 행 출력), `--commit` 만 쓴다. `--catchup-bars`(기본 4, 최대 96), `--markets`. 시장 하나의 실패는 `errors` 에 남기고 계속하며 종료 코드 1. 실계좌·전략·게이트 변경 없음.
+- **테스트**: `tests/services/upbit_intraday_shadow/`(2026-11-25 BTC·XRP·SAHARA 녹화 봉 재생, 터치=진입 아님, 동결 해시), `tests/test_hk6036_upbit_shadow_migration_db.py`(DB 부분은 CI), `tests/scripts/test_dagu_upbit_intraday_shadow_dag.py`. 이미지에는 `research/upbit_intraday` 의 규칙·fetch·선택 파일과 `research/crypto_universe/public_http.py` 만 더 싣는다.
