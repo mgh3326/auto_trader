@@ -1,0 +1,92 @@
+{
+  "backfill": [
+    "000700",
+    "000702"
+  ],
+  "errors": [],
+  "report": {
+    "targeted_symbols": [
+      "000001",
+      "000002",
+      "000200",
+      "000201",
+      "000700",
+      "000701",
+      "000702",
+      "000800"
+    ],
+    "targets_by_origin": {
+      "fixed_list": 2,
+      "intraday_movers": 3,
+      "kis_holdings": 2,
+      "screener_pick_log": 3,
+      "screener_snapshot": 3
+    },
+    "targets_cuts": [
+      {
+        "reason": "budget_cut",
+        "symbol": "000801",
+        "tier": "screener_snapshot"
+      },
+      {
+        "reason": "budget_cut",
+        "symbol": "000500",
+        "tier": "screener_pick_log"
+      },
+      {
+        "reason": "budget_cut",
+        "symbol": "000501",
+        "tier": "screener_pick_log"
+      }
+    ],
+    "targets_tiers": [
+      {
+        "allowance": null,
+        "budget": 50,
+        "candidates": 4,
+        "cut": 0,
+        "selected": 4,
+        "tier": "fixed"
+      },
+      {
+        "allowance": 48,
+        "budget": 2,
+        "candidates": 3,
+        "cut": 0,
+        "selected": 3,
+        "tier": "intraday_movers"
+      },
+      {
+        "allowance": 47,
+        "budget": 2,
+        "candidates": 2,
+        "cut": 1,
+        "selected": 1,
+        "tier": "screener_snapshot"
+      },
+      {
+        "allowance": null,
+        "budget": null,
+        "candidates": 2,
+        "cut": 2,
+        "selected": 0,
+        "tier": "screener_pick_log"
+      }
+    ],
+    "targets_truncated": {
+      "screener_pick_log": 2,
+      "screener_snapshot": 1
+    },
+    "targets_truncated_total": 3
+  },
+  "symbols": [
+    "000001",
+    "000002",
+    "000200",
+    "000201",
+    "000700",
+    "000701",
+    "000702",
+    "000800"
+  ]
+}
