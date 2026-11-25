@@ -486,3 +486,40 @@ def test_hk6322_has_no_retention_or_scheduler_text() -> None:
         source = path.read_text()
         assert "add_retention_policy" not in source
         assert "add_continuous_aggregate_policy" not in source
+
+
+# ------------------------------------------------------------ CLI wiring (no DB) ----
+
+
+def test_first_last_check_is_us_only() -> None:
+    import importlib
+
+    diagnose = importlib.import_module("scripts.diagnose_session_coverage")
+    args = diagnose._parse_args(
+        ["--market", "us", "--date", "2026-11-25", "--first-last"]
+    )
+    assert args.first_last is True
+    with pytest.raises(SystemExit) as refused:
+        diagnose._parse_args(["--market", "kr", "--date", "2026-11-25", "--first-last"])
+    assert refused.value.code == 2
+
+
+def test_toss_inputs_are_not_requested_for_kr_and_disabled_without_the_flag(
+    monkeypatch,
+) -> None:
+    import importlib
+
+    from app.core.config import settings
+
+    cli = importlib.import_module("scripts.collect_session_minutes")
+    reader, calendar, status = asyncio_run(cli._toss_us_inputs("kr"))
+    assert (reader, calendar, status) == (None, None, "not_requested")
+    monkeypatch.setattr(settings, "toss_api_enabled", False)
+    reader, calendar, status = asyncio_run(cli._toss_us_inputs("us"))
+    assert (reader, calendar, status) == (None, None, "disabled")
+
+
+def asyncio_run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
