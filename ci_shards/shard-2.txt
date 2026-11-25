@@ -47,6 +47,7 @@ tests/mcp_server/tooling/test_evidence_boundary.py
 tests/mcp_server/tooling/test_get_news_envelope.py
 tests/mcp_server/tooling/test_live_order_evidence_us.py
 tests/mcp_server/tooling/test_market_index_current_only.py
+tests/mcp_server/tooling/test_market_index_symbols.py
 tests/mcp_server/tooling/test_news_handlers.py
 tests/mcp_server/tooling/test_screen_stocks_halt_filter.py
 tests/mcp_server/tooling/test_terminal_only_reconcile.py
