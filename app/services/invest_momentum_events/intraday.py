@@ -332,7 +332,14 @@ async def first_captures(
             symbol=r.symbol,
             name=r.name,
             snapshot_at=r.snapshot_at,
-            surface=f"stock:{r.trade_type}:{r.market_type}:{r.order_type}",
+            # KR rows keep the computed Naver surface (hk 6154 output unchanged);
+            # a US row's surface (``us:<source>:<session>:<side>``) is stored
+            # because the session is not a column (hk 6510).
+            surface=(
+                f"stock:{r.trade_type}:{r.market_type}:{r.order_type}"
+                if r.market == "kr"
+                else r.surface
+            ),
             rank=r.rank,
             change_rate=r.change_rate,
             trade_value=r.trade_value,

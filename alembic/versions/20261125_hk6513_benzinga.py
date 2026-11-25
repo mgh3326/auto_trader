@@ -1,7 +1,7 @@
 """hk 6513: Benzinga calendar evidence columns + append-only revision log.
 
 Revision ID: 20261125_hk6513_benzinga
-Revises: 20261125_hk6508_fnguide
+Revises: 20261125_hk6510_us_movers_val
 Create Date: 2026-11-25
 
 Additive. Two things are added for the Benzinga calendar ingestion
@@ -43,7 +43,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261125_hk6513_benzinga"
-down_revision: str | Sequence[str] | None = "20261125_hk6508_fnguide"
+down_revision: str | Sequence[str] | None = "20261125_hk6510_us_movers_val"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

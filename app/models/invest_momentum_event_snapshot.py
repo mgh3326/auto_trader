@@ -36,11 +36,15 @@ class InvestMomentumEventSnapshot(Base):
             "symbol",
             name="uq_invest_momentum_event_snapshots_surface_params_symbol_at",
         ),
+        # hk 6510: ``us`` rows live in the same table (see the contract's
+        # "장중 급등·급락 관측 로그" US section); ``kr`` rows are unchanged.
         CheckConstraint(
-            "market = 'kr'", name="ck_invest_momentum_event_snapshots_market"
+            "market IN ('kr', 'us')",
+            name="ck_invest_momentum_event_snapshots_market",
         ),
         CheckConstraint(
-            "source = 'naver_stock'", name="ck_invest_momentum_event_snapshots_source"
+            "source IN ('naver_stock', 'alpaca_screener', 'kis_overseas_ranking')",
+            name="ck_invest_momentum_event_snapshots_source",
         ),
         Index(
             "ix_invest_momentum_event_snapshots_date_order_rank",
@@ -68,6 +72,14 @@ class InvestMomentumEventSnapshot(Base):
             "market",
             "snapshot_at",
         ),
+        # hk 6510: ``first_captures`` reads one market's trading day by symbol.
+        Index(
+            "ix_invest_momentum_event_snapshots_market_date_symbol",
+            "market",
+            "trading_date",
+            "symbol",
+            "snapshot_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -92,6 +104,14 @@ class InvestMomentumEventSnapshot(Base):
     volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     trade_value: Mapped[Decimal | None] = mapped_column(Numeric(30, 2), nullable=True)
     market_cap: Mapped[Decimal | None] = mapped_column(Numeric(30, 2), nullable=True)
+    # hk 6510 (US rows): derivable asset class, the receipt time of the row and the
+    # closed reason for each field the source does not provide. KR rows leave all
+    # three NULL, so their stored bytes are unchanged.
+    asset_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    first_received_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    field_reasons: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     collected_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
@@ -227,7 +247,9 @@ class InvestThemeEventSnapshotStock(Base):
 
 
 #: Closed reason vocabulary of a failed ranking fetch (hk 6154). Never an
-#: exception message: only the class of failure.
+#: exception message: only the class of failure. ``source_unavailable`` (hk 6510)
+#: is a source that could not even be attempted (no credentials / no reader), so
+#: a missing configuration never looks like an empty ranking.
 RUN_ERROR_REASONS = (
     "http_4xx",
     "http_5xx",
@@ -236,6 +258,7 @@ RUN_ERROR_REASONS = (
     "bad_response",
     "unparseable",
     "unexpected",
+    "source_unavailable",
 )
 RUN_EMPTY_REASON = "no_rows"
 

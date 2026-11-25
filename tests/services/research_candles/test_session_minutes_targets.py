@@ -246,6 +246,8 @@ def _mover(symbol: str):
     return SimpleNamespace(
         symbol=symbol,
         name=None,
+        market="kr",
+        surface="domestic_market_stock_default",
         snapshot_at=NOW,
         trade_type="KRX",
         market_type="ALL",
@@ -342,7 +344,7 @@ async def test_intraday_movers_query_failure_is_reported_and_the_run_continues(
 
 
 @pytest.mark.asyncio
-async def test_us_targets_never_query_intraday_movers(monkeypatch) -> None:
+async def test_us_targets_query_us_intraday_movers_only(monkeypatch) -> None:
     import app.services.manual_holdings_service as manual_module
 
     class _Manual:
@@ -353,6 +355,15 @@ async def test_us_targets_never_query_intraday_movers(monkeypatch) -> None:
             return []
 
     monkeypatch.setattr(manual_module, "ManualHoldingsService", _Manual)
+    calls: list[tuple[str, object]] = []
+
+    async def _captures(session, trading_date, market="kr"):
+        calls.append((market, trading_date))
+        return [_mover("DELL")]
+
+    from app.services.invest_momentum_events import intraday as movers
+
+    monkeypatch.setattr(movers, "first_captures", _captures)
     session = _RecordingSession([], mover_rows=[_mover("000700")])
     targets = await sc.build_targets(
         market="us",
@@ -364,5 +375,7 @@ async def test_us_targets_never_query_intraday_movers(monkeypatch) -> None:
         snapshot_fn=FakeSnapshot({}),
         presets_fn=lambda market: [],
     )
-    assert "intraday_movers" not in targets.by_origin
-    assert not any("invest_momentum_event_snapshots" in s for s in session.statements)
+    # hk 6510: the US run reads its own captures (market='us'), never the KR ones.
+    assert targets.by_origin["intraday_movers"] == 1
+    assert "DELL" in targets.symbols
+    assert calls and calls[0][0] == "us"

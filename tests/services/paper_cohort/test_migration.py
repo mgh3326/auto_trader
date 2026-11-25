@@ -468,6 +468,21 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f"ALTER TABLE market_events DROP COLUMN {column}")
                 )
             await connection.execute(text("DROP TABLE market_event_revisions"))
+            # hk 6510 columns and index on the momentum snapshot table are later
+            # than the stamped boundary and already in Base.metadata; drop them
+            # so the migration adds them back.
+            for column in ("asset_type", "first_received_at", "field_reasons"):
+                await connection.execute(
+                    text(
+                        f"ALTER TABLE invest_momentum_event_snapshots DROP COLUMN {column}"
+                    )
+                )
+            await connection.execute(
+                text(
+                    "DROP INDEX IF EXISTS "
+                    "ix_invest_momentum_event_snapshots_market_date_symbol"
+                )
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

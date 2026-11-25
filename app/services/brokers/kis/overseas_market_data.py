@@ -451,3 +451,42 @@ class OverseasMarketDataMixin(MarketDataBase):
             has_more=has_more,
             next_keyb=next_keyb,
         )
+
+    # ── Ranking (hk 6510) ──
+
+    async def inquire_overseas_updown_rate(
+        self,
+        exchange_code: str = "NAS",
+        *,
+        direction: str = "1",
+        nday: str = "0",
+        vol_rang: str = "0",
+        keyb: str = "",
+    ) -> dict[str, Any]:
+        """해외주식 상승률/하락률 순위 (HHDFS76290000), read-only.
+
+        ``direction`` is the provider's ``GUBN``: ``"1"`` rising, ``"0"`` falling.
+        ``exchange_code`` is the provider's ``EXCD`` (NAS / NYS / AMS). The raw
+        payload is returned; parsing and the closed read vocabulary live in the
+        consumer (``app/services/invest_momentum_events/us_sources.py``).
+        """
+        if direction not in ("0", "1"):
+            raise ValueError("direction must be '0' (falling) or '1' (rising)")
+        params = {
+            "AUTH": "",
+            "EXCD": constants.OVERSEAS_EXCHANGE_MAP.get(
+                exchange_code, exchange_code[:3]
+            ),
+            "NDAY": nday,
+            "GUBN": direction,
+            "VOL_RANG": vol_rang,
+            "KEYB": keyb,
+        }
+        js = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_UPDOWN_RATE_TR,
+            url=self._kis_url(constants.OVERSEAS_UPDOWN_RATE_URL),
+            params=params,
+            timeout=10,
+            api_name="inquire_overseas_updown_rate",
+        )
+        return js if isinstance(js, dict) else {}

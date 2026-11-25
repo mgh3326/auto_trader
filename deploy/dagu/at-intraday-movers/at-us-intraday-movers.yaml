@@ -1,0 +1,27 @@
+# US 장중 급등·급락 관측: 월–금 04:00–20:10 ET 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# Alpaca 스크리너(상승·하락·거래량 상위)와 KIS 해외 상승률/하락률 순위를 invest_momentum_event_snapshots 에
+# market='us' 로 삽입 전용 기록하고, 면별(us:<source>:<session>:<side>) 상태를 invest_momentum_event_runs 에 쓴다.
+# 세션 라벨은 04:00–09:30 ET 프리(us_pre), 정규(us_regular), 정규 마감–20:00 ET 애프터(us_post)이며,
+# XNYS 휴장일·창 밖은 스크립트가 outside_session 으로 아무것도 쓰지 않고 종료 코드 0 으로 끝난다.
+# KST 로는 여름(EDT) 17:00–09:10, 겨울(EST) 18:00–10:10 이다. KST 고정 창은 여름 프리장 첫 1시간을 놓친다.
+# 쓰기는 INVEST_MOMENTUM_EVENTS_COMMIT_ENABLED=true 일 때만 일어난다(기본 false). 등록과 스위치 변경은 설계 세션이 한다.
+description: "US intraday movers observation log (up / down / most actives)"
+schedule:
+  - "CRON_TZ=America/New_York */5 4-19 * * 1-5"
+  - "CRON_TZ=America/New_York 0,5,10 20 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: record
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.us_intraday_movers || rc=$?
+      exit "$rc"
+    timeout_sec: 180
+handler_on:
+  success:
+    command: 'logger -t at-dagu-intraday-movers "dag=at-us-intraday-movers status=success"'
+  failure:
+    command: 'logger -t at-dagu-intraday-movers "dag=at-us-intraday-movers status=failure"'

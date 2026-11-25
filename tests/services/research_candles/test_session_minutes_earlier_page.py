@@ -150,26 +150,132 @@ async def test_a_failing_earlier_page_keeps_the_first_page_and_is_reported() -> 
     assert "must not leak" not in str(report)
 
 
+# ------------------------------------------------------------------- US (6510)
+
+
+US_NOW = datetime(2026, 11, 24, 15, 30, tzinfo=UTC)  # 10:30 ET
+
+
+def _us_frame(labels: list[str]) -> pd.DataFrame:
+    return _frame(labels)
+
+
+def _us_labels(start: str, count: int) -> list[str]:
+    first = datetime.strptime(f"2026-11-24 {start}", "%Y-%m-%d %H:%M")
+    return [
+        (first + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M") for i in range(count)
+    ]
+
+
+class UsPagedKis:
+    """``keyb`` -> page; the first page is ``None``. Records every call."""
+
+    def __init__(self, pages: dict, fail_keyb: str | None = None):
+        self.pages = pages
+        self.fail_keyb = fail_keyb
+        self.calls: list[str | None] = []
+
+    async def inquire_overseas_minute_chart(
+        self, symbol, exchange_code="NASD", n=120, keyb=""
+    ):
+        from types import SimpleNamespace
+
+        self.calls.append(keyb or None)
+        if keyb and keyb == self.fail_keyb:
+            raise RuntimeError("detail that must not leak")
+        frame, has_more, next_keyb = self.pages.get(
+            keyb or None, (_frame([]), False, None)
+        )
+        return SimpleNamespace(frame=frame, has_more=has_more, next_keyb=next_keyb)
+
+
+def _us_pages():
+    return {
+        None: (_us_frame(_us_labels("09:30", 30)), True, "093000"),
+        "093000": (_us_frame(_us_labels("09:00", 30)), True, "090000"),
+        # reaches 04:00 ET, the session start: the loop stops there
+        "090000": (_us_frame(_us_labels("04:00", 30)), True, "040000"),
+    }
+
+
 @pytest.mark.asyncio
-async def test_backfill_is_ignored_for_us() -> None:
-    class UsKis:
-        calls = 0
-
-        async def inquire_overseas_minute_chart(
-            self, symbol, exchange_code="NASD", n=120, keyb=""
-        ):
-            UsKis.calls += 1
-            from types import SimpleNamespace
-
-            return SimpleNamespace(frame=_frame([]))
-
+async def test_us_backfill_pages_back_to_the_session_start() -> None:
+    kis = UsPagedKis(_us_pages())
+    writer = Writer()
     report = await sc.collect(
         market="us",
         symbols=["NVDA"],
-        kis=UsKis(),  # type: ignore[arg-type]
-        writer=Writer(),
+        kis=kis,  # type: ignore[arg-type]
+        writer=writer,
         us_exchanges={"NVDA": "NASD"},
-        clock=lambda: NOW,
+        clock=lambda: US_NOW,
         backfill_symbols=["NVDA"],
     )
-    assert UsKis.calls == 1 and report["backfill_symbols"] == 0
+    assert kis.calls == [None, "093000", "090000"]
+    assert report["backfill_pages"] == 2
+    assert report["backfill_symbols"] == 1
+    assert report["reads"] == 3
+    assert report["errors"] == 0
+    assert len(writer.bars) == 90  # 04:00..09:59 ET, in minute order
+    assert writer.bars[0].time_utc == datetime(
+        2026, 11, 24, 9, 0, tzinfo=UTC
+    )  # 04:00 ET
+    assert writer.bars[-1].time_utc == datetime(2026, 11, 24, 14, 59, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_us_backfill_is_bounded_by_the_page_cap() -> None:
+    pages = {None: (_us_frame(_us_labels("09:30", 5)), True, "k1")}
+    for index in range(sc.US_BACKFILL_MAX_PAGES + 5):
+        pages[f"k{index + 1}"] = (
+            _us_frame(_us_labels("08:00", 5)),
+            True,
+            f"k{index + 2}",
+        )
+    kis = UsPagedKis(pages)
+    report = await sc.collect(
+        market="us",
+        symbols=["NVDA"],
+        kis=kis,  # type: ignore[arg-type]
+        writer=Writer(),
+        us_exchanges={"NVDA": "NASD"},
+        clock=lambda: US_NOW,
+        backfill_symbols=["NVDA"],
+    )
+    assert len(kis.calls) == 1 + sc.US_BACKFILL_MAX_PAGES
+    assert report["backfill_pages"] == sc.US_BACKFILL_MAX_PAGES
+
+
+@pytest.mark.asyncio
+async def test_us_earlier_page_failure_keeps_the_first_page() -> None:
+    kis = UsPagedKis(_us_pages(), fail_keyb="093000")
+    writer = Writer()
+    report = await sc.collect(
+        market="us",
+        symbols=["NVDA"],
+        kis=kis,  # type: ignore[arg-type]
+        writer=writer,
+        us_exchanges={"NVDA": "NASD"},
+        clock=lambda: US_NOW,
+        backfill_symbols=["NVDA"],
+    )
+    assert report["errors"] == 1
+    assert report["error_details"][0]["origin"] == "intraday_movers"
+    assert report["error_details"][0]["error_class"] == "RuntimeError"
+    assert "detail that must not leak" not in str(report["error_details"])
+    assert len(writer.bars) == 30  # only the newest page survived
+
+
+@pytest.mark.asyncio
+async def test_us_symbols_outside_the_backfill_stay_on_one_page() -> None:
+    kis = UsPagedKis(_us_pages())
+    await sc.collect(
+        market="us",
+        symbols=["AMD"],
+        kis=kis,  # type: ignore[arg-type]
+        writer=Writer(),
+        us_exchanges={"AMD": "NASD"},
+        clock=lambda: US_NOW,
+        backfill_symbols=["NVDA"],
+    )
+    assert kis.calls == [None]

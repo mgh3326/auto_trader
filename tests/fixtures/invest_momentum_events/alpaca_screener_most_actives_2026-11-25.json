@@ -1,0 +1,9 @@
+{
+  "most_actives": [
+    {"symbol": "NVDA", "volume": 118000000, "trade_count": 412000},
+    {"symbol": "QQQ", "volume": 41000000, "trade_count": 210000},
+    {"symbol": "AMD", "volume": 39000000, "trade_count": 180000},
+    {"symbol": "SMH", "volume": 7200000, "trade_count": 61000}
+  ],
+  "last_updated": "2026-11-24T21:00:05.987654321Z"
+}

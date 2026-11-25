@@ -226,6 +226,8 @@ tests/services/invalid_sample_eligibility/test_pnl_eligibility_wiring.py
 tests/services/invalid_sample_eligibility/test_static_boundaries.py
 tests/services/invest_momentum_events/test_intraday.py
 tests/services/invest_momentum_events/test_intraday_db.py
+tests/services/invest_momentum_events/test_us_intraday.py
+tests/services/invest_momentum_events/test_us_intraday_db.py
 tests/services/invest_view_model/buy_plan/test_computation.py
 tests/services/invest_view_model/buy_plan/test_service.py
 tests/services/invest_view_model/test_watch_panel_service.py
@@ -431,6 +433,7 @@ tests/test_hermes_client.py
 tests/test_hermes_context_payload_intraday.py
 tests/test_hk6145_session_minutes_migration_db.py
 tests/test_hk6148_futures_minutes_migration_db.py
+tests/test_hk6510_us_movers_migration.py
 tests/test_import_contracts.py
 tests/test_integration.py
 tests/test_intraday_order_review_tasks.py
