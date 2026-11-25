@@ -34,6 +34,7 @@ from app.services.brokers.kis.vts_distributed_gate import (
 )
 from app.services.brokers.token_issuance import (
     GatewaydTokenProvider,
+    KISTokenIssuanceRateLimitedError,
     cache_only_refusal,
     ensure_gatewayd_token,
     is_cache_only_token_issuance,
@@ -421,7 +422,7 @@ class BaseKISClient:
         """Return the OAuth token request timeout for this KIS environment."""
         return 5.0
 
-    async def _fetch_token(self) -> tuple[str, int]:
+    async def _fetch_token(self) -> tuple[str, int, str | None]:
         """Fetch new OAuth2 token from KIS API.
 
         ROB-700: the token POST is guarded by the SAME per-process circuit
@@ -470,8 +471,11 @@ class BaseKISClient:
             )
             response_seen = True
             response = r.json()
+            if isinstance(response, dict) and response.get("msg_cd") == "EGW00133":
+                raise KISTokenIssuanceRateLimitedError()
             access_token = response["access_token"]
             expires_in = response.get("expires_in", 3600)
+            expires_at = response.get("access_token_token_expired")
         except asyncio.CancelledError:
             if response_seen:
                 breaker.record_reachable_error(lease)
@@ -490,7 +494,11 @@ class BaseKISClient:
             raise
         breaker.record_success(lease)
         logging.info("KIS 새 토큰 발급 완료")
-        return access_token, expires_in
+        return (
+            access_token,
+            expires_in,
+            expires_at if isinstance(expires_at, str) else None,
+        )
 
     def _token_provider_label(self) -> str:
         """Provider label for cache_only refusals. Subclasses that own a mock
@@ -545,9 +553,8 @@ class BaseKISClient:
                 )
                 return
 
-        async def token_fetcher() -> tuple[str, int]:
-            access_token, expires_in = await self._fetch_token()
-            return access_token, expires_in
+        async def token_fetcher() -> tuple[str, int, str | None]:
+            return await self._fetch_token()
 
         self._settings.kis_access_token = (
             await self._token_manager.refresh_token_with_lock(token_fetcher)

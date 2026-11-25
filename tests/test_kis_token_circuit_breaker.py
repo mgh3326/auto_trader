@@ -8,6 +8,7 @@ import pytest
 from app.services.brokers.kis import circuit_breaker as cb
 from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.circuit_breaker import KISCircuitBreaker, KISCircuitOpen
+from app.services.brokers.token_issuance import KISTokenIssuanceRateLimitedError
 
 pytestmark = pytest.mark.unit
 
@@ -139,12 +140,34 @@ async def test_token_non_json_body_does_not_open():
 @pytest.mark.asyncio
 async def test_token_success_returns_and_keeps_closed():
     post = AsyncMock(
-        return_value=_json_response({"access_token": "T", "expires_in": 100})
+        return_value=_json_response(
+            {
+                "access_token": "T",
+                "expires_in": 100,
+                "access_token_token_expired": "2026-11-25 12:34:56",
+            }
+        )
     )
     client = _client_with_post(post)
-    token, expires = await client._fetch_token()
+    token, expires, absolute_expiry = await client._fetch_token()
     assert token == "T"
     assert expires == 100
+    assert absolute_expiry == "2026-11-25 12:34:56"
+    assert cb.get_kis_circuit_breaker().state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_egw00133_is_typed_reachable_response_not_credential_failure():
+    post = AsyncMock(
+        return_value=_json_response({"msg_cd": "EGW00133", "msg1": "rate limited"})
+    )
+    client = _client_with_post(post)
+
+    with pytest.raises(KISTokenIssuanceRateLimitedError) as exc:
+        await client._fetch_token()
+
+    assert exc.value.code == "EGW00133"
+    assert post.await_count == 1
     assert cb.get_kis_circuit_breaker().state == "closed"
 
 

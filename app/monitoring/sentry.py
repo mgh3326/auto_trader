@@ -73,6 +73,7 @@ _SENSITIVE_KEYWORDS = (
     "password",
     "passwd",
     "api_key",
+    "crtfc_key",
     "apikey",
     "appkey",
     "app_key",

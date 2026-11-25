@@ -39,12 +39,35 @@ class MarketEventsRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def insert_provider_event(self, event_data: dict[str, Any]) -> bool:
+        """Keep the first observation of a provider-keyed event."""
+        if not event_data.get("source_event_id"):
+            raise ValueError("source_event_id is required")
+        payload = dict(event_data)
+        if payload.get("raw_payload_json") is not None:
+            payload["raw_payload_json"] = _redact_sensitive_keys(
+                payload["raw_payload_json"]
+            )
+        table = MarketEvent.__table__
+        stmt = (
+            pg_insert(table)
+            .values(**payload)
+            .on_conflict_do_nothing(
+                index_elements=["source", "category", "market", "source_event_id"],
+                index_where=table.c.source_event_id.isnot(None),
+            )
+            .returning(table.c.id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
     async def upsert_event_with_values(
         self,
         event_data: dict[str, Any],
         values: list[dict[str, Any]],
         *,
         replace_values: bool = False,
+        preserve_dart_detail: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
         if payload.get("raw_payload_json") is not None:
@@ -100,6 +123,12 @@ class MarketEventsRepository:
                 value = payload.get(column)
                 if value is not None:
                     update_columns[column] = value
+            # A DART list row can be replayed after a typed detail lookup fails
+            # or by the paced list-only backfill. Keep the existing evidence and
+            # corrected receipt date on conflict while still allowing inserts.
+            if preserve_dart_detail:
+                update_columns.pop("raw_payload_json", None)
+                update_columns.pop("event_date", None)
             stmt = (
                 pg_insert(MarketEvent.__table__)
                 .values(**payload)
@@ -171,6 +200,7 @@ class MarketEventsRepository:
                 "surprise",
                 "surprise_pct",
                 "released_at",
+                "value_details",
             )
             if k in payload
         }

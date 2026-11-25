@@ -5,13 +5,16 @@ import math
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from functools import cache
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import redis.asyncio as redis
 
 from app.core.config import settings
 from app.services.brokers.token_issuance import (
+    KISTokenIssuanceRateLimitedError,
     TokenIssuanceUnavailable,
     cache_only_refusal,
     is_cache_only_token_issuance,
@@ -257,10 +260,27 @@ class RedisTokenManager:
                 )
                 return None
 
-    async def save_token(self, access_token: str, expires_in: int = 3600) -> None:
+    async def save_token(
+        self,
+        access_token: str,
+        expires_in: int = 3600,
+        *,
+        absolute_expiry: str | None = None,
+    ) -> None:
         """Redis에 토큰 저장"""
         now = time.time()
         expires_at = now + expires_in
+        if isinstance(absolute_expiry, str):
+            try:
+                parsed = datetime.strptime(absolute_expiry, "%Y-%m-%d %H:%M:%S")
+                if parsed.strftime("%Y-%m-%d %H:%M:%S") != absolute_expiry:
+                    return
+                absolute_timestamp = parsed.replace(
+                    tzinfo=ZoneInfo("Asia/Seoul")
+                ).timestamp()
+                expires_at = min(expires_at, absolute_timestamp)
+            except ValueError:
+                pass
         token_data = {
             "access_token": access_token,
             "expires_at": expires_at,
@@ -274,7 +294,7 @@ class RedisTokenManager:
             await redis_client.set(
                 self._token_key,
                 json.dumps(token_data),
-                ex=expires_in + self._token_expiry_buffer,  # Redis TTL도 설정
+                ex=max(1, math.ceil(expires_at - now + self._token_expiry_buffer)),
             )
 
             logging.info(f"Redis에 토큰 저장 완료 (만료: {expires_in}초)")
@@ -293,6 +313,13 @@ class RedisTokenManager:
         Returns:
             str: 새로 발급된 access_token
         """
+        cooldown_key = f"{self._token_key}:issuance_cooldown"
+
+        async def raise_if_rate_limited() -> None:
+            redis_client = await self._get_redis_client()
+            if await redis_client.get(cooldown_key) == "1":
+                raise KISTokenIssuanceRateLimitedError()
+
         # 먼저 기존 토큰 확인 (여러 번 체크)
         for attempt in range(3):
             existing_token = await self.get_token(force_redis_check=True)
@@ -303,6 +330,7 @@ class RedisTokenManager:
                 await asyncio.sleep(0.05)
 
         # 락 획득 시도
+        await raise_if_rate_limited()
         logging.info("토큰 발급을 위한 분산 락 획득 시도...")
         lock_acquired = await self._acquire_lock()
         if not lock_acquired:
@@ -342,10 +370,24 @@ class RedisTokenManager:
 
             # 새 토큰 발급
             logging.info("새 KIS 토큰 발급 시작")
-            access_token, expires_in = await token_fetcher()
+            await raise_if_rate_limited()
+            try:
+                fetched = await token_fetcher()
+            except KISTokenIssuanceRateLimitedError:
+                redis_client = await self._get_redis_client()
+                await redis_client.set(cooldown_key, "1", ex=60)
+                raise
+            access_token, expires_in, *absolute_expiry = fetched
 
             # Redis에 저장
-            await self.save_token(access_token, expires_in)
+            if absolute_expiry:
+                await self.save_token(
+                    access_token,
+                    expires_in,
+                    absolute_expiry=absolute_expiry[0],
+                )
+            else:
+                await self.save_token(access_token, expires_in)
             logging.info("KIS 토큰 발급 및 저장 완료")
 
             return access_token

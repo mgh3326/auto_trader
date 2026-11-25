@@ -91,10 +91,11 @@ async def test_kis_mock_fetch_token_posts_to_mock_base_url(monkeypatch):
     client = KISClient(is_mock=True)
     monkeypatch.setattr(client, "_ensure_client", AsyncMock(return_value=http_client))
 
-    token, expires_in = await client._fetch_token()
+    token, expires_in, expires_at = await client._fetch_token()
 
     assert token == "token"
     assert expires_in == 1234
+    assert expires_at is None
     assert http_client.post.await_args.args[0] == (
         "https://mock.example.invalid/oauth2/token"
     )

@@ -1096,9 +1096,19 @@ class Settings(BaseSettings):
     RESEARCH_MINUTES_INGEST_TOKEN: str = ""
     RESEARCH_MINUTES_INGEST_TOKEN_HEADER: str = "X-Research-Minutes-Ingest-Token"
 
-    @field_validator("RESEARCH_MINUTES_INGEST_ENABLED", mode="before")
+    BENZINGA_PRO_INGEST_ENABLED: bool = False
+    BENZINGA_PRO_INGEST_TOKEN: str = ""
+    BENZINGA_PRO_INGEST_TOKEN_HEADER: str = "X-Benzinga-Pro-Ingest-Token"
+    SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED: bool = False
+
+    @field_validator(
+        "RESEARCH_MINUTES_INGEST_ENABLED",
+        "BENZINGA_PRO_INGEST_ENABLED",
+        "SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED",
+        mode="before",
+    )
     @classmethod
-    def _exact_true_research_minutes_gate(cls, value: object) -> bool:
+    def _exact_true_ingest_gate(cls, value: object) -> bool:
         """Only exactly ``"true"`` (or a real bool) opens the gate.
 
         pydantic's bool coercion accepts ``1`` / ``yes`` / ``on`` / ``TRUE``;

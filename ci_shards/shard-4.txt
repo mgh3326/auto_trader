@@ -156,6 +156,7 @@ tests/services/brokers/nhplug/test_static_guard.py
 tests/services/brokers/paper/test_adapter_registry.py
 tests/services/brokers/paper/test_safety_guards.py
 tests/services/brokers/test_credential_firewall.py
+tests/services/brokers/test_kis_token_expiry_and_rate_limit.py
 tests/services/brokers/toss/test_config.py
 tests/services/buy_gate_ab_shadow/test_scoring_symmetry.py
 tests/services/daily_candles/test_crypto_candles_1d_migration.py
@@ -230,6 +231,7 @@ tests/services/mandate/test_loss_guard_db.py
 tests/services/mandate/test_projection_db.py
 tests/services/mandate/test_store_db.py
 tests/services/market_events/test_coverage_gate.py
+tests/services/market_events/test_kis_ksd_dividends.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py

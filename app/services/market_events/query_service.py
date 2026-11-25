@@ -37,9 +37,47 @@ def _normalize_symbol_filter(symbol: str | None) -> str | None:
     return normalized
 
 
+def _value_response(value: MarketEventValue) -> MarketEventValueResponse:
+    response = MarketEventValueResponse.model_validate(value)
+    if value.value_details:
+        return MarketEventValueResponse.model_validate(
+            {**response.model_dump(), **value.value_details}
+        )
+    return response
+
+
 class MarketEventsQueryService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    async def dart_values_by_receipt(
+        self, receipts: list[str]
+    ) -> dict[str, list[dict[str, str | None]]]:
+        """Read structured values for exact DART receipts already returned by MCP."""
+        if not receipts:
+            return {}
+        stmt = (
+            select(MarketEvent.source_event_id, MarketEventValue)
+            .join(MarketEventValue, MarketEvent.id == MarketEventValue.event_id)
+            .where(
+                MarketEvent.source == "dart",
+                MarketEvent.market == "kr",
+                MarketEvent.category == "disclosure",
+                MarketEvent.source_event_id.in_(receipts),
+                MarketEventValue.value_details.is_not(None),
+            )
+            .order_by(MarketEventValue.id)
+        )
+        values: dict[str, list[dict[str, str | None]]] = {}
+        for receipt, value in (await self.db.execute(stmt)).all():
+            values.setdefault(receipt, []).append(
+                {
+                    "metric_name": value.metric_name,
+                    "unit": value.unit,
+                    **value.value_details,
+                }
+            )
+        return values
 
     async def list_for_date(
         self,
@@ -166,9 +204,7 @@ class MarketEventsQueryService:
                     fiscal_quarter=row.fiscal_quarter,
                     held=None,
                     watched=None,
-                    values=[
-                        MarketEventValueResponse.model_validate(v) for v in value_rows
-                    ],
+                    values=[_value_response(v) for v in value_rows],
                 )
             )
         return out

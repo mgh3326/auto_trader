@@ -7,6 +7,7 @@
 - KR/US Category Normalization & Lazy Fill (ROB-512)
 - Market Events Ingestion Foundation (ROB-128)
 - Benzinga calendar ingestion (hk 6513)
+- KIS KSD dividend calendar (hk 6583)
 - Research Reports Integration (ROB-140)
 - Invest Screener US Activation (ROB-204)
 - Screener pick log (prospective bakeoff)
@@ -81,6 +82,30 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 없으면 `registry_unavailable`을 `raw_payload_json.symbol_resolution_reason`에 기록하고 `symbol`은 `null`로 둔다.
 퍼지 매칭은 하지 않으며 `corp_code`는 심볼로 대체하지 않는다. 행에 기존 `stock_code`가 있으면 기존 정규화 동작을
 유지한다. 레지스트리 실패는 공시 수집을 실패시키지 않는다.
+
+**DART 구조화 자본 이벤트 (hk 6582)**: 기존 날짜별 공시 수집은 주요사항보고서의 유상·무상증자, 감자,
+전환·신주인수권·교환사채 및 자기주식 취득·처분 결정과 5% 보유·임원/주요주주 소유 공시에 대해
+[주요사항보고서 API](https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS005)와
+[지분공시 API](https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS004)의 해당 응답을 조회한다.
+공시 이벤트는 기존 접수번호를 유지하고, 동일 접수번호와 회사 고유번호의 행만 결합한다. 주요사항보고서 조회는
+최초접수일 구간을 최대 366일(양 끝 포함)로 제한한다. 유상증자 결정 응답에는 발행가와 납입일이 없다.
+임원·주요주주 공시일은 접수번호의 날짜와 응답의 접수일 중 늦은 날짜를 반영한다.
+
+- 금액·주식수·보유비율·비율 증감은 단위와 함께 `market_event_values`에 저장한다.
+  `value_details`의 출처 기반 십진 문자열은 공용 Numeric 열의 소수점 자릿수 제약을 받지 않는다.
+  보유비율 전 값은 공시된 이후 비율에서 증감(퍼센트포인트)을 뺀다. CB/BW 최저 조정가 기준 희석률(%)은
+  권면총액 ÷ 최저 조정가 ÷ 발행주식수 × 100이다. 발행주식수는 공시 신주 수와 총수 대비 비율에서 역산하므로
+  공시 반올림을 계승한다. 양수 입력이 하나라도 없으면 값은 `null`이고 누락 항목을 `reason`에 남긴다.
+  최저 조정가 근거는 이벤트 원본에 보존한다.
+- 배당 공시에 명시된 배당기준일을 [공시 원문 API](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019003)에서
+  읽어 `YYYYMMDD` 값으로 저장한다. 확인 가능한 회계연도 종료월은
+  [기업개황 `acc_mt`](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019002)를 따른다.
+- HTTP 200의 본문 상태 `013/014`는 정상 빈 결과다. `020`은 1초·2초 백오프 후 재시도하고,
+  `010/011/012/901`(인증 거절), `800`(서비스 불가), `021/100`(요청 제약/인자 오류)은 유형별 실패다.
+  상세 조회 실패는 목록 행과 확보한 값을 저장한 뒤 해당 파티션을 실패 처리한다. 구조화 대상 공시의 같은 접수번호를 상세값 없이 다시
+  수집하면 이전 수치와 원본 payload, 상세로 보정한 공시일을 보존한다. 페이싱 백필에도 같은 규칙을 적용한다.
+- 기존 시장 이벤트 조회의 `values`에 구조화 수치가 포함되고 MCP `get_disclosures(include_values=True)`는
+  저장된 수치를 접수번호별로 조회한다. MCP 기본 응답은 기존과 동일하다.
 
 ### Benzinga calendar ingestion (hk 6513)
 
@@ -995,3 +1020,35 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - **쓰기**: 두 표의 유일한 writer 는 `writer.py`, `ON CONFLICT DO NOTHING` 삽입뿐이라 재실행은 첫 수신 시각과 값을 바꾸지 않는다. 어떤 live·mock 체결 표와도 분리돼 있고 그 표를 읽거나 쓰지 않는다. 마이그레이션 `20261125_hk6036_upbit_shadow`(추가형, `at_app` 조건부 GRANT SELECT·INSERT·schema USAGE, downgrade 는 행이 있으면 거부).
 - **실행**: 기본은 드라이런(DB 접근 0, 후보·가상 행 출력), `--commit` 만 쓴다. `--catchup-bars`(기본 4, 최대 96), `--markets`. 시장 하나의 실패는 `errors` 에 남기고 계속하며 종료 코드 1. 실계좌·전략·게이트 변경 없음.
 - **테스트**: `tests/services/upbit_intraday_shadow/`(2026-11-25 BTC·XRP·SAHARA 녹화 봉 재생, 터치=진입 아님, 동결 해시), `tests/test_hk6036_upbit_shadow_migration_db.py`(DB 부분은 CI), `tests/scripts/test_dagu_upbit_intraday_shadow_dag.py`. 이미지에는 `research/upbit_intraday` 의 규칙·fetch·선택 파일과 `research/crypto_universe/public_http.py` 만 더 싣는다.
+
+## Benzinga Pro 캡처 수신 (hk 6579)
+
+- `POST /trading/api/research/benzinga-pro/ingest`는 `benzinga-pro-capture/v1` JSON을 받는다. `BENZINGA_PRO_INGEST_ENABLED` 기본값은 false이며 환경 변수 값이 정확히 `true`일 때만 열린다. DB 접근 전에 게이트 off는 404, 토큰 또는 헤더 이름 미설정은 403, 토큰 불일치는 401을 반환한다. 전용 토큰 `BENZINGA_PRO_INGEST_TOKEN`은 `BENZINGA_PRO_INGEST_TOKEN_HEADER`(기본 `X-Benzinga-Pro-Ingest-Token`)에서만 받는다.
+- Benzinga Pro 브라우저 세션 키는 auto_trader에 전달되지 않는다. 스키마에 키 필드가 없으며 중첩 객체를 포함해 `apikey`, `key` 등 미정의 필드를 422로 거부한다. 응답은 삽입 건수만 담는다.
+- `captured_at`은 수집기의 UTC 관측 시각이다. 해당 시각의 첫 캡처를 단일 트랜잭션으로 기록하고 재전송의 삽입 건수는 모두 0이다. 상승·하락 스냅샷은 각각 `us:benzinga_pro:<session>:<side>`에 기록하며 각 방향에 run을 하나 남긴다. 빈 배열은 `empty/no_rows`, 행이 있는 배열은 `ok`다. 쓰기 실패는 캡처 전체를 롤백한다. `no_session_price`는 `order_type=excluded`와 원본 사유로 남긴다.
+- 속보는 `market_events`에 `source=benzinga_pro`, `category=breaking_news`로 기록한다. 제공자 ID 단위로 최초 행을 유지하며 `first_received_at`은 캡처 시각이다. 이 캡처의 DB 행이 있으면 마이그레이션 다운그레이드가 중단된다.
+- `SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED`(기본 false)는 US 분봉 수집 대상 승격에만 적용된다. 켜면 제외 행을 뺀 Benzinga Pro movers가 기존 점수 규칙에 들어간다.
+
+### KIS KSD 배당 일정 (hk 6583)
+
+`KISClient.ksd_dividends` 는 국내주식 읽기 전용 실계좌 메서드다. 경로는
+`/uapi/domestic-stock/v1/ksdinfo/dividend`, TR 은 `HHKDB669102C0`이며 기존
+KIS 토큰 인증 클라이언트만 사용한다. 공식 query 필드 `CTS`, `GB1`, `F_DT`,
+`T_DT`, `SHT_CD`, `HIGH_GB` 를 보내고, 모의 클라이언트는 요청 전에 거부한다.
+응답의 `tr_cont` 페이지 연결은 사용하지 않는다.
+
+`fetch_ksd_dividend_window` 는 100행 이상인 응답의 날짜 구간을 반으로 나눠
+재조회한다. 하루 구간도 100행이면 받은 행을 유지하고 해당 구간을 가능한
+절단으로 반환하므로 호출자가 경고해야 한다. `normalize_ksd_dividend_row` 는
+`record_date` 를 이벤트 날짜로, `divi_pay_dt` 를 보존된 지급일로,
+`per_sto_divi_amt` 를 float 변환 없는 정확한 Decimal `dps` 로 저장한다.
+이벤트는 `category=dividend`, `market=kr`, `source=kis_ksd` 이며
+`first_received_at` 을 보존한다. 모든 DB 쓰기는 `MarketEventsRepository` 를
+통한다.
+
+수동 실행은 `python -m scripts.ingest_kis_ksd_dividends --from-date YYYY-MM-DD
+--to-date YYYY-MM-DD [--dry-run]` 이다. 드라이런은 조회·정규화만 하고 DB 에
+접근하지 않는다. `deploy/dagu/at-kis-ksd-dividends/` 는 미등록 복사본이며 이
+작업은 스케줄러 등록을 추가하지 않는다. US 배당과 주문·계좌 API 는 범위 밖이다.
+공식 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
+[KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).

@@ -1,6 +1,8 @@
 import inspect
+import json
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -177,8 +179,45 @@ def test_registers_get_disclosures_public_contract() -> None:
     tool = mcp.tools["get_disclosures"]
     signature = inspect.signature(tool)
 
-    assert list(signature.parameters) == ["symbol", "days", "limit", "report_type"]
+    assert list(signature.parameters) == [
+        "symbol",
+        "days",
+        "limit",
+        "report_type",
+        "include_values",
+    ]
+    assert signature.parameters["include_values"].default is False
     assert signature.parameters["days"].default == 30
     assert signature.parameters["limit"].default == 20
     assert signature.parameters["report_type"].default is None
     assert "direct 6-digit stock-code inputs" in mcp.descriptions["get_disclosures"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_disclosure_default_bytes_and_opt_in_values(monkeypatch):
+    from app.services.market_events.query_service import MarketEventsQueryService
+
+    golden = (
+        '{"success":true,"filings":[{"date":"2026-11-24","report_nm":"CB",'
+        '"rcp_no":"20261124000001","corp_name":"Test"}],"symbol":"005930"}'
+    )
+    monkeypatch.setattr(
+        handlers, "list_filings", AsyncMock(return_value=json.loads(golden))
+    )
+    session = MagicMock()
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", session)
+    values = [{"metric_name": "worst_case_dilution", "actual": "12.5", "unit": "%"}]
+    read = AsyncMock(return_value={"20261124000001": values})
+    monkeypatch.setattr(MarketEventsQueryService, "dart_values_by_receipt", read)
+    mcp = DummyMCP()
+    register_analysis_tools(cast(Any, mcp))
+    tool = mcp.tools["get_disclosures"]
+
+    assert json.dumps(await tool("005930"), separators=(",", ":")) == golden
+    session.assert_not_called()
+    read.assert_not_awaited()
+    enriched = await tool("005930", include_values=True)
+    assert enriched["filings"] == [
+        {**json.loads(golden)["filings"][0], "values": values}
+    ]
+    read.assert_awaited_once_with(["20261124000001"])

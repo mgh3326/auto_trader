@@ -295,6 +295,7 @@ async def ingest_kr_disclosures_for_date(
     fetch_rows: Callable[[date], Awaitable[list[dict[str, Any]]]] | None = None,
     *,
     today: date | None = None,
+    enrich_capital: bool | None = None,
     load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
     | None = None,
 ) -> IngestionRunResult:
@@ -304,12 +305,23 @@ async def ingest_kr_disclosures_for_date(
     returning a list of dart-row dicts. Default uses
     `app.services.market_events.dart_helpers.fetch_dart_filings_for_date`.
 
+    With a custom fetcher, typed detail enrichment is opt-in via `enrich_capital`.
+
     `today` (default: today in Asia/Seoul) injects the clock. A date on or after
     `today` is not complete yet: DART publishes the day's list during the day, so
     a zero-row fetch on an XKRX trading session returns status ``pending`` and
     leaves the partition ``pending`` (never ``succeeded``) so a later run fetches
     it again. Dates before `today` keep the fail-closed zero-filings guard.
     """
+    from app.services.market_events.dart_capital import (
+        DartCredentialError,
+        DartDetailError,
+        capital_endpoint,
+        enrich_capital_event,
+    )
+
+    if enrich_capital is None:
+        enrich_capital = fetch_rows is None
     if fetch_rows is None:
         from app.services.market_events.dart_helpers import (
             fetch_dart_filings_for_date as _default_fetch,
@@ -332,8 +344,14 @@ async def ingest_kr_disclosures_for_date(
     try:
         rows = await fetch_rows(target_date)
         corp_registry = None
+        endpoints = [capital_endpoint(row.get("report_nm") or "") for row in rows]
         needs_registry = any(
-            not dart_row_stock_code(row) and row.get("corp_name") for row in rows
+            row.get("corp_name")
+            and (
+                not dart_row_stock_code(row)
+                or (enrich_capital and endpoint and not row.get("corp_code"))
+            )
+            for row, endpoint in zip(rows, endpoints, strict=True)
         )
         if needs_registry:
             if load_corp_registry is None:
@@ -344,7 +362,10 @@ async def ingest_kr_disclosures_for_date(
                 # Registry lookup is enrichment only; ingestion must continue.
                 logger.warning("DART corp registry unavailable")
         upserted = 0
-        for row in rows:
+        fiscal_months: dict[str, str | None] = {}
+        detail_error: DartDetailError | None = None
+        credential_refused = False
+        for row, endpoint in zip(rows, endpoints, strict=True):
             try:
                 event_dict, value_dicts = normalize_dart_disclosure_row(
                     row, corp_registry=corp_registry
@@ -352,8 +373,39 @@ async def ingest_kr_disclosures_for_date(
             except ValueError as exc:
                 logger.warning("skipping unparseable dart row: %s (%s)", row, exc)
                 continue
-            await repo.upsert_event_with_values(event_dict, value_dicts)
+            if enrich_capital and endpoint and not credential_refused:
+                try:
+                    value_dicts = await enrich_capital_event(
+                        endpoint, row, event_dict, corp_registry, fiscal_months
+                    )
+                except DartDetailError as exc:
+                    credential_refused = isinstance(exc, DartCredentialError)
+                    if detail_error is None or credential_refused:
+                        detail_error = exc
+                    logger.warning(
+                        "DART detail lookup failed for receipt %s: %s",
+                        event_dict["source_event_id"],
+                        exc,
+                    )
+            if endpoint and not value_dicts:
+                await repo.upsert_event_with_values(
+                    event_dict, value_dicts, preserve_dart_detail=True
+                )
+            else:
+                await repo.upsert_event_with_values(event_dict, value_dicts)
             upserted += 1
+
+        if detail_error is not None:
+            await repo.mark_partition_failed(partition, error=str(detail_error))
+            return IngestionRunResult(
+                source=source,
+                category=partition_category,
+                market=market,
+                partition_date=target_date,
+                status="failed",
+                event_count=upserted,
+                error=str(detail_error),
+            )
 
         day_incomplete = not rows and target_date >= (today or today_kst())
         if _require_legitimate_dart_zero(

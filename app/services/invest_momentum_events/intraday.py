@@ -36,6 +36,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.invest_momentum_event_snapshot import (
     RUN_EMPTY_REASON,
     InvestMomentumEventSnapshot,
@@ -318,6 +319,10 @@ async def us_mover_rows_today(session: AsyncSession, trading_day: dt.date) -> li
         row.trade_value,
         row.asset_type,
     ).where(row.market == "us", row.trading_date == trading_day)
+    if settings.SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED:
+        stmt = stmt.where(row.order_type != "excluded")
+    else:
+        stmt = stmt.where(row.source != "benzinga_pro")
     result = await session.execute(stmt)
     return list(result.all())
 

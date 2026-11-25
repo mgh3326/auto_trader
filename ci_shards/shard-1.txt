@@ -96,6 +96,7 @@ tests/research/us_stage_b/test_isolation.py
 tests/research/us_universe/test_us_universe_symdir.py
 tests/research_contracts/test_dfc_2c_4h_v21.py
 tests/routers/test_alpaca_paper_ledger_router.py
+tests/routers/test_benzinga_pro_ingest.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_manual_cash.py
 tests/routers/test_invest_session_context_router.py
@@ -265,6 +266,7 @@ tests/services/kr_trading_flags/test_sync_guard.py
 tests/services/kr_trading_flags/test_wiring_import.py
 tests/services/kr_trading_flags/test_wrapper_offline.py
 tests/services/market_close_digest/test_service.py
+tests/services/market_events/test_dart_capital.py
 tests/services/market_events/test_dart_today_pending.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py
 tests/services/mock_integration/test_coordination.py
@@ -435,6 +437,7 @@ tests/test_hermes_context_payload_intraday.py
 tests/test_hk6145_session_minutes_migration_db.py
 tests/test_hk6148_futures_minutes_migration_db.py
 tests/test_hk6510_us_movers_migration.py
+tests/test_hk6579_benzinga_pro_migration.py
 tests/test_import_contracts.py
 tests/test_integration.py
 tests/test_intraday_order_review_tasks.py
