@@ -57,6 +57,19 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
+**Alpaca paper 프리·애프터 모의 제출 — `extended_hours` (hk 6497)**: `alpaca_paper_preview_order`와
+`alpaca_paper_submit_order`는 선택 인자 `extended_hours: bool = False`를 받는다. 기본값은 기존 요청 본문·
+정규화 canonical·hash·`client_order_id`·echo를 바이트 단위로 바꾸지 않는다(테스트가 골든으로 고정).
+`true`이면 요청 본문에 `extended_hours: true`가 실리고, 그 값은 canonical에도 포함되어 preview 해시와
+`client_order_id`에 묶인다. 패킷은 `execution_extended_hours`로 이 값을 결속하고, submit의 값이 패킷과 다르면
+`order_extended_hours_mismatch`로 전송 전에 거부한다. 로컬 거부(브로커 호출 전): `type=limit`과
+`time_in_force=day`만 허용한다(Alpaca 문서는 `gtc`도 허용하지만 이 표면은 더 좁게 둔다). 암호화폐 주문은
+범위 밖이며 거부한다. 분수 수량은 Alpaca 문서상 프리·애프터에서도 허용되며(거래소 상장·분수 거래 가능 자산
+한정), 자산 자격은 브로커가 판정하므로 로컬에서 거부하지 않는다. 근거: Alpaca "Orders at Alpaca"
+(https://docs.alpaca.markets/docs/orders-at-alpaca, 2026-11-25 확인)와 "Fractional Trading"
+(https://docs.alpaca.markets/docs/fractional-trading, 2026-11-25 확인). 게이트(env·confirm·paper URL·계좌
+suffix)와 ROB-1474 전략 CLI는 바뀌지 않았다. 야간(24/5) 세션과 KIS·Kiwoom·실계좌는 범위 밖이다.
+
 ### ROB-1474 US paper 전략 에피소드
 
 `review.mock_strategy_orders`는 네 paper/demo venue의 전략 귀속과 전송 journal이다.

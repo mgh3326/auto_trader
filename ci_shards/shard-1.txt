@@ -42,6 +42,7 @@ tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_kis_mock_shadow_order_history.py
+tests/mcp_server/test_kr_quote_price_kind.py
 tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_parking_exclusion.py
@@ -347,6 +348,7 @@ tests/services/test_kis_mock_preopen_approval_bridge.py
 tests/services/test_kis_us_inference_expiry.py
 tests/services/test_kis_us_inference_expiry_db.py
 tests/services/test_kr_preopen_news_brief_service.py
+tests/services/test_kr_quote_price.py
 tests/services/test_live_place_provenance.py
 tests/services/test_live_reconcile_metrics.py
 tests/services/test_manual_holdings_leftover.py
