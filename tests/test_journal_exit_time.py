@@ -161,6 +161,7 @@ async def test_toss_passes_broker_fill_time():
     cm.__aenter__.return_value = AsyncMock()
     service = MagicMock()
     service.update_reconcile_outcome = AsyncMock()
+    service.lock_row_for_booking = AsyncMock(return_value=row)
     close = AsyncMock(return_value=None)
     with (
         patch.object(mod, "_save_order_fill", AsyncMock(return_value=1)),

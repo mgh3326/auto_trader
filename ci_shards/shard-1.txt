@@ -57,6 +57,7 @@ tests/mcp_server/tooling/test_order_proposal_create_post_commit.py
 tests/mcp_server/tooling/test_orders_history_expiry_reason.py
 tests/mcp_server/tooling/test_paper_cohort_control_registration.py
 tests/mcp_server/tooling/test_toss_batch_evidence_source.py
+tests/mcp_server/tooling/test_toss_booking_concurrency_db.py
 tests/mcp_server/tooling/test_toss_live_ledger.py
 tests/mcp_server/tooling/test_toss_reconcile_resilience.py
 tests/middleware/test_auth_telegram_branch.py

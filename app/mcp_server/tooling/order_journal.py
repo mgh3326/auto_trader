@@ -114,13 +114,18 @@ async def _save_order_fill(
     currency: str,
     account: str,
     order_id: str | None,
+    db: AsyncSession | None = None,
 ) -> int | None:
     """Save executed order to review.trades for permanent history.
 
     Returns the trade ID if inserted, None if conflict (already exists).
+
+    ``db`` is the caller's transaction: the insert is never committed here and
+    a failed insert raises, so the caller's booking rolls back with it.  Without
+    ``db`` a failure is logged and returns None.
     """
     try:
-        async with _order_session_factory()() as db:
+        async with _own_or_caller_session(db) as session:
             stmt = (
                 pg_insert(Trade)
                 .values(
@@ -140,13 +145,16 @@ async def _save_order_fill(
                     constraint="uq_review_trades_account_order",
                 )
             )
-            result = await db.execute(stmt)
-            await db.commit()
+            result = await session.execute(stmt)
+            if db is None:
+                await session.commit()
 
             if result.inserted_primary_key and result.inserted_primary_key[0]:
                 return typing_cast(int, result.inserted_primary_key[0])
             return None
     except Exception as exc:
+        if db is not None:
+            raise
         logger.warning("Failed to save order fill: %s", exc)
         return None
 
@@ -156,10 +164,15 @@ async def _link_journal_to_fill(
     trade_id: int,
     account_type: str = "live",
     account: str | None = None,
+    db: AsyncSession | None = None,
 ) -> None:
-    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
+    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until.
+
+    With ``db`` the caller commits the update and a failure raises, so the
+    caller's booking rolls back with it.  Without ``db`` a failure is logged.
+    """
     try:
-        async with _order_session_factory()() as db:
+        async with _own_or_caller_session(db) as session:
             stmt = select(TradeJournal).where(
                 TradeJournal.symbol == symbol,
                 TradeJournal.status == JournalStatus.draft,
@@ -169,7 +182,7 @@ async def _link_journal_to_fill(
                 stmt = stmt.where(TradeJournal.account == account)
 
             stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
-            result = await db.execute(stmt)
+            result = await session.execute(stmt)
             journal = result.scalars().first()
 
             if journal is None:
@@ -182,7 +195,8 @@ async def _link_journal_to_fill(
 
                 journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
 
-            await db.commit()
+            if db is None:
+                await session.commit()
             logger.info(
                 "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
                 journal.id,
@@ -192,6 +206,8 @@ async def _link_journal_to_fill(
                 account,
             )
     except Exception as exc:
+        if db is not None:
+            raise
         logger.warning("Failed to link journal to fill: %s", exc)
 
 
@@ -229,11 +245,13 @@ async def _create_trade_journal_for_buy(
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
     correlation_id: str | None = None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
     Returns a dict with journal_created, journal_id, journal_status.
-    Raises on DB errors to allow caller to handle.
+    Raises on DB errors to allow caller to handle.  With ``db`` the row is only
+    flushed; the caller's transaction commits it.
     """
     hold_until = (
         now_kst() + datetime.timedelta(days=min_hold_days)
@@ -270,10 +288,14 @@ async def _create_trade_journal_for_buy(
         correlation_id=correlation_id,
     )
 
-    async with _order_session_factory()() as db:
+    if db is not None:
         db.add(journal)
-        await db.commit()
-        await db.refresh(journal)
+        await db.flush()
+    else:
+        async with _order_session_factory()() as session:
+            session.add(journal)
+            await session.commit()
+            await session.refresh(journal)
 
     return {
         "journal_created": True,

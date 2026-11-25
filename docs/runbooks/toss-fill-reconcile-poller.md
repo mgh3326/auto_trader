@@ -91,20 +91,44 @@ failure). Inspect `targets` against what you expect to be open right now.
 TOSS_FILL_POLL_ENABLED=true uv run python -m scripts.toss_fill_reconcile_poller --commit
 ```
 
-> ⚠️ **동시 실행 금지**: ROB-757 TaskIQ 폴러 스케줄이 armed(워커+스케줄러 가동
-> 중)일 때 `--commit`을 돌리지 말 것. Dagu 잡 `at-toss-fill-poll`(hk 6277)도 같다 —
-> 먼저 OCI 에서 잡을 일시정지하고 진행 중 실행이 끝난 뒤 돌리고, 끝나면 재개한다. dedupe는 delta 기반이라 **직렬** 재실행만
-> 보호한다 — 두 reconcile 패스가 겹치면(둘 다 `already=0`을 읽은 뒤 커밋)
-> 이중 부기 가능성이 있다(`update_reconcile_outcome`에 row lock 없음). 수동
-> reps 기간엔 TaskIQ 폴러가 off인 것을 먼저 확인하라.
+> ⚠️ **겹치는 패스**: 부기는 원장 행 잠금으로 한 번만 일어난다(hk 6288) — 다른
+> 패스가 잡은 행은 `skipped_row_locked` 로 건너뛰고 다음 패스가 처리한다. 외부
+> 주문 discovery 는 이 잠금 밖이라, 두 패스가 같은 새 외부 주문을 동시에 등록하면
+> 한쪽이 unique 제약 오류(`status: "error"`)로 끝날 수 있다. 그래서 `--commit` 을
+> 돌릴 때는 아래 "Scheduled run" 절의 순서(Dagu 잡 일시정지, 같은 컨테이너 이름)를
+> 따른다.
 
 Expect `{"status": "ran", "success": true, "discover": {...}, "reconcile": {...}, "booked_symbols": [...]}`.
 Re-running this immediately is safe — the second pass should report
 `booked_symbols: []` and `reconcile.counts` dominated by
 `noop_already_booked` for rows the first pass already booked (idempotent by
 construction: `_reconcile_one_toss_row` in
-`app/mcp_server/tooling/toss_live_ledger.py` compares `delta = broker_cum -
-already_filled_qty` and no-ops when `delta <= 0`).
+`app/mcp_server/tooling/toss_live_ledger.py` locks the ledger row, re-reads
+`filled_qty` under that lock, and books only `delta = broker_cum -
+filled_qty` when it is positive).
+
+Row actions that book nothing:
+
+| `action` | Meaning | Operator step |
+|---|---|---|
+| `skipped_row_locked` | Another transaction holds the ledger row. The next pass books what is still unbooked. | none |
+| `noop_stale_evidence` | Another pass already booked past this pass's broker evidence. | none |
+| `noop_stale_evidence` with `requires_manual_review` (`reason_code: evidence_contradiction`) | No other pass moved the row, and the broker reports less filled quantity than is booked. The row stays open; `last_reconcile_error` records it. | check the Toss order detail |
+| `noop_terminal` | Another pass closed the row after this pass scanned it, and there is nothing new to book. | none |
+
+`scripts.toss_live_auto_reconcile --apply` counts `skipped_row_locked` and
+`noop_stale_evidence` rows as not clean and exits 3; a `noop_terminal` row is
+clean there.
+
+A failed booking write rolls the whole row booking back (nothing is
+committed).
+
+- A database condition that can clear (lost connection or SQLSTATE class 08,
+  `40001`, `40P01`, `55P03`, `57014`, a connection-pool wait timeout, a socket
+  error) leaves the row open: the row result is `deferred_transient_retryable`,
+  `last_reconcile_error` records it, and the next pass books it.
+- Any other error marks the row `anomaly` with `requires_manual_review` and
+  `last_reconcile_error`. It is not reopened automatically: check that row.
 
 **3. Verification query** (run against the DB the process pointed at):
 
@@ -151,13 +175,15 @@ container still present five minutes later is a stalled pass for a person to
 look at. A race between the check and the start is caught by docker refusing
 a second container with the same name (exit 125).
 
-A booking pass is never signalled. Booking one row commits in separate steps
-(fill save, then journal/FIFO, then the progress update), so a pass killed in
-between can book the same delta again on the next pass. There is no timeout
-inside the container, and `--sig-proxy=false` keeps Dagu's timeout signal
-(`timeout_sec` only lets go of the docker client) away from the container.
-A kill from outside the job (deploy, OOM, reboot) can still split a row;
-a deadline checked between rows and idempotent row booking are hk 6288.
+Booking one row is one database transaction (hk 6288): the fill save, the
+journal/FIFO step, the execution-ledger row and the progress update commit
+together. A pass killed in the middle (deploy, OOM, reboot) leaves nothing for
+that row, and the next pass books it. The poller starts no new row later than
+240 seconds after the pass start; a started row always finishes. The output
+then carries `reconcile.deadline` with `rows_left`, and the next pass picks
+those rows up. The job itself still sends no signal: there is no timeout inside
+the container, and `--sig-proxy=false` keeps Dagu's timeout signal
+(`timeout_sec` only lets go of the docker client) away from it.
 
 Before any manual `--commit` pass (step 2 above), suspend `at-toss-fill-poll`
 on OCI. Check that `docker ps --filter name=at-toss-fill-poll` on pi is empty.

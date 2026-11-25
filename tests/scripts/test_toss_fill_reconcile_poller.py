@@ -1,6 +1,7 @@
 # tests/scripts/test_toss_fill_reconcile_poller.py
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -142,6 +143,49 @@ async def test_commit_rerun_does_not_double_book_already_reconciled_row():
     invalidate.assert_any_await(["005930"])
     invalidate.assert_any_await([])
     assert fake_client.aclose.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_pass_gives_the_reconcile_a_deadline_from_pass_start():
+    """hk 6288: the deadline counts discovery too and fits inside one tick."""
+    discovery_started_at: list[float] = []
+
+    async def _discover(**kwargs):
+        discovery_started_at.append(time.monotonic())
+        return {"success": True}
+
+    fake_discover_service = AsyncMock()
+    fake_discover_service.discover_external_orders = AsyncMock(side_effect=_discover)
+
+    with (
+        patch.object(cli.settings, "TOSS_FILL_POLL_ENABLED", True),
+        patch.object(cli, "_toss_fill_poll_market_gate", return_value={"active": True}),
+        patch.object(cli.TossReadClient, "from_settings", return_value=AsyncMock()),
+        patch.object(cli, "TossFillPollerService", return_value=fake_discover_service),
+        patch.object(
+            cli,
+            "toss_reconcile_orders_impl",
+            AsyncMock(
+                return_value={
+                    "success": True,
+                    "reconciled": [],
+                    "deadline": {"reached": True, "rows_left": 4},
+                }
+            ),
+        ) as reconcile,
+        patch.object(cli, "_invalidate_sellable_cache", AsyncMock()),
+    ):
+        before = time.monotonic()
+        result = await cli.run_poll(dry_run=False)
+
+    deadline = reconcile.await_args.kwargs["deadline_monotonic"]
+    assert (
+        before + cli.PASS_DEADLINE_SECONDS
+        <= deadline
+        <= discovery_started_at[0] + cli.PASS_DEADLINE_SECONDS
+    )
+    assert 0 < cli.PASS_DEADLINE_SECONDS < 300
+    assert result["reconcile"]["deadline"] == {"reached": True, "rows_left": 4}
 
 
 @pytest.mark.asyncio
