@@ -273,6 +273,18 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   (ROB-510) 경로는 ROB-1388에서 같은 비동기 HTTP 패턴으로 전환됐다.
 
 
+
+### retro/v1 모의 왕복 읽기 `mock_round_trips` (hk 6476)
+
+호환 확장이다 — 새 경로(`/trading/api/retro/v1/mock_round_trips`)와 새 스키마만 더하고 `consumers.lock`은 그대로다(소비자 게이트 통과 확인, 핀 갱신은 호환 확장 → 소비자 커밋 → 핀 갱신 순서). 모의(paper/demo) 전략 journal `review.mock_strategy_orders`의 에피소드 하나가 체인 한 행이다: 진입 leg(`client_order_id = episode_id`)와 같은 episode의 청산 leg. 🔴 읽기 전용 SELECT만 쓰고 `mode="mock"`·`basis="inference"`로 고정한다. 라이브 reader는 건드리지 않았으므로 기존 골든은 바이트 동일하다.
+
+- **상태**: 닫힌 어휘 `closed | open | unresolved | not_filled`. 미확정 leg(`sending`/`uncertain`)가 있으면 `unresolved`+`uncertain_leg`, 청산이 끝났는데 실현 손익이 없으면 `closed`+`pnl_unrecorded`, 진입 leg 없이 청산 leg만 있으면 `unresolved`+`incomplete_evidence`다. 사유 없이 0으로 채우지 않는다.
+- **금액**: 진입가·청산가·실현 손익은 청산 뒤에만 정확한 decimal 문자열로 낸다(청산 전 체인의 손익은 null + 사유). 통화는 venue별 고정값이다.
+- **브로커 증거**: 주문번호는 노출하지 않고 leg마다 `broker_order_bound` 불리언만 낸다. ref는 내부 PK의 해시다.
+- **상한·실패**: 소스 행이 5,000을 넘거나 읽기가 실패하면 `total=null`+`count_unavailable`과 소스 unknown이며 chain 일부를 내지 않는다.
+- **범위**: 필터는 `strategy_id`와 네 모의 venue(`alpaca_paper`·`alpaca_paper_crypto`·`binance_spot_demo`·`binance_futures_demo`)다. kiwoom/KIS 모의 원장은 이 연산 범위 밖이며 후속 작업이다. 기존 `mock_experiments`(집계)와 별개다.
+- **테스트·예제**: `tests/services/retro_v1/test_mock_round_trips.py`, `contracts/retro/v1/examples/mock_round_trips.yaml`.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.
