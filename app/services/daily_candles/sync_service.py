@@ -402,6 +402,8 @@ class DailyCandleSyncService:
                         source=lane.source,
                     )
                 except Exception as exc:
+                    if _is_job_wide_database_failure(exc):
+                        raise
                     lane_stats["errors"] += 1
                     last_error = exc
                     logger.warning(
@@ -444,12 +446,16 @@ class DailyCandleSyncService:
                 return target, rows, True, None
             return target, [], True, last_error or NoDataError("no US daily rows")
 
-        fetched = await asyncio.gather(
-            *(
-                fetch_target(target, index % len(lanes))
-                for index, target in enumerate(targets)
+        try:
+            fetched = await asyncio.gather(
+                *(
+                    fetch_target(target, index % len(lanes))
+                    for index, target in enumerate(targets)
+                )
             )
-        )
+        except Exception:
+            await self._repository.session.rollback()
+            raise
 
         rows_total = 0
         fallback_count = 0
@@ -458,6 +464,16 @@ class DailyCandleSyncService:
             for target, rows, _fallback, error in fetched
             if error is not None and not rows
         }
+        if failures:
+            # Reset the universe-resolution transaction before writes, matching
+            # the per-symbol rollback boundary of the sequential sync path.
+            await self._repository.session.rollback()
+            for symbol, exc in failures.items():
+                logger.warning(
+                    "Daily-candle sync failed market=us symbol=%s error_class=%s",
+                    symbol,
+                    type(exc).__name__,
+                )
         # Serialize all session access. Successful symbols are written as one
         # executemany call per chunk; only a bad chunk is retried individually.
         for offset in range(0, len(fetched), 100):

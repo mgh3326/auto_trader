@@ -726,14 +726,16 @@ async def test_pool_and_invalidated_connection_errors_abort_the_job(
 
     repo = _repo_with_session()
     target_market = MarketKey.KR if market == "kr" else MarketKey.US
+    db_error = infra_error()
     svc = DailyCandleSyncService(
         repository=repo,
-        kis_kr_fetcher=AsyncMock(),
-        kis_us_fetcher=AsyncMock(),
+        kis_kr_fetcher=AsyncMock(
+            side_effect=db_error if market == "kr" else None
+        ),
+        kis_us_fetcher=AsyncMock(side_effect=db_error if market == "us" else None),
         yahoo_us_fetcher=AsyncMock(),
         upbit_crypto_fetcher=AsyncMock(),
     )
-    svc.sync_one = AsyncMock(side_effect=infra_error())
     svc._resolve_universe = AsyncMock(
         return_value=[
             SyncTarget(market=target_market, symbol="A", partition="KRX"),
@@ -744,8 +746,7 @@ async def test_pool_and_invalidated_connection_errors_abort_the_job(
     with pytest.raises(Exception) as raised:
         await svc.sync_market_universe(market=market, horizon_bars=1)
 
-    assert type(raised.value) is type(infra_error())
-    assert svc.sync_one.await_count == 1
+    assert type(raised.value) is type(db_error)
     repo.session.rollback.assert_awaited_once()
 
 

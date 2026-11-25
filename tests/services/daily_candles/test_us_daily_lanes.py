@@ -309,17 +309,27 @@ def test_us_daily_lane_rate_budgets_match_provider_limits() -> None:
 
 @pytest.mark.asyncio
 async def test_yahoo_empty_daily_result_is_a_normal_empty_fallback(monkeypatch) -> None:
+    from app.services.brokers.yahoo import client as yahoo_client
     from app.services.daily_candles import yahoo_us_fallback
 
     calling_thread = threading.get_ident()
     fetch_thread = []
 
-    async def raw(**kwargs):
-        assert kwargs["empty_ok"] is True
+    def download(*_args, **_kwargs):
         fetch_thread.append(threading.get_ident())
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["Open", "High", "Low", "Close", "Volume"],
+            index=pd.DatetimeIndex([], name="Date"),
+        )
 
-    monkeypatch.setattr(yahoo_us_fallback.yahoo_service, "_fetch_ohlcv_raw", raw)
+    async def fetch(*, ticker, days, period, empty_ok):
+        assert empty_ok is True
+        return await yahoo_client._fetch_ohlcv_raw(
+            ticker=ticker, days=days, period=period, empty_ok=empty_ok
+        )
+
+    monkeypatch.setattr(yahoo_client.yf, "download", download)
+    monkeypatch.setattr(yahoo_us_fallback.yahoo_service, "fetch_ohlcv", fetch)
     monkeypatch.setattr(
         yahoo_us_fallback.yahoo_service,
         "_filter_closed_buckets_nyse",

@@ -113,6 +113,7 @@ async def fetch_ohlcv(
     end_date: datetime | None = None,
     *,
     prepost: bool = False,
+    empty_ok: bool = False,
 ) -> pd.DataFrame:
     normalized_period = str(period or "").strip().lower()
 
@@ -130,7 +131,13 @@ async def fetch_ohlcv(
             ticker,
             count=days,
             period=normalized_period,
-            raw_fetcher=_fetch_ohlcv_raw,
+            raw_fetcher=lambda raw_ticker, raw_days, raw_period, raw_end: _fetch_ohlcv_raw(
+                ticker=raw_ticker,
+                days=raw_days,
+                period=raw_period,
+                end_date=raw_end,
+                empty_ok=empty_ok,
+            ),
             end_date=end_date,
         )
         if cached is not None:
@@ -142,6 +149,7 @@ async def fetch_ohlcv(
         period=normalized_period,
         end_date=end_date,
         prepost=prepost,
+        empty_ok=empty_ok,
     )
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
@@ -193,17 +201,20 @@ async def _fetch_ohlcv_raw(
     last_exc: BaseException | None = None
     for attempt in range(_CRUMB_RETRY_MAX + 1):
         try:
-            with yfinance_tracing_session() as session:
-                df = yf.download(
-                    yahoo_ticker,
-                    start=start,
-                    end=end,
-                    interval=period_map[period],
-                    progress=False,
-                    auto_adjust=False,
-                    session=session,
-                    **extra_kwargs,
-                )
+            def _download() -> pd.DataFrame:
+                with yfinance_tracing_session() as session:
+                    return yf.download(
+                        yahoo_ticker,
+                        start=start,
+                        end=end,
+                        interval=period_map[period],
+                        progress=False,
+                        auto_adjust=False,
+                        session=session,
+                        **extra_kwargs,
+                    )
+
+            df = await asyncio.to_thread(_download)
             df = _flatten_cols(df).reset_index(names="date")
             df = (
                 df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
