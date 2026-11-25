@@ -7,7 +7,8 @@ take ALL tools down at once (the ROB-469 SPOF). This middleware bounds each
 
 LIMITATION: ``asyncio.wait_for`` can only cancel a coroutine blocked on ``await``. A
 tool that blocks the loop SYNCHRONOUSLY (heavy pandas with no await, a blocking C
-call) cannot be cancelled this way — that case is covered by ROB-469 PR3's watchdog.
+call) cannot be cancelled this way; the ROB-469 PR3 external watchdog that
+covered that case was retired with its NCP host (hk 6457).
 """
 
 from __future__ import annotations

@@ -106,14 +106,8 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # closure (decision/2026-11-21/at-binance-demo-not-found). Pure ledger
         # state transition; no HTTP/WS, signing, credential or endpoint behavior.
         "app/services/mock_strategy/recorder.py",
-        # Task 847 — the H5-LS-ENV-v1 durable-state ORM model lives under
-        # app/models/. Persistence only: review.binance_h5_* tables, no
-        # HTTP/WS, signing, credential, or endpoint behavior; "Binance"
-        # appears only in table/column names and the docstring. Registered
-        # in app/models/__init__.py (already allow-listed above).
-        "app/models/binance_h5.py",
         # hk 4702 — the TREND-TSMOM-v1 durable-state ORM model (same precedent as
-        # binance_h5.py): persistence only, review.binance_trend_* tables, no
+        # the retired H5 model, hk 6457): persistence only, review.binance_trend_* tables, no
         # HTTP/WS, signing, credential, or endpoint behavior.
         "app/models/binance_trend.py",
         "app/models/__init__.py",
@@ -281,12 +275,6 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
       * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
       * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
       * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
-      * ``app/services/brokers/binance/h5/`` (Task 847 — the H5-LS-ENV-v1
-        Futures Demo lane's own signed adapter package, same class as
-        futures_demo/. Its ``cancel_order``/``set_leverage``/``order_test``
-        defs are fail-closed overrides that raise on the inherited signed
-        surface; ``submit_order``/``get_order`` carry the lane's real
-        evidence-first signed path).
       * ``app/services/brokers/binance/trend/`` (hk 4719 — the TREND-TSMOM-v1
         Futures Demo lane's own signed adapter, same class as h5/. Its
         ``cancel_order``/``set_leverage``/``order_test`` defs are fail-closed
@@ -304,9 +292,6 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
         pkg / "testnet",
         pkg / "spot_demo",
         pkg / "futures_demo",
-        # Task 847 — H5-LS-ENV-v1 Futures Demo lane: its own signed adapter
-        # package (fail-closed overrides + evidence-first signed path).
-        pkg / "h5",
         # hk 4719 — TREND-TSMOM-v1 Futures Demo lane (same class as h5/).
         pkg / "trend",
     )

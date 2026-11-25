@@ -156,7 +156,7 @@ leg를 새 심볼로 보내고(echo 검증 포함) 저널 `meta.symbol_change`�
   `FILLED`+심볼·사이드·타입·수량·지정가·TIF·주문번호 일치를 보여야 하며, 하나라도 부적격·증거
   불일치·조회 실패면 배치 전체 거부·무변경. 이미 이 도구로 종결된 배치는 no-op. 감사 기록은
   `extra_metadata["d2_root_reconcile"]`(마이그레이션 0). 🔴 직접 SQL·삭제·주문 경로 없음,
-  H5 truth gate 범위는 변경하지 않는다. 실행은 운영자 전용(런북 §8)
+  실행은 운영자 전용(런북 §8)
 
 **USD-M Futures Demo (ROB-298 PR 2)**:
 - **실행 어댑터**: `app/services/brokers/binance/futures_demo/execution_client.BinanceFuturesDemoExecutionClient` — `demo-fapi.binance.com` only; mutation은 `submit_order(..., confirm=True)`만; close 주문에는 `reduce_only=True` 필수
@@ -248,75 +248,9 @@ due 에피소드별 증거 실패는 다른 청산을 막지 않고, 프로세�
   demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
 - **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
 
-### H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
+### H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847) — 은퇴 (hk 6457, 데이터 보존)
 
-H5는 ROB-993의 StrategyPlugin 인터페이스, complete-only 1m→4h collector,
-기존 signed Futures Demo transport와 Demo ledger 서비스를 재사용하는 별도 어댑터다.
-ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
-그 경로에 그대로 남는다. H5의 독립 상수와 상태 서비스는 H5 identity에서만 쓰인다.
-
-- **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
-  scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
-- **배포 이미지 (task 1254)**: H5 모듈이 research.nautilus_scalping.rob974_features를
-  import하므로 `Dockerfile.api` 최종 단계는 `research/nautilus_scalping/`를 복사한다.
-  추가 연구 파일은 ROB-1474 순수 목록 빌더 5개와 data_plane 달력 의존 3개뿐이며
-  `research/`의 나머지는 이미지에 넣지 않는다. 이 COPY는 order permission이 아니다.
-  `tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py`가 최종 단계의 COPY
-  집합과 `.dockerignore`를 시뮬레이션해 `scripts/binance_h5_*.py`의 import 폐쇄(정적 +
-  이미지 파일만 둔 새 인터프리터 import)와 `research/` 범위를 고정한다.
-- **호스트/게이트**: exact https://demo-fapi.binance.com 및 H5DemoClient identity를
-  HTTP/DB 전에 검사한다. BINANCE_H5_DEMO_ENABLED와
-  BINANCE_FUTURES_DEMO_ENABLED는 기본 false이고, 각 runner tick과 모든 주문은
-  명시 confirm=True가 필요하다. live 자격증명과 endpoint는 사용하지 않는다.
-- **노출/전송**: review.binance_h5_signals와 review.binance_h5_intents는 H5 전용
-  서비스가 advisory transaction lock으로 예약한다. 최대 전역 2개, 심볼별 1개,
-  외부 포지션과 미체결 주문 시 entry 차단. client order ID를 commit한 뒤
-  sending fence를 commit하고 단 한 번 보낸다. 응답 불명은 uncertain으로 보존하고
-  broker order ID/client ID와 전계정 position 증거로만 해소한다. 예약된 pre-send
-  intent는 재시작 시 자동 전송하지 않는다.
-- **수량/청산**: 최신 NAV × 0.01 / 0.05의 notional을 executable quote와
-  MARKET_LOT_SIZE로 내림하고 MIN_NOTIONAL 미달 시 차단한다. isolated 1x와 one-way
-  모드는 broker readback으로 요구하며 설정 mutation은 없다. 청산은 hard stop,
-  completed-bar close stop, time exit, TP 순서이고 모든 청산은 reduceOnly이며
-  broker 증명 잔량까지만 보낸다. hard stop은 4h 마감 사이에도 1m 극값으로 검사한다.
-- **레저/학습**: 모든 binance_demo_order_ledger 쓰기는
-  BinanceDemoLedgerService만 사용한다. H5 correlation과 signal_key는 DFC identity와
-  독립이며 forecast는 실제 entry fill 후 저장하고 실제 held close 후 해소한다.
-  predeclared 4h opportunity grid의 random control은 오프라인 계산만 수행한다.
-- **관리 전용 틱 (hk 3644)**: `scripts/binance_h5_demo.py --manage-only`(`--once`/`--loop` 공용)는 `H5Executor.run_tick(manage_only=True)`로 미해소 intent 정리·uncertain 차단·보유 포지션 관리(reduceOnly 청산)·forecast 복구까지만 실행하고 `entries_skipped_manage_only`로 끝난다. 신호 수집·사이징·진입 예약·개시 주문 전송에 도달하지 못하며 이 강제는 executor 안에 있다(기본값=기존 동작). 게이트·상수는 불변. H5 은퇴 시 마지막 포지션은 플레이북 §11 절차로만 닫는다(거래소 UI 수동 청산 금지 — H5 DB가 `holding`으로 남는다).
-- **권한**: 이 코드의 존재는 order permission이 아니다. 별도 operator contract의
-  strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
-  마이그레이션도 별도 운영 절차로 적용한다. 상세는
-  docs/runbooks/binance-h5-demo.md를 따른다.
-- **H5 수동 운영·알림 (task 1251)**: 정확한 복붙 절차는
-  `docs/runbooks/binance-h5-ncp-manual-playbook.md`(명령의 플래그는
-  `tests/scripts/test_binance_h5_ncp_playbook.py`가 각 스크립트의 실제 argparse로
-  검증). 데모 플래그 3종(`BINANCE_H5_DEMO_ENABLED`·`BINANCE_FUTURES_DEMO_ENABLED`·
-  `BINANCE_H5_ALERT_ENABLED`)은 해당 일회성 컨테이너의 `docker run -e` 에만 둔다 —
-  공유 env 파일(`.env.api`) 편집·`--restart`·`-d`·cron/systemd 등록 금지.
-  시작 전 `scripts/binance_h5_truth_gate.py --confirm-demo`(서명 GET + SELECT 만,
-  주문·쓰기 도달 불가를 AST 테스트로 고정)가 PASS 해야 한다.
-- **비USDT 잔고 (#1272, hk 1271 = B)**: Futures Demo 기본 지급분(USDC·BTC)은 같은 서명 GET
-  `/fapi/v2/account` 응답의 `multiAssetsMargin` 이 정확히 JSON `false` 일 때만 허용된다(`read_account`).
-  true·누락·null·문자열·숫자·읽기 실패는 FAIL. 비USDT 잔고는 양의 유한값·이름 `[A-Z0-9]{1,20}` 이어야 하고,
-  있으면 NAV(`totalMarginBalance`)가 USDT `marginBalance` 와 같아야 한다. 트루스 게이트
-  `account_isolated_1x` 는 모드를 다시 확인하고 통과 detail 에 `margin_mode=single_asset non_usdt_assets=…`
-  를 붙인다(비USDT 잔고 없으면 detail 불변). 읽기 경로·다른 체크·종료 코드 불변. 기록:
-  `docs/contracts/h5-deviation-20261008-single-asset-margin-foreign-balances.md`.
-- **장애 알림 (default off, `BINANCE_H5_ALERT_ENABLED` 정확히 `true` 일 때만)**:
-  `h5/alerting.py`. `stopped`(SIGINT 외의 종료)·`error`(`blocked`/`entry_uncertain`/
-  `close_uncertain` 틱)는 러너 안에서, `heartbeat_missed`는 별도 읽기 전용
-  `scripts/binance_h5_heartbeat_watch.py`가 `review.binance_h5_lane_state.updated_at`
-  (`record_nav` 가 틱마다 갱신)이 N분(기본 10) 이상 묵었을 때 보낸다 — SIGKILL/OOM 은
-  이 경로만 잡는다. 채널은 기존 ops 채널 `settings.discord_webhook_alerts`(Hermes 아님,
-  신규 provider 없음). 에피소드당 1회·리마인더 최대 6시간 1회·전송 실패 재시도 5분
-  간격이며 전송 실패·지연은 러너 동작을 바꾸지 못한다(타임아웃 5초, 예외 삼킴, 틱
-  알림은 백그라운드 태스크라 다음 틱을 늦추지 않고 종료 시 drain). 에피소드 키는
-  (종류, 버킷)이며 틱 오류의 버킷은 틱 event 라서 예외 클래스가 바뀌어도 같은
-  에피소드다. 감시자의 heartbeat 읽기는 15초 데드라인이며 초과는 `unreadable` 알림이다.
-  H5 에는 거래소 측 손절이 없으므로 모든 종류가 "포지션이 있으면 손절 감시 중단"을 뜻한다.
-  코인 세션이 읽을 H5 상태 도구는 아직 없다 — live-crypto 프로필은 폐쇄 세계이고
-  core 15/extension 10 상한이 차 있어 별도 결정이 필요하다.
+운영자 결정 `decision/2026-11-25/at-ncp-retire-unused`에 따라 H5 러너 코드(`app/services/brokers/binance/h5/`, `scripts/binance_h5_*`, `app/models/binance_h5.py`, H5 전용 런북과 테스트)를 제거했다. 🔴 `review.binance_h5_{signals,intents,lane_state,opportunities,nav_samples}` 테이블과 그 마이그레이션(`20260928_task847_h5_state`)은 **그대로 둔다 — 드롭하지 않았고 이 PR은 마이그레이션을 쓰지 않는다**. ORM 모델이 없으므로 이후 autogenerate 가 이 테이블들의 DROP 을 제안할 수 있다 — 새 리비전을 만들 때 생성된 drop 을 반드시 검토한다. 병합 전 H5 보유 포지션 0 확인은 PR 본문의 설계 세션 전제다. 같은 PR 의 TREND-TSMOM·ROB-993 공유 코드(`research/nautilus_scalping/rob974_features`, 데모 원장 서비스, 알림 패턴)는 유지했다.
 
 ### TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기·CLI (hk 4702 CT-3, hk 4719 CT-4, hk 4753 CT-5a)
 

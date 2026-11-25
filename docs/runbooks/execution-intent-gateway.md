@@ -114,7 +114,7 @@ below or by merging this code.
    SELECT mode, reason, updated_by, updated_at FROM review.kis_mock_runner_control WHERE id = 1;
    ```
 
-3. Start the route in the foreground on the host where fillwire runs. Set `image` to the digest of the deployed version and `env_file` to the shared env file, as in `docs/runbooks/binance-h5-ncp-manual-playbook.md`. Export the token in your shell first, so that its value is not on the command line.
+3. Start the route in the foreground on the host where fillwire runs. Set `image` to the digest of the deployed version and `env_file` to the shared env file, as in the retired H5 playbook (hk 6457). Export the token in your shell first, so that its value is not on the command line.
 
    ```sh
    docker run --rm --network host --env-file "$env_file" \

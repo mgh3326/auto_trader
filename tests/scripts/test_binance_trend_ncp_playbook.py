@@ -1,6 +1,6 @@
 """The trend runbook's commands must be the real scripts' arguments.
 
-Like ``test_binance_h5_ncp_playbook.py``: parse every invocation in the runbook
+Parse every invocation in the runbook
 (``/app/.venv/bin/python -m scripts.binance_trend_*``), and check each flag
 against that module's real argparse parser. Also pin the operational sentences
 that the copy-paste steps depend on: no ``--restart``/detach, no scheduler, and

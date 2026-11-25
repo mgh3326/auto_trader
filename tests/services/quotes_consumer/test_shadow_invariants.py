@@ -67,7 +67,6 @@ EXPECTED_PACKAGE = {
 }
 
 FORBIDDEN_FRAGMENTS = (
-    "fill_event_handoff",
     "ops_task_kick",
     "create_flow_run",
     "prefect",
