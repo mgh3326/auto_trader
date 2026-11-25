@@ -155,6 +155,17 @@ def test_a_page_that_does_not_reach_back_to_the_entry_decides_nothing() -> None:
     )
 
 
+def test_a_page_without_the_recorded_signal_bar_decides_nothing() -> None:
+    # An empty or truncated response must not become a permanent "no trades".
+    empty = CandlePage(
+        MARKET, {}, None, S.end_slot_after(205), S.run_after(204)
+    )  # fmt: skip
+    kwargs = {"end_slot": S.end_slot_after(200), "now": S.run_after(200)}
+    assert outcomes.resolve(pending(), empty, **kwargs) == []
+    gap = {i: r for i, r in walk().items() if i not in (SIGNAL, SIGNAL + 1)}
+    assert outcomes.resolve(pending(), page(gap), **kwargs) == []
+
+
 def test_an_unlisted_market_is_missing_only_after_the_horizon() -> None:
     found = outcomes.resolve(
         pending(), None, end_slot=S.end_slot_after(SIGNAL + 16), now=S.run_after(200)

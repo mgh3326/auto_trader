@@ -18,6 +18,7 @@ row.
 from __future__ import annotations
 
 import statistics
+import sys
 from datetime import datetime
 from decimal import Decimal
 
@@ -68,18 +69,19 @@ def quantized(value: Decimal) -> Decimal:
     return value.quantize(_PRECISION)
 
 
-def _determined_from(raw_slots: list[int], first_computable: int) -> int | None:
+def _determined_from(raw_slots: list[int], first_computable: int) -> int:
     """First raw index from which the cooldown chain cannot depend on unseen bars.
 
     The chain restarts after any gap longer than the cooldown. Bars before the
     first computable index are unseen, so they count as a possible earlier signal.
+    ``sys.maxsize`` when the panel never shows such a gap.
     """
     previous = first_computable - 1
     for index in raw_slots:
         if index - previous > R.COOLDOWN_BARS:
             return index
         previous = index
-    return None
+    return sys.maxsize
 
 
 def _event_at(
@@ -149,22 +151,18 @@ def evaluate_market(
         determined = _determined_from(
             raw_slots.tolist(), max(config.n, R.VOLUME_WINDOW_M)
         )
-
-        def verified(index: int, determined_from: int | None = determined) -> bool:
-            return determined_from is not None and index >= determined_from
-
         for i in range(K.PANEL_SLOTS - catchup_bars, K.PANEL_SLOTS):
             reasons: list[str] = []
             if raw[i]:
-                if verified(i) and i not in kept:
-                    continue  # suppressed by the frozen cooldown
-                if not verified(i):
+                if i < determined:
                     reasons.append(K.REASON_COOLDOWN_UNVERIFIED)
+                elif i not in kept:
+                    continue  # suppressed by the frozen cooldown
             elif relaxed[i]:
                 recent = [int(s) for s in raw_slots if i - R.COOLDOWN_BARS <= s < i]
-                if any(verified(s) and s in kept for s in recent):
+                if any(s >= determined and s in kept for s in recent):
                     continue
-                if not all(verified(s) for s in recent):
+                if any(s < determined for s in recent):
                     reasons.append(K.REASON_COOLDOWN_UNVERIFIED)
                 reasons.append(K.REASON_LIQUIDITY_BELOW_FLOOR)
             else:

@@ -69,6 +69,8 @@ def resolve(
         limit = min(end_slot, page.before_slot - 1)
         if entry_slot > limit or not page.covers(entry_slot):
             continue
+        if page.covers(signal_slot) and signal_slot not in page.rows:
+            continue  # an empty or odd page, not evidence that a bar never traded
         if entry_slot not in page.rows:
             out.append(
                 _missing(
