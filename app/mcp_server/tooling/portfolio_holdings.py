@@ -754,8 +754,13 @@ async def _prefetch_kr_candle_frames(kr_symbols: list[str]) -> None:
     if not symbols:
         return
     try:
-        from app.core.db import AsyncSessionLocal
         from app.services.daily_candles import read_service as _kr_read_service
+
+        # DB-free unit contract: tests stub portfolio_holdings.cache_first_kr.
+        # A stubbed per-symbol reader means the caller wants no DB.
+        if cache_first_kr is not _kr_read_service.cache_first_kr:
+            return
+        from app.core.db import AsyncSessionLocal
         from app.services.daily_candles.repository import (
             DailyCandlesRepository,
             MarketKey,
@@ -1405,7 +1410,7 @@ async def _apply_protection_to_live_positions(
         try:
             from app.services import protected_quantity_service as _pqs2
 
-            _pqs2.clear_protection_head_cache()
+            _pqs2.clear_protection_batch_caches()
         except Exception:
             pass
     return protected_positions

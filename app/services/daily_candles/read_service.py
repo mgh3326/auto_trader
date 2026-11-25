@@ -26,6 +26,7 @@ forming bar and DB-first must not silently drop it. After the cutoff and on
 non-session days the DB-first path proceeds. The US path needs no such gate:
 the Yahoo daily path is already closed-bucket only.
 """
+from __future__ import annotations
 
 import datetime
 import logging
