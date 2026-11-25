@@ -53,6 +53,7 @@ from app.services.brokers.kis.live_order_expiry import (
     KR_PREMARKET_OPEN_KST,
     KR_REGULAR_OPEN_KST,
 )
+from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.research_candles.session_segment import (
     TOSS_US_VENUE,
     session_segment_of,
@@ -1310,6 +1311,7 @@ async def collect(
     reads = 0
     kis_day_market_skips = 0
     toss_reads = 0
+    toss_not_listed_symbols: list[str] = []
     toss_status = "not_requested"
     errors: list[dict[str, str]] = [dict(item) for item in prior_errors]
     for symbol in unresolved_symbols:
@@ -1454,6 +1456,17 @@ async def collect(
                             inserted += new
                             already_present += present
                     except Exception as exc:  # noqa: BLE001 - one symbol must not stop the run
+                        if (
+                            isinstance(exc, TossApiResponseError)
+                            and exc.status_code == 404
+                            and exc.envelope.code == "stock-not-found"
+                        ):
+                            toss_not_listed_symbols.append(symbol)
+                            logger.info(
+                                "session minutes toss symbol not listed symbol=%s",
+                                symbol,
+                            )
+                            continue
                         logger.warning(
                             "session minutes toss read/write failed symbol=%s error=%s",
                             symbol,
@@ -1488,6 +1501,10 @@ async def collect(
         "kis_skipped_day_market": kis_day_market_skips,
         "toss": toss_status,
         "toss_reads": toss_reads,
+        "toss_not_listed": {
+            "count": len(toss_not_listed_symbols),
+            "symbols": toss_not_listed_symbols,
+        },
     }
 
 

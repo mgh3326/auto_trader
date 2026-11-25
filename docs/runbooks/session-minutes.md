@@ -68,6 +68,7 @@ NTX 표지는 NXT 공식 시간을 따른다(출처: nextrade.co.kr 거래시스
 - **달력을 못 받으면 토스를 읽지 않는다**: 보고서에 `toss: calendar_unavailable` 과 `CalendarUnavailable` 오류가 남고 종료 코드는 1 이다(KIS 쪽 수집은 그대로 한다). `TOSS_API_ENABLED` 가 꺼져 있으면 `toss: disabled` 이고 오류는 없다.
 - **KIS 와 토스는 섞이지 않는다**: KIS 행(`NASD` 등)과 토스 행(`TOSS_INTEGRATED`)은 venue 가 달라 PK 가 충돌하지 않고, 출처 `KIS`/`TOSS` 로 따로 보인다. 수집기는 달력의 dayMarket 창이 연 뒤 15분이 지나면 KIS 미국 읽기를 건너뛴다(`kis_skipped_day_market`). 창이 열린 직후 15분은 KIS 를 계속 읽는다: KIS 시간외는 창이 열리는 20:00 ET 에 끝나므로 마지막 KIS 봉(19:54–19:59 ET)을 그때 읽어야 한다. pre/regular/post 는 KIS 가 그대로 맡는다.
 - **읽는 범위**: 실행마다 종목별로 현재 시각 3시간 전부터 현재까지(`TOSS_US_LOOKBACK`, 최대 4페이지), 형성 중인 봉은 `is_closed`(시작 + 1분 + 10초) 규칙으로 건너뛴다. 재실행은 `ON CONFLICT DO NOTHING` 이라 0행이고 `retrieved_at`(최초 수신)은 그대로다. 토스 `before` 커서는 현재 시각 + 2분으로 보낸다(형성 중인 봉을 받아 버리기 위해; 클라이언트의 "커서보다 새 봉" 검사를 피한다).
+- 토스 US 분봉에서 HTTP 404와 응답 코드 `stock-not-found`가 함께 확인되면 미상장 심볼로 `toss_not_listed`에 기록하고 오류 수와 종료 코드에는 반영하지 않는다. 그 밖의 Toss API 오류와 비-Toss 예외는 기존처럼 오류로 남는다.
 - **DAG 사본**: `deploy/dagu/at-session-minutes/at-session-minutes-us.yaml` 은 KIS 창 04:00–20:10 ET 에 데이마켓 창을 더했다 — 일–금 20:00–23:55 ET 와 월–토 00:00–03:55 ET. 세 줄은 겹치지 않는다. 등록은 여전히 설계 세션이 한다.
 - **확인 명령(한 줄)**: 오늘 미국 세션마다 종목·출처·venue 별 첫 봉과 마지막 봉(봉 시작, UTC·KST):
 
