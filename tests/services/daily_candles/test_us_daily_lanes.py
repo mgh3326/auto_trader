@@ -251,6 +251,30 @@ async def test_yahoo_empty_is_reported_as_no_data_after_each_lane_once() -> None
 
 
 @pytest.mark.asyncio
+async def test_yahoo_fallback_concurrency_is_bounded() -> None:
+    active = 0
+    max_active = 0
+
+    async def empty_lane(target, _n):
+        return pd.DataFrame()
+
+    async def yahoo(*, symbol, n):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return []
+
+    service = _service(_Repo(), [UsDailyLane("kis", "kis", empty_lane, 20, 20)], yahoo)
+    service._resolve_universe.return_value = [_target(f"Y{i}") for i in range(12)]
+
+    await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert max_active == 5
+
+
+@pytest.mark.asyncio
 async def test_single_symbol_us_sync_uses_the_same_lane_dispatcher() -> None:
     repo = _Repo()
 
