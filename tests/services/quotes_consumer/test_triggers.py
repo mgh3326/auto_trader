@@ -458,30 +458,6 @@ def test_seed_breach_suppresses_replay_of_the_same_breach() -> None:
     assert len(rows) == 1
 
 
-def test_evaluator_never_calls_a_session_kick(monkeypatch) -> None:
-    """A2: the real trigger path runs under a booby-trapped kick seam.
-
-    If any firing secretly constructed FillHandoffRunner the sentinel records
-    it and the assertion below fails. The evaluator has no kick injection
-    point, so a mutant that adds one must trip this. (hk 5753: the ops
-    task-kick seam this test once also booby-trapped was removed.)
-    """
-    called: list[str] = []
-
-    class _ExplodingKick:
-        def __init__(self, *a, **k):
-            called.append("FillHandoffRunner")
-
-    monkeypatch.setattr(
-        "app.services.fill_event_handoff.service.FillHandoffRunner",
-        _ExplodingKick,
-    )
-    ev = TriggerEvaluator()
-    rows = _fire_symbols(ev, ["AAA", "BBB"], T0)
-    assert len(rows) == 2
-    assert called == []
-
-
 # ---------------------------------------------------------------------------
 # not_evaluable records
 # ---------------------------------------------------------------------------

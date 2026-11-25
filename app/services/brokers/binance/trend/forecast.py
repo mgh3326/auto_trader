@@ -1,6 +1,6 @@
 """TREND-TSMOM-v1 forecast lifecycle: fill claim now, held outcome on close.
 
-Mirrors the H5 adapter (``app.services.brokers.binance.h5.forecast``): the
+Modeled on the retired H5 adapter (removed in hk 6457): the
 forecast id is deterministic — ``uuid5`` of the signal correlation id — the
 entry forecast is saved only after a broker-proven entry fill, and the held
 outcome is resolved only when the managed position is actually closed. The

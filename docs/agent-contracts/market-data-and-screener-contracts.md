@@ -30,6 +30,7 @@
 - 장중 급등·급락 관측 로그 (hk 6154)
 - 미국 장중 급등·급락 관측 로그 (hk 6510)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
+- KR 관리·시장경고·정리매매·거래정지 플래그 (hk 6503)
 - Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
 
 ## 기준 원문 계약
@@ -845,6 +846,17 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 
 `scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 비교할 근거가 없으면(한쪽 0행, 겹치는 봉 0개, 요청 종목이 양쪽에 없음) PASS 가 아니라 `INCONCLUSIVE`(종료 코드 4)다. Python 쪽은 세션 수집기 행(`batch_id` 접두어 `session-minutes-`)만 본다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
 
+### KR 관리·시장경고·정리매매·거래정지 플래그 (hk 6503)
+
+국내 종목의 관리종목·시장경고·정리매매·거래정지 상태를 `public.kr_symbol_trading_flags`(PK `(symbol, category)`, 마이그레이션 `20261125_hk6503_kr_trading_flags`, 추가형)에 둔다. 🔴 **행이 없으면 unknown 이며 `none` 이 아니다.** `none` 은 소스가 명시한 값(KIS `N`, 네이버 `tradeStopYn=N`, 시장경고 `00`)에서만 온다.
+
+- **소스와 오프라인 계약**: KIS 종목정보(`kospi_code.mst`·`kosdaq_code.mst`)의 tail 고정폭 필드(거래정지·정리매매·관리종목·시장경고)는 공개 스펙 `github.com/koreainvestment/open-trading-api` `stocks_info/kis_{kospi,kosdaq}_code_mst.py` 의 오프셋으로 읽는다(`app/services/kr_trading_flags/kis_master.py`). 스펙은 개행을 포함한 줄에서 `row[-228:]`/`row[-222:]` 로 자르므로, 개행을 뗀 줄(다운로더가 주는 형태)에서는 tail 이 227/221 자이고 폭 합과 같다. 228/222 로 자르면 모든 플래그가 한 칸 앞 열로 읽힌다(PR #2584 리뷰 지적, `test_kis_master.py` 가 전체 폭 표로 고정). 🔴 **[unverified]** 스펙은 필드 이름과 폭만 주고 값 샘플은 주지 않는다. 시장경고 `02`/`03` 과 `Y/N` 의 실제 분포는 라이브 스모크 전에는 확정하지 않는다. 네이버 `manageStatusGb=1` 을 관리로 보는 것도 픽스처 224060 에서만 추정한 것이다(`naver_status.py`).
+- **쓰기 가드**(`store.py`, SQL 에 있다): 새 `observed_at` 만 기존 행을 덮는다. `unmapped` 은 매핑된 상태를 절대 덮지 않는다(읽지 못한 코드가 이미 제외된 종목을 다시 열지 못하게 한다). 매핑되지 않는 코드는 `raw_code` 로 보존하고 추측하지 않는다.
+- **닫힌 어휘**: 관리 `designated|none|unmapped`, 시장경고 `none|caution|warning|risk|unmapped`(투자주의=caution, 투자경고=warning, 투자위험=risk), 정리매매 `in_progress|none|unmapped`, 거래정지 `halted|none|unmapped`. DB CHECK 가 카테고리별 상태를 강제한다.
+- **스크리너 게이트**(`app/services/kr_trading_flags/gate.py`, `app/mcp_server/tooling/screening/trading_flag_filter.py`, `screen_stocks` 진입점의 halt 필터 뒤): 관리·투자경고·투자위험·정리매매·거래정지는 제외되고 `meta.trading_flag_excluded` 에 사유 코드(`management_designated`·`market_alert_warning`·`market_alert_risk`·`delisting_trade_in_progress`·`trading_halt`), 출처, 관측 시각, 소스 사유 코드, 지정일이 남는다. **투자주의는 제외하지 않고** 행의 `trading_flag_labels` 로만 표시한다. 저장소 읽기 실패는 fail-open(모든 행 유지, `meta.trading_flags_check_skipped`). 행 키는 `kr_row_symbol`(`symbol` → `short_code` → 6자 `code`)로 정한다. 레거시 경로의 `code` 는 ISIN 이다. 96시간(`FLAG_MAX_AGE`)보다 오래된 관측은 unknown 으로 보고 제외하지 않는다(`meta.trading_flags_stale`). 기준값과 장중 보조를 함께 돌리지 않으면 해제 상태가 남기 때문이다. 이 게이트는 `screen_stocks`(매수 후보 fanout 포함)에만 있고 DB-only `screen_stocks_snapshot` 에는 아직 없다(후속).
+- **halted_suspect**: 판정 로직은 그대로다. 국내 종목에 halt suspicion 이 서고 저장된 `trading_halt=halted` 행이 있을 때만 `halt_suspect.confirmed_halt_flag` 로 근거를 붙인다(`app/services/kr_trading_flags/lookup.py`).
+- **쓰기 경로(운영자 수동)**: `scripts/sync_kr_trading_flags.py --source kis-master|naver-intraday [--dry-run]`. 소스 실패·형식 오류는 쓰기 전에 종료 코드 1. 네이버 목록은 상태가 있는 종목만 준다. 목록에 없는 종목은 "해제"의 증거가 아니므로 아무것도 쓰지 않는다. 스케줄 등록은 없다. DAG 사본은 `deploy/dagu/at-kr-trading-flags/`(등록 안 됨): 장중 10분 간격 보조 + 월–금 07:00 일 기준값. 두 DAG 는 함께 등록한다. kis-master 쓰기는 한 카테고리의 대부분(20행 이상, 50% 초과)이 `unmapped` 이면 거부한다.
+- **범위 밖**: 주문 경로, Upbit, US, KRX 거래정지 마스터(`halted_suspect` 의 `krx_halt_master: unavailable` 는 그대로다), 스냅샷 전용 스크리너(`screen_stocks_snapshot`), KOSDAQ 의 `투자주의환기종목여부`(별도 필드).
 ### Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
 
 `app/services/upbit_intraday_shadow/` + 수동 CLI `scripts/upbit_intraday_shadow.py` 는 hk 6035 동결 규칙을 마감된 15분 봉에 적용해 **전향 증거만** 쌓는다. 6035 는 세 계열 모두 `NOT_SUPPORTED` 였으므로 이 행들은 매매 신호·알림·정책 입력이 아니다. 🔴 주문·미리보기·승인·원장 모듈을 import 하지 않고(정적 import 폐쇄 + 새 인터프리터 로드 검사 `tests/services/upbit_intraday_shadow/test_static_boundary.py`), 스케줄러 등록 없음(하드룰 6: `deploy/dagu/at-upbit-intraday-shadow/` 는 미등록 복사본, 등록은 마이그레이션 적용 뒤 설계 세션).

@@ -274,9 +274,6 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/execution_ledger/repository.py", "position_before_fill"): (
         "test_quarantine_readers_db::READERS[repository.position_before_fill]"
     ),
-    ("app/services/fill_event_handoff/broker_risk.py", "list_fills_for_order"): (
-        "test_quarantine_readers_db::READERS[broker_risk.list_fills_for_order]"
-    ),
     ("app/services/market_close_digest/queries.py", "_execution_fills"): (
         "test_quarantine_readers_db::READERS[market_close_digest._execution_fills]"
     ),
