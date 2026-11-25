@@ -64,6 +64,9 @@ class AuthMiddleware:
     EXECUTION_LEDGER_INGEST_PATH_PREFIX: ClassVar[str] = (
         "/trading/api/execution-ledger/"
     )
+    RESEARCH_MINUTES_INGEST_PATH_PREFIX: ClassVar[str] = (
+        "/trading/api/research-minutes/"
+    )
     TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
@@ -259,6 +262,42 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid execution ledger ingest token"},
+                )
+            return None
+
+        # hk 6343 — research minute-bar HTTP ingest + target read for the Go
+        # quote collector. The gate is checked BEFORE the token so a disabled
+        # surface answers 404 (the same shape an absent route would) and never
+        # reveals whether a token is configured; both happen before any DB
+        # access. An unset token (or header name) is fail-closed 403 and a wrong
+        # token is 401; a session cookie is never a substitute.
+        if path.startswith(self.RESEARCH_MINUTES_INGEST_PATH_PREFIX):
+            if settings.RESEARCH_MINUTES_INGEST_ENABLED is not True:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": "Not Found"},
+                )
+            expected_token = settings.RESEARCH_MINUTES_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Research minutes ingest token not configured"
+                    },
+                )
+            header_name = settings.RESEARCH_MINUTES_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Research minutes ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid research minutes ingest token"},
                 )
             return None
 

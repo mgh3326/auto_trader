@@ -25,6 +25,7 @@
 - KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
 - Upbit KRW 15분 봉 장중 신호 사전등록·과거 재생 (hk 6035)
 - 세션 분봉 타임라인 — research 분봉 수집·커버리지 진단 (hk 6145)
+- research 분봉 HTTP ingest·대상 읽기 (hk 6343)
 - 장중 급등·급락 관측 로그 (hk 6154)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 
@@ -755,6 +756,10 @@ CLI는 `scripts/prune_nonprice_history.py` 하나이며 정본 설명은 `docs/r
 - **진단**: `scripts/diagnose_session_coverage.py --market kr|us --date D [--symbols …]` — 읽기 전용 트랜잭션(`SET TRANSACTION READ ONLY`), 8초 `statement_timeout`, SELECT 뿐. 종목 × venue × session_segment 별 `rows`/`expected_minutes`(그 시각에 이미 닫힌 분)/`missing_minutes`/`retrieved_at − (time_utc + 1분)` p50·p95. `batch_id` 가 `%backfill%` 또는 `promote-%` 인 행(최초 수신이 아님)은 제외한다. 계산은 `session_coverage.py`(순수).
 - **범위 밖**: 선물, `market_timeline` 이벤트, retro/v1, 급등 귀속, DART·뉴스 시각, KRX 애프터 적격 목록 갱신, 주문·승인·정책 경로, DAG 등록, 과거 백필.
 - **DAG 사본**: `deploy/dagu/at-session-minutes/`(KR 월–금 08:00–20:10 KST 5분, US 월–금 04:00–20:10 ET 5분 — KST 로 환산하면 서머타임에 따라 17:00/18:00–09:10/10:10). **테스트**: `tests/services/research_candles/test_session_{segment,minutes_collector,minutes_targets,coverage,minutes_db}.py`, `tests/test_hk6145_session_minutes_migration_db.py`(DB 는 CI), `tests/scripts/test_dagu_session_minutes_dags.py`. 런북 `docs/runbooks/session-minutes.md`.
+
+### research 분봉 HTTP ingest·대상 읽기 (hk 6343, 설계 hk 6321 T2)
+
+Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 인증 HTTP 표면으로 보내고 서버가 기존 writer 로 쓴다. 표면은 `/trading/api/research-minutes/` 아래 둘이며 `app/routers/research_minutes_ingest.py`·`app/schemas/research_minutes_ingest.py`·`app/services/research_candles/minute_ingest.py` 에 있고, 게이트·토큰 검사는 `AuthMiddleware` 의 전용 분기다(게이트 `RESEARCH_MINUTES_INGEST_ENABLED` 는 정확히 `"true"` 일 때만 열리고, 꺼져 있으면 어떤 경로든 DB 접근 전에 404, 토큰 `RESEARCH_MINUTES_INGEST_TOKEN` 이 비면 403, 틀리면 401 이며 세션 쿠키는 대체가 아니다). `POST .../ingest` 는 한 시장의 배치(최대 1,000봉)를 받아 봉마다 자기 SAVEPOINT 로 `SqlMinuteWriter.insert_one` 을 실행한다 — `ON CONFLICT (time_utc, symbol, venue) DO NOTHING` 이므로 재전송은 0행이고 `retrieved_at`(최초 수신)은 먼저 도착한 쪽이 고정한다. 응답 `results[]` 는 요청 `bars[]` 와 위치로 대응하며 `inserted`/`already_present`/`rejected`(사유는 닫힌 어휘 또는 쓰기 실패의 예외 클래스 이름)만 담는다. 서버가 소유한 필드는 클라이언트에서 받지 않는다: `session_segment` 는 `session_segment_of`, `session_date`/`session_date_kst` 는 `time_utc` 에서 유도하고, `received_at` 은 시간대가 있어야 하고 서버 시계 +5초를 넘는 미래이거나 봉 시작보다 이르면 그 항목을 거부한다(재시도·백필이 더 이른 수신을 주장할 수 없다). `source` 는 시장별 닫힌 집합(KR `KIWOOM|KIS|TOSS|UNKNOWN`, US `KIS|TOSS|YAHOO|UNKNOWN`)이며 이는 두 표의 CHECK 와 같다 — 새 소스는 그 소스 티켓의 추가형 마이그레이션 없이는 받지 않는다(이 표면에는 마이그레이션이 없다). `GET .../targets?market=kr|us` 는 읽기 전용으로 `build_targets`(hk 6299 단계·예산)와 `targets_report` 를 그대로 돌려주므로 계층 규칙의 정본은 Python 하나다. 정적 테스트 `tests/routers/test_research_minutes_ingest_static_guard.py` 가 라우터(함수 내부 import 포함)와 모듈 수준 import 폐쇄가 주문·원장·승인·슬리브·판단근거 모듈에 닿지 않음과 writer SQL 이 두 research 표만 건드림을 고정한다. 스케줄러·과거 백필·Go 클라이언트·주문 경로는 범위 밖이고, 테스트는 `tests/routers/test_research_minutes_ingest{,_auth,_db,_static_guard}.py`·`tests/services/research_candles/test_minute_ingest.py`(DB 는 CI)다.
 
 ### 장중 급등·급락 관측 로그 (hk 6154)
 
