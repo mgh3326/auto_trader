@@ -1,7 +1,7 @@
 # Kiwoom Mock US-Equity Order Smoke
 
-> **MCP profile:** `MCP_PROFILE=kiwoom`은 US namespace를 항상 등록한다.
-> default profile에서는 `KIWOOM_MOCK_US_ENABLED=true`일 때만 등록된다.
+> **MCP profile:** US namespace는 DEFAULT profile에서 `KIWOOM_MOCK_US_ENABLED=true`일
+> 때만 등록된다(예전 전체 Kiwoom profile은 hk 6456에 은퇴).
 > CLI smoke 스크립트는 프로파일과 무관하다.
 
 ROB-867. Operator-safe smoke for the Kiwoom **mock-investment** (모의투자)
@@ -244,7 +244,7 @@ another order type after its first unsafe baseline or lifecycle outcome.
 If `full` mode exits with code 2 (`cleanup_required`), cancel the stranded order:
 
 ```bash
-# Via MCP tool (MCP_PROFILE=kiwoom session):
+# Via MCP tool (DEFAULT session with KIWOOM_MOCK_US_ENABLED=true):
 #   kiwoom_mock_us_cancel_order(order_id="<1-18 digit order id>", symbol="AAPL",
 #                              dry_run=False, confirm=True)
 
