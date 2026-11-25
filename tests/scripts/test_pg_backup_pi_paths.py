@@ -1,7 +1,7 @@
 """hk 6447: pg-backup lives under deploy/shiftgate/pi and follow.sh uses it.
 
-Acceptance 2: follow.sh's BACKUP_UNIT default is at-pg-backup.service and the
-unit file at the new path runs the moved script.
+Acceptance 2 (amended by hk 6466): the daily Dagu job runs at-pg-backup.service,
+follow.sh no longer runs it, and the unit file at the new path runs the moved script.
 """
 
 from __future__ import annotations
@@ -23,9 +23,17 @@ def test_verifier_fallback_matches_writer_default() -> None:
     assert 'os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/at-pg")' in verifier
 
 
-def test_follow_backup_unit_default_is_at_pg_backup_service() -> None:
-    follow = FOLLOW.read_text()
-    assert 'BACKUP_UNIT="${AT_BACKUP_UNIT:-at-pg-backup.service}"' in follow
+def test_backup_unit_runs_from_dagu_not_follow() -> None:
+    dag = (
+        REPO_ROOT / "deploy" / "dagu" / "at-maintenance" / "at-pg-backup.yaml"
+    ).read_text()
+    assert "at-pg-backup.service" in dag
+    code = [
+        line
+        for line in FOLLOW.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    assert not any("at-pg-backup.service" in line for line in code)
 
 
 def test_unit_file_at_new_path_runs_moved_script() -> None:
