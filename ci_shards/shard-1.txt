@@ -322,6 +322,8 @@ tests/services/research_candles/test_session_minutes_earlier_page.py
 tests/services/research_candles/test_session_minutes_targets.py
 tests/services/research_candles/test_session_minutes_tiers.py
 tests/services/research_candles/test_session_segment.py
+tests/services/research_candles/test_us_toss_day_market.py
+tests/services/research_candles/test_us_toss_day_market_db.py
 tests/services/screener_evidence/test_scoring.py
 tests/services/social_sentiment_probe/test_cli.py
 tests/services/spike_attribution/test_judgment_status.py
