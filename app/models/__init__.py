@@ -32,6 +32,7 @@ from .execution_mandates import (
 )
 from .fill_watch_context_outcome import FillWatchContextOutcome
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+from .fnguide import FnguideReport, FnguideSnapshot, FnguideValue
 from .funding_advisory import (
     ExternalCashDeclaration,
     FundingAdvisory,
@@ -312,6 +313,9 @@ __all__ = [
     "InvalidSampleCleanupLifecycleEvent",
     "SampleEligibilityDecision",
     "InvestCryptoScreenerSnapshot",
+    "FnguideReport",
+    "FnguideSnapshot",
+    "FnguideValue",
     "InvestKrFundamentalsSnapshot",
     "InvestScreenerSnapshot",
     "InvestMomentumEventRun",

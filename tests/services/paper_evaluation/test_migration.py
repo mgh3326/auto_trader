@@ -407,6 +407,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(text("DROP TABLE review.strategy_sleeves"))
             # hk 6154 momentum run-status table is later than the boundary too.
             await connection.execute(text("DROP TABLE invest_momentum_event_runs"))
+            # hk 6508 FnGuide tables are later too and already in Base.metadata
+            # (children first); the migration adds them back.
+            await connection.execute(text("DROP TABLE fnguide_reports"))
+            await connection.execute(text("DROP TABLE fnguide_values"))
+            await connection.execute(text("DROP TABLE fnguide_snapshots"))
             # hk 6503 KR trading flags table is later than the boundary too; it
             # is in Base.metadata, so create_all built it and the migration
             # would collide with "already exists" unless it is dropped here.
