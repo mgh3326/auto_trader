@@ -125,9 +125,7 @@ def test_poll_writes_append_only_jsonl(
     articles = [r for r in rows if r.get("record_type") == "article"]
     statuses = [r for r in rows if r.get("record_type") == "poll_status"]
     frames = [
-        r
-        for r in rows
-        if r.get("record_type") in ("poll_header", "poll_completion")
+        r for r in rows if r.get("record_type") in ("poll_header", "poll_completion")
     ]
     # Two runs x two request params per symbol.
     assert len(articles) == 4
@@ -518,7 +516,9 @@ def test_poll_queries_both_params_and_records_names(
     }
     rows = [
         json.loads(line)
-        for line in (tmp_path / "p-params.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (tmp_path / "p-params.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     articles = [r for r in rows if r.get("record_type") == "article"]
     statuses = [r for r in rows if r.get("record_type") == "poll_status"]

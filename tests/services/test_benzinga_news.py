@@ -130,6 +130,7 @@ async def test_fetch_tickers_param_is_evidence_query() -> None:
     assert records == []
     assert "tickers=NVDA" in seen["url"]
 
+
 @pytest.mark.asyncio
 async def test_fetch_http_error_never_carries_the_key() -> None:
     with pytest.raises(bz.BenzingaNewsHTTPError) as excinfo:
@@ -380,6 +381,7 @@ def test_normalize_url_ignores_scheme_query_and_case() -> None:
     assert bz.normalize_url(None) is None
     assert bz.normalize_url("") is None
 
+
 def test_normalize_record_missing_id_keeps_provider_id_none() -> None:
     item = dict(BENZINGA_ITEM)
     item.pop("id")
@@ -389,13 +391,19 @@ def test_normalize_record_missing_id_keeps_provider_id_none() -> None:
 
 def test_dedupe_keeps_empty_provider_id_rows() -> None:
     rows = [
-        _record("benzinga", "https://x.com/a", "First", "p1", "2025-11-25T14:00:00+00:00"),
-        _record("benzinga", "https://x.com/b", "Second", "p1", "2025-11-25T14:00:00+00:00"),
+        _record(
+            "benzinga", "https://x.com/a", "First", "p1", "2025-11-25T14:00:00+00:00"
+        ),
+        _record(
+            "benzinga", "https://x.com/b", "Second", "p1", "2025-11-25T14:00:00+00:00"
+        ),
     ]
     for row in rows:
         row["provider_id"] = None
     rows.append(
-        _record("benzinga", "https://x.com/c", "Third", "p1", "2025-11-25T14:00:00+00:00")
+        _record(
+            "benzinga", "https://x.com/c", "Third", "p1", "2025-11-25T14:00:00+00:00"
+        )
     )
     rows[-1]["provider_id"] = ""
     kept, removed = bz._dedupe_articles(rows)
