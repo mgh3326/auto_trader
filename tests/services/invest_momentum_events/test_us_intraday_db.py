@@ -106,9 +106,7 @@ async def test_closed_market_and_source_vocabularies_are_enforced(db_session) ->
     for source in ("alpaca_screener", "naver_stock"):
         assert (
             await repo.insert_momentum(
-                _us_row(f"X{source[:3].upper()}", extra=None).model_copy(
-                    update={"source": source}
-                )
+                _us_row(f"X{source[:3].upper()}").model_copy(update={"source": source})
             )
             is True
         )
