@@ -365,6 +365,20 @@ def observation_session():
             poolclass=NullPool,
             connect_args={"timeout": 5.0, "command_timeout": 5.0},
         )
+        # hk 6378: same per-transaction statement count as the shared app
+        # engine (fail-open; a registration failure only loses the count).
+        try:
+            from sqlalchemy import event as sqlalchemy_event
+
+            from app.monitoring.db_call_count import before_cursor_execute
+
+            sqlalchemy_event.listen(
+                engine.sync_engine, "before_cursor_execute", before_cursor_execute
+            )
+        except Exception:  # noqa: BLE001 - engine must survive telemetry failure
+            logging.getLogger(__name__).exception(
+                "Failed to attach Sentry db.call_count listener"
+            )
         _observation_sessions = async_sessionmaker(engine, expire_on_commit=False)
     return _observation_sessions()
 

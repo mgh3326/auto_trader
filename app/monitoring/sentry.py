@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - dependent on MCP SDK availability
     _mcp_request_ctx = None
 
 from app.core.config import settings
+from app.monitoring.db_call_count import attach_db_call_count_measurement
 
 logger = logging.getLogger(__name__)
 
@@ -660,6 +661,10 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     # through unchanged; span descriptions/data for spans of every op (not
     # just mcp.server) are covered by the same pass.
     event = _sanitize_in_place(event)
+
+    # hk 6378: per-request statement count as a transaction measurement,
+    # independent of the span cap. Fail-open: never affects the transaction.
+    attach_db_call_count_measurement(event)
 
     # A middleware may return before FastAPI resolves a route (for example,
     # auth returns 401 and CSRF returns 403). Sentry consequently names the
