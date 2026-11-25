@@ -921,3 +921,43 @@ class TestUsMomentumCandidates:
         assert {entry["status"] for entry in active_statuses["alpaca_screener"]} == {
             "not_collected"
         }
+
+    @pytest.mark.asyncio
+    async def test_active_status_is_unsupported_for_non_alpaca_sources(
+        self, monkeypatch
+    ):
+        from app.mcp_server.tooling import momentum_candidates as mod
+
+        class _FakeRepo:
+            def __init__(self, session):
+                pass
+
+            async def list_us_momentum_events(self, *, trading_date):
+                return []
+
+            async def list_us_momentum_run_statuses(self, *, trading_date):
+                return []
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(mod, "InvestMomentumEventSnapshotsRepository", _FakeRepo)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(
+            market="us", date="2026-11-25", side="active"
+        )
+
+        statuses = {
+            entry["source"]: {surface["status"] for surface in entry["surfaces"]}
+            for entry in result["source_statuses"]
+        }
+        assert statuses == {
+            "kis_overseas_ranking": {"unsupported"},
+            "alpaca_screener": {"not_collected"},
+            "benzinga_pro": {"unsupported"},
+        }
