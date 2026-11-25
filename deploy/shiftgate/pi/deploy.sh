@@ -11,6 +11,8 @@
 #      at-worker 는 hk 5753 에 TaskIQ worker 은퇴로 이 배포 경로에서 빠졌다. 컨테이너 정지는 설계 세션이 한다.
 #   4. 세 컴포넌트(at-api, at-mcp, at-upbit-ws)가 모두 그 digest 인지 다시 확인한 뒤에만
 #      /root/at-run/deployed-digest 를 갱신한다.
+#   5. (hk 6437) 마커를 쓴 성공 뒤에만 오래된 auto_trader 이미지를 정리한다: 현재·이전 digest 와 컨테이너가 쓰는 이미지는 남긴다.
+#      AT_IMAGE_PRUNE_ENABLED=0 이면 끈다. 복구·롤백·실패 경로는 정리하지 않는다.
 #   중간에 실패하면 거기서 멈추고 상태를 출력한다. 같은 명령을 다시 실행하면 이미 끝난 컴포넌트는 건너뛰고
 #   나머지만 이어서 한다(보관된 이전 컨테이너와 deployed-digest.previous 는 그대로 보존된다).
 # 복구: deploy.sh --rollback
@@ -35,6 +37,8 @@ DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 DEPLOYED_DIGEST_PREVIOUS_FILE="${DEPLOYED_DIGEST_FILE}.previous"
 readonly SHIFTGATE_SERVICES=(at-api at-mcp)
 readonly SINGLETONS=(at-upbit-ws)
+# 성공한 전진 배포 뒤의 오래된 이미지 정리 스위치(hk 6437, task 934 규칙). 1 기본, 0 끔, 그 밖의 값은 경고 후 건너뜀.
+readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED-1}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -44,7 +48,7 @@ usage: deploy.sh [--allow-unverified REASON] <tag>
          digest 를 직접 받지 않는다: 게이트는 태그만 받아 이미지의 SHA 를 확인한다.
   --allow-unverified REASON  CI 증거만 면제하는 기록되는 우회(이미지 고정은 그대로).
   --rollback  세 컴포넌트(at-api, at-mcp, at-upbit-ws)를 deployed-digest 로 수렴시키고, 이미 같으면 deployed-digest.previous 로 되돌린다.
-  환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_FOLLOW_VERIFIED_DIGEST(follow.sh 전용) AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR
+  환경 변수: AT_DEPLOY_GATE_PYTHON AT_DEPLOY_GATE_SCRIPT AT_FOLLOW_VERIFIED_DIGEST(follow.sh 전용) AT_SHIFTGATE_BIN AT_SHIFTGATE_CONFIG AT_SWAP_SINGLETONS AT_RUN_DIR AT_IMAGE_PRUNE_ENABLED(0 이면 오래된 이미지 정리를 끈다)
   종료 코드: 2 사용법 · 75 다른 배포가 잠금을 잡음 · 78 게이트/설정 거부 · 그 밖은 실패한 단계의 코드(3 = shiftgate recover 필요)
 USAGE
 }
@@ -190,6 +194,118 @@ write_marker() {
   if ! mv -f "$tmp" "$DEPLOYED_DIGEST_FILE"; then rm -f "$tmp"; return 1; fi
 }
 
+# --- 오래된 이미지 정리 (hk 6437: task 934 규칙을 pi 로 이식; 정본 scripts/deploy-ncp-pull.sh 와 docs/contracts/task-934-image-prune.md)
+# 성공한 전진 배포가 deployed-digest 를 쓴 뒤에만 돈다(롤백·실패·이미 배포됨 경로는 아무것도 지우지 않는다).
+# 보존: 현재 digest, deployed-digest.previous(롤백 대상), 상태와 무관하게 컨테이너가 쓰는 모든 이미지.
+# 입력을 하나라도 읽지 못하면 아무것도 지우지 않는다. 지우는 것은 docker image rm(-f 없음)뿐이다.
+# 이 블록은 scripts/deploy-ncp-pull.sh 의 같은 함수들을 복사한 것이다(NCP 스크립트 동작은 바꾸지 않는다).
+is_image_id() { [[ "$1" =~ ^sha256:[[:xdigit:]]{64}$ ]]; }
+# 이미지 참조의 저장소 부분: '@' 뒤(digest)를 버리고, '/' 를 포함하지 않는 마지막 ':' 뒤(태그)만 버린다(레지스트리 포트 보존).
+ref_repository() {
+  local ref="${1%%@*}"
+  if [[ "$ref" == *:* && "${ref##*:}" != */* ]]; then ref="${ref%:*}"; fi
+  printf '%s\n' "$ref"
+}
+# 엄격한 digest 기록 판독: 파일은 정확히 digest 한 줄 + 개행 하나여야 한다(write_marker 가 쓰는 형식).
+# 바이트 수를 세는 이유는 read 가 NUL 바이트를 버리기 때문이다(숨은 내용을 거른다).
+read_digest_record() {
+  local file="$1" line size
+  [[ -f "$file" ]] || return 1
+  IFS= read -r line <"$file" || return 1
+  is_ref "$line" || return 1
+  size="$(wc -c <"$file")" || return 1
+  size="${size//[[:space:]]/}"
+  [[ "$size" == "$((${#line} + 1))" ]] || return 1
+  printf '%s\n' "$line"
+}
+image_refs() { docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}' "$1"; }
+
+# PRUNE_IDS(제거 후보, 목록 순서), PRUNE_REFS(id -> 공백으로 구분한 참조), PRUNE_KEPT(id -> 보존 사유)를 채운다.
+# docker 조회가 실패하거나 예상 밖의 모양을 내면 아무것도 결정하지 않은 채 0 이 아닌 값으로 돌아온다.
+declare -a PRUNE_IDS=()
+declare -A PRUNE_REFS=() PRUNE_KEPT=()
+plan_image_prune() {
+  local current="$1" previous="$2" ref id cid image_id listed refs owned foreign keep
+  local -A keep_ids=() seen=()
+  PRUNE_IDS=() PRUNE_REFS=() PRUNE_KEPT=()
+  for ref in "$current" "$previous"; do
+    is_ref "$ref" || return 1
+    # 기록된 digest 가 로컬에 없으면 지킬 것이 없다. 후보는 아래 RepoDigests 비교로도 걸러진다.
+    if id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)"; then
+      is_image_id "$id" || return 1
+      keep_ids["$id"]="recorded digest"
+    fi
+  done
+  listed="$(docker ps -a --no-trunc --format '{{.ID}}')" || return 1
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    image_id="$(docker inspect --format '{{.Image}}' "$cid")" || return 1
+    is_image_id "$image_id" || return 1
+    keep_ids["$image_id"]="used by a container"
+  done <<<"$listed"
+  listed="$(docker image ls --no-trunc --format '{{.ID}}')" || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    is_image_id "$id" || return 1
+    [[ -z "${seen[$id]:-}" ]] || continue
+    seen["$id"]=1
+    refs="$(image_refs "$id")" || return 1
+    owned=false foreign=false keep=false
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      if [[ "$(ref_repository "$ref")" == "$IMAGE_REPOSITORY" ]]; then owned=true; else foreign=true; fi
+      if [[ "$ref" == "$current" || "$ref" == "$previous" ]]; then keep=true; fi
+    done <<<"$refs"
+    [[ "$owned" == true && "$foreign" == false ]] || continue # 저장소: 이 저장소의 참조만 가진 이미지만 후보다
+    if [[ -n "${keep_ids[$id]:-}" ]]; then PRUNE_KEPT["$id"]="${keep_ids[$id]}"; continue; fi
+    if [[ "$keep" == true ]]; then PRUNE_KEPT["$id"]="recorded digest"; continue; fi
+    PRUNE_IDS+=("$id")
+    PRUNE_REFS["$id"]="${refs//$'\n'/ }"
+  done <<<"$listed"
+}
+
+prune_enabled() {
+  case "$IMAGE_PRUNE_ENABLED" in
+    1) return 0 ;;
+    0) return 1 ;;
+    *) printf 'WARNING: image prune skipped: AT_IMAGE_PRUNE_ENABLED must be 0 or 1\n' >&2; return 1 ;;
+  esac
+}
+
+prune_old_images() {
+  local deployed="$1" current previous id out listed
+  local -a refs=() failed=()
+  local -A errors=() remaining=()
+  prune_enabled || return 0
+  previous="$(read_digest_record "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'WARNING: image prune skipped: %s is absent or invalid; every image kept\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
+  current="$(read_digest_record "$DEPLOYED_DIGEST_FILE")" && [[ "$current" == "$deployed" ]] || { printf 'WARNING: image prune skipped: %s does not record %s; every image kept\n' "$DEPLOYED_DIGEST_FILE" "$deployed" >&2; return 1; }
+  plan_image_prune "$deployed" "$previous" || { printf 'WARNING: image prune skipped: docker image or container state is unreadable; every image kept\n' >&2; return 1; }
+  for id in "${!PRUNE_KEPT[@]}"; do printf 'image prune: kept %s (%s)\n' "$id" "${PRUNE_KEPT[$id]}"; done
+  for id in "${PRUNE_IDS[@]}"; do
+    read -r -a refs <<<"${PRUNE_REFS[$id]}"
+    # 마지막 태그를 지우면 같은 호출의 나중 digest 참조가 실패할 수 있다. 결과는 아래 목록 재조회로 판정한다.
+    out="$(docker image rm "${refs[@]}" 2>&1)" || errors["$id"]="${out//$'\n'/ }"
+  done
+  if ((${#PRUNE_IDS[@]})); then
+    listed="$(docker image ls --no-trunc --format '{{.ID}}')" || { printf 'WARNING: image prune could not confirm removals; attempted: %s\n' "${PRUNE_IDS[*]}" >&2; return 1; }
+    while IFS= read -r id; do [[ -n "$id" ]] && remaining["$id"]=1; done <<<"$listed"
+  fi
+  for id in "${PRUNE_IDS[@]}"; do
+    if [[ -n "${remaining[$id]:-}" ]]; then
+      failed+=("$id (${PRUNE_REFS[$id]% })")
+      printf 'WARNING: image prune could not remove %s (%s): %s\n' "$id" "${PRUNE_REFS[$id]% }" "${errors[$id]:-still present}" >&2
+      continue
+    fi
+    printf 'image prune: removed %s (%s)\n' "$id" "${PRUNE_REFS[$id]% }"
+  done
+  if ((${#failed[@]})); then
+    printf 'WARNING: image prune incomplete; not removed: %s\n' "${failed[*]}" >&2
+    return 1
+  fi
+}
+# 서브셸이 정리의 모든 실패(errexit·nounset·exit 포함)를 가둔다. 경고만 더할 뿐 배포 결과는 바꾸지 않는다.
+run_image_prune() { (prune_old_images "$1") || printf 'WARNING: image prune did not complete; the deployment result is unchanged\n' >&2; }
+
 # --- 컴포넌트를 target 으로 이동 ----------------------------------------------------------------
 
 # forward: 그 digest 가 이미 활성이면 건너뛴다. rollback: 보관된 이전 색이 그 digest 면 pull 없이 shiftgate rollback.
@@ -252,3 +368,5 @@ fi
 converge "$PINNED" forward
 write_marker "$PINNED" || fail_stage "write deployed-digest" "$?"
 printf 'deploy OK: %s\n' "$PINNED"
+# 5. 성공한 전진 배포가 마커를 쓴 뒤에만 오래된 이미지를 정리한다(hk 6437). 정리 실패는 배포 결과를 바꾸지 않는다.
+run_image_prune "$PINNED"

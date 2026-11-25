@@ -526,6 +526,9 @@ printf 'swap %s\\n' "$*" >> "$FAKE_CALLS"
 for name in at-upbit-ws; do printf '%s\\n' "$1" > "$FAKE_SG/single.$name"; done
 """
 FAKE_DOCKER_DEPLOY = """#!/usr/bin/env bash
+# hk 6437: 이미지 정리의 읽기 전용 조회(image ls/inspect)는 배포 동작이 아니므로 호출 기록에 넣지 않는다.
+# docker ps 와 image rm 은 그대로 기록한다(실패 시 상태 출력 검사가 ps 를 본다).
+if [[ "$1" == image && ( "$2" == ls || "$2" == inspect ) ]]; then exit 0; fi
 if [[ "$1" == inspect ]]; then
   name="${@: -1}"
   [[ -f "$FAKE_SG/single.$name" ]] || exit 1

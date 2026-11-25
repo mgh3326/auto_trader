@@ -269,6 +269,18 @@ GitHub 인증 없는 읽기는 시간당 60회 한도다. follow.sh 는 digest �
 
 **한계(알고 쓴다)**: `deploy` 태그를 쓸 수 있는 쪽(Actions 의 `GITHUB_TOKEN`, GHCR 패키지 쓰기 권한자)은 신뢰 경계다. follow.sh 의 재확인은 "main 의 조상 + 전체 스위트 초록"까지만 막는다 — 승인 보류가 걸렸어야 할 범위의 이미지를 손으로 태그에 올리면 설치된다. 그래서 패키지 쓰기 권한을 제한하고 태그를 손으로 옮기지 않는다. 마이그레이션이 든 릴리스를 승인 없이 태그에 올리지 않는다.
 
+### 4.2 성공 뒤 오래된 이미지 정리 (hk 6437)
+
+전진 배포가 `deployed-digest` 를 쓴 **뒤에만** `deploy.sh` 가 오래된 `ghcr.io/mgh3326/auto_trader` 이미지를 지운다. 수동 실행과 `follow.sh` 가 부르는 배포가 같다. 롤백, 실패한 배포, 이미 배포된 상태의 재실행은 아무것도 지우지 않는다.
+
+- 보존: 현재 digest, `deployed-digest.previous`(롤백 대상), 실행 중·정지·생성만 된 컨테이너가 쓰는 모든 이미지.
+- 지우지 않는 것: 다른 저장소의 참조가 섞인 이미지, 접두만 같은 다른 저장소, 참조 없는 이미지. 볼륨·컨테이너·네트워크 정리와 `docker system prune` 은 하지 않는다.
+- 지우는 방법은 `docker image rm` 뿐이며 강제 옵션을 쓰지 않는다. 컨테이너가 쓰는 이미지는 docker 가 거부한다.
+- 기록을 하나라도 읽지 못하거나 docker 조회가 실패하면 아무것도 지우지 않고 stderr 에 `WARNING` 을 남긴다. 정리가 실패해도 배포 결과(종료 코드 0)는 바뀌지 않는다.
+- 출력: 이미지마다 한 줄, `image prune: removed <id> (<참조>)` 또는 `image prune: kept <id> (<사유>)`. 다른 줄은 내지 않는다. 그래서 NCP 스크립트와 달리 확보한 크기 합계는 출력하지 않는다.
+- 끄기: `AT_IMAGE_PRUNE_ENABLED=0`(기본 `1`). `0` 과 `1` 이 아닌 값은 경고 후 건너뛴다.
+- 규칙의 정본은 `docs/contracts/task-934-image-prune.md`(NCP 쪽)이고, pi 쪽은 같은 함수를 `deploy/shiftgate/pi/deploy.sh` 에 복사했다. 설치는 머지 뒤 설계 세션이 `deploy.sh` 와 함께 한다.
+
 ## 5. 롤백과 복구
 
 모든 롤백은 `deploy.sh --rollback` 하나로 한다(호스트 잠금을 잡고, 게이트는 보지 않는 긴급 경로). 기준은 `deployed-digest` — **마지막으로 세 컴포넌트(`at-api`, `at-mcp`, `at-upbit-ws`)가 모두 끝난 릴리스**다:
