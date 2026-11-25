@@ -355,18 +355,152 @@ def parse_symbol_list(market: Market, raw: str | None) -> list[str]:
     return sorted({s for s in symbols if s})
 
 
-#: Highest priority first. holdings > fixed list > snapshot rank > pick log >
-#: intraday movers (hk 6145, hk 6154).
+#: Origin order of the holdings / fixed / movers / screener / pick-log candidates
+#: (report key order only; selection is by tier, see ``TIER_ORDER``).
 TARGET_ORIGIN_ORDER = (
     "kis_holdings",
     "manual_holdings",
     "fixed_list",
+    "intraday_movers",
     "screener_snapshot",
     "screener_pick_log",
-    "intraday_movers",
 )
+#: Selection tiers, highest priority first (hk 6299). ``fixed`` = holdings (KIS and
+#: manual) + the fixed list: never cut. ``intraday_movers`` = KR intraday promotion
+#: (today's 6154 first captures). ``screener_snapshot`` = pre-open screen top N.
+#: ``screener_pick_log`` = the remainder.
+TIER_FIXED = "fixed"
+TIER_ORDER = (TIER_FIXED, "intraday_movers", "screener_snapshot", "screener_pick_log")
+CUT_REASON_BUDGET = "budget_cut"
 DEFAULT_SCREENER_TOP_N = 20
 DEFAULT_MAX_SYMBOLS = 150
+DEFAULT_FIXED_BUDGET = 50
+DEFAULT_INTRADAY_BUDGET = 40
+DEFAULT_SCREENER_BUDGET = 60
+
+
+@dataclass(frozen=True, slots=True)
+class TierSpec:
+    """One selection tier. ``symbols`` are in priority order (may repeat).
+
+    ``budget`` None = no per-tier budget (the run cap still applies). ``exempt``
+    tiers are never cut; their unused budget still spills to the next tier.
+    ``protected`` symbols are kept ahead of the tier budget (not ahead of the run
+    cap). Only protected symbols that are still candidates of this tier count, so a
+    symbol a higher tier already took cannot raise this tier's allowance.
+    """
+
+    tier: str
+    symbols: Sequence[str]
+    budget: int | None
+    exempt: bool = False
+    protected: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class TierReport:
+    tier: str
+    budget: int | None  # base budget
+    allowance: (
+        int | None
+    )  # base + spill-over, before the run cap; None = unbudgeted/exempt
+    candidates: int  # not already taken by a higher tier
+    selected: int
+    cut: int
+
+
+@dataclass(frozen=True, slots=True)
+class TieredSelection:
+    selected: list[str]  # in priority order
+    tiers: list[TierReport]
+    cuts: list[dict[str, str]]  # {"symbol", "tier", "reason"} for symbols left out
+    truncated: dict[str, int]  # cut count per tier
+
+
+def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelection:
+    """Pick symbols tier by tier under a per-tier budget and one run cap.
+
+    Unused budget of a tier (``budget + carry - taken``) carries to the next tier.
+    A symbol that a tier does not take stays eligible for the lower tiers and is
+    reported as cut only when no tier takes it; the cut reason is the first tier
+    that left it out. Exempt tiers consume the run cap but are never trimmed by it.
+    """
+    remaining = max(int(max_symbols), 0)
+    carry = 0
+    chosen: list[str] = []
+    chosen_set: set[str] = set()
+    cut_by: dict[str, str] = {}
+    cut_order: list[str] = []
+    reports: list[tuple[TierSpec, list[str], list[str], int | None]] = []
+    for spec in tiers:
+        listed: set[str] = set()
+        open_symbols: list[str] = []
+        for symbol in spec.symbols:
+            if symbol not in chosen_set and symbol not in listed:
+                listed.add(symbol)
+                open_symbols.append(symbol)
+        # protected candidates first (stable), so the prefix slice keeps them
+        candidates = [s for s in open_symbols if s in spec.protected] + [
+            s for s in open_symbols if s not in spec.protected
+        ]
+        kept_count = sum(1 for s in candidates if s in spec.protected)
+        pool = None if spec.budget is None else spec.budget + carry
+        if spec.exempt:
+            take = candidates
+        else:
+            limit = remaining if pool is None else min(max(pool, kept_count), remaining)
+            take = candidates[:limit]
+        taken = set(take)
+        cut = [symbol for symbol in candidates if symbol not in taken]
+        for symbol in cut:
+            if symbol not in cut_by:
+                cut_by[symbol] = spec.tier
+                cut_order.append(symbol)
+        chosen.extend(take)
+        chosen_set.update(take)
+        remaining = max(remaining - len(take), 0)
+        carry = 0 if pool is None else max(pool - len(take), 0)
+        reports.append((spec, candidates, take, pool))
+
+    cuts = [
+        {"symbol": symbol, "tier": cut_by[symbol], "reason": CUT_REASON_BUDGET}
+        for symbol in cut_order
+        if symbol not in chosen_set
+    ]
+    cut_counts: dict[str, int] = {}
+    for item in cuts:
+        cut_counts[item["tier"]] = cut_counts.get(item["tier"], 0) + 1
+    tier_reports = [
+        TierReport(
+            tier=spec.tier,
+            budget=spec.budget,
+            allowance=None if (spec.exempt or pool is None) else pool,
+            candidates=len(candidates),
+            selected=len(take),
+            cut=cut_counts.get(spec.tier, 0),
+        )
+        for spec, candidates, take, pool in reports
+    ]
+    return TieredSelection(
+        selected=chosen,
+        tiers=tier_reports,
+        cuts=cuts,
+        truncated={k: v for k, v in cut_counts.items() if v},
+    )
+
+
+def select_with_cap(
+    tiers: Sequence[tuple[str, Sequence[str]]], max_symbols: int
+) -> tuple[list[str], dict[str, int]]:
+    """Cap-only selection in the given order (no per-tier budgets).
+
+    Returns ``(kept_in_priority_order, truncated_count_by_origin)``.
+    """
+    selection = select_tiered(
+        [TierSpec(origin, symbols, budget=None) for origin, symbols in tiers],
+        max_symbols,
+    )
+    return selection.selected, selection.truncated
 
 
 @dataclass(slots=True)
@@ -378,29 +512,30 @@ class TargetSet:
     #: KR symbols first seen as intraday movers that have no minute row yet today:
     #: they get one extra, earlier KIS page (hk 6154). Subset of ``symbols``.
     backfill: list[str] = field(default_factory=list)
+    tiers: list[TierReport] = field(default_factory=list)
+    cuts: list[dict[str, str]] = field(default_factory=list)
 
 
-def select_with_cap(
-    tiers: Sequence[tuple[str, Sequence[str]]], max_symbols: int
-) -> tuple[list[str], dict[str, int]]:
-    """Keep symbols in tier order up to ``max_symbols``; report what was cut.
-
-    A symbol found in several tiers belongs to the first (highest priority) one.
-    Returns ``(kept_in_priority_order, truncated_count_by_origin)``.
-    """
-    ordered: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for origin, symbols in tiers:
-        for symbol in symbols:
-            if symbol not in seen:
-                seen.add(symbol)
-                ordered.append((origin, symbol))
-    cap = max(int(max_symbols), 0)
-    kept = [symbol for _, symbol in ordered[:cap]]
-    truncated: dict[str, int] = {}
-    for origin, _ in ordered[cap:]:
-        truncated[origin] = truncated.get(origin, 0) + 1
-    return kept, truncated
+def targets_report(targets: TargetSet) -> dict[str, Any]:
+    """The per-run target fields of the collector JSON (hk 6299)."""
+    return {
+        "targeted_symbols": list(targets.symbols),
+        "targets_by_origin": dict(targets.by_origin),
+        "targets_truncated": dict(targets.truncated),
+        "targets_truncated_total": sum(targets.truncated.values()),
+        "targets_tiers": [
+            {
+                "tier": t.tier,
+                "budget": t.budget,
+                "allowance": t.allowance,
+                "candidates": t.candidates,
+                "selected": t.selected,
+                "cut": t.cut,
+            }
+            for t in targets.tiers
+        ],
+        "targets_cuts": [dict(c) for c in targets.cuts],
+    }
 
 
 def _row_rank(row: Mapping[str, Any], position: int) -> int:
@@ -490,12 +625,25 @@ async def build_targets(
     max_symbols: int = DEFAULT_MAX_SYMBOLS,
     snapshot_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     presets_fn: Callable[[str], Sequence[Any]] | None = None,
+    fixed_budget: int = DEFAULT_FIXED_BUDGET,
+    intraday_budget: int = DEFAULT_INTRADAY_BUDGET,
+    screener_budget: int = DEFAULT_SCREENER_BUDGET,
 ) -> TargetSet:
-    """Holdings (KIS + manual) > fixed list > screener snapshot top N > pick log
-    > today's first-capture intraday movers (KR only, hk 6154).
+    """Tiered selection under ``max_symbols`` (hk 6299).
 
-    Over ``max_symbols`` the lower tiers are cut first and the number cut per
-    origin is reported in ``truncated``.
+    1. ``fixed``: KIS + manual holdings and the fixed list. Never cut; its unused
+       part of ``fixed_budget`` spills to the next tier.
+    2. ``intraday_movers`` (KR only): today's first captures (hk 6154), ordered by
+       earliest capture then best rank; ``intraday_budget``. A symbol that already
+       has minute rows today is protected from the budget (never demoted the same
+       day).
+    3. ``screener_snapshot``: top ``screener_top_n`` of every active preset, by best
+       rank; ``screener_budget``.
+    4. ``screener_pick_log``: today's admitted symbols, the remainder of the cap.
+
+    Symbols a tier does not take remain eligible for the lower tiers; the ones
+    nobody takes are reported in ``cuts`` with their tier and reason. ``truncated``
+    keeps the cut count per tier.
     """
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
@@ -562,6 +710,8 @@ async def build_targets(
             {"origin": "screener_pick_log", "error_class": type(exc).__name__}
         )
 
+    mover_order: list[str] = []
+    protected: set[str] = set()
     if market == "kr":
         try:
             from app.services.invest_momentum_events.intraday import first_captures
@@ -569,33 +719,79 @@ async def build_targets(
             captures = await first_captures(
                 session, now.astimezone(_KST).date(), market="kr"
             )
-            add("intraday_movers", (c.symbol for c in captures))
+            # Promotion order: earliest capture first, then best rank, then symbol.
+            ranked = sorted(
+                {c.symbol: c for c in captures}.values(),
+                key=lambda c: (c.snapshot_at, c.rank, c.symbol),
+            )
+            for capture in ranked:
+                symbol = normalize_symbol("kr", capture.symbol)
+                if symbol and symbol not in mover_order:
+                    mover_order.append(symbol)
+            found["intraday_movers"] = list(mover_order)
         except Exception as exc:  # noqa: BLE001 - other origins still count
             await session.rollback()
             errors.append(
                 {"origin": "intraday_movers", "error_class": type(exc).__name__}
             )
-
-    tiers = [(origin, found.get(origin, [])) for origin in TARGET_ORIGIN_ORDER]
-    symbols, truncated = select_with_cap(tiers, max_symbols)
-    backfill: list[str] = []
-    kept = set(symbols)
-    mover_symbols = [s for s in found.get("intraday_movers", []) if s in kept]
-    if mover_symbols:
+    have_today: set[str] = set()
+    have_known = False
+    if mover_order:
         try:
-            have = await load_symbols_with_rows_today(session, mover_symbols, now)
-            backfill = sorted(set(mover_symbols) - have)
-        except Exception as exc:  # noqa: BLE001 - no backfill, the run continues
+            have_today = await load_symbols_with_rows_today(session, mover_order, now)
+            have_known = True
+        except Exception as exc:  # noqa: BLE001 - no protection, the run continues
             await session.rollback()
             errors.append(
                 {"origin": "intraday_movers", "error_class": type(exc).__name__}
             )
+        protected = {s for s in mover_order if s in have_today}
+    mover_candidates = [s for s in mover_order if s in protected] + [
+        s for s in mover_order if s not in protected
+    ]
+
+    fixed_tier = [
+        *found.get("kis_holdings", []),
+        *found.get("manual_holdings", []),
+        *found.get("fixed_list", []),
+    ]
+    specs = [
+        TierSpec(TIER_FIXED, fixed_tier, budget=fixed_budget, exempt=True),
+    ]
+    if market == "kr":
+        specs.append(
+            TierSpec(
+                "intraday_movers",
+                mover_candidates,
+                budget=intraday_budget,
+                protected=frozenset(protected),
+            )
+        )
+    specs.append(
+        TierSpec(
+            "screener_snapshot",
+            found.get("screener_snapshot", []),
+            budget=screener_budget,
+        )
+    )
+    specs.append(
+        TierSpec("screener_pick_log", found.get("screener_pick_log", []), budget=None)
+    )
+    selection = select_tiered(specs, max_symbols)
+
+    kept = set(selection.selected)
+    backfill: list[str] = []
+    if have_known:
+        # Kept movers with no minute row yet today get the earlier KIS page (hk 6154).
+        backfill = sorted(s for s in mover_order if s in kept and s not in have_today)
     return TargetSet(
-        symbols=sorted(symbols),
+        symbols=sorted(selection.selected),
         by_origin={origin: len(values) for origin, values in found.items() if values},
         errors=errors,
-        truncated=truncated,
+        truncated=selection.truncated,
         backfill=backfill,
+        tiers=selection.tiers,
+        cuts=selection.cuts,
     )
 
 
@@ -810,12 +1006,19 @@ async def collect(
 
 
 __all__ = [
+    "CUT_REASON_BUDGET",
     "KisMinuteReader",
     "MinuteBar",
     "MinuteWriter",
     "SqlMinuteWriter",
+    "TIER_ORDER",
     "TargetSet",
+    "TierReport",
+    "TierSpec",
+    "TieredSelection",
+    "select_tiered",
     "select_with_cap",
+    "targets_report",
     "snapshot_top_symbols",
     "bars_from_frame",
     "build_targets",

@@ -10,17 +10,22 @@ into ``research.kr_candles_1m``; US reads the overseas minute chart into
 (``ON CONFLICT DO NOTHING``), so ``retrieved_at`` is the first receipt. Nothing
 is written to ``public.*_candles_1m``. Not scheduled by this repository.
 
-Targets (default), in priority order: KIS + manual holdings > fixed list
-(``SESSION_MINUTES_FIXED_SYMBOLS_{KR,US}``) > top ``SESSION_MINUTES_SCREENER_TOP_N``
-(default 20) of every available screener-snapshot preset (DB-only, no pick log
-write) > today's admitted ``review.screener_pick_log`` symbols > (KR) today's first-capture
-intraday movers (hk 6154). The union is
-capped at ``SESSION_MINUTES_MAX_SYMBOLS_{KR,US}`` (default 150); lower tiers are
-cut first and the cut counts are in ``targets_truncated``.
-``--symbols`` replaces that union for a targeted run. KR movers with no minute row yet
-today get one extra, earlier KIS page (hour cursor; KIS returns ~30 bars per call).
+Targets (default), in tier order (hk 6299): (1) fixed — KIS + manual holdings and
+the fixed list (``SESSION_MINUTES_FIXED_SYMBOLS_{KR,US}``, default benchmarks 069500,
+229200 / SPY,QQQ,SMH), never cut, budget ``SESSION_MINUTES_BUDGET_FIXED`` (50);
+(2) KR only — today's first-capture intraday movers (hk 6154), ordered by earliest
+capture then best rank, budget ``SESSION_MINUTES_BUDGET_INTRADAY`` (40); (3) the
+top ``SESSION_MINUTES_SCREENER_TOP_N`` (default 20) of every available screener
+preset (DB-only, no pick-log write), budget ``SESSION_MINUTES_BUDGET_SCREENER`` (60);
+(4) today's admitted ``review.screener_pick_log`` symbols, the remainder. Unused budget
+spills to the next tier. The union is capped at ``SESSION_MINUTES_MAX_SYMBOLS_{KR,US}``
+(default 150). ``--symbols`` replaces the union for a targeted run. KR movers with no
+minute row yet today get one extra, earlier KIS page (hour cursor).
 
-Output: one JSON object (inserted / already_present / skipped_forming / errors).
+Output: one JSON object (inserted / already_present / skipped_forming / errors) plus
+``targeted_symbols``, ``targets_tiers`` (per-tier budget, allowance, candidates,
+selected, cut) and ``targets_cuts`` (symbol, tier, reason ``budget_cut``). Feed this
+line to ``scripts/diagnose_session_coverage.py --collect-report``.
 Exit 0 = clean, 1 = at least one error, 2 = usage.
 """
 
@@ -68,6 +73,11 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         if market == "kr"
         else settings.SESSION_MINUTES_MAX_SYMBOLS_US
     )
+    budgets = {
+        "fixed_budget": settings.SESSION_MINUTES_BUDGET_FIXED,
+        "intraday_budget": settings.SESSION_MINUTES_BUDGET_INTRADAY,
+        "screener_budget": settings.SESSION_MINUTES_BUDGET_SCREENER,
+    }
     async with AsyncSessionLocal() as session:
         if args.symbols:
             symbols = collector.parse_symbol_list(market, ",".join(args.symbols))
@@ -84,6 +94,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 now=now,
                 screener_top_n=settings.SESSION_MINUTES_SCREENER_TOP_N,
                 max_symbols=max_symbols,
+                **budgets,
             )
         nxt: set[str] = set()
         exchanges: dict[str, str] = {}
@@ -106,9 +117,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             prior_errors=targets.errors,
             backfill_symbols=targets.backfill,
         )
-    report["targets_by_origin"] = targets.by_origin
-    report["targets_truncated"] = targets.truncated
-    report["targets_truncated_total"] = sum(targets.truncated.values())
+    report.update(collector.targets_report(targets))
     return report
 
 

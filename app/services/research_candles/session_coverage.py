@@ -18,7 +18,7 @@ Backfilled rows are excluded by the caller's SQL (``is_backfill_batch``): their
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
@@ -107,6 +107,73 @@ def _round(value: float | None) -> float | None:
     return None if value is None else round(value, 3)
 
 
+#: Closed reasons for a requested symbol that has no stored minute (hk 6299).
+ZERO_ROW_REASONS = (
+    "not_selected",
+    "cut_by_budget",
+    "fetch_error",
+    "no_trades_reported",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RunEvidence:
+    """What one collector run (``collect_session_minutes`` JSON) says about symbols."""
+
+    targeted: frozenset[str]
+    cut: frozenset[str]
+    error_symbols: frozenset[str]
+
+
+def run_evidence_from_report(report: Mapping[str, object]) -> RunEvidence:
+    """Read a collector run report; fails when the run did not list its targets.
+
+    A ``dry_run`` report writes nothing and proves no read of the day: it gives no
+    evidence at all (its target list is still validated).
+    """
+    targeted = report.get("targeted_symbols")
+    cuts = report.get("targets_cuts") or []
+    errors = report.get("error_details") or []
+    if not isinstance(targeted, list):
+        raise ValueError("run report has no targeted_symbols list")
+    if not isinstance(cuts, list) or not isinstance(errors, list):
+        raise ValueError("run report has malformed targets_cuts or error_details")
+    if report.get("dry_run") is True:
+        return RunEvidence(frozenset(), frozenset(), frozenset())
+    return RunEvidence(
+        targeted=frozenset(str(s) for s in targeted),
+        cut=frozenset(
+            str(item["symbol"])
+            for item in cuts
+            if isinstance(item, Mapping) and item.get("reason") == "budget_cut"
+        ),
+        error_symbols=frozenset(
+            str(item["symbol"])
+            for item in errors
+            if isinstance(item, Mapping) and item.get("symbol")
+        ),
+    )
+
+
+def classify_zero_row(symbol: str, runs: Sequence[RunEvidence]) -> str:
+    """One of ``ZERO_ROW_REASONS``, by precedence:
+
+    * an error on any run: a failed read is not proof of "no trades";
+    * a budget cut on any run: the symbol was left out during the session, even if
+      an earlier (e.g. pre-open) run targeted it and could not have stored rows for
+      the date;
+    * targeted on some run, never cut: it was requested and read, no minute stored;
+    * otherwise it was never in a run's targets.
+    """
+    if any(symbol in run.error_symbols for run in runs):
+        return "fetch_error"
+    if any(symbol in run.cut for run in runs):
+        return "cut_by_budget"
+    if any(symbol in run.targeted for run in runs):
+        return "no_trades_reported"
+    return "not_selected"
+
+
 def coverage_report(
     rows: Iterable[StoredMinute],
     *,
@@ -114,6 +181,7 @@ def coverage_report(
     session_date: date,
     as_of: datetime,
     requested_symbols: Sequence[str] = (),
+    run_evidence: Sequence[RunEvidence] | None = None,
 ) -> dict[str, object]:
     by_pair: dict[tuple[str, str], list[StoredMinute]] = defaultdict(list)
     for row in rows:
@@ -155,12 +223,18 @@ def coverage_report(
             )
 
     with_rows = {symbol for symbol, _ in by_pair}
-    return {
+    missing = sorted(set(requested_symbols) - with_rows)
+    report: dict[str, object] = {
         "market": market,
         "session_date": session_date.isoformat(),
         "as_of": as_of.astimezone(UTC).isoformat(),
         "venues_expected": list(KR_VENUES) if market == "kr" else None,
         "night_collection": "unsupported" if market == "futures" else None,
         "entries": entries,
-        "symbols_without_rows": sorted(set(requested_symbols) - with_rows),
+        "symbols_without_rows": missing,
     }
+    if run_evidence is not None:
+        report["requested_zero_row"] = {
+            symbol: classify_zero_row(symbol, run_evidence) for symbol in missing
+        }
+    return report

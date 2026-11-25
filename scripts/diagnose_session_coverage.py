@@ -2,7 +2,7 @@
 """hk 6145: READ-ONLY coverage and latency report for the session minute tables.
 
     uv run python -m scripts.diagnose_session_coverage --market kr|us|futures --date YYYY-MM-DD \\
-        [--symbols 005930 000660]
+        [--symbols 005930 000660] [--collect-report RUN.json [RUN2.json ...]]
 
 One ``READ ONLY`` transaction with an 8 s statement timeout, SELECT only. Per
 symbol x venue x session_segment it reports rows, expected minutes, missing
@@ -10,7 +10,14 @@ minutes and p50/p95 of ``retrieved_at - (time_utc + 1 min)``. Rows whose
 ``batch_id`` marks a backfill/promotion are excluded (their ``retrieved_at`` is
 not a first receipt). Writes nothing, registers nothing.
 
-Exit 0 = report printed, 1 = the read failed.
+``--collect-report`` takes the JSON that ``collect_session_minutes`` printed (one
+object per line, same market). With it the output lists every run's tier counts
+and cut symbols, and each requested symbol with no stored minute gets one closed
+reason (hk 6299): ``not_selected``, ``cut_by_budget``, ``fetch_error`` or
+``no_trades_reported``. Optional: without it the output is the plain coverage report
+(no ``requested_zero_row`` key). Reports of a ``dry_run`` give no evidence.
+
+Exit 0 = report printed, 1 = the read failed, 2 = usage or an unreadable run report.
 """
 
 from __future__ import annotations
@@ -19,7 +26,9 @@ import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from sqlalchemy import text
 
@@ -29,6 +38,7 @@ from app.services.research_candles.session_coverage import (
     BACKFILL_BATCH_LIKE,
     StoredMinute,
     coverage_report,
+    run_evidence_from_report,
 )
 from app.services.research_candles.session_minutes_collector import (
     normalize_symbol,
@@ -65,10 +75,48 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--market", required=True, choices=("kr", "us", "futures"))
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--symbols", nargs="+", default=None)
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--collect-report",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="PATH",
+        help="collect_session_minutes JSON output (one object per line)",
+    )
+    args = parser.parse_args(argv)
+    return args
 
 
-async def run(args: argparse.Namespace) -> dict[str, object]:
+def _load_run_reports(paths: Sequence[Path], market: str) -> list[dict[str, object]]:
+    """Run reports of this market; a malformed line is a usage error (exit 2)."""
+    reports: list[dict[str, object]] = []
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            report = json.loads(line)
+            if not isinstance(report, dict):
+                raise ValueError("run report line is not a JSON object")
+            run_evidence_from_report(report)  # shape check, raises ValueError
+            if report.get("market") == market:
+                reports.append(report)
+    return reports
+
+
+def _run_summary(report: dict[str, object]) -> dict[str, object]:
+    return {
+        "batch_id": report.get("batch_id"),
+        "market": report.get("market"),
+        "dry_run": report.get("dry_run"),
+        "targets_tiers": report.get("targets_tiers"),
+        "targets_truncated": report.get("targets_truncated"),
+        "targets_cuts": report.get("targets_cuts"),
+    }
+
+
+async def run(
+    args: argparse.Namespace, reports: Sequence[dict[str, object]] = ()
+) -> dict[str, object]:
     symbols: list[str] | None = None
     if args.symbols:
         parts = (p for chunk in args.symbols for p in chunk.split(","))
@@ -107,22 +155,40 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 )
                 for row in result
             ]
-    return coverage_report(
+    evidence = [run_evidence_from_report(r) for r in reports] if reports else None
+    report = coverage_report(
         stored,
         market=args.market,
         session_date=args.date,
         as_of=now,
         requested_symbols=symbols or (),
+        run_evidence=evidence,
     )
+    if reports:
+        report["runs"] = [_run_summary(r) for r in reports]
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     setup_logging_and_sentry(service_name="diagnose-session-coverage")
 
+    try:
+        reports = _load_run_reports(args.collect_report, args.market)
+    except (OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"status": "invalid_run_report", "error_class": type(exc).__name__}
+            )
+        )
+        return 2
+    if args.collect_report and not reports:
+        print(json.dumps({"status": "no_matching_run_report", "market": args.market}))
+        return 2
+
     async def _go() -> int:
         try:
-            report = await run(args)
+            report = await run(args, reports)
         except Exception as exc:  # noqa: BLE001 - a failed read must be visible
             print(
                 json.dumps({"status": "unavailable", "error_class": type(exc).__name__})
@@ -130,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         finally:
             await engine.dispose()
-        print(json.dumps(report, sort_keys=True))
+        print(json.dumps(report, sort_keys=True, default=str))
         return 0
 
     return asyncio.run(_go())

@@ -5,7 +5,7 @@ KR·US 닫힌 1분봉을 `research.kr_candles_1m` / `research.us_candles_1m` 에
 ## 1. 적용 순서 (운영자·설계 세션)
 
 1. 코드 배포 뒤 마이그레이션 `20261124_hk6145_session_minutes` 적용(`uv run alembic upgrade head`). 추가형이며 `public.*_candles_1m` 은 바뀌지 않는다.
-2. 환경 변수(배포 env 파일)에 고정 목록을 둔다: `SESSION_MINUTES_FIXED_SYMBOLS_US=NVDA`, `SESSION_MINUTES_FIXED_SYMBOLS_KR=005930,000660`. 선택: `SESSION_MINUTES_SCREENER_TOP_N`(기본 20), `SESSION_MINUTES_MAX_SYMBOLS_KR/US`(기본 150).
+2. 고정 목록은 기본값이 벤치마크다(hk 6299): KR `069500,229200`, US `SPY,QQQ,SMH`. 다른 종목을 넣을 때만 env 를 둔다(`SESSION_MINUTES_FIXED_SYMBOLS_KR/US`, 쉼표 구분 — 값을 주면 기본값을 대체한다). 선택: `SESSION_MINUTES_SCREENER_TOP_N`(기본 20), `SESSION_MINUTES_MAX_SYMBOLS_KR/US`(기본 150, 상한은 바꾸지 않는다), 단계 예산 `SESSION_MINUTES_BUDGET_FIXED`(50)·`SESSION_MINUTES_BUDGET_INTRADAY`(40, KR 만)·`SESSION_MINUTES_BUDGET_SCREENER`(60). pick log 는 나머지다.
 3. 수동 확인(DB 에 쓴다): `python -m scripts.collect_session_minutes --market kr --dry-run` 으로 대상·읽기 수를 확인한 뒤 `--dry-run` 없이 1회 실행.
 4. DAG 사본(`deploy/dagu/at-session-minutes/`) 등록은 위 1–3 뒤에 설계 세션이 한다(결정 `decision/2026-11-24/at-session-timeline` 항목 1). 저장소는 등록하지 않는다.
 
@@ -15,9 +15,10 @@ KR·US 닫힌 1분봉을 `research.kr_candles_1m` / `research.us_candles_1m` 에
 uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 005930 000660] [--dry-run]
 ```
 
-- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `null_value`, `errors`, `error_details`(종목·venue·예외 클래스만), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
+- 출력 JSON: `inserted`, `already_present`, `skipped_forming`, `skipped_invalid`, `null_value`, `errors`, `error_details`(종목·venue·예외 클래스만), `targeted_symbols`(이번 실행의 대상 전부), `targets_tiers`(단계별 `budget`·`allowance`·`candidates`·`selected`·`cut`), `targets_cuts`(잘린 종목마다 `symbol`·`tier`·`reason`, reason 은 `budget_cut` 하나), `targets_by_origin`, `targets_truncated`. 종료 코드 0 = 정상, 1 = 오류 있음.
+- 단계 순서(hk 6299): ① **고정** = 보유(KIS·수동) + 고정 목록, 절대 자르지 않는다(예산 50 을 넘어도 전부 받고 아래 단계가 줄어든다). ② **KR 장중 승격** = 오늘의 6154 최초 포착, 최초 포착 시각 → 순위 순, 예산 40. 오늘 분봉이 이미 있는 종목은 예산에서 보호되어 같은 날 내려가지 않는다. ③ **장전 스크리너** = 프리셋별 상위 N 의 합집합, 예산 60. ④ **pick log** = 나머지. 쓰지 않은 예산은 다음 단계로 넘어간다(예: 고정이 2개만 쓰면 48 이 승격으로 간다). US 는 ② 가 없다.
+- `targets_truncated` 가 0 이 아니면 상한 또는 단계 예산에 걸린 것이다. 잘린 목록은 `targets_cuts` 에 있다.
 - 닫힌 봉만 쓴다(`시작 + 1분 + 10초 <= 요청 직전`). 같은 봉을 다시 받으면 `already_present` 이고 `retrieved_at` 은 최초 값 그대로다.
-- `targets_truncated` 가 0 이 아니면 상한(`SESSION_MINUTES_MAX_SYMBOLS_*`)에 걸린 것이다. 낮은 순위(pick log → 스냅샷 순위 → 고정 목록 → 보유) 순으로 잘린다.
 - KIS 분봉 한 번 호출은 최근 구간만 돌려준다(KR 최대 30행, US 최대 120행). 5분 간격 DAG 에서는 겹치지만, 실행이 한동안 멈추면 그 구간은 비며 소급 채움은 없다(진단의 `missing_minutes` 로 보인다).
 
 - KR `value` 는 증명될 때만 채운다(직전 행 차분 또는 venue 첫 분). 그 밖의 분은 봉은 저장하되 `value` 가 NULL 이고 `null_value` 로 센다. 🔴 KR 연속 집계(5m/15m/30m/1h)의 `value` 는 1분봉 `value` 가 NULL 인 분이 있으면 **부분합**이다(`SUM` 이 NULL 을 무시). 집계 값을 거래대금으로 쓰기 전에 진단의 `value_null` 을 확인한다.
@@ -25,8 +26,18 @@ uv run python -m scripts.collect_session_minutes --market kr|us [--symbols 00593
 ## 3. 커버리지 확인
 
 ```bash
-uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11-24 [--symbols 005930]
+uv run python -m scripts.diagnose_session_coverage --market kr|us --date 2026-11-24 \
+    [--symbols 005930 000660] [--collect-report RUN.json [RUN2.json ...]]
 ```
+
+`--collect-report` 는 수집기가 출력한 JSON(한 줄에 한 실행, 같은 시장)이다. 선택이다. 없으면 `requested_zero_row` 키가 나오지 않고 나머지 출력은 같다(`futures-minutes.md` 의 `--symbols` 명령은 그대로 동작한다). `dry_run` 보고는 근거에서 빠진다. 실행별 `runs`(단계 수·잘린 목록)가 나오고, 행이 0개인 요청 종목마다 닫힌 사유 하나가 `requested_zero_row` 에 붙는다.
+
+| 사유 | 뜻 |
+|---|---|
+| `fetch_error` | 어느 실행에서든 이 종목의 읽기 오류가 있었다(실패는 '거래 없음'이 아니다). |
+| `no_trades_reported` | 대상이었고 오류 없이 읽었는데 저장된 분이 없다(거래 없음 또는 형성 중). |
+| `cut_by_budget` | 대상이 되지 못하고 단계 예산·상한에 잘렸다. |
+| `not_selected` | 이 실행들의 어느 목록에도 없었다. |
 
 읽기 전용(8초 timeout). 종목 × venue × session_segment 별 `rows`, `expected_minutes`, `missing_minutes`, `value_null`/`value_null_ratio`(세션별 NULL `value` 분 수·비율), `latency_p50_s`/`latency_p95_s`(= `retrieved_at − (time_utc + 1분)`). 백필·승격(`%backfill%`, `promote-%`) 배치 행은 제외한다. `UNKNOWN` 세그먼트 행은 예상 분이 0 으로 따로 나온다.
 

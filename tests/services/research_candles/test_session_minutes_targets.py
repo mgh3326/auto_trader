@@ -307,17 +307,24 @@ async def test_intraday_movers_origin_is_reported_and_backfills_only_new_symbols
 
 
 @pytest.mark.asyncio
-async def test_intraday_movers_are_cut_after_every_other_origin(monkeypatch) -> None:
+async def test_intraday_movers_outrank_the_pick_log_under_the_cap(monkeypatch) -> None:
+    # hk 6299: movers are the second tier, ahead of the pick log (was the last tier).
+    # cap 2: the fixed list takes one slot; the first mover (symbol order, same
+    # capture time and rank) takes the other; the second mover and the pick-log
+    # symbol are cut, each with its tier.
     session = _RecordingSession(
         ["000500"], mover_rows=[_mover("000700"), _mover("000701")]
     )
-    # cap 2: fixed list (1) + pick log (1) fill it; both movers are the tail cut
     targets = await _kr_targets(
         monkeypatch, session, fixed_symbols_raw="000200", max_symbols=2
     )
-    assert targets.symbols == ["000200", "000500"]
-    assert targets.truncated == {"intraday_movers": 2}
-    assert targets.backfill == []  # a cut symbol is not collected, so no backfill
+    assert targets.symbols == ["000200", "000700"]
+    assert targets.truncated == {"intraday_movers": 1, "screener_pick_log": 1}
+    assert targets.cuts == [
+        {"symbol": "000701", "tier": "intraday_movers", "reason": "budget_cut"},
+        {"symbol": "000500", "tier": "screener_pick_log", "reason": "budget_cut"},
+    ]
+    assert targets.backfill == ["000700"]  # the kept mover has no row yet today
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -223,3 +224,161 @@ def test_value_null_count_and_ratio_per_segment() -> None:
 def test_diagnostic_selects_the_value_null_flag() -> None:
     literals = " ".join(_string_literals(ast.parse(SCRIPT.read_text())))
     assert literals.count("(value IS NULL) AS value_is_null") == 2
+
+
+# ---------------------------------------- zero-row reasons and run reports (hk 6299)
+
+
+def _evidence(targeted=(), cut=(), errors=()):
+    return cov.RunEvidence(
+        targeted=frozenset(targeted),
+        cut=frozenset(cut),
+        error_symbols=frozenset(errors),
+    )
+
+
+def test_zero_row_reason_is_one_of_four_closed_codes() -> None:
+    assert cov.ZERO_ROW_REASONS == (
+        "not_selected",
+        "cut_by_budget",
+        "fetch_error",
+        "no_trades_reported",
+    )
+    run_a = _evidence(targeted={"000100"}, cut={"000200"}, errors={"000300"})
+    run_b = _evidence(targeted={"000300", "000400"}, cut={"000400"})
+    assert cov.classify_zero_row("000100", [run_a]) == "no_trades_reported"
+    assert cov.classify_zero_row("000200", [run_a]) == "cut_by_budget"
+    # an error on any run wins: a failed read is not proof of "no trades"
+    assert cov.classify_zero_row("000300", [run_a, run_b]) == "fetch_error"
+    # cut by budget in a run and also targeted in the same run: the cut is the answer
+    assert cov.classify_zero_row("000400", [run_b]) == "cut_by_budget"
+    # targeted by a pre-open run that could not store rows, cut in every in-session run
+    pre_open = _evidence(targeted={"000500", "000600"})
+    in_session = _evidence(cut={"000500"})
+    assert cov.classify_zero_row("000500", [pre_open, in_session]) == "cut_by_budget"
+    # targeted and read without error, never cut
+    assert cov.classify_zero_row("000600", [pre_open]) == "no_trades_reported"
+    assert cov.classify_zero_row("000999", [run_a, run_b]) == "not_selected"
+    assert cov.classify_zero_row("000100", []) == "not_selected"
+
+
+def test_run_evidence_reads_targets_cuts_and_symbol_errors() -> None:
+    report = {
+        "market": "kr",
+        "targeted_symbols": ["005930"],
+        "targets_cuts": [
+            {"symbol": "000660", "tier": "screener_pick_log", "reason": "budget_cut"}
+        ],
+        "error_details": [
+            {"symbol": "005930", "venue": "KRX", "error_class": "TimeoutError"},
+            {"origin": "screener_snapshot", "error_class": "SnapshotError"},
+        ],
+    }
+    evidence = cov.run_evidence_from_report(report)
+    assert evidence.targeted == {"005930"}
+    assert evidence.cut == {"000660"}
+    assert evidence.error_symbols == {"005930"}
+    with pytest.raises(ValueError):
+        cov.run_evidence_from_report({"error_details": []})
+
+
+def test_requested_zero_row_symbols_get_one_closed_reason() -> None:
+    rows = [_row(m, 5) for m in _regular_minutes()[:3]]  # 005930 has rows
+    evidence = [
+        cov.run_evidence_from_report(
+            {
+                "targeted_symbols": ["005930", "000770", "000880"],
+                "targets_cuts": [
+                    {
+                        "symbol": "000660",
+                        "tier": "screener_pick_log",
+                        "reason": "budget_cut",
+                    }
+                ],
+                "error_details": [
+                    {"symbol": "000880", "venue": "KRX", "error_class": "Timeout"}
+                ],
+            }
+        )
+    ]
+    requested = ["005930", "000660", "000770", "000880", "000990"]
+    report = cov.coverage_report(
+        rows,
+        market="kr",
+        session_date=KR_DATE,
+        as_of=_utc_kst(21, 0),
+        requested_symbols=requested,
+        run_evidence=evidence,
+    )
+    assert report["requested_zero_row"] == {
+        "000660": "cut_by_budget",
+        "000770": "no_trades_reported",
+        "000880": "fetch_error",
+        "000990": "not_selected",
+    }
+    assert report["symbols_without_rows"] == ["000660", "000770", "000880", "000990"]
+    plain = cov.coverage_report(
+        rows,
+        market="kr",
+        session_date=KR_DATE,
+        as_of=_utc_kst(21, 0),
+        requested_symbols=requested,
+    )
+    assert "requested_zero_row" not in plain
+
+
+def test_diagnostic_run_reports_are_optional_and_read_one_market(
+    tmp_path,
+) -> None:
+    from scripts import diagnose_session_coverage as diag
+
+    # --symbols without a run report parses (requested_zero_row is then omitted)
+    bare = diag._parse_args(
+        ["--market", "kr", "--date", "2026-11-24", "--symbols", "005930"]
+    )
+    assert bare.symbols == ["005930"] and bare.collect_report == []
+    args = diag._parse_args(["--market", "kr", "--date", "2026-11-24"])
+    assert args.collect_report == []
+    kr = {
+        "market": "kr",
+        "batch_id": "session-minutes-kr-1",
+        "targeted_symbols": ["005930"],
+        "targets_cuts": [],
+        "error_details": [],
+    }
+    us = {**kr, "market": "us", "batch_id": "session-minutes-us-1"}
+    path = tmp_path / "runs.jsonl"
+    path.write_text(json.dumps(kr) + "\n" + json.dumps(us) + "\n", encoding="utf-8")
+    reports = diag._load_run_reports([path], "kr")
+    assert [r["batch_id"] for r in reports] == ["session-minutes-kr-1"]
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        diag._load_run_reports([bad], "kr")
+
+
+def test_dry_run_reports_give_no_zero_row_evidence() -> None:
+    dry = cov.run_evidence_from_report(
+        {
+            "dry_run": True,
+            "targeted_symbols": ["005930"],
+            "targets_cuts": [
+                {
+                    "symbol": "000660",
+                    "tier": "screener_pick_log",
+                    "reason": "budget_cut",
+                }
+            ],
+            "error_details": [{"symbol": "000770", "error_class": "Timeout"}],
+        }
+    )
+    assert dry == cov.RunEvidence(frozenset(), frozenset(), frozenset())
+    report = cov.coverage_report(
+        [],
+        market="kr",
+        session_date=KR_DATE,
+        as_of=_utc_kst(21, 0),
+        requested_symbols=["005930"],
+        run_evidence=[dry],
+    )
+    assert report["requested_zero_row"] == {"005930": "not_selected"}

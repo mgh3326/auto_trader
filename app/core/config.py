@@ -1073,12 +1073,18 @@ class Settings(BaseSettings):
     WATCH_TRIGGER_REPRICING_ENABLED: bool = False
     # hk 6145 — 세션 분봉 수집기(scripts/collect_session_minutes.py)의 고정 수집 목록.
     # 쉼표 구분, 기본 비어 있음. 매매 판단 정책(YAML)이 아니라 수집 설정이다.
-    SESSION_MINUTES_FIXED_SYMBOLS_KR: str = ""
-    SESSION_MINUTES_FIXED_SYMBOLS_US: str = ""
+    # 벤치마크 기본값(hk 6299 Q1). 고정 수집 목록은 보유 종목과 함께 고정 단계(예산 밖, 절대 자르지 않음).
+    SESSION_MINUTES_FIXED_SYMBOLS_KR: str = "069500,229200"
+    SESSION_MINUTES_FIXED_SYMBOLS_US: str = "SPY,QQQ,SMH"
     # 스크리너 스냅샷(DB-only) 프리셋별 상위 N 과 시장별 수집 종목 총 상한.
     SESSION_MINUTES_SCREENER_TOP_N: int = 20
     SESSION_MINUTES_MAX_SYMBOLS_KR: int = 150
     SESSION_MINUTES_MAX_SYMBOLS_US: int = 150
+    # 단계별 예산(hk 6299). 고정(보유+고정 목록, 절대 자르지 않음), KR 장중 승격,
+    # 장전 스크리너 상위 N, 나머지는 pick log. 쓰지 않은 예산은 다음 단계로 넘어간다.
+    SESSION_MINUTES_BUDGET_FIXED: int = 50
+    SESSION_MINUTES_BUDGET_INTRADAY: int = 40
+    SESSION_MINUTES_BUDGET_SCREENER: int = 60
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
