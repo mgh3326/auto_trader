@@ -331,6 +331,76 @@ def ingest_env() -> tuple[str, str, str]:
     return url, token, header
 
 
+def _write_local(out_dir: Path, payload: dict, errors: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    day = payload["captured_at"][:10]
+    with (out_dir / f"benzinga-pro-{day}.jsonl").open("a") as fh:
+        fh.write(json.dumps({"payload": payload, "errors": errors}) + "\n")
+
+
+def _emit(*, session: str, volume_floor: int, pages: int, out_dir: Path) -> int:
+    """Capture on the Mac; stdout carries the payload only when it is complete."""
+    result = capture(session=session, volume_floor=volume_floor, pages=pages)
+    payload, errors = result["payload"], result["errors"]
+    _write_local(out_dir, payload, errors)
+    summary = {
+        "status": "emitted" if not errors else "not_emitted",
+        "session": session,
+        "captured_at": payload["captured_at"],
+        "up": len(payload["movers"]["up"]),
+        "down": len(payload["movers"]["down"]),
+        "errors": errors,
+    }
+    print(json.dumps(summary), file=sys.stderr)
+    if errors:
+        return 1
+    print(json.dumps(payload))
+    return 0
+
+
+def _post_stdin() -> int:
+    """POST a payload read from stdin with the ingest env of this host."""
+    url, token, header = ingest_env()
+    missing = [
+        n
+        for n, v in (
+            ("BENZINGA_PRO_INGEST_URL", url),
+            ("BENZINGA_PRO_INGEST_TOKEN", token),
+        )
+        if not v
+    ]
+    if missing:
+        print(json.dumps({"status": "not_posted", "missing_env": missing}))
+        return 2
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print(json.dumps({"status": "not_posted", "reason": "empty_stdin"}))
+        return 1
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        print(json.dumps({"status": "not_posted", "reason": "invalid_json"}))
+        return 1
+    if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
+        print(json.dumps({"status": "not_posted", "reason": "schema_mismatch"}))
+        return 1
+    try:
+        ingest = post(payload, url=url, token=token, header=header)
+    except (IngestConfigError, RuntimeError) as exc:
+        print(json.dumps({"status": "post_failed", "post_error": str(exc)}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "status": "posted",
+                "captured_at": payload.get("captured_at"),
+                "ingest": ingest,
+            }
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--session", choices=sorted(SESSION_FIELDS))
@@ -341,15 +411,42 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path.home() / "work" / "herdr-inbox" / "benzinga-pro",
     )
-    parser.add_argument("--dry-run", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument(
+        "--emit",
+        action="store_true",
+        help="capture and print the payload JSON on stdout (no POST, no ingest env); "
+        "nothing is printed on stdout when a side failed",
+    )
+    mode.add_argument(
+        "--post-stdin",
+        action="store_true",
+        help="read one payload JSON from stdin and POST it with the ingest env "
+        "(runs where the token lives, e.g. inside the pi API image)",
+    )
     args = parser.parse_args(argv)
     if args.pages < 1 or args.pages > 20 or args.volume_floor < 0:
         parser.error("--pages must be 1..20 and --volume-floor >= 0")
 
+    if args.post_stdin:
+        return _post_stdin()
+
     session = args.session or us_session(dt.datetime.now(dt.UTC))
     if session is None:
-        print(json.dumps({"status": "outside_session"}))
+        if args.emit:
+            print(json.dumps({"status": "outside_session"}), file=sys.stderr)
+        else:
+            print(json.dumps({"status": "outside_session"}))
         return 0
+
+    if args.emit:
+        return _emit(
+            session=session,
+            volume_floor=args.volume_floor,
+            pages=args.pages,
+            out_dir=args.out_dir,
+        )
 
     # Preconditions before opening the browser: a missing or malformed ingest
     # config must not capture, write JSONL or reach the session.

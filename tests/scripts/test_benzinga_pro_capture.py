@@ -242,3 +242,47 @@ def test_main_checks_ingest_config_before_capture(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(cap, "capture", boom)
     assert cap.main(["--session", "us_pre", "--out-dir", str(tmp_path)]) == 2
     assert not list(tmp_path.iterdir())
+
+
+def test_emit_prints_payload_only_when_complete(tmp_path, monkeypatch, capsys) -> None:
+    ok = {
+        "payload": {
+            "schema": cap.SCHEMA,
+            "captured_at": "2026-11-25T14:00:00Z",
+            "movers": {"up": [], "down": []},
+        },
+        "errors": {},
+    }
+    monkeypatch.setattr(cap, "capture", lambda **kw: ok)
+    assert cap.main(["--session", "us_pre", "--emit", "--out-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out.strip()
+    assert json.loads(out)["schema"] == cap.SCHEMA
+    bad = {**ok, "errors": {"down": 429}}
+    monkeypatch.setattr(cap, "capture", lambda **kw: bad)
+    assert cap.main(["--session", "us_pre", "--emit", "--out-dir", str(tmp_path)]) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_post_stdin_validates_and_posts(monkeypatch, capsys) -> None:
+    import io
+
+    monkeypatch.setenv("BENZINGA_PRO_INGEST_URL", "http://127.0.0.1:8000/x")
+    monkeypatch.setenv("BENZINGA_PRO_INGEST_TOKEN", "tok")
+    sent = {}
+    monkeypatch.setattr(
+        cap, "post", lambda payload, **kw: sent.setdefault("p", payload) and {"ok": 1}
+    )
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"schema": cap.SCHEMA, "captured_at": "x"}))
+    )
+    assert cap.main(["--post-stdin"]) == 0 and sent["p"]["schema"] == cap.SCHEMA
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"schema": "other"})))
+    assert cap.main(["--post-stdin"]) == 1
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cap.main(["--post-stdin"]) == 1
+
+
+def test_post_stdin_requires_env(monkeypatch) -> None:
+    monkeypatch.delenv("BENZINGA_PRO_INGEST_URL", raising=False)
+    monkeypatch.delenv("BENZINGA_PRO_INGEST_TOKEN", raising=False)
+    assert cap.main(["--post-stdin"]) == 2
