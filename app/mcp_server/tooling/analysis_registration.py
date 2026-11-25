@@ -251,7 +251,7 @@ def register_analysis_tools(
             "Supports direct 6-digit stock-code inputs (e.g., '005930') and best-effort "
             "Korean company-name inputs (e.g., '삼성전자'). "
             "Returns filing date, report name, report number, and "
-            "corporation name."
+            "corporation name. Set include_values to read stored capital and ownership metrics."
         ),
     )
     async def get_disclosures(
@@ -259,12 +259,14 @@ def register_analysis_tools(
         days: int = 30,
         limit: int = 20,
         report_type: str | None = None,
+        include_values: bool = False,
     ) -> dict[str, Any]:
         return await get_disclosures_impl(
             symbol=symbol,
             days=days,
             limit=limit,
             report_type=report_type,
+            include_values=include_values,
         )
 
     @mcp.tool(

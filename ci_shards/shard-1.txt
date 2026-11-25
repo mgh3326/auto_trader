@@ -266,6 +266,7 @@ tests/services/kr_trading_flags/test_sync_guard.py
 tests/services/kr_trading_flags/test_wiring_import.py
 tests/services/kr_trading_flags/test_wrapper_offline.py
 tests/services/market_close_digest/test_service.py
+tests/services/market_events/test_dart_capital.py
 tests/services/market_events/test_dart_today_pending.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py
 tests/services/mock_integration/test_coordination.py

@@ -67,6 +67,7 @@ class MarketEventsRepository:
         values: list[dict[str, Any]],
         *,
         replace_values: bool = False,
+        preserve_dart_detail: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
         if payload.get("raw_payload_json") is not None:
@@ -122,6 +123,12 @@ class MarketEventsRepository:
                 value = payload.get(column)
                 if value is not None:
                     update_columns[column] = value
+            # A DART list row can be replayed after a typed detail lookup fails
+            # or by the paced list-only backfill. Keep the existing evidence and
+            # corrected receipt date on conflict while still allowing inserts.
+            if preserve_dart_detail:
+                update_columns.pop("raw_payload_json", None)
+                update_columns.pop("event_date", None)
             stmt = (
                 pg_insert(MarketEvent.__table__)
                 .values(**payload)
@@ -193,6 +200,7 @@ class MarketEventsRepository:
                 "surprise",
                 "surprise_pct",
                 "released_at",
+                "value_details",
             )
             if k in payload
         }

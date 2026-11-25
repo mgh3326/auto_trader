@@ -152,6 +152,9 @@ class MarketEventValue(Base):
     unit: Mapped[str | None] = mapped_column(Text)
     surprise: Mapped[float | None] = mapped_column(Numeric(28, 8))
     surprise_pct: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    value_details: Mapped[dict[str, str | None] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
 
     released_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

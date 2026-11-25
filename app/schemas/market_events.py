@@ -21,6 +21,7 @@ class MarketEventValueResponse(BaseModel):
     surprise: Decimal | None = None
     surprise_pct: Decimal | None = None
     released_at: datetime | None = None
+    reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MarketEventResponse(BaseModel):
