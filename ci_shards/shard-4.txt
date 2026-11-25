@@ -107,6 +107,7 @@ tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_compare_go_py_minutes.py
 tests/scripts/test_dagu_fnguide_consensus_dag.py
 tests/scripts/test_dagu_upbit_intraday_shadow_dag.py
+tests/scripts/test_diagnose_session_coverage_us_decisions.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_execution_mandates_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
@@ -288,6 +289,9 @@ tests/services/research/test_rob984_cp7_fixture_closure.py
 tests/services/research/test_rob984_fix_r1.py
 tests/services/research/test_strategy_experiment_registry.py
 tests/services/research_candles/test_go_py_compare.py
+tests/services/research_candles/test_session_minutes_kr_golden.py
+tests/services/research_candles/test_us_mover_promotion.py
+tests/services/research_candles/test_us_mover_score.py
 tests/services/retro_v1/test_block_reason.py
 tests/services/retro_v1/test_chain_readers.py
 tests/services/retro_v1/test_funnel_scope.py

@@ -43,6 +43,7 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, cast
 
 from app.core.cli import setup_logging_and_sentry
@@ -128,6 +129,9 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         "fixed_budget": settings.SESSION_MINUTES_BUDGET_FIXED,
         "intraday_budget": settings.SESSION_MINUTES_BUDGET_INTRADAY,
         "screener_budget": settings.SESSION_MINUTES_BUDGET_SCREENER,
+        "us_mover_dollar_volume_floor": Decimal(
+            settings.SESSION_MINUTES_US_MOVER_MIN_DOLLAR_VOLUME
+        ),
     }
     async with AsyncSessionLocal() as session:
         if args.symbols:

@@ -9,6 +9,7 @@ with that tier and the closed reason ``budget_cut``.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -42,6 +43,17 @@ def _mover(symbol: str, rank: int, captured=CAPTURED_0905):
         rank=rank,
         change_rate=None,
         trade_value=None,
+    )
+
+
+def _us_mover(symbol: str, rank: int, captured=CAPTURED_0905):
+    """A US ``invest_momentum_event_snapshots`` row (hk 6510/6554 fields)."""
+    return SimpleNamespace(
+        symbol=symbol,
+        snapshot_at=captured,
+        rank=rank,
+        trade_value=Decimal("5000000"),
+        asset_type="common_stock",
     )
 
 
@@ -345,14 +357,15 @@ async def test_us_selects_the_fixed_defaults_and_its_own_movers_tier(
     The first-capture read is US-scoped (``market='us'``, ET trading day), so a KR
     capture never promotes a US symbol.
     """
-    calls: list[tuple[str, object]] = []
+    calls: list[object] = []
+    real_rows = intraday.us_mover_rows_today
 
-    async def _captures(session, trading_date, market="kr"):
-        calls.append((market, trading_date))
-        return [_mover("DELL", rank=1)]
+    async def _rows(session, trading_date):
+        calls.append(trading_date)
+        return await real_rows(session, trading_date)
 
-    monkeypatch.setattr(intraday, "first_captures", _captures)
-    session = _Session(pick=["AAPL"])
+    monkeypatch.setattr(intraday, "us_mover_rows_today", _rows)
+    session = _Session(pick=["AAPL"], movers=[_us_mover("DELL", rank=1)])
     targets = await _targets(
         market="us",
         session=session,
@@ -366,7 +379,7 @@ async def test_us_selects_the_fixed_defaults_and_its_own_movers_tier(
     assert "DELL" in targets.symbols
     # US-scoped first captures on the ET trading day: NOW is 2026-11-25 06:10 UTC
     # = 01:10 ET on the 25th (the ET calendar date of that instant).
-    assert calls == [("us", NOW.astimezone(ZoneInfo("America/New_York")).date())]
+    assert calls == [NOW.astimezone(ZoneInfo("America/New_York")).date()]
 
 
 @pytest.mark.asyncio
@@ -380,18 +393,15 @@ async def test_us_backfill_retries_until_the_earliest_bar_reaches_the_session_st
     whose earliest bar is the session start is done.
     """
 
-    async def _captures(session, trading_date, market="kr"):
-        return [_mover("DELL", rank=1), _mover("URBN", rank=2)]
-
-    monkeypatch.setattr(intraday, "first_captures", _captures)
     # NOW is 2026-11-25 06:10 UTC = 01:10 ET on the 25th, so that ET day's open is
     # 04:00 ET = 09:00 UTC on the 25th.
     session_start_utc = datetime(2026, 11, 25, 9, 0, tzinfo=UTC)
     session = _Session(
+        movers=[_us_mover("DELL", rank=1), _us_mover("URBN", rank=2)],
         us_earliest=[
             ("DELL", session_start_utc),  # paged back to the open: done
             ("URBN", datetime(2026, 11, 25, 14, 30, tzinfo=UTC)),  # 09:30 ET only
-        ]
+        ],
     )
     targets = await _targets(
         market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
@@ -405,11 +415,7 @@ async def test_us_backfill_completion_counts_only_kis_bars(monkeypatch) -> None:
     """hk 6510 r4: Toss day-market bars (same session_date, earlier times) must not
     make a mover look backfilled when no KIS page ever reached 04:00 ET."""
 
-    async def _captures(session, trading_date, market="kr"):
-        return [_mover("DELL", rank=1)]
-
-    monkeypatch.setattr(intraday, "first_captures", _captures)
-    session = _Session(us_earliest=[])
+    session = _Session(movers=[_us_mover("DELL", rank=1)], us_earliest=[])
     await _targets(
         market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
     )

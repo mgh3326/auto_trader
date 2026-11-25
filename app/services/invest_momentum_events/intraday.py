@@ -302,6 +302,26 @@ class FirstCapture:
     trade_value: Any  # Decimal | None
 
 
+async def us_mover_rows_today(session: AsyncSession, trading_day: dt.date) -> list[Any]:
+    """Every ``market='us'`` mover row of ``trading_day`` (one per symbol per run).
+
+    hk 6554: the US promotion order needs every run's rank and dollar volume, not
+    only the earliest capture ``first_captures`` keeps. Returns rows with
+    ``symbol``, ``snapshot_at``, ``rank``, ``trade_value`` and ``asset_type``;
+    scoring is ``research_candles.us_mover_score``. Read-only.
+    """
+    row = InvestMomentumEventSnapshot
+    stmt = select(
+        row.symbol,
+        row.snapshot_at,
+        row.rank,
+        row.trade_value,
+        row.asset_type,
+    ).where(row.market == "us", row.trading_date == trading_day)
+    result = await session.execute(stmt)
+    return list(result.all())
+
+
 async def first_captures(
     session: AsyncSession, trading_date: dt.date, market: str = "kr"
 ) -> list[FirstCapture]:

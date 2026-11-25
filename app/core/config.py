@@ -1085,6 +1085,9 @@ class Settings(BaseSettings):
     SESSION_MINUTES_BUDGET_FIXED: int = 50
     SESSION_MINUTES_BUDGET_INTRADAY: int = 40
     SESSION_MINUTES_BUDGET_SCREENER: int = 60
+    # hk 6554 — US 장중 승격 순서: 거래대금(USD) 하한 이상이 먼저 온다(제외가 아니라 버킷).
+    # 기본값은 임시 값이며 11-25 실측 dry-run 으로 다시 확인한다.
+    SESSION_MINUTES_US_MOVER_MIN_DOLLAR_VOLUME: int = 100000
     # hk 6343 — research 분봉 HTTP ingest(Go 수집기 → auto_trader)와 수집 대상
     # 읽기 엔드포인트. 기본 off 이며 정확히 "true" 일 때만 열린다. 게이트가 꺼져
     # 있으면 어떤 경로든 DB 접근 전에 404 다. 토큰이 비어 있으면 403, 틀리면 401

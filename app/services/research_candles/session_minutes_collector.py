@@ -60,6 +60,12 @@ from app.services.research_candles.session_segment import (
     us_day_market_bar,
     us_session_date,
 )
+from app.services.research_candles.us_mover_score import (
+    REASON_NOT_COMMON_OR_ETF,
+    UsMoverScore,
+    plain_decimal,
+    score_us_movers,
+)
 
 if TYPE_CHECKING:  # type only
     from app.services.brokers.toss.dto import TossMinuteCandle
@@ -510,6 +516,10 @@ DEFAULT_MAX_SYMBOLS = 150
 DEFAULT_FIXED_BUDGET = 50
 DEFAULT_INTRADAY_BUDGET = 40
 DEFAULT_SCREENER_BUDGET = 60
+#: hk 6554: US movers below this dollar volume rank after the ones at or above it
+#: (a bucket, not an exclusion). A default, to be re-checked on real dry-run data.
+DEFAULT_US_MOVER_DOLLAR_VOLUME_FLOOR = Decimal("100000")
+MOVERS_TIER = "intraday_movers"
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,6 +558,7 @@ class TieredSelection:
     tiers: list[TierReport]
     cuts: list[dict[str, str]]  # {"symbol", "tier", "reason"} for symbols left out
     truncated: dict[str, int]  # cut count per tier
+    taken_by: dict[str, str]  # selected symbol -> the tier that took it (hk 6554)
 
 
 def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelection:
@@ -603,6 +614,7 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
     cut_counts: dict[str, int] = {}
     for item in cuts:
         cut_counts[item["tier"]] = cut_counts.get(item["tier"], 0) + 1
+    taken_by = {symbol: spec.tier for spec, _, take, _ in reports for symbol in take}
     tier_reports = [
         TierReport(
             tier=spec.tier,
@@ -619,6 +631,7 @@ def select_tiered(tiers: Sequence[TierSpec], max_symbols: int) -> TieredSelectio
         tiers=tier_reports,
         cuts=cuts,
         truncated={k: v for k, v in cut_counts.items() if v},
+        taken_by=taken_by,
     )
 
 
@@ -647,6 +660,9 @@ class TargetSet:
     backfill: list[str] = field(default_factory=list)
     tiers: list[TierReport] = field(default_factory=list)
     cuts: list[dict[str, str]] = field(default_factory=list)
+    #: US only (hk 6554): the per-symbol decision record of this run. None for KR,
+    #: so the KR report has no such key and its bytes are unchanged.
+    decisions: dict[str, Any] | None = None
 
 
 def targets_report(targets: TargetSet) -> dict[str, Any]:
@@ -668,6 +684,11 @@ def targets_report(targets: TargetSet) -> dict[str, Any]:
             for t in targets.tiers
         ],
         "targets_cuts": [dict(c) for c in targets.cuts],
+        **(
+            {"targets_decisions": targets.decisions}
+            if targets.decisions is not None
+            else {}
+        ),
     }
 
 
@@ -761,14 +782,17 @@ async def build_targets(
     fixed_budget: int = DEFAULT_FIXED_BUDGET,
     intraday_budget: int = DEFAULT_INTRADAY_BUDGET,
     screener_budget: int = DEFAULT_SCREENER_BUDGET,
+    us_mover_dollar_volume_floor: Decimal = DEFAULT_US_MOVER_DOLLAR_VOLUME_FLOOR,
 ) -> TargetSet:
     """Tiered selection under ``max_symbols`` (hk 6299).
 
     1. ``fixed``: KIS + manual holdings and the fixed list. Never cut; its unused
        part of ``fixed_budget`` spills to the next tier.
-    2. ``intraday_movers``: today's first captures — hk 6154 for KR, hk 6510 for
-       US (``market='us'`` rows, ET trading day) — ordered by earliest capture
-       then best rank; ``intraday_budget``. A symbol that already has minute rows
+    2. ``intraday_movers``: today's first captures — hk 6154 for KR, ordered by
+       earliest capture then best rank. For US (hk 6510 rows, ET trading day, hk
+       6554) every run of today is scored by ``us_mover_score.score_us_movers``:
+       assets ``unknown`` last, a dollar-volume floor bucket, best rank, then
+       dollar volume; warrants excluded. ``intraday_budget``. A symbol that already has minute rows
        today is protected from the budget (never demoted the same day).
     3. ``screener_snapshot``: top ``screener_top_n`` of every active preset, by best
        rank; ``screener_budget``.
@@ -844,9 +868,14 @@ async def build_targets(
         )
 
     mover_order: list[str] = []
+    mover_scores: dict[str, UsMoverScore] = {}
+    excluded_movers: list[UsMoverScore] = []
     protected: set[str] = set()
     try:
-        from app.services.invest_momentum_events.intraday import first_captures
+        from app.services.invest_momentum_events.intraday import (
+            first_captures,
+            us_mover_rows_today,
+        )
 
         # hk 6154 (KR) / hk 6510 (US): the observation log's trading date is the
         # KST date in KR and the ET trading day in US.
@@ -855,16 +884,26 @@ async def build_targets(
             if market == "kr"
             else now.astimezone(_ET).date()
         )
-        captures = await first_captures(session, trading_day, market=market)
-        # Promotion order: earliest capture first, then best rank, then symbol.
-        ranked = sorted(
-            {c.symbol: c for c in captures}.values(),
-            key=lambda c: (c.snapshot_at, c.rank, c.symbol),
-        )
-        for capture in ranked:
-            symbol = normalize_symbol(market, capture.symbol)
-            if symbol and symbol not in mover_order:
-                mover_order.append(symbol)
+        if market == "us":
+            # hk 6554: best rank over every run of today, then liquidity (a floor
+            # bucket); rights and warrants are excluded with their reason.
+            scored, excluded_movers = score_us_movers(
+                await us_mover_rows_today(session, trading_day),
+                dollar_volume_floor=us_mover_dollar_volume_floor,
+            )
+            mover_scores = {score.symbol: score for score in scored}
+            mover_order = [score.symbol for score in scored]
+        else:
+            captures = await first_captures(session, trading_day, market=market)
+            # Promotion order: earliest capture first, then best rank, then symbol.
+            ranked = sorted(
+                {c.symbol: c for c in captures}.values(),
+                key=lambda c: (c.snapshot_at, c.rank, c.symbol),
+            )
+            for capture in ranked:
+                symbol = normalize_symbol(market, capture.symbol)
+                if symbol and symbol not in mover_order:
+                    mover_order.append(symbol)
         if mover_order:
             found["intraday_movers"] = list(mover_order)
     except Exception as exc:  # noqa: BLE001 - other origins still count
@@ -924,6 +963,18 @@ async def build_targets(
     )
     selection = select_tiered(specs, max_symbols)
 
+    cuts = selection.cuts
+    decisions: dict[str, Any] | None = None
+    if market == "us":
+        cuts, decisions = _us_decisions(
+            selection,
+            mover_order=mover_order,
+            mover_scores=mover_scores,
+            excluded=excluded_movers,
+            protected=protected,
+            trading_day=now.astimezone(_ET).date(),
+            floor=us_mover_dollar_volume_floor,
+        )
     kept = set(selection.selected)
     backfill: list[str] = []
     if have_known:
@@ -951,8 +1002,70 @@ async def build_targets(
         truncated=selection.truncated,
         backfill=backfill,
         tiers=selection.tiers,
-        cuts=selection.cuts,
+        cuts=cuts,
+        decisions=decisions,
     )
+
+
+def _us_decisions(
+    selection: TieredSelection,
+    *,
+    mover_order: Sequence[str],
+    mover_scores: Mapping[str, UsMoverScore],
+    excluded: Sequence[UsMoverScore],
+    protected: set[str],
+    trading_day: date,
+    floor: Decimal,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Final per-symbol decision of one US run (hk 6554).
+
+    The record is the final outcome: a symbol the movers tier excluded still shows
+    as ``selected`` when a lower tier took it. A symbol excluded from the movers
+    tier and not taken elsewhere is cut at ``intraday_movers`` with
+    ``not_common_or_etf`` (its exclusion comes before any budget). Returns the
+    cut list (exclusions replace the ``select_tiered`` entry for those symbols)
+    and the record for the run JSON.
+    """
+    excluded_by = {score.symbol: score for score in excluded}
+    position = {symbol: index for index, symbol in enumerate(mover_order, start=1)}
+    cut_by = {item["symbol"]: item for item in selection.cuts}
+    records: list[dict[str, Any]] = []
+    for symbol in sorted(set(selection.taken_by) | set(cut_by) | set(excluded_by)):
+        score = mover_scores.get(symbol) or excluded_by.get(symbol)
+        score_report = (
+            None
+            if score is None
+            else score.as_report(
+                protected=symbol in protected, position=position.get(symbol)
+            )
+        )
+        if symbol in selection.taken_by:
+            tier, decision, reason = selection.taken_by[symbol], "selected", None
+        elif symbol in excluded_by:
+            tier, decision, reason = MOVERS_TIER, "cut", REASON_NOT_COMMON_OR_ETF
+        else:
+            tier, decision = cut_by[symbol]["tier"], "cut"
+            reason = cut_by[symbol]["reason"]
+        records.append(
+            {
+                "symbol": symbol,
+                "tier": tier,
+                "decision": decision,
+                "reason": reason,
+                "score": score_report,
+            }
+        )
+    cuts = [item for item in selection.cuts if item["symbol"] not in excluded_by]
+    cuts.extend(
+        {"symbol": symbol, "tier": MOVERS_TIER, "reason": REASON_NOT_COMMON_OR_ETF}
+        for symbol in sorted(excluded_by)
+        if symbol not in selection.taken_by
+    )
+    return cuts, {
+        "trading_day": trading_day.isoformat(),
+        "dollar_volume_floor": plain_decimal(floor),
+        "decisions": records,
+    }
 
 
 async def load_symbols_with_rows_today(

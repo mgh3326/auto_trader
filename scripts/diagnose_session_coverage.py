@@ -136,6 +136,23 @@ def _run_summary(report: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _us_decisions_for_date(
+    reports: Sequence[dict[str, object]], trading_day: str
+) -> list[dict[str, object]]:
+    """Per-run US decision records of one ET trading day (hk 6554).
+
+    A run without ``targets_decisions`` (KR, or a US run from before hk 6554) is
+    skipped: it carries no per-symbol record, and it is not guessed from its tiers.
+    """
+    found: list[dict[str, object]] = []
+    for report in reports:
+        record = report.get("targets_decisions")
+        if not isinstance(record, dict) or record.get("trading_day") != trading_day:
+            continue
+        found.append({"batch_id": report.get("batch_id"), **record})
+    return found
+
+
 async def run(
     args: argparse.Namespace, reports: Sequence[dict[str, object]] = ()
 ) -> dict[str, object]:
@@ -190,6 +207,8 @@ async def run(
     )
     if reports:
         report["runs"] = [_run_summary(r) for r in reports]
+    if args.market == "us" and reports:
+        report["decisions"] = _us_decisions_for_date(reports, args.date.isoformat())
     return report
 
 
