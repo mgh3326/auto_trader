@@ -68,7 +68,7 @@ async def _record_trade_for_fill(
     currency: str,
     account: str,
     order_id: str | None,
-    trade_day: datetime.date | None = None,
+    trade_day: datetime.date,
 ) -> int | None:
     """Insert or update the order's single trade row to its cumulative figures.
 
@@ -79,21 +79,15 @@ async def _record_trade_for_fill(
     the journal and its progress marker atomically.
 
     hk 5642: a broker reuses order numbers across trading days. ``trade_day``
-    is the fill's own order day when the caller can prove it; the row is
+    is the fill's own order day, which the caller must prove; the row is
     written on that day and the conflict update applies only to a row of the
     same day. A row of another day is left exactly as it is and no trade is
-    recorded for this fill, so the caller gets ``None`` and no journal points
-    at the earlier day's trade. Without ``trade_day`` the row is dated now (the
-    behaviour for callers that have no day to prove).
+    recorded for this fill, so the caller gets ``None`` and flags the row for
+    review; no journal points at the earlier day's trade.
     """
-    if trade_day is None:
-        day_at = now_kst()
-        day = day_at.astimezone(KST).date()
-    else:
-        day = trade_day
-        day_at = datetime.datetime(
-            trade_day.year, trade_day.month, trade_day.day, tzinfo=KST
-        )
+    day_at = datetime.datetime(
+        trade_day.year, trade_day.month, trade_day.day, tzinfo=KST
+    )
     stmt = (
         pg_insert(Trade)
         .values(
@@ -118,7 +112,7 @@ async def _record_trade_for_fill(
             },
             # Compared in KST so the session timezone cannot change the answer.
             where=func.cast(func.timezone(_TRADE_DAY_TIMEZONE, Trade.trade_date), Date)
-            == day,
+            == trade_day,
         )
         .returning(Trade.id)
     )

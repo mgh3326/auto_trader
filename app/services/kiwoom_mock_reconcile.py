@@ -421,13 +421,26 @@ async def _journal_buy_delta(
     return {"journal_created": True, "journal_id": lot.id}
 
 
-def _trading_day_date(trading_day: str) -> date | None:
-    """The place row's ``YYYYMMDD`` trading day as a date, or ``None``.
+#: Manual-review reasons for a fill whose cumulative trade row was not written
+#: (hk 5642): the row belongs to another trading day, or the day is unreadable.
+#: Both make the omission visible in ``last_reconcile_detail`` and put the row
+#: back in the journal-recovery scan instead of leaving it silent.
+TRADE_ROW_DAY_CONFLICT = "trade_row_day_conflict"
+TRADE_ROW_DAY_UNAVAILABLE = "trade_row_day_unavailable"
 
-    ``None`` means the day cannot be read; the trade row then falls back to the
-    runtime day instead of being guessed onto some other calendar day.
+
+def _trading_day_date(trading_day: str) -> date | None:
+    """The place row's exact ``YYYYMMDD`` trading day as a date, or ``None``.
+
+    Only eight digits are a day: ``strptime`` alone accepts truncated values
+    (``"202611"`` parses as 2026-01-01), which would silently date the trade
+    row to the first of some month. ``None`` means the day cannot be read, and
+    the fill's trade row is not written at all rather than dated to the day it
+    happened to be observed.
     """
     text_day = str(trading_day or "").strip()
+    if len(text_day) != 8 or not text_day.isdigit():
+        return None
     try:
         return datetime.strptime(text_day, "%Y%m%d").date()
     except ValueError:
@@ -451,8 +464,14 @@ async def _journal_unjournaled(
     A buy journals the whole remainder into the order's lot; a sell closes
     FIFO lots and a shortfall is NOT journaled: the progress marker advances
     only by the matched part, a manual-review reason is left on the row, and
-    the next run sees the rest again. Imported lazily so the reconcile module
-    stays light for the CLI.
+    the next run sees the rest again.
+
+    hk 5642: the order's cumulative ``review.trades`` row is written on the
+    order's trading day. When that row already belongs to another trading day
+    (a reused order number) or the day cannot be read, no trade row is written
+    and the row is flagged for manual review — never silently journaled with
+    the trade row missing, and never dated to the day the fill was observed.
+    Imported lazily so the reconcile module stays light for the CLI.
     """
     from app.mcp_server.tooling import order_journal
 
@@ -467,22 +486,30 @@ async def _journal_unjournaled(
     if price <= 0:
         raise ValueError("unjournaled_price_unavailable")
     average = booking.cumulative_avg if booking.cumulative_avg > 0 else price
-    trade_id = await order_journal._record_trade_for_fill(
-        db,
-        symbol=booking.symbol,
-        instrument_type=booking.instrument_type,
-        side=str(booking.side),
-        price=float(average),
-        quantity=float(booking.cumulative_qty),
-        total_amount=float(booking.cumulative_qty * average),
-        fee=0.0,
-        currency=booking.currency,
-        account=JOURNAL_ACCOUNT,
-        order_id=booking.broker_order_id,
-        # hk 5642: the trade row belongs to the order's trading day, and a row
-        # of another day is never rewritten by this fill.
-        trade_day=_trading_day_date(booking.trading_day),
-    )
+    trade_day = _trading_day_date(booking.trading_day)
+    trade_id: int | None = None
+    trade_review: str | None = None
+    if trade_day is None:
+        trade_review = TRADE_ROW_DAY_UNAVAILABLE
+    else:
+        trade_id = await order_journal._record_trade_for_fill(
+            db,
+            symbol=booking.symbol,
+            instrument_type=booking.instrument_type,
+            side=str(booking.side),
+            price=float(average),
+            quantity=float(booking.cumulative_qty),
+            total_amount=float(booking.cumulative_qty * average),
+            fee=0.0,
+            currency=booking.currency,
+            account=JOURNAL_ACCOUNT,
+            order_id=booking.broker_order_id,
+            # hk 5642: the trade row belongs to the order's trading day, and a
+            # row of another day is never rewritten by this fill.
+            trade_day=trade_day,
+        )
+        if trade_id is None:
+            trade_review = TRADE_ROW_DAY_CONFLICT
     details: dict[str, Any] = {"trade_id": trade_id}
     manual_review_reason: str | None = None
     if booking.side == "buy":
@@ -521,6 +548,14 @@ async def _journal_unjournaled(
         journaled_now = unjournaled - unmatched
         if unmatched > 0:
             manual_review_reason = f"unmatched_sell_quantity:{unmatched}"
+    if trade_review is not None:
+        # The cumulative trade row was not written: keep it reviewable next to
+        # any sell remainder instead of silently advancing the journal only.
+        manual_review_reason = (
+            f"{manual_review_reason};{trade_review}"
+            if manual_review_reason
+            else trade_review
+        )
     new_qty = booking.journaled_qty + journaled_now
     new_avg = (
         (booking.journaled_qty * booking.journaled_avg + journaled_now * price)

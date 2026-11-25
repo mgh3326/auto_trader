@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -1514,3 +1514,91 @@ async def test_cancel_confirmation_row_closes_the_original_not_itself(
     assert result["unresolved_count"] == 0
     writes = _writes(fake_ledger)
     assert [w[:3] for w in writes] == [("mark_terminal", 1, "cancelled")]
+
+
+# --- hk 5642: the trade row's day --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text_day", "expected"),
+    [
+        ("20261116", date(2026, 11, 16)),
+        # strptime alone would read these as the first of a month.
+        ("202611", None),
+        ("2026111", None),
+        ("202611166", None),
+        ("2026-11-16", None),
+        ("20261340", None),
+        ("", None),
+        ("abcdefgh", None),
+    ],
+)
+async def test_only_an_exact_eight_digit_day_is_a_trading_day(
+    text_day: str, expected: date | None
+) -> None:
+    assert kernel._trading_day_date(text_day) == expected
+
+
+async def test_a_refused_trade_row_is_flagged_for_review(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ledger: Any,
+) -> None:
+    """hk 5642 review r4690545271: the omitted trade row must not be silent.
+
+    The order number's ``review.trades`` row belongs to another trading day, so
+    the trade write is refused. The fill is still journaled, but the row keeps
+    a manual-review marker so the missing trade row is visible (and the row is
+    a journal-recovery candidate) instead of being journaled and forgotten.
+    """
+    from app.mcp_server.tooling import order_journal
+
+    FakeSession.journals = []
+    row = _row(1, status="partial", filled_qty=4, avg_fill_price=70000)
+    FakeService.rows = [row]
+    FakeService.total = 1
+    booking = _fake_booking(row, action="booked_partial", delta=Decimal("4"))
+    db = FakeSession()
+    service = FakeService(db)
+
+    async def _refused(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(order_journal, "_record_trade_for_fill", _refused)
+
+    details = await kernel._journal_unjournaled(db, service, booking)
+
+    assert details["trade_id"] is None
+    assert details["manual_review"] == kernel.TRADE_ROW_DAY_CONFLICT
+    assert (
+        row.last_reconcile_detail["journal_manual_review"]
+        == kernel.TRADE_ROW_DAY_CONFLICT
+    )
+
+
+async def test_an_unreadable_day_writes_no_trade_row_and_flags_itself(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ledger: Any,
+) -> None:
+    from app.mcp_server.tooling import order_journal
+
+    FakeSession.journals = []
+    row = _row(1, status="partial", filled_qty=4, avg_fill_price=70000, trading_day="")
+    FakeService.rows = [row]
+    FakeService.total = 1
+    booking = _fake_booking(row, action="booked_partial", delta=Decimal("4"))
+    db = FakeSession()
+    service = FakeService(db)
+
+    async def _not_called(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("a trade row must not be dated without a proven day")
+
+    monkeypatch.setattr(order_journal, "_record_trade_for_fill", _not_called)
+
+    details = await kernel._journal_unjournaled(db, service, booking)
+
+    assert details["trade_id"] is None
+    assert details["manual_review"] == kernel.TRADE_ROW_DAY_UNAVAILABLE
+    assert (
+        row.last_reconcile_detail["journal_manual_review"]
+        == kernel.TRADE_ROW_DAY_UNAVAILABLE
+    )
