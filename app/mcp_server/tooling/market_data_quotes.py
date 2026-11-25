@@ -34,6 +34,7 @@ from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     DATA_STATE_PREMARKET_UNAVAILABLE,
     DATA_STATE_STALE,
+    DATA_STATE_UNKNOWN,
     KRX_OHLCV_CARRIED_PREVIOUS_CLOSE,
     NXT_NO_TRADE_OBSERVED,
     PRICE_AS_OF_KIND_DATE_ONLY,
@@ -106,6 +107,8 @@ from app.services.us_symbol_universe_service import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastmcp import FastMCP
 
 
@@ -1375,8 +1378,66 @@ def _tag_us_quote_session(
     return quote
 
 
+# hk 6521: freshness of a Yahoo extended-hours overlay, decided from the age of
+# the provider bar time (``quote_asof``) against the request time. Thresholds
+# are per session; an overlay older than its threshold is ``stale`` and never
+# ``fresh``. A bar stamped more than this far in the future is unverifiable and
+# reported as ``unknown`` (clock skew between provider and AT is tolerated up
+# to this bound).
+EXTENDED_QUOTE_MAX_AGE_BY_SESSION: dict[str, datetime.timedelta] = {
+    US_SESSION_PREMARKET: datetime.timedelta(minutes=5),
+    US_SESSION_AFTERHOURS: datetime.timedelta(minutes=5),
+}
+EXTENDED_QUOTE_MAX_FUTURE_SKEW = datetime.timedelta(seconds=60)
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
+def _classify_extended_quote_freshness(
+    quote_asof: str | None,
+    *,
+    session: str,
+    request_at: datetime.datetime,
+) -> tuple[str, str | None, int | None]:
+    """Return ``(data_state, data_state_reason, age_seconds)`` for an overlay.
+
+    Pure: no I/O. ``age_seconds`` is ``request_at - quote_asof`` truncated to
+    whole seconds, or ``None`` when the bar time cannot be read.
+    """
+    if quote_asof is None:
+        return DATA_STATE_UNKNOWN, "quote_asof_missing", None
+    try:
+        asof = datetime.datetime.fromisoformat(quote_asof)
+    except ValueError:
+        return DATA_STATE_UNKNOWN, "quote_asof_unparsable", None
+    if asof.tzinfo is None:
+        # A naive bar time has no provable zone; it cannot be aged honestly.
+        return DATA_STATE_UNKNOWN, "quote_asof_unparsable", None
+    age = request_at - asof
+    age_seconds = int(age.total_seconds())
+    if age < -EXTENDED_QUOTE_MAX_FUTURE_SKEW:
+        return DATA_STATE_UNKNOWN, "quote_asof_in_future", age_seconds
+    threshold = EXTENDED_QUOTE_MAX_AGE_BY_SESSION.get(session)
+    if threshold is None:
+        return DATA_STATE_UNKNOWN, "session_threshold_unavailable", age_seconds
+    if age > threshold:
+        return (
+            DATA_STATE_STALE,
+            f"extended_quote_age_{age_seconds}s_exceeds_"
+            f"{int(threshold.total_seconds())}s",
+            age_seconds,
+        )
+    return DATA_STATE_FRESH, None, age_seconds
+
+
 async def _apply_extended_hours_overlay(
-    quote: dict[str, Any], symbol: str, include_extended_hours: bool
+    quote: dict[str, Any],
+    symbol: str,
+    include_extended_hours: bool,
+    *,
+    clock: Callable[[], datetime.datetime] = _utc_now,
 ) -> dict[str, Any]:
     """ROB-922: opt-in Yahoo prepost overlay for US premarket/afterhours quotes.
 
@@ -1385,11 +1446,22 @@ async def _apply_extended_hours_overlay(
     quotes are untouched (no-op), and KR/crypto callers never reach this
     helper at all. On any failure or empty prepost data the existing quote
     and its labels are kept as-is — never lie about price_source.
+
+    hk 6521: the overlay's ``data_state`` is decided from the age of the
+    prepost bar time against the request time (see
+    ``_classify_extended_quote_freshness``): ``fresh`` within the session
+    threshold, ``stale`` beyond it (reason names the age), ``unknown`` when
+    the bar time is missing or unreadable. The overlay reports ``quote_asof``
+    (provider bar time), ``received_at`` (when AT fetched it) and
+    ``quote_age_seconds``. Only the price and its time come from the prepost
+    bar; the 1-minute bar volume is never copied into ``volume``. ``delayed``
+    is left as the base quote set it.
     """
     if not include_extended_hours:
         return quote
     if quote.get("session") not in (US_SESSION_PREMARKET, US_SESSION_AFTERHOURS):
         return quote
+    request_at = clock()
     try:
         prepost = await yahoo_service.fetch_prepost_quote(symbol)
     except Exception as exc:  # noqa: BLE001 — best-effort overlay, never breaks the base quote
@@ -1404,13 +1476,24 @@ async def _apply_extended_hours_overlay(
     price = _to_float_or_none(prepost.get("price"))
     if price is None:
         return quote
+    received_at = clock()
     quote["price"] = price
     quote["price_source"] = "yahoo_prepost_last"
+    # The prepost bar time, not the base quote's time: when Yahoo omits it,
+    # quote_asof is null rather than the base quote's (unrelated) timestamp.
     quote_asof = _optional_text(prepost.get("quote_asof"))
-    if quote_asof is not None:
-        quote["quote_asof"] = quote_asof
-    quote["data_state"] = DATA_STATE_FRESH
-    quote.pop("data_state_reason", None)
+    data_state, reason, age_seconds = _classify_extended_quote_freshness(
+        quote_asof, session=quote["session"], request_at=request_at
+    )
+    quote["quote_asof"] = quote_asof
+    quote["received_at"] = received_at.isoformat()
+    quote["quote_age_seconds"] = age_seconds
+    quote["data_state"] = data_state
+    quote["is_stale_price"] = data_state != DATA_STATE_FRESH
+    if reason is None:
+        quote.pop("data_state_reason", None)
+    else:
+        quote["data_state_reason"] = reason
     return quote
 
 
