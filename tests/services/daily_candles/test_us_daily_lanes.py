@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -83,13 +84,23 @@ async def test_us_targets_are_distributed_and_each_symbol_uses_one_source() -> N
     repo = _Repo()
     kis_limiter, toss_limiter = _LimiterSpy(), _LimiterSpy()
     kis_symbols, toss_symbols = [], []
+    kis_started, toss_started = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_both_lanes() -> None:
+        await asyncio.wait_for(
+            asyncio.gather(kis_started.wait(), toss_started.wait()), timeout=1
+        )
 
     async def kis(target, _n):
         kis_symbols.append(target.symbol)
+        kis_started.set()
+        await wait_for_both_lanes()
         return _frame(target.symbol, 11)
 
     async def toss(target, _n):
         toss_symbols.append(target.symbol)
+        toss_started.set()
+        await wait_for_both_lanes()
         return _frame(target.symbol, 22)
 
     service = _service(
