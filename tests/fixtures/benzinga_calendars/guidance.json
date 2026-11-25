@@ -1,0 +1,33 @@
+{
+  "guidance": [
+    {
+      "currency": "USD",
+      "cusip": "00BMCD000",
+      "date": "2026-01-05",
+      "eps_guidance_est": "",
+      "eps_guidance_max": "",
+      "eps_guidance_min": "",
+      "eps_guidance_prior_max": "",
+      "eps_guidance_prior_min": "",
+      "eps_type": "",
+      "exchange": "NASDAQ",
+      "id": "695bcc0c83cac20001becbd4",
+      "importance": 1,
+      "is_primary": "Y",
+      "name": "RedCloud Holdings",
+      "notes": "",
+      "period": "FY",
+      "period_year": 2026,
+      "prelim": "Y",
+      "revenue_guidance_est": "91170920.000",
+      "revenue_guidance_max": "100000000.000",
+      "revenue_guidance_min": "100000000.000",
+      "revenue_guidance_prior_max": "100000000",
+      "revenue_guidance_prior_min": "100000000.000",
+      "revenue_type": "GAAP",
+      "ticker": "RCT",
+      "time": "09:30:00",
+      "updated": 1767623735
+    }
+  ]
+}

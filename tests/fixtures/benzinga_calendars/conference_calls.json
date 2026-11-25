@@ -1,0 +1,23 @@
+{
+  "conference": [
+    {
+      "access_code": "",
+      "cusip": "74965L101",
+      "date": "2026-02-27",
+      "exchange": "NYSE",
+      "id": "69455ad26f0e8300014905ae",
+      "importance": 2,
+      "international_num": "(201) 493-6780",
+      "isin": "US74965L1017",
+      "name": "RLJ Lodging",
+      "notes": "",
+      "phone_num": "(877) 407-3982",
+      "reservation_num": "",
+      "start_time": "10:00:00",
+      "ticker": "RLJ",
+      "time": "09:01:54",
+      "updated": 1766389198,
+      "webcast_url": "https://edge.media-server.com/mmc/p/vrgtwapr/"
+    }
+  ]
+}

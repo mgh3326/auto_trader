@@ -6,6 +6,7 @@
 
 - KR/US Category Normalization & Lazy Fill (ROB-512)
 - Market Events Ingestion Foundation (ROB-128)
+- Benzinga calendar ingestion (hk 6513)
 - Research Reports Integration (ROB-140)
 - Invest Screener US Activation (ROB-204)
 - Screener pick log (prospective bakeoff)
@@ -76,6 +77,79 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 없으면 `registry_unavailable`을 `raw_payload_json.symbol_resolution_reason`에 기록하고 `symbol`은 `null`로 둔다.
 퍼지 매칭은 하지 않으며 `corp_code`는 심볼로 대체하지 않는다. 행에 기존 `stock_code`가 있으면 기존 정규화 동작을
 유지한다. 레지스트리 실패는 공시 수집을 실패시키지 않는다.
+
+### Benzinga calendar ingestion (hk 6513)
+
+운영자 결정 `hk:doc decision/2026-11-25/at-benzinga-trial-front-use`: 체험 요금제 기간에는 Benzinga 캘린더를 결정
+흐름 앞단에서 쓰고, 체험 종료 전에 자체 소스로 대체할 수 있도록 원본 증거를 남긴다.
+
+- **표면**: `app/services/benzinga_http.py`(공유 HTTP·시각 헬퍼 — hk 6511 이 바꾸는 `app/services/benzinga_news.py`
+  는 건드리지 않는다), `app/services/benzinga_calendars/`(`spec`·`client`·`normalizers`·`ingestion`·`compare`),
+  CLI `scripts/ingest_benzinga_calendars.py`. 행은 `market_events` 에 `source="benzinga"`, `market="us"` 로
+  들어가며 쓰기는 `MarketEventsRepository` 하나뿐이다(직접 SQL 금지).
+- **게이트**: `BENZINGA_CALENDARS_ENABLED` 가 정확히 `"true"`(기본 false)이고 키는 env `BENZINGA_API_KEY` 에서만
+  읽는다. 인증은 query 파라미터 `token=<key>` 뿐이다(헤더 토큰은 401 — 2026-11-25 실호출 확인). 게이트가 꺼져
+  있으면 CLI 는 **네트워크 호출·DB 접근·키 읽기 전에 exit 2** 다. 키 값은 로그·에러·저장 payload 어디에도 남지
+  않는다(`redact_token`).
+- **카테고리 → 엔드포인트**(필드 이름은 아래 문서의 응답 예시 그대로):
+  | category | endpoint | 문서 |
+  |---|---|---|
+  | earnings | `GET /api/v2.1/calendar/earnings` → `earnings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-earnings |
+  | analyst_rating | `GET /api/v2.1/calendar/ratings` → `ratings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ratings |
+  | guidance | `GET /api/v2.1/calendar/guidance` → `guidance[]` | https://docs.benzinga.com/api-reference/calendar-api/get-guidance |
+  | dividend | `GET /api/v2.2/calendar/dividends` → `dividends[]` | https://docs.benzinga.com/api-reference/calendar-api/get-dividends |
+  | economic | `GET /api/v2.1/calendar/economics` → `economics[]` | https://docs.benzinga.com/api-reference/calendar-api/get-economics |
+  | conference | `GET /api/v2.1/calendar/conference-calls` → `conference[]` | https://docs.benzinga.com/api-reference/calendar-api/get-conference-calls |
+  | short_interest | `GET /api/v1/shortinterest` → `shortInterestData{}` | https://docs.benzinga.com/api-reference/market-data/get-short-interest-data |
+  | wiim | `GET /api/v2/news?channels=WIIM` → 배열 | https://docs.benzinga.com/api-reference/news-api/wiims/get-wiims |
+
+  캘린더 계열은 `page`/`pagesize` + `parameters[date_from]`/`parameters[date_to]`(선택 `parameters[tickers]`),
+  short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
+  `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
+  `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 마지막 페이지가 가득 찬 채
+  페이지 상한(기본 20)에 닿으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
+- **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,
+  `SOURCES` 에 `benzinga`. 컨퍼런스콜은 기존 `conference`, 경제지표는 기존 `economic`(미국 행만)을 쓴다.
+  기존 값은 그대로이고 `market_events` 에 category/source CHECK 는 없다(코드가 정본).
+- **시각 계약**: `first_received_at` 은 **우리 시계의 최초 관측**이며 재수집이 덮어쓰지 않는다(리포지토리
+  갱신 열에서 제외). 제공자 시각은 `provider_created_at`/`provider_updated_at`(aware UTC)과
+  `provider_created_raw`/`provider_updated_raw`(받은 그대로)로 함께 남긴다. 캘린더 계열 `updated` 는 Unix
+  seconds, WIIM `created`/`updated` 는 RFC 2822(`-0400`)다. 해석 불가는 `null` 이며 0 으로 채우지 않는다.
+- **revision**: `market_event_revisions`(append-only). 레코드의 정규화 payload 해시가 최신 revision 과 같으면
+  아무것도 쓰지 않고(값·`first_received_at`·`updated_at` 불변), 다르면 새 revision 행을 추가한 뒤 현재
+  `market_events` 행을 갱신한다 — **덮어써서 이전 상태를 잃지 않는다**. 유일키는
+  `(source, category, market, source_event_id, revision_seq)` 와 같은 키 + `content_hash` 다.
+- **raw payload**: `raw_payload_json` 은 2,000자 넘는 문자열을 절단하고(`…(truncated)`) 리포지토리에서
+  redaction 을 거친다. 대체 비교에 필요한 증거는 남기되 무한 blob 은 남기지 않는다.
+- **리더(union/prefer 규칙 명시)**: `get_earnings_calendar` US 성공 응답은 Finnhub 행에 **저장된 Benzinga
+  earnings 행을 union** 한다. 적용 조건은 (a) 게이트 on, (b) 창 안에 저장된 `source="benzinga"` earnings 행이
+  존재, (c) 그 (symbol, date) 를 Finnhub 이 보고하지 않을 때뿐이다. 즉 **Finnhub 이 이긴다** — 같은
+  (symbol, date) 에 Benzinga 행을 겹쳐 넣지 않는다. 추가 행은 `source="benzinga"` 로 표시되고, 최상위에
+  `sources`·`benzinga_union`(added_rows·rule)이 붙는다. 위 조건이 하나라도 없거나 저장소 읽기가 실패하면
+  Finnhub payload 는 **바이트 동일**하게 그대로 나간다(게이트 off golden, fail-soft). Finnhub 실패 시의
+  ROB-1384 fail-closed 계약(저장분 degraded 폴백·`earnings_lookup_failed`)은 변경 없고, 그 폴백 행은 이미
+  `source` 별로 라벨링된다. market events 읽기 표면(`/trading/api/market-events/...`)도 `source` 필드로
+  벤징가 행을 그대로 노출한다.
+- **파티션·재실행**: `(benzinga, category, us, date)` 파티션. `--force` 없이는 `succeeded` 파티션을 건너뛴다.
+  fetch 실패는 그 창의 처리 대상 파티션 전부를 `failed` 로 남긴 뒤 예외를 다시 올린다.
+- **CLI**: `scripts/ingest_benzinga_calendars.py` — `--category`(콤마/반복, 필수), `--date` 또는
+  `--from-date/--to-date`, `--symbols`(short_interest 필수, 그 밖에는 선택 필터), `--commit`(없으면 dry-run,
+  네트워크 0), `--force`, `--max-pages`, `--compare-earnings`(읽기 전용).
+- **비교 도우미**: `app/services/benzinga_calendars/compare.py::compare_earnings` — Finnhub 대비 coverage
+  (심볼 공통/한쪽만, 항목 한쪽만)와 **양쪽이 모두 관측한 항목에 대해서만** 시간대 일치/불일치/unknown 을 낸다.
+  대체 판정용 읽기이며 어떤 정책·게이트도 바꾸지 않는다.
+- **DAG 사본**: `deploy/dagu/at-benzinga-calendars/`(장전 1회, 장중 30분). **등록되지 않았다** — 등록은 설계
+  세션 몫이고, `short_interest` 는 symbols 필수라 DAG 에 넣지 않는다(수동 CLI). 그래서
+  `market_events/expected_sources` 의 `EXPECTED_SOURCES` 에도 넣지 않았다 — 스케줄이 없는데 기대 소스로 두면
+  신선도·`data_gaps` 가 매일 누락을 보고한다. DAG 를 등록할 때 같은 PR 에서 함께 정한다.
+- **마이그레이션** `20261125_hk6513_benzinga_calendars`: 추가형. `market_events` 에 5개 nullable 열과
+  `market_event_revisions` 표를 더하고 `at_app` 에 조건부 GRANT(SELECT·INSERT, 시퀀스 USAGE·SELECT)를 준다.
+  downgrade 는 revision 행이나 provider 증거 열이 채워진 `market_events` 행이 있으면 거부한다.
+- **범위 밖**: 뉴스(hk 6511·후속), Benzinga Pro 웹 엔드포인트, short interest 의 기본 symbol 목록 자동 결정,
+  스케줄 등록, 주문 경로.
+- **테스트**: `tests/services/benzinga_calendars/`(픽스처 정규화·idempotency·revision·client 계약·비교),
+  `tests/mcp_server/test_benzinga_earnings_union.py`(union·게이트 off golden), `tests/test_benzinga_calendars_cli.py`,
+  DB 왕복 `tests/services/benzinga_calendars/test_ingestion_db.py`(CI).
 
 ### Research Reports Integration (ROB-140)
 

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.market_events import (
     MarketEvent,
     MarketEventIngestionPartition,
+    MarketEventRevision,
     MarketEventValue,
 )
 from app.services.alpaca_paper_ledger_service import _redact_sensitive_keys
@@ -56,9 +57,16 @@ class MarketEventsRepository:
                 "source_url",
                 "raw_payload_json",
                 "fetched_at",
+                "provider_created_at",
+                "provider_created_raw",
+                "provider_updated_at",
+                "provider_updated_raw",
             )
             if k in payload
         }
+        # ``first_received_at`` is our first observation of this record and is
+        # deliberately absent from the update set (hk 6513): a later ingest of
+        # the same row must not rewrite it.
         update_columns["updated_at"] = func.now()
 
         if payload.get("source_event_id"):
@@ -149,6 +157,81 @@ class MarketEventsRepository:
                     setattr(existing, key, value_)
             existing.updated_at = datetime.now(UTC)
         await self.db.flush()
+
+    # -- provider revisions (hk 6513) ---------------------------------------
+
+    async def latest_revision(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        source_event_id: str,
+    ) -> MarketEventRevision | None:
+        stmt = (
+            select(MarketEventRevision)
+            .where(
+                MarketEventRevision.source == source,
+                MarketEventRevision.category == category,
+                MarketEventRevision.market == market,
+                MarketEventRevision.source_event_id == source_event_id,
+            )
+            .order_by(MarketEventRevision.revision_seq.desc())
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def append_revision(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        source_event_id: str,
+        content_hash: str,
+        observed_at: datetime,
+        provider_created_at: datetime | None = None,
+        provider_updated_at: datetime | None = None,
+        raw_payload_json: dict[str, Any] | None = None,
+    ) -> bool:
+        """Append one provider revision; return False when it already exists.
+
+        Both unique keys are handled by ``ON CONFLICT DO NOTHING`` so a repeat
+        of the same content (hash) or a lost race on the sequence number writes
+        nothing rather than failing the batch.
+        """
+        latest = await self.latest_revision(
+            source=source,
+            category=category,
+            market=market,
+            source_event_id=source_event_id,
+        )
+        next_seq = 1 if latest is None else latest.revision_seq + 1
+        payload: dict[str, Any] = {
+            "source": source,
+            "category": category,
+            "market": market,
+            "source_event_id": source_event_id,
+            "revision_seq": next_seq,
+            "content_hash": content_hash,
+            "provider_created_at": provider_created_at,
+            "provider_updated_at": provider_updated_at,
+            "observed_at": observed_at,
+            "raw_payload_json": (
+                _redact_sensitive_keys(raw_payload_json)
+                if raw_payload_json is not None
+                else None
+            ),
+        }
+        stmt = (
+            pg_insert(MarketEventRevision.__table__)
+            .values(**payload)
+            .on_conflict_do_nothing()
+            .returning(MarketEventRevision.__table__.c.id)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.flush()
+        return result.scalar_one_or_none() is not None
 
     # -- partition state ----------------------------------------------------
 

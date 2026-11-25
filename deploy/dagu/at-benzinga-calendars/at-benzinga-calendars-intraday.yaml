@@ -1,0 +1,26 @@
+# 제안(PROPOSAL, hk 6513) — 어디에도 등록되어 있지 않다.
+# 등록은 이 레인을 만든 설계 세션이 한다. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다(하드룰 6).
+#
+# 장중 30분 간격: 당일 실적 발표·애널리스트 등급 변경·WIIM(Why Is It Moving)·컨퍼런스콜을
+# 새 값만 갱신한다. 같은 페이로드는 revision 이 아니라 no-op 이고, 값이 바뀐 행은
+# market_event_revisions 에 이전 버전이 남는다(덮어쓰지 않는다).
+#
+# 게이트·키는 premarket DAG 과 같다. short_interest 는 symbols 필수라 여기 없다.
+description: "Benzinga calendars intraday (earnings/ratings/wiim/conference)"
+schedule: "CRON_TZ=America/New_York */30 9-16 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: intraday
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_CALENDARS_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_benzinga_calendars --category earnings,analyst_rating,wiim,conference --date $(TZ=Asia/Seoul date +%F) --commit
+    timeout_sec: 600
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+handler_on:
+  success:
+    command: 'logger -t at-dagu-benzinga-calendars "dag=at-benzinga-calendars-intraday status=success"'
+  failure:
+    command: 'logger -t at-dagu-benzinga-calendars "dag=at-benzinga-calendars-intraday status=failure"'

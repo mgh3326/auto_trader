@@ -1,0 +1,26 @@
+{
+  "shortInterestData": {
+    "AAPL": {
+      "data": [
+        {
+          "recordDate": "2026-01-12",
+          "symbol": "AAPL",
+          "company": "Apple Inc. Common Stock",
+          "totalShortInterest": "112732788",
+          "daysToCover": 2.71,
+          "shortPercentOfFloat": 0.77,
+          "shortPriorMo": "122035714",
+          "percentChangeMoMo": -7.62,
+          "sharesFloat": "14688854878",
+          "averageDailyVolume": "41632615",
+          "sharesOutstanding": "14697926000",
+          "exchange": "NNM",
+          "sector": "Technology",
+          "industry": "Consumer Electronics",
+          "exchangeReceiptDate": "2026-01-05",
+          "settlementDate": "2025-12-31"
+        }
+      ]
+    }
+  }
+}

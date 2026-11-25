@@ -1,0 +1,44 @@
+{
+  "economics": [
+    {
+      "actual": "",
+      "actual_t": "%",
+      "consensus": "",
+      "consensus_t": "",
+      "country": "USA",
+      "date": "2026-03-08",
+      "description": "Challenger Job Cuts (YoY) report tracks the percentage change in layoffs reported by employers during a given month compared to the same month of the previous year.",
+      "event_category": "Employment",
+      "event_name": "Challenger Job Cuts (YoY)",
+      "event_period": "",
+      "id": "6745790147f2830001365a27",
+      "importance": 1,
+      "notes": "",
+      "period_year": 2026,
+      "prior": "",
+      "prior_t": "%",
+      "time": "02:30:09",
+      "updated": 1736341667
+    },
+    {
+      "actual": "",
+      "actual_t": "%",
+      "consensus": "",
+      "consensus_t": "",
+      "country": "DEU",
+      "date": "2026-03-08",
+      "description": "German industrial production.",
+      "event_category": "Production",
+      "event_name": "German Industrial Production (MoM)",
+      "event_period": "",
+      "id": "6745790147f2830001365a28",
+      "importance": 2,
+      "notes": "",
+      "period_year": 2026,
+      "prior": "",
+      "prior_t": "%",
+      "time": "02:00:00",
+      "updated": 1736341670
+    }
+  ]
+}
