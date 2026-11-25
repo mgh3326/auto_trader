@@ -132,7 +132,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Source is `app.services.exchange_rate_service.get_usd_krw_rate_details()`, which uses Toss when enabled and open.er-api as fallback.
   - Response fields: `pair`, `base_currency`, `quote_currency`, `rate`, `mid_rate`, `default_rate`, `source`, `valid_from`, `valid_until`, `basis_point`, `rate_change_type`.
   - `default_rate` mirrors the scalar exchange-rate behavior used by existing portfolio and cash consumers.
-  - Unsupported pairs raise a tool argument error. FX pairs are not market indices; `get_market_index("USDKRW")` remains unsupported.
+  - Unsupported pairs raise a tool argument error. `get_market_index("USDKRW")` is a market-index row too (Yahoo `KRW=X`); the FX quote above stays the spot source of truth for conversions.
   - Trends, bank-specific quotes, preferential effective rates, exchange execution, and US-order total-cost routing are outside ROB-567 P1.
 - `suggest_order_account(symbol, market=None, side="buy", quantity, price=None, usd_krw=None)`
   - Read-only advisory tool. It never submits, previews, routes, modifies, or cancels an order.
@@ -204,6 +204,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
 - `get_market_index(symbol=None, period="day", count=20)`
+  - Added symbols (task 6301): `SOX` (Yahoo `^SOX`), `KOSPI200` (Naver `KPI200`, [unverified] code), `NQ=F`/`ES=F` (Yahoo continuous front-month; `contract.kind=continuous`, `delayed=null` because the delay is not verified), `USDKRW` (Yahoo `KRW=X`), `KOSPI200_NIGHT` (KOSPI200 night futures through the hk 6148 view; with `KIS_FUTURES_QUOTES_ENABLED` not exactly `true` the row is `unsupported=true` with `unsupported_reason` and no value; gate on gives `contract.kind=dated` with `contract_month`, `last_trade_date`, `roll_state`).
+  - Every row carries `as_of` (UTC) and `as_of_basis` (`quote_time` when the exchange quote timestamp is present, else `fetched_at`). KR rows carry `session_date` (the quote date) and `ohlc_date`; when the OHLC is from an earlier session the top-level `open/high/low/volume` are null and the earlier session is under `previous_session` with its own `date`, so one record never mixes two sessions.
+  - Unknown symbols raise `Unknown index symbol '<X>'. Supported: <sorted list>`.
   - KR indices (`KOSPI`/`KOSDAQ`) are tagged with `data_state` from the KRX
     session clock. If the clock is live but the Naver payload is self-inconsistent
     (`change == 0`, `change_pct == 0`, and `open != current`), the original

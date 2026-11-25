@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import re
 from typing import Any
 
 import httpx
@@ -32,6 +33,41 @@ _INDEX_META: dict[str, dict[str, str]] = {
         "source": "coingecko",
         "cg_metric": "btc_dominance",
     },
+    # Yahoo-sourced SOX, NQ/ES continuous futures and USD/KRW (Yahoo KRW=X).
+    # ``kind`` only labels the row (contract/delay fields).
+    "SOX": {
+        "name": "필라델피아 반도체지수(SOX)",
+        "source": "yfinance",
+        "yf_ticker": "^SOX",
+    },
+    "NQ=F": {
+        "name": "나스닥100 선물 (연속)",
+        "source": "yfinance",
+        "yf_ticker": "NQ=F",
+        "kind": "continuous_future",
+    },
+    "ES=F": {
+        "name": "S&P 500 선물 (연속)",
+        "source": "yfinance",
+        "yf_ticker": "ES=F",
+        "kind": "continuous_future",
+    },
+    "USDKRW": {
+        "name": "원/달러 환율",
+        "source": "yfinance",
+        "yf_ticker": "KRW=X",
+        "kind": "fx",
+    },
+    # KOSPI200 spot through the existing Naver index source. ``KPI200`` is the Naver
+    # index code [unverified until the first live smoke].
+    "KOSPI200": {"name": "코스피200", "source": "naver", "naver_code": "KPI200"},
+    # KOSPI200 night futures: the hk 6148 KIS futures quotes view, gated on
+    # KIS_FUTURES_QUOTES_ENABLED. Off => unsupported row with a reason.
+    "KOSPI200_NIGHT": {
+        "name": "코스피200 야간선물",
+        "source": "kis_futures",
+        "kind": "dated_future",
+    },
 }
 
 _DEFAULT_INDICES = ["KOSPI", "KOSDAQ", "SPX", "NASDAQ"]
@@ -49,6 +85,18 @@ def _parse_naver_num(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _date_part(value: Any) -> str | None:
+    """``YYYY-MM-DD`` prefix of a Naver timestamp or date string, else None."""
+    if isinstance(value, str):
+        match = _DATE_PREFIX.match(value)
+        if match is not None:
+            return match.group(0)
+    return None
 
 
 def _parse_naver_int(value: Any) -> int | None:
@@ -83,7 +131,10 @@ async def _fetch_index_kr_current(naver_code: str, name: str) -> dict[str, Any]:
 
     latest = price_list[0] if price_list else {}
 
-    return {
+    quote_asof = basic.get("localTradedAt")
+    session_date = _date_part(quote_asof)
+    ohlc_date = _date_part(latest.get("localTradedAt"))
+    result: dict[str, Any] = {
         "symbol": naver_code,
         "name": name,
         "current": _parse_naver_num(basic.get("closePrice")),
@@ -97,9 +148,27 @@ async def _fetch_index_kr_current(naver_code: str, name: str) -> dict[str, Any]:
         # signed change_pct from (minute-granular, tz-aware ISO). Surface it so
         # callers can detect intraday lag — near flat, a stale quote inverts the
         # sign of change_pct vs live (KOSDAQ +0.18 vs −0.46 at 09:10 KST).
-        "quote_asof": basic.get("localTradedAt"),
+        "quote_asof": quote_asof,
+        # Date separation: the current value is the quote date; the
+        # OHLC comes from the newest daily price row, which can be an earlier
+        # session. Both dates are surfaced separately.
+        "session_date": session_date,
+        "ohlc_date": ohlc_date,
         "source": "naver",
     }
+    if session_date is not None and ohlc_date is not None and ohlc_date != session_date:
+        # A current quote from one session must never sit beside OHLC from another.
+        # Move the earlier session's OHLC under its own dated block and null the
+        # top-level OHLC, so the record cannot be read as one session.
+        result.update({"open": None, "high": None, "low": None, "volume": None})
+        result["previous_session"] = {
+            "date": ohlc_date,
+            "open": _parse_naver_num(latest.get("openPrice")),
+            "high": _parse_naver_num(latest.get("highPrice")),
+            "low": _parse_naver_num(latest.get("lowPrice")),
+            "volume": _parse_naver_int(latest.get("accumulatedTradingVolume")),
+        }
+    return result
 
 
 async def _fetch_index_kr_history(

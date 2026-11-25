@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-from app.core.timezone import KST, now_kst
+from app.core.timezone import KST, now_kst, today_kst
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
@@ -20,8 +20,21 @@ from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     DATA_STATE_STALE,
     kr_market_data_state,
+    us_market_session,
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
+from app.services.brokers.kis.futures_quotes import (
+    GATE_ENV,
+    FuturesQuotesGateOff,
+    FuturesQuotesUnsupported,
+    gate_check,
+)
+from app.services.kis_futures_quotes.contracts import (
+    KOSPI200_FUTURES,
+    resolve_front_next,
+    roll_state,
+)
+from app.services.kis_futures_quotes.view import open_quotes_view
 
 _KR_INDEX_LAGGING_REASON = "kr_index_fresh_clock_payload_lagging"
 
@@ -113,6 +126,142 @@ def _tag_kr_index_data_state(index: Any) -> Any:
     return index
 
 
+def _to_utc_iso(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat()
+
+
+def _decorate_index_row(row: Any, meta: dict[str, str] | None) -> Any:
+    """Add ``as_of`` (UTC), ``as_of_basis`` and the session/contract/delay labels.
+
+    ``as_of_basis`` is ``quote_time`` when the row carries the exchange quote
+    timestamp (Naver ``localTradedAt``) and ``fetched_at`` otherwise (Yahoo and
+    CoinGecko rows carry no quote time, so the fetch time is the only honest
+    stamp). An ``as_of`` already set upstream (ROB-464) is kept as-is.
+    Error rows are returned untouched.
+    """
+    if not isinstance(row, dict) or "error" in row:
+        return row
+    now = now_kst()
+    quote = _parse_quote_asof(row.get("quote_asof"))
+    if "as_of" not in row:
+        if quote is not None:
+            row["as_of"] = _to_utc_iso(quote)
+            row["as_of_basis"] = "quote_time"
+        else:
+            row["as_of"] = _to_utc_iso(now)
+            row["as_of_basis"] = "fetched_at"
+    if meta is None or row.get("unsupported"):
+        return row
+    kind = meta.get("kind")
+    if meta.get("source") == "yfinance":
+        if kind == "continuous_future":
+            row["session_state"] = "continuous_futures"
+            row["contract"] = {
+                "kind": "continuous",
+                "yahoo_symbol": meta["yf_ticker"],
+                "note": "Yahoo continuous front-month; the underlying contract rolls without notice",
+            }
+            row["delayed"] = None
+            row["delay_basis"] = "not_verified"
+        elif kind == "fx":
+            row["session_state"] = "continuous_fx"
+        else:
+            row["session_state"] = us_market_session(now)
+    return row
+
+
+def _unsupported_row(symbol: str, meta: dict[str, str], reason: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "name": meta["name"],
+        "current": None,
+        "change": None,
+        "change_pct": None,
+        "source": "kis_futures_quotes",
+        "unsupported": True,
+        "unsupported_reason": reason,
+    }
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return (
+        parsed
+        if parsed == parsed and parsed not in (float("inf"), float("-inf"))
+        else None
+    )
+
+
+async def _fetch_kospi200_night_futures(
+    symbol: str, meta: dict[str, str], *, on_date: date | None = None
+) -> dict[str, Any]:
+    """KOSPI200 night futures via the hk 6148 view; never invents a value.
+
+    Gate off (``KIS_FUTURES_QUOTES_ENABLED`` not exactly ``true``) returns an
+    ``unsupported`` row with the reason and makes no KIS call. Gate on reads the
+    front KOSPI200 futures contract from the master and its price.
+    """
+    try:
+        gate_check()
+    except FuturesQuotesGateOff:
+        return _unsupported_row(
+            symbol,
+            meta,
+            f"{GATE_ENV} is not true; night-session futures quotes are gated (hk 6148)",
+        )
+    today = on_date or today_kst()
+    view = open_quotes_view()
+    try:
+        master_rows = await view.master()
+        contracts, _unresolved = resolve_front_next(
+            master_rows, today, (KOSPI200_FUTURES,)
+        )
+        front = next((c for c in contracts if c.rank == 0), None)
+        if front is None:
+            return _unsupported_row(
+                symbol, meta, "no live KOSPI200 futures contract in the KIS master"
+            )
+        quote = await view.price(front.short_code)
+    except FuturesQuotesUnsupported as exc:
+        return _unsupported_row(symbol, meta, str(exc))
+    finally:
+        await view.close()
+
+    output = quote.get("output1") if isinstance(quote, dict) else None
+    if not isinstance(output, dict):
+        return _unsupported_row(
+            symbol, meta, "KIS futures price response had no output1"
+        )
+    current = _number(output.get("futs_prpr"))
+    if current is None:
+        return _unsupported_row(symbol, meta, "current futures price field absent")
+    return {
+        "symbol": symbol,
+        "name": meta["name"],
+        "current": current,
+        "change": _number(output.get("futs_prdy_vrss")),
+        "change_pct": _number(output.get("futs_prdy_ctrt")),
+        "source": "kis_futures_quotes",
+        "session_state": "futures_snapshot",
+        "contract": {
+            "kind": "dated",
+            "symbol": front.symbol,
+            "contract_month": front.contract_month,
+            "last_trade_date": front.last_trade_date.isoformat(),
+            "roll_state": roll_state(
+                front.contract_month, today, list(front.listed_months)
+            ),
+        },
+        "delayed": None,
+        "delay_basis": "not_verified",
+    }
+
+
 async def handle_get_market_index(
     symbol: str | None = None,
     period: str = "day",
@@ -133,25 +282,40 @@ async def handle_get_market_index(
             )
 
         try:
+            if meta["source"] == "kis_futures":
+                row = await _fetch_kospi200_night_futures(sym, meta)
+                return {"indices": [_decorate_index_row(row, meta)], "history": []}
             if meta["source"] == "naver":
                 current_data, history = await asyncio.gather(
                     _fetch_index_kr_current(meta["naver_code"], meta["name"]),
                     _fetch_index_kr_history(meta["naver_code"], capped_count, period),
                 )
+                # The row names the requested symbol (KOSPI200 is Naver code KPI200).
+                current_data["symbol"] = sym
                 return {
-                    "indices": [_tag_kr_index_data_state(current_data)],
+                    "indices": [
+                        _decorate_index_row(
+                            _tag_kr_index_data_state(current_data), meta
+                        )
+                    ],
                     "history": history,
                 }
             if meta["source"] == "coingecko":
                 current_data = await _fetch_index_crypto_current(
                     meta["cg_metric"], meta["name"], sym
                 )
-                return {"indices": [current_data], "history": []}
+                return {
+                    "indices": [_decorate_index_row(current_data, meta)],
+                    "history": [],
+                }
             current_data, history = await asyncio.gather(
                 _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
                 _fetch_index_us_history(meta["yf_ticker"], capped_count, period),
             )
-            return {"indices": [current_data], "history": history}
+            return {
+                "indices": [_decorate_index_row(current_data, meta)],
+                "history": history,
+            }
         except Exception as exc:
             return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
 
@@ -176,9 +340,10 @@ async def handle_get_market_index(
         if isinstance(r, BaseException):
             indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
         elif isinstance(r, dict):
-            if _INDEX_META[_DEFAULT_INDICES[i]]["source"] == "naver":
+            meta_i = _INDEX_META[_DEFAULT_INDICES[i]]
+            if meta_i["source"] == "naver":
                 _tag_kr_index_data_state(r)
-            indices.append(r)
+            indices.append(_decorate_index_row(r, meta_i))
         else:
             indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
 
