@@ -439,6 +439,8 @@ class FillBooking:
     symbol: str = ""
     instrument_type: str = ""
     currency: str = ""
+    #: The place row's trading day (``YYYYMMDD``); blank when unreadable.
+    trading_day: str = ""
     correlation_id: str | None = None
     thesis: str | None = None
     strategy: str | None = None
@@ -1088,6 +1090,7 @@ class KiwoomMockOrderLedgerService:
             symbol=row.symbol,
             instrument_type=row.instrument_type,
             currency=row.currency,
+            trading_day=str(row.trading_day or ""),
             correlation_id=row.correlation_id,
             thesis=row.thesis,
             strategy=row.strategy,

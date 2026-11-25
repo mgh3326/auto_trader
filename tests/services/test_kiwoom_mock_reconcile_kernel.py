@@ -167,6 +167,10 @@ class _FakeResult:
     def scalar_one(self) -> int:
         return 777  # the upserted trade row's id
 
+    def scalar_one_or_none(self) -> int | None:
+        # hk 5642: the trade upsert's day guard can match nothing.
+        return 777
+
 
 class FakeSession:
     """In-memory journal store: get/add/flush/execute for the journal helpers.
@@ -296,6 +300,7 @@ def _fake_booking(
         correlation_id=row.correlation_id,
         thesis=row.thesis,
         strategy=row.strategy,
+        trading_day=str(getattr(row, "trading_day", "") or ""),
         reason=row.reason,
         exit_reason=row.exit_reason,
         notes=row.notes,

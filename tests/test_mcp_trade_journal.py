@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.trade_journal_tools import (
@@ -1837,3 +1838,63 @@ async def test_modify_journal_rejects_invalid_fx_labels():
     # Validation must short-circuit before loading or committing the journal.
     mock_session.get.assert_not_called()
     mock_session.commit.assert_not_called()
+
+
+class TestRecordTradeForFillDay:
+    """hk 5642: ``review.trades`` is unique on (account, order_id), and a broker
+    reuses order numbers across trading days."""
+
+    @staticmethod
+    def _session(row_id: int | None) -> AsyncMock:
+        session = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = row_id
+        session.execute.return_value = result
+        return session
+
+    @staticmethod
+    def _compiled(session: AsyncMock) -> str:
+        stmt = session.execute.await_args.args[0]
+        return str(
+            stmt.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+
+    @staticmethod
+    async def _record(session: AsyncMock, trade_day: date) -> int | None:
+        from app.mcp_server.tooling.order_journal import _record_trade_for_fill
+
+        return await _record_trade_for_fill(
+            session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            side="buy",
+            price=70000.0,
+            quantity=4.0,
+            total_amount=280000.0,
+            fee=0.0,
+            currency="KRW",
+            account="kiwoom_mock",
+            order_id="0000123",
+            trade_day=trade_day,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_row_is_dated_on_the_orders_trading_day(self) -> None:
+        session = self._session(42)
+        trade_id = await self._record(session, date(2026, 11, 16))
+
+        assert trade_id == 42
+        sql = self._compiled(session)
+        # The conflict update is confined to a row of the same KST day.
+        assert "ON CONFLICT ON CONSTRAINT uq_review_trades_account_order" in sql
+        assert "timezone('Asia/Seoul'" in sql
+        assert "'2026-11-16'" in sql
+
+    @pytest.mark.asyncio
+    async def test_a_row_of_another_day_gives_no_trade_id(self) -> None:
+        # The conflict update's day guard matched nothing: the stored row belongs
+        # to another trading day, so it is not touched and this fill gets no id.
+        session = self._session(None)
+        assert await self._record(session, date(2026, 11, 17)) is None

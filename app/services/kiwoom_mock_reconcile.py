@@ -47,7 +47,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Final, Protocol
 
@@ -421,6 +421,19 @@ async def _journal_buy_delta(
     return {"journal_created": True, "journal_id": lot.id}
 
 
+def _trading_day_date(trading_day: str) -> date | None:
+    """The place row's ``YYYYMMDD`` trading day as a date, or ``None``.
+
+    ``None`` means the day cannot be read; the trade row then falls back to the
+    runtime day instead of being guessed onto some other calendar day.
+    """
+    text_day = str(trading_day or "").strip()
+    try:
+        return datetime.strptime(text_day, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
 async def _journal_unjournaled(
     db: Any,
     service: KiwoomMockOrderLedgerService,
@@ -466,6 +479,9 @@ async def _journal_unjournaled(
         currency=booking.currency,
         account=JOURNAL_ACCOUNT,
         order_id=booking.broker_order_id,
+        # hk 5642: the trade row belongs to the order's trading day, and a row
+        # of another day is never rewritten by this fill.
+        trade_day=_trading_day_date(booking.trading_day),
     )
     details: dict[str, Any] = {"trade_id": trade_id}
     manual_review_reason: str | None = None

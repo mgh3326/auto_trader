@@ -418,7 +418,10 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   않는다)이다. sleeve 판독은 체결의 거래일을 `raw_payload_json.ledger_id` 가 가리키는
   place 원장 행의 `trading_day` 에서만 얻고, 그 증명이 없으면 추론 없이
   unattributed/unmeasured 로 남긴다(`kiwoom_fill_day_unknown`) — 관측 시각(`filled_at`)으로
-  거래일을 정하지 않는다.
+  거래일을 정하지 않는다. 같은 이유로 `review.trades` 의 누적 행은 주문의 `trading_day` 로
+  날짜가 찍히고, 유니크 키가 `(account, order_id)` 라서 다른 거래일의 같은 번호는 그 행을
+  갱신하지 못한다(같은 날의 누적 갱신만 계속 동작하고, 다른 날 체결은 trade id 를 받지 않아
+  어떤 저널도 이전 날 행을 가리키지 않는다).
   🔴 **저널 투영은 델타 부킹과 같은 트랜잭션이다 (hk 4802).** full 대사는 부킹한
   `execution_ledger` 델타마다 `(account, order_id)` 단일 누적 `review.trades` 행을
   upsert 하고 `account='kiwoom_mock'`·`account_type='mock'` 의 `TradeJournal` 을
