@@ -1,0 +1,52 @@
+{
+  "rt_cd": "0",
+  "msg_cd": "MCA00000",
+  "msg1": "정상처리 되었습니다.",
+  "output1": {
+    "zdiv": "2",
+    "stat": "R",
+    "crec": "2",
+    "trec": "2",
+    "nrec": "0"
+  },
+  "output2": [
+    {
+      "rsym": "DNASDELL",
+      "excd": "NAS",
+      "symb": "DELL",
+      "name": "델 테크놀로지스",
+      "last": "118.42",
+      "sign": "5",
+      "diff": "-9.53",
+      "rate": "-7.45",
+      "tvol": "604000",
+      "pask": "118.50",
+      "pbid": "118.40",
+      "n_base": "127.95",
+      "n_diff": "-9.53",
+      "n_rate": "-7.45",
+      "rank": "1",
+      "ename": "DELL TECHNOLOGIES",
+      "e_ordyn": "가능"
+    },
+    {
+      "rsym": "DNASURBN",
+      "excd": "NAS",
+      "symb": "URBN",
+      "name": "어반 아웃피터스",
+      "last": "43.11",
+      "sign": "5",
+      "diff": "-7.38",
+      "rate": "-14.62",
+      "tvol": "1310",
+      "pask": "43.20",
+      "pbid": "43.10",
+      "n_base": "50.49",
+      "n_diff": "-7.38",
+      "n_rate": "-14.62",
+      "rank": "2",
+      "ename": "URBAN OUTFITTERS",
+      "e_ordyn": "가능"
+    }
+  ]
+}

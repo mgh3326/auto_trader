@@ -108,6 +108,12 @@ OVERSEAS_MINUTE_CHART_TR = "HHDFS76950200"
 OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
 OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 
+# Overseas Stock - Ranking (hk 6510)
+# 해외주식 상승률/하락률. Official sample
+# examples_llm/overseas_stock/updown_rate/updown_rate.py (read 2026-11-25).
+OVERSEAS_UPDOWN_RATE_URL = "/uapi/overseas-stock/v1/ranking/updown-rate"
+OVERSEAS_UPDOWN_RATE_TR = "HHDFS76290000"
+
 # Overseas Stock - Balance & Orders
 OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"
 OVERSEAS_BALANCE_TR = "TTTS3012R"  # 실전투자 해외주식 잔고조회
