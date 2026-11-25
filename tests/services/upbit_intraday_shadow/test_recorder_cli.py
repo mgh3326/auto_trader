@@ -122,6 +122,53 @@ def test_a_delisted_market_ends_as_market_unavailable(monkeypatch) -> None:
     assert {t.missing_reason for t in seen["trades"]} == {"market_unavailable"}
 
 
+def test_a_delisted_market_is_asked_once(monkeypatch) -> None:
+    session = FakeSession()
+    seen = fake_writer(
+        monkeypatch,
+        session,
+        [old_pending("KRW-GONE", 100), old_pending("KRW-GONE", 120)],
+    )
+    fake = S.FakeUpbit({"KRW-AAA": rows()})
+    run(fake, session=session, catchup_bars=1)
+    assert len(seen["trades"]) == 6
+    assert len([u for u in fake.urls if "market=KRW-GONE" in u]) == 1
+
+
+def test_a_failed_older_page_does_not_hold_back_newer_candidates(monkeypatch) -> None:
+    session = FakeSession()
+    seen = fake_writer(
+        monkeypatch,
+        session,
+        [old_pending("KRW-AAA", 100), old_pending("KRW-AAA", 390)],
+    )
+    fake = S.FakeUpbit({"KRW-AAA": rows()})
+    calls: list[str] = []
+
+    def older_page_fails(url: str):
+        if "market=KRW-AAA" in url:
+            calls.append(url)
+            if len(calls) == 2:  # the first call is this run's own page
+                raise OSError("older page unreachable")
+        return fake(url)
+
+    report = asyncio.run(
+        run_once(
+            S.data_at(older_page_fails, NOW),
+            run_id="t",
+            now=NOW,
+            session=session,
+            catchup_bars=1,
+        )
+    )
+    assert [(e["market"], e["stage"]) for e in report["errors"]] == [
+        ("KRW-AAA", "outcome")
+    ]
+    assert [(t.entry_bar_open_at, t.horizon_bars) for t in seen["trades"]] == [
+        (S.at(391), 4)
+    ]
+
+
 @pytest.mark.parametrize("status", [404, 500])
 def test_a_listed_market_that_fails_stays_pending(monkeypatch, status) -> None:
     session = FakeSession()

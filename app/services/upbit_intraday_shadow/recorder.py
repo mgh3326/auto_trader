@@ -38,6 +38,7 @@ _MARKET_ERRORS = (
     OSError,
     http.client.HTTPException,
     ValueError,
+    KeyError,  # a candle without one of Upbit's fields
 )
 
 
@@ -71,6 +72,7 @@ def _resolve_all(
     trades: list[K.VirtualTrade] = []
     for market, items in sorted(by_market.items()):
         known = [pages[market]] if market in pages else []
+        unavailable = fetch_failed = False
         for item in sorted(items, key=lambda p: p.signal_bar_open_at):
             signal_slot = slot_of(item.signal_bar_open_at)
             # The page must reach the longest horizon (or the present) and still
@@ -84,20 +86,23 @@ def _resolve_all(
                 ),
                 None,
             )
-            if page is None:
+            if page is None and not unavailable:
+                if fetch_failed:
+                    continue  # one failed fetch per market per run
                 try:
                     page = data.candles(market, slot_open(reach))
+                    known.append(page)
                 except MarketUnavailable as exc:
                     # Permanent only for a market Upbit no longer lists.
                     if market in listing.market_events:
                         errors.append(_error(market, "outcome", exc))
-                        break
-                    trades += outcomes.resolve(item, None, end_slot=end_slot, now=now)
-                    continue
+                        fetch_failed = True
+                        continue
+                    unavailable = True
                 except _MARKET_ERRORS as exc:
                     errors.append(_error(market, "outcome", exc))
-                    break  # stays pending; the next run tries again
-                known.append(page)
+                    fetch_failed = True
+                    continue  # stays pending; the next run tries again
             trades += outcomes.resolve(item, page, end_slot=end_slot, now=now)
     return trades
 
