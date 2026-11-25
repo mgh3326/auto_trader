@@ -23,6 +23,7 @@ tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
 tests/mcp_server/test_b0x_shadow_replay_tools.py
 tests/mcp_server/test_binance_demo_ledger_status_tool.py
 tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
+tests/mcp_server/test_get_quote_kr_premarket.py
 tests/mcp_server/test_h3_us_paper_profile.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_kis_live_tool_descriptions.py
