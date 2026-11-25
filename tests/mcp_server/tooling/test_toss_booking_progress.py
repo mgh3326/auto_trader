@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.mcp_server.tooling import order_journal
 from app.mcp_server.tooling import toss_live_ledger as mod
@@ -36,6 +38,7 @@ def _row(filled_qty: str, status: str = "partial") -> SimpleNamespace:
         status=status,
         filled_qty=Decimal(filled_qty),
         journal_id=7,
+        currency="USD",
     )
 
 
@@ -144,6 +147,105 @@ async def test_difference_below_the_column_scale_books_nothing():
     assert out["action"] == "noop_already_booked"
     assert out["delta_qty"] == 0.0
     service.update_reconcile_outcome.assert_awaited_once()
+
+
+def _database_error(sqlstate: str | None, *, invalidated: bool = False):
+    original = Exception("database said no")
+    original.sqlstate = sqlstate
+    return OperationalError("stmt", {}, original, connection_invalidated=invalidated)
+
+
+async def _booking_failure(error: Exception) -> Exception:
+    """The exception a booking pass raises when a write fails with ``error``."""
+    service = MagicMock()
+    service.lock_row_for_booking = AsyncMock(return_value=_row("0"))
+    service.update_reconcile_outcome = AsyncMock()
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=object())
+    session.__aexit__ = AsyncMock(return_value=False)
+    evidence = TossFillEvidence(
+        verdict="partial",
+        local_status="partial",
+        broker_status="PARTIAL_FILLED",
+        filled_qty=Decimal("1"),
+        avg_price=Decimal("190"),
+        commission=None,
+        tax=None,
+        fee_total=Decimal("0"),
+        settlement_date=None,
+        raw_order={},
+        reason="test",
+    )
+    with (
+        patch.object(mod, "_save_order_fill", new=AsyncMock(side_effect=error)),
+        patch.object(mod, "_order_session_factory", return_value=lambda: session),
+        patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+    ):
+        with pytest.raises(Exception) as raised:  # noqa: PT011 - type is asserted
+            await mod._reconcile_one_toss_row(
+                _row("0"),
+                dry_run=False,
+                evidence_source=SimpleNamespace(
+                    evidence_for=AsyncMock(return_value=evidence)
+                ),
+                project_proposal_rungs=False,
+            )
+    service.update_reconcile_outcome.assert_not_awaited()
+    return raised.value
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _database_error("40001"),
+        _database_error("40P01"),
+        _database_error("55P03"),
+        _database_error("57014"),
+        _database_error("08006"),
+        _database_error(None, invalidated=True),
+        PoolTimeoutError("pool exhausted"),
+        ConnectionRefusedError("database is restarting"),
+    ],
+    ids=[
+        "serialization",
+        "deadlock",
+        "lock",
+        "cancel",
+        "conn",
+        "invalid",
+        "pool",
+        "socket",
+    ],
+)
+async def test_passing_database_failure_leaves_the_row_retryable(error):
+    raised = await _booking_failure(error)
+
+    assert mod._is_transient_reconcile_error(raised) is True
+    assert raised.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _database_error("23505"),
+        _database_error("22003"),
+        DBAPIError("stmt", {}, Exception("no sqlstate")),
+        RuntimeError("code fault"),
+    ],
+    ids=["unique", "numeric", "unknown-db", "code"],
+)
+async def test_other_booking_failure_keeps_the_manual_review_path(error):
+    raised = await _booking_failure(error)
+
+    assert raised is error
+    assert mod._is_transient_reconcile_error(raised) is False
+
+
+def test_database_error_outside_the_booking_is_classified_as_before():
+    assert mod._is_transient_reconcile_error(_database_error("40P01")) is False
 
 
 async def _call_helper(helper: str, db):

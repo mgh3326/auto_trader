@@ -120,11 +120,15 @@ Row actions that book nothing:
 `noop_stale_evidence` rows as not clean and exits 3; a `noop_terminal` row is
 clean there.
 
-A failed trade or journal write rolls the whole row booking back (nothing is
-committed) and takes the same error path as any other booking failure. A
-database error is not classified as transient, so the row is marked `anomaly`
-with `requires_manual_review` and `last_reconcile_error`, and it is not
-reopened automatically: check that row.
+A failed booking write rolls the whole row booking back (nothing is
+committed).
+
+- A database condition that can clear (lost connection or SQLSTATE class 08,
+  `40001`, `40P01`, `55P03`, `57014`, a connection-pool wait timeout, a socket
+  error) leaves the row open: the row result is `deferred_transient_retryable`,
+  `last_reconcile_error` records it, and the next pass books it.
+- Any other error marks the row `anomaly` with `requires_manual_review` and
+  `last_reconcile_error`. It is not reopened automatically: check that row.
 
 **3. Verification query** (run against the DB the process pointed at):
 

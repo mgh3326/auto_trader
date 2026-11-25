@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app.core.db import AsyncSessionLocal, engine
 from app.mcp_server.tooling import order_journal
@@ -387,6 +387,32 @@ async def test_failed_trade_or_link_write_rolls_the_whole_booking_back(
             await _pass(await _scan(target.order_id))
 
     broken.assert_called_once()
+    await _assert_nothing_booked(target)
+
+    assert (await _pass(await _scan(target.order_id)))["action"] == "booked"
+    await _assert_booked_exactly_once(target)
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_deadlock_during_booking_leaves_the_row_for_the_next_pass(order, side):
+    target = await order(side)
+    row = await _scan(target.order_id)
+
+    async def _deadlocked(*args, db, **kwargs):
+        # A real server error through the real driver, inside the booking.
+        await db.execute(
+            text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '40P01'; END $$")
+        )
+
+    with patch.object(mod, "_save_order_fill", new=_deadlocked):
+        with pytest.raises(mod.TossBookingRetryableError) as raised:
+            await _pass(row)
+    outcome = await mod._handle_reconcile_row_error(row, raised.value, dry_run=False)
+
+    assert outcome["action"] == "deferred_transient_retryable"
+    state = await _booked(target)
+    assert state.ledger.requires_manual_review is False
+    assert state.ledger.last_reconcile_error["type"] == "TossBookingRetryableError"
     await _assert_nothing_booked(target)
 
     assert (await _pass(await _scan(target.order_id)))["action"] == "booked"

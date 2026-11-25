@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
@@ -10,6 +12,8 @@ from typing import Any, Literal
 import httpx
 import sentry_sdk
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
@@ -632,7 +636,7 @@ async def _reconcile_one_toss_row(
     # update_reconcile_outcome commits it, and nothing else does.  A pass that
     # dies before that commit leaves no trade, journal or execution row.
     scanned_qty, scanned_status = already, row.status
-    async with _order_session_factory()() as db:
+    async with _retryable_booking_errors(), _order_session_factory()() as db:
         svc = TossLiveOrderLedgerService(db)
         locked = await svc.lock_row_for_booking(row.id)
         if locked is None:
@@ -863,9 +867,46 @@ _TRANSIENT_TOSS_CODES = frozenset(
     }
 )
 _TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+# hk 6288 — database conditions a later pass can get past, besides class 08
+# (connection): serialization failure, deadlock, lock not available, and a
+# cancelled or timed-out statement.
+_RETRYABLE_BOOKING_SQLSTATES = frozenset({"40001", "40P01", "55P03", "57014"})
+
+
+class TossBookingRetryableError(RuntimeError):
+    """A row booking rolled back on a database condition that can clear."""
+
+
+def _is_retryable_database_error(exc: Exception) -> bool:
+    # A pool wait timeout, or a socket failure the driver does not wrap.
+    if isinstance(exc, PoolTimeoutError | OSError):
+        return True
+    if not isinstance(exc, DBAPIError):
+        return False
+    if exc.connection_invalidated:
+        return True
+    sqlstate = str(getattr(exc.orig, "sqlstate", None) or "")
+    return sqlstate.startswith("08") or sqlstate in _RETRYABLE_BOOKING_SQLSTATES
+
+
+@contextlib.asynccontextmanager
+async def _retryable_booking_errors() -> AsyncIterator[None]:
+    """Name the booking failures that are safe to retry.
+
+    The booking is one transaction and the next pass re-reads the row under its
+    lock, so retrying cannot book twice.  Other errors pass through unchanged.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if _is_retryable_database_error(exc):
+            raise TossBookingRetryableError(f"{type(exc).__name__}: {exc}") from exc
+        raise
 
 
 def _is_transient_reconcile_error(exc: Exception) -> bool:
+    if isinstance(exc, TossBookingRetryableError):
+        return True
     if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
         return True
     if isinstance(exc, TossRateLimitError):
