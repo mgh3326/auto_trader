@@ -61,32 +61,6 @@ class TestSyncOneSymbol:
         repo.session.commit.assert_awaited_once()
         repo.session.rollback.assert_not_awaited()
 
-
-@pytest.mark.asyncio
-async def test_default_service_constructs_toss_client_only_on_first_fetch(monkeypatch):
-    from app.core import db
-    from app.core.config import settings
-    from app.services.brokers.kis import client as kis_client_module
-    from app.services.brokers.toss import client as toss_client_module
-    from app.services.daily_candles.sync_service import _build_default_service
-
-    session = MagicMock()
-    session.close = AsyncMock()
-    kis = MagicMock()
-    kis.close = AsyncMock()
-    factory = MagicMock(side_effect=RuntimeError("invalid Toss settings"))
-    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(kis_client_module, "KISClient", lambda: kis)
-    monkeypatch.setattr(settings, "toss_api_enabled", True)
-    monkeypatch.setattr(toss_client_module.TossReadClient, "from_settings", factory)
-
-    service = await _build_default_service()
-
-    factory.assert_not_called()
-    await service.close()
-    session.close.assert_awaited_once()
-    kis.close.assert_awaited_once()
-
     @pytest.mark.asyncio
     async def test_us_kis_empty_falls_back_to_yahoo(self):
         repo = MagicMock()
@@ -995,3 +969,29 @@ async def test_kr_run_logs_dropped_in_progress_count_once_per_run(caplog):
     ]
     assert len(dropped_logs) == 1
     assert "dropped 2 in-progress bar(s)" in dropped_logs[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_default_service_constructs_toss_client_only_on_first_fetch(monkeypatch):
+    from app.core import db
+    from app.core.config import settings
+    from app.services.brokers.kis import client as kis_client_module
+    from app.services.brokers.toss import client as toss_client_module
+    from app.services.daily_candles.sync_service import _build_default_service
+
+    session = MagicMock()
+    session.close = AsyncMock()
+    kis = MagicMock()
+    kis.close = AsyncMock()
+    factory = MagicMock(side_effect=RuntimeError("invalid Toss settings"))
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(kis_client_module, "KISClient", lambda: kis)
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(toss_client_module.TossReadClient, "from_settings", factory)
+
+    service = await _build_default_service()
+
+    factory.assert_not_called()
+    await service.close()
+    session.close.assert_awaited_once()
+    kis.close.assert_awaited_once()
