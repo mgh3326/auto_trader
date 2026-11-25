@@ -75,8 +75,15 @@ uv run python -m scripts.compare_go_py_minutes --market kr --date 2026-11-24 \
   --go-jsonl /var/lib/fillwire/market-tap/bars.jsonl [--symbols 005930 000660]
 ```
 
-- 종료 코드: `0` PASS, `3` BLOCK, `1` Python 읽기 실패, `2` 사용법·Go 파일 오류.
-  출력 JSON 은 `verdict`, `blocking`, `listed`, `cutover`(전환 표), `failure_code_map`.
+- 종료 코드: `0` PASS, `3` BLOCK, `4` INCONCLUSIVE(비교 근거 없음), `1` Python 읽기 실패,
+  `2` 사용법·Go 파일 오류. 출력 JSON 은 `verdict`, `inconclusive_reasons`, `blocking`,
+  `listed`, `cutover`(전환 표), `failure_code_map`.
+- Python 쪽은 세션 수집기가 쓴 행(`batch_id` 가 `session-minutes-` 로 시작)만 비교한다. 같은
+  표에 들어오는 Go ingest 행(hk 6343)과 promotion·backfill 행은 제외하고 `py_rows_excluded_non_collector`
+  로 센다. 이 규칙은 관례다. ingest 가 호출자 제공 `batch_id` 를 받으므로 `session-minutes-` 를 고른
+  호출자의 행은 통과한다. 그 경우는 이 CLI 가 잡지 못한다.
+- INCONCLUSIVE 는 다음 중 하나일 때다: 한쪽 행이 0개, 겹치는 봉이 0개, 요청 종목이 양쪽 어디에도
+  없음. 0 행을 "세션이 모두 덮였다"로 읽으면 안 된다. 이 결과는 PASS 와 같은 근거로 쓰지 않는다.
 - SELECT 만 쓴다(`research.kr_candles_1m` 또는 `research.us_candles_1m`). `READ ONLY` 트랜잭션,
   `statement_timeout 8s`. 쓰기·등록·브로커 호출 없음. 정적 테스트
   `tests/scripts/test_compare_go_py_minutes.py` 가 이를 고정한다.
@@ -119,6 +126,9 @@ p95)는 Go 쪽 수신 시각이 생기기 전까지 측정할 수 없다.
 | `fetch_error` | `fetch_error` | 그 밖의 오류 |
 | `unsupported` | 없음 | 소스가 세션·TR 을 제공하지 않음 |
 
-**전환 표 (스모크 수준)**: PASS 면 전환 기준 ①–⑤ 중 Go 쪽이 막히는 항목이 없다는 뜻이다. 전체 기준
-(연속 5 거래일 OHLCV 100%, 결측 0, 429·회로 비교, 최초 수신 p95, KIS 429 증가 없음)은 이 CLI 가 아니라
-여러 거래일 실행과 설계 §6 의 측정이 판단한다.
+**PASS 의 뜻은 좁다**: 이 CLI 의 PASS 는 "한쪽에 있고 다른 쪽에 통째로 없는 종목·(종목, venue, 거래일)
+세션이 없다"는 뜻뿐이다. 설계 §6 전환 기준 ①–⑤ 중 어느 것도 증명하지 않는다. 기준 ①(OHLCV 100%)은
+`listed` 의 `ohlcv_mismatch` 가, ②(결측 0)은 `listed` 의 `partial_gap_keys_*` 가, ④(최초 수신 p95)는
+`latency` 가 `unavailable` 이라 측정되지 않는다. ③·⑤(429·회로, KIS 429)는 이 CLI 가 보지 않는다.
+따라서 PASS 한 번으로 Python 수집을 멈추지 않는다. 기준은 여러 거래일 실행과 `listed` 값을 함께 본 뒤
+운영자가 판단한다. 전환 표의 `ok`/`listed` 는 기준 충족 표시가 아니다.

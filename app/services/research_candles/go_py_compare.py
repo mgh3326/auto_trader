@@ -25,6 +25,14 @@ from typing import Final
 
 PASS: Final = "PASS"
 BLOCK: Final = "BLOCK"
+# 비교할 근거가 없다(한쪽이 비었거나, 겹치는 봉이 없거나, 요청 종목이 양쪽 다 없다).
+# 근거 없음은 PASS 가 아니다: 0 행을 "세션이 다 덮였다"로 읽지 않게 한다.
+INCONCLUSIVE: Final = "INCONCLUSIVE"
+
+REASON_GO_ROWS_EMPTY: Final = "go_rows_empty"
+REASON_PY_ROWS_EMPTY: Final = "py_rows_empty"
+REASON_NO_MATCHED_BARS: Final = "no_matched_bars"
+REASON_REQUESTED_ABSENT_ON_BOTH: Final = "requested_symbol_absent_on_both"
 
 # 세션별 행 수 허용오차: max(절대 2 봉, 큰 쪽 행 수의 2% 올림). 상세는 런북.
 COUNT_TOLERANCE_ABS: Final = 2
@@ -227,10 +235,16 @@ class CompareReport:
             "reason": "go_jsonl_has_no_received_at",
         }
     )
+    requested_symbols_absent_on_both: tuple[str, ...] = ()
+    inconclusive_reasons: tuple[str, ...] = ()
 
     @property
     def blocking(self) -> bool:
         return self.verdict == BLOCK
+
+    @property
+    def inconclusive(self) -> bool:
+        return self.verdict == INCONCLUSIVE
 
 
 def _tolerance(go_rows: int, py_rows: int) -> int:
@@ -262,10 +276,13 @@ def compare_minutes(
     py: Sequence[MinuteBar],
     *,
     key_sample_limit: int = 20,
+    requested_symbols: Sequence[str] | None = None,
 ) -> CompareReport:
     """두 소스의 같은 거래일 행을 (time_utc, symbol, venue) 로 맞춰 판정한다.
 
-    `go` 와 `py` 는 같은 거래일·시장으로 미리 걸러진 행이어야 한다.
+    `go` 와 `py` 는 같은 거래일·시장으로 미리 걸러진 행이어야 한다. 판정:
+    BLOCK(통째로 빠진 종목·세션) > INCONCLUSIVE(비교 근거 없음) > PASS.
+    `requested_symbols` 가 주어지면 양쪽 어디에도 행이 없는 요청 종목을 따로 보고한다.
     """
     go_by_key, duplicate_go = _dedupe(go)
     py_by_key, duplicate_py = _dedupe(py)
@@ -364,8 +381,29 @@ def compare_minutes(
         or missing_sessions_on_go
         or missing_sessions_on_py
     )
+    requested = tuple(sorted(set(requested_symbols or ())))
+    absent_on_both = tuple(
+        sym for sym in requested if sym not in go_symbols and sym not in py_symbols
+    )
+    reasons: list[str] = []
+    if not go_by_key:
+        reasons.append(REASON_GO_ROWS_EMPTY)
+    if not py_by_key:
+        reasons.append(REASON_PY_ROWS_EMPTY)
+    if go_by_key and py_by_key and matched == 0:
+        reasons.append(REASON_NO_MATCHED_BARS)
+    if absent_on_both:
+        reasons.append(REASON_REQUESTED_ABSENT_ON_BOTH)
+    if blocking:
+        verdict = BLOCK
+    elif reasons:
+        verdict = INCONCLUSIVE
+    else:
+        verdict = PASS
     return CompareReport(
-        verdict=BLOCK if blocking else PASS,
+        verdict=verdict,
+        requested_symbols_absent_on_both=absent_on_both,
+        inconclusive_reasons=tuple(reasons),
         missing_symbols_on_go=missing_symbols_on_go,
         missing_symbols_on_py=missing_symbols_on_py,
         missing_sessions_on_go=missing_sessions_on_go,
@@ -412,6 +450,12 @@ def cutover_table(report: CompareReport) -> tuple[CutoverRow, ...]:
     )
     tolerance_pct = format(float(COUNT_TOLERANCE_REL) * 100, "g")
     return (
+        CutoverRow(
+            "비교 근거 (양쪽 행·겹치는 봉)",
+            "양쪽 모두 행이 있고 겹치는 봉이 있으며 요청 종목이 한쪽에라도 있어야 함",
+            "INCONCLUSIVE" if report.inconclusive_reasons else "ok",
+            blocking=False,
+        ),
         CutoverRow(
             "같은 종목 커버 (양방향)",
             "통째로 없는 종목 0",

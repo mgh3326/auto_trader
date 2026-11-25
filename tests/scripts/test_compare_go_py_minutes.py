@@ -133,7 +133,7 @@ def test_loader_keeps_only_the_requested_day_and_market_venues(tmp_path):
     us_row = GOOD.replace('"KRX"', '"NASD"')
     path = _write(tmp_path, [GOOD, other_day, us_row, ""])
 
-    bars, stats = cli._load_go(path, "kr", KR_DAY)
+    bars, stats = cli._load_go(path, "kr", KR_DAY, None)
 
     assert len(bars) == 1
     assert bars[0].symbol == "005930"
@@ -141,13 +141,14 @@ def test_loader_keeps_only_the_requested_day_and_market_venues(tmp_path):
         "go_lines": 3,
         "go_rows_compared": 1,
         "go_rows_other_scope": 2,
+        "go_rows_other_symbol": 0,
     }
 
 
 def test_loader_rejects_a_malformed_line_without_echoing_it(tmp_path):
     path = _write(tmp_path, [GOOD, '{"time_utc": 1.0}'])
     with pytest.raises(ValueError) as excinfo:
-        cli._load_go(path, "kr", KR_DAY)
+        cli._load_go(path, "kr", KR_DAY, None)
     assert "line 2" in str(excinfo.value)
     assert "1.0" not in str(excinfo.value)
 
@@ -157,7 +158,7 @@ def test_loader_rejects_a_float_price(tmp_path):
     raw["close"] = 100.0
     path = _write(tmp_path, [json.dumps(raw)])
     with pytest.raises(ValueError):
-        cli._load_go(path, "kr", KR_DAY)
+        cli._load_go(path, "kr", KR_DAY, None)
 
 
 def _py_bar(minute: int) -> cmp.MinuteBar:
@@ -216,3 +217,90 @@ def test_main_exits_usage_on_a_bad_go_file_before_any_database_work(tmp_path):
     path = _write(tmp_path, ["not json"])
     code = cli.main(["--market", "kr", "--date", "2026-11-24", "--go-jsonl", str(path)])
     assert code == cli.EXIT_USAGE
+
+
+# ---- review r1: Python side = session collector rows only ------------------
+
+
+def test_python_prefix_is_pinned_to_the_collector_batch_prefix():
+    from app.services.research_candles.session_minutes_collector import (
+        BATCH_PREFIX,
+    )
+
+    assert cli.PY_COLLECTOR_BATCH_PREFIX == BATCH_PREFIX
+
+
+def test_split_keeps_only_collector_rows_and_counts_the_rest():
+    rows = [
+        {"batch_id": "session-minutes-kr-20261124T000000Z-abcd1234"},
+        {"batch_id": "minutes-ingest-kr-20261124T000000Z-ffff0000"},
+        {"batch_id": "promote-20261124"},
+        {"batch_id": "session-minutes-us-x"},
+        {"batch_id": None},
+    ]
+    collector, excluded = cli.split_collector_rows(rows)
+
+    assert [r["batch_id"] for r in collector] == [
+        "session-minutes-kr-20261124T000000Z-abcd1234",
+        "session-minutes-us-x",
+    ]
+    assert excluded == 3
+
+
+def test_both_reads_select_the_batch_id_needed_for_the_filter():
+    for sql in _sql_literals(_tree()):
+        if sql.lstrip().upper().startswith("SELECT"):
+            assert "batch_id" in sql
+
+
+# ---- review r1: symbol count after filtering and exit codes ----------------
+
+
+def test_loader_counts_symbol_filtered_rows_separately(tmp_path):
+    other_symbol = GOOD.replace("005930", "000660")
+    path = _write(tmp_path, [GOOD, other_symbol])
+
+    bars, stats = cli._load_go(path, "kr", KR_DAY, ["005930"])
+
+    assert len(bars) == 1
+    assert stats["go_rows_compared"] == 1
+    assert stats["go_rows_other_symbol"] == 1
+    assert stats["go_rows_other_scope"] == 0
+
+
+def test_verdict_exit_codes_are_distinct():
+    assert cli._VERDICT_EXIT == {cmp.PASS: 0, cmp.BLOCK: 3, cmp.INCONCLUSIVE: 4}
+
+
+def test_requested_symbols_that_normalise_to_nothing_are_usage():
+    assert cli._requested_symbols("kr", [","]) == []
+    assert cli._requested_symbols("kr", ["5930", " 000660 "]) == ["000660", "005930"]
+
+
+def test_main_rejects_empty_symbol_list_before_reading_anything(tmp_path):
+    path = _write(tmp_path, [GOOD])
+    code = cli.main(
+        [
+            "--market",
+            "kr",
+            "--date",
+            "2026-11-24",
+            "--go-jsonl",
+            str(path),
+            "--symbols",
+            ",",
+        ]
+    )
+    assert code == cli.EXIT_USAGE
+
+
+def test_report_reports_inconclusive_with_reasons():
+    report = cli.build_report(
+        "kr",
+        KR_DAY,
+        [],
+        [],
+        {"go_lines": 0, "go_rows_compared": 0, "go_rows_other_scope": 0},
+    )
+    assert report["verdict"] == cmp.INCONCLUSIVE
+    assert "go_rows_empty" in report["inconclusive_reasons"]

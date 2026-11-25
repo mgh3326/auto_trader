@@ -368,3 +368,67 @@ def test_go_client_classes_outside_the_ticket_fold_into_fetch_error():
         "credential_host",
     ):
         assert cmp.FAILURE_CODE_MAP[code][0] == "fetch_error", code
+
+
+# ---- review r1: an empty or unmatched comparison is never a PASS ------------
+
+
+def test_empty_both_sides_is_inconclusive_not_pass():
+    report = cmp.compare_minutes([], [])
+
+    assert report.verdict == cmp.INCONCLUSIVE
+    assert not report.blocking
+    assert report.inconclusive_reasons == (
+        cmp.REASON_GO_ROWS_EMPTY,
+        cmp.REASON_PY_ROWS_EMPTY,
+    )
+    rows = cmp.cutover_table(report)
+    evidence = next(r for r in rows if r.check.startswith("비교 근거"))
+    assert evidence.status == "INCONCLUSIVE"
+
+
+def test_empty_go_with_python_rows_blocks_and_stays_blocked():
+    report = cmp.compare_minutes([], _session())
+
+    assert report.verdict == cmp.BLOCK
+    assert report.missing_symbols_on_go == ("005930",)
+    assert cmp.REASON_GO_ROWS_EMPTY in report.inconclusive_reasons
+
+
+def test_no_overlapping_bars_is_inconclusive():
+    go = [_bar(m) for m in range(100, 105)]  # 같은 세션, 겹치는 봉 없음
+    py = [_bar(m) for m in range(0, 5)]
+    report = cmp.compare_minutes(go, py)
+
+    assert report.matched_bars == 0
+    assert report.verdict == cmp.INCONCLUSIVE
+    assert report.inconclusive_reasons == (cmp.REASON_NO_MATCHED_BARS,)
+
+
+def test_requested_symbol_absent_on_both_sides_is_inconclusive():
+    rows = _session()
+    report = cmp.compare_minutes(
+        rows, list(rows), requested_symbols=["005930", "999999"]
+    )
+
+    assert report.verdict == cmp.INCONCLUSIVE
+    assert report.requested_symbols_absent_on_both == ("999999",)
+    assert report.inconclusive_reasons == (cmp.REASON_REQUESTED_ABSENT_ON_BOTH,)
+
+
+def test_requested_symbol_present_on_one_side_still_blocks_not_inconclusive():
+    rows = _session()
+    py = rows + _session(symbol="000660")
+    report = cmp.compare_minutes(rows, py, requested_symbols=["000660"])
+
+    assert report.verdict == cmp.BLOCK
+    assert report.requested_symbols_absent_on_both == ()
+
+
+def test_clean_pass_has_no_inconclusive_reasons():
+    rows = _session()
+    report = cmp.compare_minutes(rows, list(rows), requested_symbols=["005930"])
+
+    assert report.verdict == cmp.PASS
+    assert report.inconclusive_reasons == ()
+    assert report.requested_symbols_absent_on_both == ()
