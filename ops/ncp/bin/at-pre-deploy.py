@@ -120,7 +120,7 @@ def backup(start_ns, start_monotonic_ns, reason, receipt):
         backup_result=status["Result"],
     )
     # The actual PG_BACKUP_DIRECTORY is a live check; see design §pre_deploy.
-    directory = Path(os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/ncp-pg"))
+    directory = Path(os.environ.get("PG_BACKUP_DIRECTORY", "/var/backups/at-pg"))
     checksums = sorted(
         directory.glob("backup-*.sha256"),
         key=lambda path: path.stat().st_mtime_ns,

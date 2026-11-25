@@ -10,7 +10,7 @@ pi는 `PG_BACKUP_DIRECTORY`를 env 파일(`/root/at-secrets/.env.pg-backup`)에 
 
 ## Environment file
 
-Create `/root/at-secrets/.env.pg-backup` on NCP with mode `0600`. Do not put
+Create `/root/at-secrets/.env.pg-backup` on the pi with mode `0600`. Do not put
 this file, a database URL, or any credential in the repository.
 
 | Name | Required | Meaning |
@@ -40,7 +40,8 @@ not export role passwords.
 On the pi, after a reviewed pull of the versioned files:
 
 ```bash
-install -d -m 0700 /var/backups/at-pg /root/at-secrets
+PG_BACKUP_DIRECTORY="${PG_BACKUP_DIRECTORY:-/var/backups/at-pg}"
+install -d -m 0700 "$PG_BACKUP_DIRECTORY" /root/at-secrets
 install -m 0700 deploy/shiftgate/pi/pg-backup.sh /root/at-run/pg-backup.sh
 install -m 0644 deploy/shiftgate/pi/at-pg-backup.{service,timer} /etc/systemd/system/
 install -m 0600 /dev/null /root/at-secrets/.env.pg-backup
@@ -54,10 +55,11 @@ Before relying on the timer, run one controlled manual backup and inspect only
 safe metadata:
 
 ```bash
+PG_BACKUP_DIRECTORY="${PG_BACKUP_DIRECTORY:-/var/backups/at-pg}"
 systemctl start at-pg-backup.service
 systemctl status at-pg-backup.service --no-pager
-find /var/backups/at-pg -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
-sha256sum -c /var/backups/at-pg/backup-YYYYMMDD-HHMM.sha256
+find "$PG_BACKUP_DIRECTORY" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+sha256sum -c "$PG_BACKUP_DIRECTORY/backup-YYYYMMDD-HHMM.sha256"
 ```
 
 The mirror is additive `rsync -a`, not `rsync --delete`: the MacBook's 30-day
@@ -73,9 +75,10 @@ to make a failed remote look healthy.
 Measure present logical database sizes before choosing storage:
 
 ```bash
+PG_BACKUP_DIRECTORY="${PG_BACKUP_DIRECTORY:-/var/backups/at-pg}"
 psql -h 127.0.0.1 -p 25432 -U "$PGUSER" -d postgres \
   -c "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database ORDER BY pg_database_size(datname) DESC;"
-du -sh /var/backups/at-pg
+du -sh "$PG_BACKUP_DIRECTORY"
 ```
 
 Observed planning sizes are `auto_trader` about 961 MB plus a small
