@@ -36,7 +36,7 @@ hk 6302·6031·6372·6395, 같은 날짜의 dots 댓글 33192/33232/33252.
 |US/KR 뉴스(Finnhub·Naver)|`finnhub_news.py:172`, `naver_finance/news.py:47` → `symbol_news_store.py:81`|[사실] `news_articles`, `symbol_news_relevance`|저장됨. 원천 시각 timezone 손실, revised 없음|
 |Upbit 공지|`upbit_public_read_model/notices.py:91`, 소비 `_crypto_catalysts.py:106`|[사실] 쓰기 없음|조회 성공·미저장(호출 시점만)|
 |Upbit 유의·주의 상태|`upbit_market_event.py:99` 파싱, `upbit_symbol_universe_service.py:134-145` 기록|[사실] `upbit_symbol_universe.market_event`|현재값만. 지정·해제 이력 없음|
-|경제 이벤트(ForexFactory·TradingView)|`market_events/normalizers.py:296` 부근, `market_events/ingestion.py:460`/`561`|[사실] `market_events`|수동 전용. 기대 원천 아님(`expected_sources.py:33-39`)|
+|경제 이벤트(ForexFactory·TradingView)|`market_events/normalizers.py:296` (ForexFactory), `market_events/ingestion.py:460`/`561`|[사실] `market_events`|수동 전용. 기대 원천 아님(`expected_sources.py:33-39`)|
 |Factortrail 타임라인|`retro_v1/retro_timeline.py:549`|[사실] 쓰기 없음|이벤트 없음(closed SOURCES:82)|
 
 ### 1.2 KR DART 공시 — 저장 경로
