@@ -7,27 +7,26 @@ incumbent Finnhub company-news feed over the same window.
 
 Findings measured by the design session on 2026-11-25 (no live call is made
 by this worker; these are recorded facts to code against):
-- Auth works only with the query-parameter token (``token=...``). The
-  ``Authorization: token`` header gives HTTP 401.
-- ``GET https://api.benzinga.com/api/v2/news`` returns a JSON list. Item
-  fields: ``author, body, channels, created, id, image, importance_rank,
-  stocks, tags, teaser, title, updated, url``.
-- ``created``/``updated`` are RFC 2822 strings with a ``-0400`` offset even
-  in late November.
-- ``tickers=NVDA`` returned 0 items although NVDA articles exist under
-  ``tickers=AAPL``; unexplained.
+Auth works only with the query-parameter token (``token=...``). The
+``Authorization: token`` header gives HTTP 401.
+``GET https://api.benzinga.com/api/v2/news`` returns a JSON list. Item
+fields: ``author, body, channels, created, id, image, importance_rank,
+stocks, tags, teaser, title, updated, url``.
+``created``/``updated`` are RFC 2822 strings with a ``-0400`` offset even
+in late November.
+Confirmed 2026-11-25 (design-session live check): ``tickers=NVDA`` returned
+0 items although NVDA articles exist; ``primaryTickers=NVDA`` returned the
+NVDA articles. The ``tickers`` filter matches only the primary
+(first-listed) ticker of an article, so a story filed primarily under
+another ticker with NVDA as a secondary mention is invisible to
+``tickers=NVDA``.
 
-Query hypothesis for the ``tickers=NVDA`` anomaly (NOT verified — no live
-call from this worker; the design session confirms): the ``tickers`` filter
-may match only the primary/first-listed ticker of an article rather than any
-mentioned ticker, so a story filed primarily under AAPL with NVDA as a
-secondary mention is invisible to ``tickers=NVDA``. The CLI therefore
-queries each symbol individually (one request per symbol) instead of joining
-symbols into a single ``tickers=A,B`` call, records per-symbol result counts
-(including explicit zeros), and never treats "0 items" as "no news" without
-the poll evidence. If the per-symbol query also returns 0 for a symbol that
-should have coverage, the JSONL still shows the empty poll and the summary
-still counts the gap.
+The CLI therefore queries ``primaryTickers=<symbol>`` per symbol for
+coverage, and additionally issues ``tickers=<symbol>`` per symbol as
+evidence. Each symbol is queried individually (never joined into one
+``primaryTickers=A,B`` call), every article and poll_status row carries its
+request parameter name (``query_param``), and explicit zeros stay visible —
+0 items is a gap data point, never silence.
 
 Safety:
 - Default off: ``BENZINGA_NEWS_SHADOW_ENABLED`` must be exactly ``"true"``.
@@ -176,10 +175,12 @@ def normalize_record(
     created_utc = parse_provider_time(created_raw)
     updated_utc = parse_provider_time(updated_raw)
     symbols = sorted({s.upper() for s in _names(item.get("stocks")) if s})
+    raw_id = item.get("id")
+    provider_id = str(raw_id) if raw_id is not None else None
     return {
         "record_type": "article",
         "source": "benzinga",
-        "provider_id": str(item.get("id")),
+        "provider_id": provider_id,
         "url": item.get("url") if isinstance(item.get("url"), str) else None,
         "title": item.get("title") if isinstance(item.get("title"), str) else None,
         "teaser": item.get("teaser") if isinstance(item.get("teaser"), str) else None,
@@ -203,8 +204,13 @@ def _finnhub_created_utc(raw: Any) -> tuple[str | None, str | None]:
     The provider value is a naive host-local string
     (``datetime.fromtimestamp(ts).isoformat()``), so a manual run on a KST
     host would otherwise record values 9 hours off labelled UTC. A naive
-    value is read as host-local time and converted; an aware value is
-    converted as-is. Returns ``(utc_iso, basis)``.
+    value is read as host-local time *at its own instant* and converted;
+    an aware value is converted as-is. Returns ``(utc_iso, basis)``.
+
+    The naive branch must not pin ``datetime.now()``'s offset: across a DST
+    switch inside the window that is off by one hour. Calling
+    ``astimezone(UTC)`` on the naive value lets the host zone rules supply
+    the offset in effect at the record instant.
     """
     if not isinstance(raw, str) or not raw.strip():
         return None, None
@@ -213,8 +219,7 @@ def _finnhub_created_utc(raw: Any) -> tuple[str | None, str | None]:
     except ValueError:
         return None, None
     if parsed.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        parsed = parsed.replace(tzinfo=local_tz)
+        parsed = parsed.astimezone(UTC)
         basis = "finnhub_naive_interpreted_as_local"
     else:
         basis = "provider_offset_aware"
@@ -268,18 +273,23 @@ async def fetch_benzinga_news(
     date_to: str | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     client_factory: Any = None,
+    ticker_param: str = "primaryTickers",
 ) -> list[dict[str, Any]]:
     """Fetch one ticker's window and return normalized shadow records.
 
-    One ticker per call (the tickers=NVDA anomaly hypothesis): the caller
-    loops over symbols and records per-symbol counts, including zeros.
-    The ``token`` param is built inside this call only; failures carry
-    status + ticker, never the URL or key material.
+    One ticker per call, one request parameter per call: the caller loops
+    over symbols and over ``("primaryTickers", "tickers")``, recording
+    per-symbol per-parameter counts, including zeros. ``primaryTickers``
+    is the coverage query (confirmed 2026-11-25: ``tickers=NVDA`` returns
+    0 items while ``primaryTickers=NVDA`` returns the NVDA articles);
+    ``tickers`` is evidence for the comparison. The ``token`` param is
+    built inside this call only; failures carry status + ticker, never
+    the URL or key material.
     """
     symbol = ticker.strip().upper()
     params: dict[str, Any] = {
         "token": api_key,
-        "tickers": symbol,
+        ticker_param: symbol,
         "displayOutput": "full",
         "pageSize": max(1, page_size),
     }
@@ -433,11 +443,22 @@ def _dedupe_articles(
     The CLI queries each symbol separately, so one story tagged NVDA and AMD
     is written twice; each poll also writes its own file. Counting those as
     separate unique items would inflate coverage. Returns (kept, removed).
+
+    Records with an empty or missing ``provider_id`` keep their own
+    identity: merging them onto one shared key would silently drop
+    distinct stories.
     """
     best: dict[tuple[Any, Any], dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
     removed = 0
     for record in records:
-        key = (record.get("source"), record.get("provider_id"))
+        provider_id = record.get("provider_id")
+        if provider_id is None or (
+            isinstance(provider_id, str) and not provider_id.strip()
+        ):
+            unkeyed.append(record)
+            continue
+        key = (record.get("source"), provider_id)
         seen = _seen_at(record)
         prior = best.get(key)
         if prior is None:
@@ -447,7 +468,7 @@ def _dedupe_articles(
         prior_seen = _seen_at(prior)
         if seen is not None and (prior_seen is None or seen < prior_seen):
             best[key] = record
-    return list(best.values()), removed
+    return list(best.values()) + unkeyed, removed
 
 
 def _cell(record: dict[str, Any]) -> tuple[Any, Any]:
@@ -457,6 +478,7 @@ def _cell(record: dict[str, Any]) -> tuple[Any, Any]:
 def summarize_shadow(
     benzinga_records: list[dict[str, Any]],
     finnhub_records: list[dict[str, Any]],
+    poll_frames: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Compare two shadow streams over the same window (pure function).
 
@@ -465,6 +487,13 @@ def summarize_shadow(
     cell where either source reports ``status="error"`` is unreliable: its
     articles are excluded from coverage counts and reported separately, so a
     failed fetch is never counted as "no news".
+
+    ``poll_frames`` carries the per-poll ``poll_header`` / ``poll_completion``
+    records. A poll with a header but no completion record was killed or
+    timed out mid-pass: every planned symbol cell is unreliable. A completed
+    poll whose completion lists fewer symbols than the header planned left
+    symbols unpolled: those cells are unreliable too. Both are reported in
+    ``incomplete_polls`` so a partial collection never reads as a gap.
 
     - Dedupe: by (source, provider_id), keeping the earliest sighting.
     - Overlap: same article in both sources — first by normalized URL, then
@@ -490,6 +519,49 @@ def summarize_shadow(
         ):
             unreliable.add(_cell(status))
 
+    planned: dict[Any, set[Any]] = {}
+    completed: dict[Any, set[Any]] = {}
+    for frame in poll_frames:
+        frame_type = frame.get("record_type")
+        poll_id = frame.get("poll_id")
+        if poll_id is None:
+            continue
+        if frame_type == "poll_header":
+            symbols = frame.get("symbols")
+            if isinstance(symbols, list):
+                planned.setdefault(poll_id, set()).update(
+                    s for s in symbols if isinstance(s, str)
+                )
+        elif frame_type == "poll_completion":
+            symbols = frame.get("symbols_completed")
+            if isinstance(symbols, list):
+                completed.setdefault(poll_id, set()).update(
+                    s for s in symbols if isinstance(s, str)
+                )
+    incomplete_polls: list[dict[str, Any]] = []
+    for poll_id in sorted(planned, key=str):
+        wanted = planned[poll_id]
+        done = completed.get(poll_id)
+        if done is None:
+            incomplete_polls.append(
+                {
+                    "poll_id": poll_id,
+                    "reason": "no_completion_record",
+                    "symbols": sorted(wanted, key=str),
+                }
+            )
+            unreliable.update((poll_id, symbol) for symbol in wanted)
+        else:
+            missing = wanted - done
+            if missing:
+                incomplete_polls.append(
+                    {
+                        "poll_id": poll_id,
+                        "reason": "symbols_unpolled",
+                        "symbols": sorted(missing, key=str),
+                    }
+                )
+                unreliable.update((poll_id, symbol) for symbol in missing)
     ben_all = [r for r in benzinga_records if r.get("record_type") == "article"]
     fin_all = [r for r in finnhub_records if r.get("record_type") == "article"]
     ben_excluded = [r for r in ben_all if _cell(r) in unreliable]
@@ -578,9 +650,15 @@ def summarize_shadow(
             return None
         return removed / count
 
+    ben_by_param: dict[str, int] = {}
+    for record in ben:
+        param = record.get("query_param") or "unknown"
+        ben_by_param[str(param)] = ben_by_param.get(str(param), 0) + 1
+
     return {
         "benzinga_count": len(ben),
         "finnhub_count": len(fin),
+        "benzinga_by_query_param": dict(sorted(ben_by_param.items())),
         "overlap_articles": len(overlap_pairs),
         "benzinga_unique": ben_unique,
         "finnhub_unique": fin_unique,
@@ -598,6 +676,7 @@ def summarize_shadow(
             {"poll_id": poll, "symbol": symbol}
             for poll, symbol in sorted(unreliable, key=str)
         ],
+        "incomplete_polls": incomplete_polls,
         "excluded_unreliable_articles": {
             "benzinga": len(ben_excluded),
             "finnhub": len(fin_excluded),

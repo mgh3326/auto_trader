@@ -20,17 +20,19 @@ BENZINGA_NEWS_SHADOW_ENABLED=true BENZINGA_API_KEY=<키> \
     --symbols NVDA,AMD --out-dir /tmp/benzinga-shadow --limit 50
 ```
 
-- 심볼마다 Benzinga `tickers=<심볼>` 1건 + Finnhub company-news 1건을 같은
-  패스로 읽는다. `tickers=NVDA` 가 0건을 돌려준 관측(hk 6395)이 있어 심볼을
-  하나의 `tickers=A,B` 호출로 묶지 않는다. 0건도 `counts` 와 `poll_status`
-  행에 그대로 남는다. 0건은 "뉴스 없음"이 아니라 그 poll 의 관측이다.
+- 심볼마다 Benzinga `primaryTickers=<심볼>`(커버리지) + `tickers=<심볼>`(증거)
+  2건을 같은 패스에서 읽고, Finnhub company-news 1건을 같은 패스에서 읽는다.
+  개별 심볼 조회이며 하나의 `tickers=A,B` 호출로 묶지 않는다. 0건도 `counts` 와
+  `poll_status` 행에 그대로 남는다. 0건은 "뉴스 없음"이 아니라 그 poll 의 관측이다.
 - 기사당 1줄(`record_type: article`): `source`, `provider_id`, `url`,
-  `title`, `symbols/stocks`, `query_symbol`(조회한 심볼), 원문
-  `created_raw/updated_raw` + 근거(`created_basis`), 파싱된 UTC(`created_utc`,
+  `title`, `symbols/stocks`, `query_symbol`, `query_param`(Benzinga 요청 파라미터명),
+  원문 `created_raw/updated_raw` + 근거(`created_basis`), 파싱된 UTC(`created_utc`,
   `updated_utc`), 수집 시계 `first_received_at`, `poll_id`.
-- 심볼·소스당 1줄(`record_type: poll_status`): `ok`/`empty`(건수) 또는
+- 심볼·소스·파라미터당 1줄(`record_type: poll_status`): `ok`/`empty`(건수) 또는
   `error`(예외 클래스명). 실패한 셀은 summary 에서 제외·보고되므로, 실패를
-  "뉴스 없음"으로 읽지 않는다.
+  "뉴스 없음"으로 읽지 않는다. pass 당 1줄씩 `poll_header`(계획 심볼)와
+  `poll_completion`(실행 완료 심볼)도 기록한다 — 중간에 죽은 poll 은 completion
+  이 없어 summary 가 `incomplete_polls` 로 보고하고 그 셀을 unreliable 로 뺀다.
 - `first_received_at` 은 소스별로 그 응답이 도착한 뒤에 찍는다. 두 소스를
   순차로 읽기 때문에 차이는 순서 신호로만 읽는다(정밀 경쟁 측정이 아니다).
 - Finnhub 시각은 naive host-local 문자열이므로 host 시간대로 읽어 UTC 로
@@ -67,13 +69,14 @@ BENZINGA_NEWS_SHADOW_ENABLED=true \
 - 어느 한 소스라도 `error` 인 (poll, 심볼) 셀은 `unreliable_symbol_polls` 로
   보고하고 겹침·unique 에서 뺀다. 상대 소스의 기사는 unique 로 세지 않는다.
 
-## tickers=NVDA 가설 (미확인)
+## tickers=NVDA 동작 (2026-11-25 설계 세션 실측으로 확정)
 
-설계 세션 관측: `tickers=NVDA` 는 0건인데 같은 기사가 `tickers=AAPL` 에는
-잡힌다. 이 워커는 API 를 호출할 수 없어 가설만 둔다: `tickers` 필터가 기사의
-대표(first-listed) 티커에만 걸리고 부차 언급은 매칭하지 않을 수 있다.
-CLI 는 그래서 심볼별 개별 조회 + 명시적 0건 기록으로 둔다. 설계 세션 확인 후
-이 문단을 갱신한다.
+설계 세션 실측: `tickers=NVDA` 는 0건인데 `primaryTickers=NVDA` 는 NVDA 기사를
+돌려준다. `tickers` 필터는 기사의 대표(first-listed) 티커에만 걸리고 부차 언급은
+매칭하지 않는다. CLI 는 그래서 심볼마다 `primaryTickers` 1건(커버리지)과
+`tickers` 1건(증거)을 각각 조회하고, 양쪽 결과를 `query_param` 과 함께 기록한다.
+summary 는 합집합(중복 제거 뒤)으로 겹침을 재고 `benzinga_by_query_param` 에
+파라미터별 건수를 남긴다.
 
 ## 운영
 
