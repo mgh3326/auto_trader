@@ -344,14 +344,12 @@ async def ingest_kr_disclosures_for_date(
     try:
         rows = await fetch_rows(target_date)
         corp_registry = None
-        endpoints = [
-            capital_endpoint(row.get("report_nm") or "") if enrich_capital else None
-            for row in rows
-        ]
+        endpoints = [capital_endpoint(row.get("report_nm") or "") for row in rows]
         needs_registry = any(
             row.get("corp_name")
             and (
-                not dart_row_stock_code(row) or (endpoint and not row.get("corp_code"))
+                not dart_row_stock_code(row)
+                or (enrich_capital and endpoint and not row.get("corp_code"))
             )
             for row, endpoint in zip(rows, endpoints, strict=True)
         )
@@ -375,7 +373,7 @@ async def ingest_kr_disclosures_for_date(
             except ValueError as exc:
                 logger.warning("skipping unparseable dart row: %s (%s)", row, exc)
                 continue
-            if endpoint and not credential_refused:
+            if enrich_capital and endpoint and not credential_refused:
                 try:
                     value_dicts = await enrich_capital_event(
                         endpoint, row, event_dict, corp_registry, fiscal_months
@@ -389,7 +387,12 @@ async def ingest_kr_disclosures_for_date(
                         event_dict["source_event_id"],
                         exc,
                     )
-            await repo.upsert_event_with_values(event_dict, value_dicts)
+            if endpoint and not value_dicts:
+                await repo.upsert_event_with_values(
+                    event_dict, value_dicts, preserve_dart_detail=True
+                )
+            else:
+                await repo.upsert_event_with_values(event_dict, value_dicts)
             upserted += 1
 
         if detail_error is not None:

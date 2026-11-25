@@ -564,3 +564,57 @@ async def test_dart_list_replay_preserves_typed_event_evidence(monkeypatch, repl
         assert "event_date =" not in conflict_update
     write_value.assert_not_awaited()
     assert transport.call_count == len(bodies)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_dart_replay_updates_date_payload_and_resolved_symbol(
+    monkeypatch,
+):
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql.dml import Insert
+
+    from app.services.market_events.repository import MarketEventsRepository
+
+    result = Mock()
+    result.scalar_one.return_value = 1
+    db = AsyncMock(execute=AsyncMock(return_value=result))
+    repo = MarketEventsRepository(db)
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    monkeypatch.setattr(repo, "get_or_create_partition", AsyncMock())
+    monkeypatch.setattr(repo, "mark_partition_running", AsyncMock())
+    monkeypatch.setattr(repo, "mark_partition_succeeded", AsyncMock())
+    initial = {**FILING, "report_nm": "기타공시", "stock_code": "", "rm": ""}
+    updated = {**initial, "stock_code": "005930", "rcept_dt": "20261125", "rm": "정정"}
+    registry = AsyncMock(return_value=None)
+
+    for row in (initial, updated):
+        outcome = await ingestion.ingest_kr_disclosures_for_date(
+            db,
+            date(2026, 11, 24),
+            fetch_rows=AsyncMock(return_value=[row]),
+            load_corp_registry=registry,
+        )
+        assert outcome.status == "succeeded"
+
+    first, second = [
+        call.args[0].compile(dialect=postgresql.dialect())
+        for call in db.execute.await_args_list
+        if isinstance(call.args[0], Insert)
+    ]
+    assert (
+        first.params["raw_payload_json"]["symbol_resolution_reason"]
+        == "registry_unavailable"
+    )
+    update = str(second).split("DO UPDATE SET ", 1)[1]
+    assert "event_date =" in update
+    assert "symbol =" in update
+    assert "raw_payload_json =" in update
+    assert date(2026, 11, 25) in second.params.values()
+    assert {"정정"} == {
+        value["rm"] for value in second.params.values() if isinstance(value, dict)
+    }
+    assert all(
+        "symbol_resolution_reason" not in value
+        for value in second.params.values()
+        if isinstance(value, dict)
+    )
