@@ -105,6 +105,7 @@ tests/scripts/b0x/test_contract_stamp.py
 tests/scripts/b0x/us/test_run_b0x_us_cycle_cli.py
 tests/scripts/test_backfill_kr_candles_1m_toss.py
 tests/scripts/test_compare_go_py_minutes.py
+tests/scripts/test_dagu_fnguide_consensus_dag.py
 tests/scripts/test_dagu_upbit_intraday_shadow_dag.py
 tests/scripts/test_dockerfile_api_ships_nautilus_scalping.py
 tests/scripts/test_execution_mandates_cli.py
@@ -177,6 +178,16 @@ tests/services/execution_ledger/test_opening_lots.py
 tests/services/execution_ledger/test_quarantine_db.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
+tests/services/fnguide_consensus/test_cli.py
+tests/services/fnguide_consensus/test_client.py
+tests/services/fnguide_consensus/test_collector.py
+tests/services/fnguide_consensus/test_fnguide_db.py
+tests/services/fnguide_consensus/test_migration.py
+tests/services/fnguide_consensus/test_parser.py
+tests/services/fnguide_consensus/test_query.py
+tests/services/fnguide_consensus/test_sink.py
+tests/services/fnguide_consensus/test_static_boundary.py
+tests/services/fnguide_consensus/test_writer.py
 tests/services/funding_advisory/test_containment.py
 tests/services/funding_advisory/test_router.py
 tests/services/funding_advisory/test_service.py

@@ -420,6 +420,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(text("DROP TABLE review.strategy_sleeves"))
             # hk 6154 momentum run-status table is later than the boundary too.
             await connection.execute(text("DROP TABLE invest_momentum_event_runs"))
+            # hk 6508 FnGuide tables are later too and already in Base.metadata
+            # (children first); the migration adds them back.
+            await connection.execute(text("DROP TABLE fnguide_reports"))
+            await connection.execute(text("DROP TABLE fnguide_values"))
+            await connection.execute(text("DROP TABLE fnguide_snapshots"))
             # hk 4702 trend state tables are later too (intents reference signals).
             await connection.execute(text("DROP TABLE review.binance_trend_intents"))
             await connection.execute(text("DROP TABLE review.binance_trend_signals"))
