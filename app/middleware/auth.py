@@ -89,7 +89,12 @@ class AuthMiddleware:
             return
 
         request = Request(scope, receive=receive)
-        path = request.url.path
+        # Decide on the routed path, not ``request.url.path``: Starlette builds
+        # that URL from ``host_header + path``, so a crafted ``Host`` (e.g.
+        # ``x/auth/?``) can make it look like a public path while routing still
+        # reaches the real one (hk 6343 review). ``scope["path"]`` is what the
+        # router matches.
+        path = scope.get("path") or request.url.path
         is_api_request = self._is_api_request_path(path)
 
         # Handle authentication logic and determine if we should short-circuit
@@ -139,7 +144,8 @@ class AuthMiddleware:
         Check authentication and return a response if access is denied.
         Returns None if request should continue to the downstream app.
         """
-        path = request.url.path
+        # Routed path, not the Host-derived ``request.url.path`` — see __call__.
+        path = scope.get("path") or request.url.path
 
         # Legacy paths must always pass through to deprecated router handlers.
         if self._is_legacy_deprecated_path(path):
@@ -281,9 +287,7 @@ class AuthMiddleware:
             if not expected_token:
                 return JSONResponse(
                     status_code=403,
-                    content={
-                        "detail": "Research minutes ingest token not configured"
-                    },
+                    content={"detail": "Research minutes ingest token not configured"},
                 )
             header_name = settings.RESEARCH_MINUTES_INGEST_TOKEN_HEADER.strip()
             if not header_name:
@@ -294,7 +298,13 @@ class AuthMiddleware:
                     },
                 )
             supplied_token = request.headers.get(header_name, "")
-            if not hmac.compare_digest(supplied_token, expected_token):
+            # Bytes, not str: Starlette decodes header values as latin-1, and
+            # ``compare_digest`` on str raises TypeError for non-ASCII input —
+            # a wrong token must be 401, never a 500.
+            if not hmac.compare_digest(
+                supplied_token.encode("utf-8", "surrogateescape"),
+                expected_token.encode("utf-8", "surrogateescape"),
+            ):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid research minutes ingest token"},

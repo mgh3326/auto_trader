@@ -30,7 +30,7 @@ def _decide(**overrides: Any) -> mi.BarDecision:
         "close_price": Decimal("105"),
         "volume": Decimal("10"),
         "value": None,
-        "received_at": BAR + timedelta(minutes=1),
+        "received_at": BAR + timedelta(minutes=2),
         "source": "KIS",
         "now": NOW,
     }
@@ -50,7 +50,7 @@ def test_valid_kr_bar_derives_server_owned_fields() -> None:
     assert bar.session_date.isoformat() == "2026-11-24"
     assert bar.source == "KIS"
     assert bar.value is None  # KR: unproven per-minute value stays NULL
-    assert decision.retrieved_at == BAR + timedelta(minutes=1)
+    assert decision.retrieved_at == BAR + timedelta(minutes=2)
 
 
 def test_valid_us_bar_requires_and_keeps_the_per_bar_value() -> None:
@@ -59,7 +59,7 @@ def test_valid_us_bar_requires_and_keeps_the_per_bar_value() -> None:
         symbol="NVDA",
         venue="NASD",
         time_utc=datetime(2026, 11, 24, 14, 31, tzinfo=UTC),  # 09:31 ET
-        received_at=datetime(2026, 11, 24, 14, 32, tzinfo=UTC),
+        received_at=datetime(2026, 11, 24, 14, 34, tzinfo=UTC),
         value=Decimal("1234.5"),
         source="TOSS",
     )
@@ -79,7 +79,7 @@ def test_us_bar_without_value_is_refused() -> None:
             venue="NASD",
             value=None,
             time_utc=datetime(2026, 11, 24, 14, 31, tzinfo=UTC),
-            received_at=datetime(2026, 11, 24, 14, 32, tzinfo=UTC),
+            received_at=datetime(2026, 11, 24, 14, 34, tzinfo=UTC),
         ).reason
         == mi.REASON_VALUE_REQUIRED
     )
@@ -115,7 +115,7 @@ def test_symbol_is_normalized_per_market() -> None:
             symbol="BRK-B",
             venue="NYSE",
             time_utc=datetime(2026, 11, 24, 14, 30, tzinfo=UTC),
-            received_at=datetime(2026, 11, 24, 14, 31, tzinfo=UTC),
+            received_at=datetime(2026, 11, 24, 14, 32, tzinfo=UTC),
             value=Decimal("1"),
         ).bar.symbol
         == "BRK.B"
@@ -238,3 +238,50 @@ def test_targets_payload_is_the_build_targets_report(
     for key, value in expected.items():
         assert payload[key] == value
     assert payload["errors"] == fake.errors
+
+
+def test_a_forming_bar_is_refused() -> None:
+    """Only a closed bar may be stored (start + 1 min + 10 s <= observed)."""
+    # 20:59 bar, now 21:00: 20:59 + 1m + 10s = 21:00:10 > 21:00 -> still forming.
+    forming = _decide(
+        time_utc=datetime(2026, 11, 24, 20, 59, tzinfo=UTC),
+        received_at=datetime(2026, 11, 24, 21, 0, tzinfo=UTC),
+    )
+    assert forming.reason == mi.REASON_BAR_NOT_CLOSED
+
+    closed = _decide(
+        time_utc=datetime(2026, 11, 24, 20, 58, tzinfo=UTC),
+        received_at=datetime(2026, 11, 24, 21, 0, tzinfo=UTC),
+    )
+    assert closed.bar is not None and closed.reason is None
+
+
+def test_a_claimed_receipt_cannot_close_a_bar_earlier_than_the_server_clock() -> None:
+    # received_at is 4 s ahead of now (within MAX_CLOCK_SKEW) but the server
+    # clock still says the minute is open.
+    decision = _decide(
+        time_utc=datetime(2026, 11, 24, 20, 59, tzinfo=UTC),
+        received_at=datetime(2026, 11, 24, 21, 0, 4, tzinfo=UTC),
+    )
+    assert decision.reason == mi.REASON_BAR_NOT_CLOSED
+
+
+def test_sentinel_and_overflowing_timestamps_are_refused_per_item() -> None:
+    # Go zero time: before the floor, and would overflow the ET conversion.
+    assert (
+        _decide(time_utc=datetime(1, 1, 1, tzinfo=UTC)).reason
+        == mi.REASON_BAR_TIME_INVALID
+    )
+    us_year_one = _decide(
+        market="us",
+        symbol="NVDA",
+        venue="NASD",
+        time_utc=datetime(1, 1, 1, tzinfo=UTC),
+        value=Decimal("1"),
+    )
+    assert us_year_one.reason == mi.REASON_BAR_TIME_INVALID
+
+    far_future = _decide(
+        received_at=datetime.fromisoformat("9999-12-31T23:59:59-01:00")
+    )
+    assert far_future.reason == mi.REASON_RECEIVED_AT_INVALID

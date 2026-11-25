@@ -61,6 +61,24 @@ def _write_failure_reason(exc: BaseException) -> str:
     return (type(exc).__name__ or "Error")[:_MAX_REASON_CHARS]
 
 
+class _HoldingsOnlyReader:
+    """Targets needs the two holdings reads and nothing else.
+
+    The KIS client is built once and wrapped so this surface cannot reach an
+    order method even by mistake; the wrapper is the router's whole KIS
+    attribute surface (static guard test).
+    """
+
+    def __init__(self, client: collector.KisMinuteReader) -> None:
+        self._client = client
+
+    async def fetch_my_stocks(self) -> list[dict[str, Any]]:
+        return await self._client.fetch_my_stocks()
+
+    async def fetch_my_us_stocks(self) -> list[dict[str, Any]]:
+        return await self._client.fetch_my_us_stocks()
+
+
 class _UnavailableKisReader:
     """Refuses every holdings read: targets still answers, with error rows.
 
@@ -169,7 +187,9 @@ async def get_research_minute_targets(
     try:
         from app.services.brokers.kis.client import KISClient
 
-        kis: collector.KisMinuteReader = cast(collector.KisMinuteReader, KISClient())
+        kis: collector.KisMinuteReader = _HoldingsOnlyReader(
+            cast(collector.KisMinuteReader, KISClient())
+        )
     except Exception as exc:  # noqa: BLE001 - targets still answers, holdings absent
         logger.warning(
             "research minute targets: kis client unavailable error=%s",

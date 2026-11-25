@@ -45,6 +45,7 @@ from app.services.research_candles.session_minutes_collector import (
     MinuteBar,
     TargetSet,
     build_targets,
+    is_closed,
     normalize_symbol,
     targets_report,
 )
@@ -60,6 +61,11 @@ _KR = ZoneInfo("Asia/Seoul")
 #: A receipt claim this much ahead of the server clock is refused as future
 #: (transport clock skew only). A late claim is only bounded by the bar start.
 MAX_CLOCK_SKEW = timedelta(seconds=5)
+
+#: No research minute bar can legitimately precede this. A zero/sentinel
+#: timestamp (Go's ``0001-01-01``) would otherwise be written as a permanent
+#: year-1 first bar that suppresses later missing-data diagnostics.
+MIN_BAR_START = datetime(2000, 1, 1, tzinfo=UTC)
 
 #: Closed ``source`` vocabulary per market — exactly what the storage CHECKs of
 #: ``research.kr_candles_1m`` / ``research.us_candles_1m`` admit. Extending this
@@ -87,6 +93,7 @@ REASON_UNKNOWN_VENUE = "unknown_venue"
 REASON_INVALID_SYMBOL = "invalid_symbol"
 REASON_BAR_TIME_INVALID = "bar_time_invalid"
 REASON_BAR_TIME_NOT_MINUTE_ALIGNED = "bar_time_not_minute_aligned"
+REASON_BAR_NOT_CLOSED = "bar_not_closed"
 REASON_RECEIVED_AT_INVALID = "received_at_invalid"
 REASON_RECEIVED_AT_IN_FUTURE = "received_at_in_future"
 REASON_RECEIVED_AT_BEFORE_BAR = "received_at_before_bar"
@@ -103,6 +110,7 @@ REASONS: frozenset[str] = frozenset(
         REASON_INVALID_SYMBOL,
         REASON_BAR_TIME_INVALID,
         REASON_BAR_TIME_NOT_MINUTE_ALIGNED,
+        REASON_BAR_NOT_CLOSED,
         REASON_RECEIVED_AT_INVALID,
         REASON_RECEIVED_AT_IN_FUTURE,
         REASON_RECEIVED_AT_BEFORE_BAR,
@@ -127,10 +135,13 @@ class BarDecision:
 def _valid_datetime(value: object) -> datetime | None:
     if not isinstance(value, datetime) or value.tzinfo is None:
         return None
-    offset = value.utcoffset()
-    if offset is None:
+    try:
+        if value.utcoffset() is None:
+            return None
+        return value.astimezone(UTC)
+    except (OverflowError, ValueError):
+        # ``9999-12-31T23:59:59-01:00`` overflows when normalised to UTC.
         return None
-    return value.astimezone(UTC)
 
 
 def _finite(value: object) -> Decimal | None:
@@ -181,6 +192,8 @@ def decide_bar(
         return BarDecision(reason=REASON_BAR_TIME_INVALID)
     if start.second or start.microsecond:
         return BarDecision(reason=REASON_BAR_TIME_NOT_MINUTE_ALIGNED)
+    if start < MIN_BAR_START:
+        return BarDecision(reason=REASON_BAR_TIME_INVALID)
 
     received = _valid_datetime(received_at)
     if received is None:
@@ -189,6 +202,12 @@ def decide_bar(
         return BarDecision(reason=REASON_RECEIVED_AT_IN_FUTURE)
     if received < start:
         return BarDecision(reason=REASON_RECEIVED_AT_BEFORE_BAR)
+    # Only a closed bar may be stored: ``is_closed`` is the collector's own rule
+    # (``start + 1 min + 10 s <= observed``), and ``min`` keeps a claimed
+    # receipt from closing a bar earlier than the server clock allows. A
+    # forming bar would be a permanent partial row (insert-only, no UPDATE).
+    if not is_closed(start, min(received, now)):
+        return BarDecision(reason=REASON_BAR_NOT_CLOSED)
 
     o = _finite(open_price)
     h = _finite(high_price)
@@ -216,9 +235,12 @@ def decide_bar(
         if traded_value is None or traded_value < 0:
             return BarDecision(reason=REASON_INVALID_VALUE)
 
-    session_date = (
-        start.astimezone(_KR).date() if market == "kr" else us_session_date(start)
-    )
+    try:
+        session_date = (
+            start.astimezone(_KR).date() if market == "kr" else us_session_date(start)
+        )
+    except (OverflowError, ValueError):
+        return BarDecision(reason=REASON_BAR_TIME_INVALID)
     return BarDecision(
         bar=MinuteBar(
             time_utc=start,
@@ -283,6 +305,7 @@ __all__ = [
     "BATCH_PREFIX",
     "BarDecision",
     "MAX_CLOCK_SKEW",
+    "MIN_BAR_START",
     "REASONS",
     "SOURCES_BY_MARKET",
     "VENUES_BY_MARKET",

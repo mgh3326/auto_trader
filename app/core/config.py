@@ -1092,6 +1092,19 @@ class Settings(BaseSettings):
     RESEARCH_MINUTES_INGEST_ENABLED: bool = False
     RESEARCH_MINUTES_INGEST_TOKEN: str = ""
     RESEARCH_MINUTES_INGEST_TOKEN_HEADER: str = "X-Research-Minutes-Ingest-Token"
+
+    @field_validator("RESEARCH_MINUTES_INGEST_ENABLED", mode="before")
+    @classmethod
+    def _exact_true_research_minutes_gate(cls, value: object) -> bool:
+        """Only exactly ``"true"`` (or a real bool) opens the gate.
+
+        pydantic's bool coercion accepts ``1`` / ``yes`` / ``on`` / ``TRUE``;
+        the contract says the surface opens only on exactly ``"true"``.
+        """
+        if isinstance(value, bool):
+            return value
+        return isinstance(value, str) and value == "true"
+
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""

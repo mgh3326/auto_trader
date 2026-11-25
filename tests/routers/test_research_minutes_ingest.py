@@ -68,7 +68,7 @@ class _FakeSession:
         self.commits += 1
 
 
-def _bar(symbol: str, *, received_at: str = "2026-11-24T00:01:00Z") -> dict[str, Any]:
+def _bar(symbol: str, *, received_at: str = "2026-11-24T00:02:00Z") -> dict[str, Any]:
     return {
         "symbol": symbol,
         "venue": "KRX",
@@ -170,7 +170,7 @@ async def test_refused_items_do_not_discard_the_rest_of_the_batch(
         datetime(2026, 11, 24).date()
     }
     assert {row["retrieved_at"] for row in session.rows} == {
-        datetime(2026, 11, 24, 0, 1, tzinfo=UTC)
+        datetime(2026, 11, 24, 0, 2, tzinfo=UTC)
     }
     assert session.commits == 1
 
@@ -181,7 +181,7 @@ async def test_replay_inserts_zero_and_keeps_the_first_retrieved_at() -> None:
 
     first = (await _post(body, session)).json()
     assert first["inserted"] == 1
-    assert session.rows[0]["retrieved_at"] == datetime(2026, 11, 24, 0, 1, tzinfo=UTC)
+    assert session.rows[0]["retrieved_at"] == datetime(2026, 11, 24, 0, 2, tzinfo=UTC)
 
     # The same bars again, with a later claimed receipt: the row is untouched.
     replay = {
@@ -194,7 +194,7 @@ async def test_replay_inserts_zero_and_keeps_the_first_retrieved_at() -> None:
     assert second["already_present"] == 1
     assert second["results"] == [{"status": "already_present", "reason": None}]
     assert len(session.rows) == 1
-    assert session.rows[0]["retrieved_at"] == datetime(2026, 11, 24, 0, 1, tzinfo=UTC)
+    assert session.rows[0]["retrieved_at"] == datetime(2026, 11, 24, 0, 2, tzinfo=UTC)
     assert session.rows[0]["batch_id"] == "go-kis-poll-1"
 
 

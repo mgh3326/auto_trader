@@ -60,7 +60,8 @@ async def test_replay_through_the_route_inserts_zero_and_keeps_first_receipt(
     await conn.run_sync(_run_step, "upgrade")
     session = AsyncSession(bind=conn, join_transaction_mode="create_savepoint")
     try:
-        first_receipt = BARS[0] + timedelta(minutes=1)
+        # Closed-bar rule: the last bar (14:31) closes at 14:32:10.
+        first_receipt = BARS[-1] + timedelta(minutes=2)
         first = await ingest_research_minutes(_request(first_receipt), session)
         assert (first.inserted, first.already_present, first.rejected) == (2, 0, 0)
         assert [r.status for r in first.results] == ["inserted", "inserted"]

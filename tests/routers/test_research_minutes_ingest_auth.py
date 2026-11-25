@@ -168,3 +168,68 @@ async def test_valid_token_reaches_the_handler(armed: None) -> None:
         db=_Session(),
     )
     assert reply.status_code == 422
+
+
+async def test_crafted_host_cannot_skip_the_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``request.url.path`` is Host-derived; auth must use the routed path.
+
+    ``Host: x/auth/?`` makes Starlette parse the URL path as ``/auth/`` (public)
+    while routing still matches ``/trading/api/research-minutes/ingest``.
+    """
+    monkeypatch.setattr(
+        settings, "RESEARCH_MINUTES_INGEST_ENABLED", False, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "RESEARCH_MINUTES_INGEST_TOKEN", _TOKEN, raising=False
+    )
+    reply = await _reply(
+        "POST",
+        _INGEST_PATH,
+        body=_INGEST_BODY,
+        headers={"host": "x/auth/?"},
+    )
+    assert reply.status_code == 404
+    assert reply.json() == {"detail": "Not Found"}
+
+
+async def test_crafted_host_cannot_skip_the_token(armed: None) -> None:
+    reply = await _reply(
+        "POST",
+        _INGEST_PATH,
+        body=_INGEST_BODY,
+        headers={"host": "x/auth/?"},
+    )
+    assert reply.status_code == 401
+
+
+async def test_non_ascii_token_is_401_not_500(armed: None) -> None:
+    """Header values are latin-1 decoded; str ``compare_digest`` raises there."""
+    reply = await _reply(
+        "POST", _INGEST_PATH, body=_INGEST_BODY, headers={_HEADER: b"w\xe9"}
+    )
+    assert reply.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        ("false", False),
+        ("TRUE", False),
+        ("1", False),
+        ("yes", False),
+        ("on", False),
+        ("y", False),
+        ("", False),
+    ],
+)
+async def test_gate_opens_only_on_exactly_true(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    """pydantic bool coercion would accept 1/yes/on/TRUE; the contract does not."""
+    monkeypatch.setenv("RESEARCH_MINUTES_INGEST_ENABLED", raw)
+    from app.core.config import Settings
+
+    assert Settings(_env_file=None).RESEARCH_MINUTES_INGEST_ENABLED is expected
