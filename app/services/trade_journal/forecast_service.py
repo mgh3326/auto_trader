@@ -14,7 +14,7 @@ import datetime as dt
 import logging
 import math
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -1360,38 +1360,292 @@ def _target_contract_failure(
     return None
 
 
-async def resolve_forecast(
+def _row_instrument(row: TradeForecast) -> str:
+    """Normalize a row's instrument to the plain string the resolver branches on."""
+    instrument = row.instrument_type
+    return instrument.value if hasattr(instrument, "value") else str(instrument)
+
+
+async def _load_candles_single(
     db: AsyncSession,
     *,
-    forecast_id: str | uuid.UUID,
+    symbol: str,
+    instrument_type: str,
+    kind: str,
+    start_date: date,
+    review_date: date,
+    backfill_missing: bool,
+) -> list[DailyCandleRow] | None:
+    """Single-row candle load with the ROB-712 lazy backfill.
+
+    Terminal-close always re-reads after a backfill attempt; price_target only
+    re-reads when the backfill wrote rows. ``resolve_forecasts_batch`` applies
+    the same rule per row in its second batched phase.
+    """
+    candles = await _read_window_candles(
+        db,
+        symbol=symbol,
+        instrument_type=instrument_type,
+        start_date=start_date,
+        review_date=review_date,
+    )
+    if not candles and backfill_missing:
+        resolved = await _resolve_candle_partition(
+            db, symbol=symbol, instrument_type=instrument_type
+        )
+        if resolved is not None:
+            market, partition = resolved
+            written = await _backfill_daily_candles(
+                symbol=symbol, market=market, partition=partition
+            )
+            if written or kind == _TERMINAL_CLOSE_KIND:
+                candles = await _read_window_candles(
+                    db,
+                    symbol=symbol,
+                    instrument_type=instrument_type,
+                    start_date=start_date,
+                    review_date=review_date,
+                )
+    return candles
+
+
+async def _resolve_candle_partitions_batch(
+    db: AsyncSession, symbols: list[str]
+) -> dict[str, tuple[MarketKey, str] | None]:
+    """Resolve US symbols to ``(market, partition)`` in one query.
+
+    Symbols the batch map knows cost exactly one ``us_symbol_universe`` SELECT
+    for the whole batch. A symbol the map misses falls back to the single-row
+    resolver so unknown/inactive/empty-universe semantics stay identical to
+    ``_resolve_candle_partition`` (which swallows every error to ``None``).
+    """
+    from app.services.us_symbol_universe_service import (
+        get_us_exchange_by_symbol,
+        get_us_exchanges_by_symbols,
+    )
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        if symbol not in seen:
+            seen.add(symbol)
+            unique.append(symbol)
+    out: dict[str, tuple[MarketKey, str] | None] = {}
+    if not unique:
+        return out
+    try:
+        batch = await get_us_exchanges_by_symbols(unique, db=db)
+    except Exception:
+        batch = {}
+    canonical_of = {s: to_db_symbol(s.strip().upper()) for s in unique}
+    single: dict[str, str] = {}
+    for symbol in unique:
+        if canonical_of[symbol] not in batch:
+            try:
+                single[symbol] = await get_us_exchange_by_symbol(symbol, db=db)
+            except Exception:
+                out[symbol] = None
+    for symbol in unique:
+        if symbol in out:
+            continue
+        exchange = batch.get(canonical_of[symbol], single.get(symbol))
+        out[symbol] = (MarketKey.US, exchange) if exchange else None
+    return out
+
+
+async def resolve_forecasts_batch(
+    db: AsyncSession,
+    rows: Sequence[TradeForecast],
+    *,
     persist: bool,
+    backfill_missing: bool = True,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve many due forecasts with a constant number of read statements.
+
+    The due-batch tool path already holds the forecast rows (two listing
+    queries), so unlike ``resolve_forecast`` this never re-fetches a forecast
+    by id. US exchange partitions resolve in one query and daily candles load
+    in one query per ``(market, partition)`` group over the union window, then
+    each row is sliced to its own ``[start_date, review_date]`` calendar
+    window — the same predicate ``_read_window_candles`` applies. Per-row
+    outcomes run through ``_resolve_open_row``, the same core the single path
+    uses, so resolutions and Brier fields are identical.
+    """
+    resolved_now = now or now_kst()
+    # Plan candle windows for rows that can reach a candle read. Rows failing
+    # contract validation simply ignore the prefetched data in the shared
+    # core below.
+    type _Plan = tuple[int, str, str, str, date, date]
+    plans: list[_Plan] = []
+    us_symbols: list[str] = []
+    for idx, row in enumerate(rows):
+        if row.status != "open":
+            continue
+        target = row.forecast_target
+        kind = target.get("kind") if isinstance(target, dict) else None
+        instrument = _row_instrument(row)
+        if kind == "price_target" and instrument in _AUTO_RESOLVABLE_INSTRUMENTS:
+            start_date = row.forecast_start_date or _kst_date(row.created_at)
+            plans.append(
+                (idx, row.symbol, instrument, kind, start_date, row.review_date)
+            )
+            if instrument == "equity_us":
+                us_symbols.append(row.symbol)
+        elif kind == _TERMINAL_CLOSE_KIND and instrument in _TERMINAL_CLOSE_INSTRUMENTS:
+            window_start = row.review_date - timedelta(
+                days=_TERMINAL_CLOSE_STALE_LOOKBACK_DAYS
+            )
+            plans.append(
+                (idx, row.symbol, instrument, kind, window_start, row.review_date)
+            )
+            if instrument == "equity_us":
+                us_symbols.append(row.symbol)
+    partitions: dict[str, tuple[MarketKey, str] | None] = {}
+    if us_symbols:
+        partitions = await _resolve_candle_partitions_batch(db, us_symbols)
+
+    def _partition_for(symbol: str, instrument: str) -> tuple[MarketKey, str] | None:
+        if instrument == "equity_kr":
+            return (MarketKey.KR, "KRX")
+        if instrument == "crypto":
+            return (MarketKey.CRYPTO, "upbit_krw")
+        if instrument == "equity_us":
+            return partitions.get(symbol)
+        return None
+
+    # Group by (market, partition); the union window covers every member's
+    # padded fetch range so per-row slicing matches the single-row reader.
+    groups: dict[tuple[MarketKey, str], list[_Plan]] = {}
+    group_key_of: dict[int, tuple[MarketKey, str]] = {}
+    for plan in plans:
+        idx, symbol, instrument = plan[0], plan[1], plan[2]
+        resolved = _partition_for(symbol, instrument)
+        if resolved is None:
+            continue
+        group_key_of[idx] = resolved
+        groups.setdefault(resolved, []).append(plan)
+    repo = DailyCandlesRepository(session=db)
+    fetched: dict[tuple[MarketKey, str], dict[str, list[DailyCandleRow]]] = {}
+    for group_key, members in groups.items():
+        market, partition = group_key
+        union_start = min(p[4] for p in members)
+        union_end = max(p[5] for p in members)
+        fetched[group_key] = await repo.fetch_range_many(
+            market=market,
+            symbols=[p[1] for p in members],
+            partition=partition,
+            start=datetime.combine(
+                union_start - timedelta(days=2), dt.time(0, 0), tzinfo=dt.UTC
+            ),
+            end=datetime.combine(
+                union_end + timedelta(days=2), dt.time(23, 59, 59), tzinfo=dt.UTC
+            ),
+        )
+
+    def _slice(plan: _Plan) -> list[DailyCandleRow]:
+        idx, symbol, _instrument, _kind, start_date, review_date = plan
+        group_rows = fetched.get(group_key_of[idx], {}).get(symbol, [])
+        return [r for r in group_rows if start_date <= _row_date(r) <= review_date]
+
+    sliced: dict[int, list[DailyCandleRow]] = {
+        plan[0]: _slice(plan) for plan in plans if plan[0] in group_key_of
+    }
+    # Second phase: ROB-712 lazy backfill for empty windows, then one
+    # re-read per group over only the refetched symbols.
+    if backfill_missing:
+        reread: dict[tuple[MarketKey, str], list[str]] = {}
+        for plan in plans:
+            idx = plan[0]
+            if idx not in group_key_of or sliced.get(idx):
+                continue
+            _idx, symbol, _instrument, kind = plan[0], plan[1], plan[2], plan[3]
+            market, partition = group_key_of[idx]
+            written = await _backfill_daily_candles(
+                symbol=symbol, market=market, partition=partition
+            )
+            if written or kind == _TERMINAL_CLOSE_KIND:
+                reread.setdefault(group_key_of[idx], []).append(symbol)
+        for group_key, symbols in reread.items():
+            market, partition = group_key
+            members = [p for p in groups[group_key] if p[1] in set(symbols)]
+            union_start = min(p[4] for p in members)
+            union_end = max(p[5] for p in members)
+            refetched = await repo.fetch_range_many(
+                market=market,
+                symbols=symbols,
+                partition=partition,
+                start=datetime.combine(
+                    union_start - timedelta(days=2), dt.time(0, 0), tzinfo=dt.UTC
+                ),
+                end=datetime.combine(
+                    union_end + timedelta(days=2), dt.time(23, 59, 59), tzinfo=dt.UTC
+                ),
+            )
+            by_symbol = fetched[group_key]
+            for symbol, rows_in in refetched.items():
+                by_symbol[symbol] = rows_in
+            for plan in members:
+                sliced[plan[0]] = _slice(plan)
+    finals: dict[int, list[DailyCandleRow] | None] = {}
+    for plan in plans:
+        idx = plan[0]
+        finals[idx] = sliced.get(idx) if idx in group_key_of else None
+
+    results: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        if row.status != "open":
+            results.append(
+                {
+                    "status": "already_closed",
+                    "changed": False,
+                    "forecast": serialize_forecast(row),
+                }
+            )
+            continue
+        final = finals.get(idx)
+        if idx in group_key_of and final is None:
+            final = []
+
+        async def _load(
+            kind: str,
+            start_date: date,
+            review_date: date,
+            _final: list[DailyCandleRow] | None = final,
+        ) -> list[DailyCandleRow] | None:
+            return _final
+
+        results.append(
+            await _resolve_open_row(
+                db,
+                row,
+                persist=persist,
+                resolved_now=resolved_now,
+                load_candles=_load,
+            )
+        )
+    return results
+
+
+async def _resolve_open_row(
+    db: AsyncSession,
+    row: TradeForecast,
+    *,
+    persist: bool,
+    resolved_now: datetime,
     manual_outcome: bool | None = None,
     manual_observed_value: float | None = None,
     manual_evidence: Any | None = None,
-    now: datetime | None = None,
-    backfill_missing: bool = True,
+    load_candles: Callable[[str, date, date], Awaitable[list[DailyCandleRow] | None]],
 ) -> dict[str, Any]:
-    """Resolve one forecast. Idempotent: a closed forecast is never re-scored.
+    """Resolve one already-loaded open row with caller-supplied candles.
 
-    ``persist=False`` computes the outcome/Brier and returns a preview without
-    mutating the row (the dry-run default at the tool boundary). Price-target
-    forecasts retain their window-touch OHLCV semantics. Terminal-close
-    forecasts use exactly one review-date regular-session ``close`` after the
-    exchange-calendar final-session gate. Other kinds require ``manual_outcome``
-    + ``manual_evidence``.
+    The single path passes a loader that reads (and ROB-712 backfills) one
+    window; the batch path passes a loader serving the prefetched union
+    window sliced to this row. Everything after the load — contract checks,
+    classification, Brier, persistence — is shared, so both paths resolve
+    identically.
     """
-    repo = ForecastRepository(db)
-    row = await repo.get_by_forecast_id(_coerce_forecast_id(forecast_id))
-    if row is None:
-        raise ForecastValidationError(f"forecast not found: {forecast_id}")
-    if row.status != "open":
-        return {
-            "status": "already_closed",
-            "changed": False,
-            "forecast": serialize_forecast(row),
-        }
-
-    resolved_now = now or now_kst()
     target = row.forecast_target
     kind = target.get("kind") if isinstance(target, dict) else None
     instrument = (
@@ -1469,34 +1723,9 @@ async def resolve_forecast(
                 "forecast": serialize_forecast(row),
             }
         start_date = row.forecast_start_date or _kst_date(row.created_at)
-        candles = await _read_window_candles(
-            db,
-            symbol=row.symbol,
-            instrument_type=instrument,
-            start_date=start_date,
-            review_date=row.review_date,
+        candles = await load_candles(
+            "price_target", start_date=start_date, review_date=row.review_date
         )
-        # ROB-712: rejected (non-held) symbols usually have no daily OHLCV in
-        # the DB yet. Lazily fetch+persist once via the shared sync service, then
-        # re-read. Never raises — backfill returns 0 on failure and the existing
-        # unresolved_no_data branch still runs below.
-        if not candles and backfill_missing:
-            resolved = await _resolve_candle_partition(
-                db, symbol=row.symbol, instrument_type=instrument
-            )
-            if resolved is not None:
-                market, partition = resolved
-                rows = await _backfill_daily_candles(
-                    symbol=row.symbol, market=market, partition=partition
-                )
-                if rows:
-                    candles = await _read_window_candles(
-                        db,
-                        symbol=row.symbol,
-                        instrument_type=instrument,
-                        start_date=start_date,
-                        review_date=row.review_date,
-                    )
         if not candles:
             return {
                 "status": "unresolved_no_data",
@@ -1552,31 +1781,11 @@ async def resolve_forecast(
         terminal_window_start = row.review_date - timedelta(
             days=_TERMINAL_CLOSE_STALE_LOOKBACK_DAYS
         )
-        candles = await _read_window_candles(
-            db,
-            symbol=row.symbol,
-            instrument_type=instrument,
+        candles = await load_candles(
+            _TERMINAL_CLOSE_KIND,
             start_date=terminal_window_start,
             review_date=row.review_date,
         )
-        if not candles and backfill_missing:
-            resolved = await _resolve_candle_partition(
-                db, symbol=row.symbol, instrument_type=instrument
-            )
-            if resolved is not None:
-                market, partition = resolved
-                await _backfill_daily_candles(
-                    symbol=row.symbol, market=market, partition=partition
-                )
-                # Daily-candle batch upserts may report rowcount=0 even after a
-                # successful write, so always re-read once after the attempt.
-                candles = await _read_window_candles(
-                    db,
-                    symbol=row.symbol,
-                    instrument_type=instrument,
-                    start_date=terminal_window_start,
-                    review_date=row.review_date,
-                )
 
         target_price = float(target.get("target_price"))
         try:
@@ -1660,6 +1869,65 @@ async def resolve_forecast(
         "computed": computed,
         "forecast": serialize_forecast(row),
     }
+
+
+async def resolve_forecast(
+    db: AsyncSession,
+    *,
+    forecast_id: str | uuid.UUID,
+    persist: bool,
+    manual_outcome: bool | None = None,
+    manual_observed_value: float | None = None,
+    manual_evidence: Any | None = None,
+    now: datetime | None = None,
+    backfill_missing: bool = True,
+) -> dict[str, Any]:
+    """Resolve one forecast. Idempotent: a closed forecast is never re-scored.
+
+    ``persist=False`` computes the outcome/Brier and returns a preview without
+    mutating the row (the dry-run default at the tool boundary). Price-target
+    forecasts retain their window-touch OHLCV semantics. Terminal-close
+    forecasts use exactly one review-date regular-session ``close`` after the
+    exchange-calendar final-session gate. Other kinds require ``manual_outcome``
+    + ``manual_evidence``.
+    """
+    repo = ForecastRepository(db)
+    row = await repo.get_by_forecast_id(_coerce_forecast_id(forecast_id))
+    if row is None:
+        raise ForecastValidationError(f"forecast not found: {forecast_id}")
+    if row.status != "open":
+        return {
+            "status": "already_closed",
+            "changed": False,
+            "forecast": serialize_forecast(row),
+        }
+
+    resolved_now = now or now_kst()
+    instrument = _row_instrument(row)
+
+    async def _load(
+        kind: str, start_date: date, review_date: date
+    ) -> list[DailyCandleRow] | None:
+        return await _load_candles_single(
+            db,
+            symbol=row.symbol,
+            instrument_type=instrument,
+            kind=kind,
+            start_date=start_date,
+            review_date=review_date,
+            backfill_missing=backfill_missing,
+        )
+
+    return await _resolve_open_row(
+        db,
+        row,
+        persist=persist,
+        resolved_now=resolved_now,
+        manual_outcome=manual_outcome,
+        manual_observed_value=manual_observed_value,
+        manual_evidence=manual_evidence,
+        load_candles=_load,
+    )
 
 
 def _group_key(r: TradeForecast, group_by: str) -> str:

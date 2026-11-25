@@ -389,6 +389,7 @@ tests/test_filled_orders_service.py
 tests/test_financial_fundamentals_builder_parse.py
 tests/test_financial_fundamentals_jsonb_safety.py
 tests/test_financial_fundamentals_snapshots_chunking.py
+tests/test_forecast_resolve_batch.py
 tests/test_forecast_service.py
 tests/test_forecast_service_pure.py
 tests/test_forecast_tools.py

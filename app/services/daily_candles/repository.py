@@ -575,6 +575,133 @@ class DailyCandlesRepository:
             )
         return out
 
+    async def fetch_range_many(
+        self,
+        *,
+        market: MarketKey,
+        symbols: list[str],
+        partition: str,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[DailyCandleRow]]:
+        """Fetch one ``[start, end]`` window for many symbols in a constant
+        number of statements.
+
+        KR/US resolve in a single candle query (``symbol IN`` + partition +
+        time bounds). Crypto needs one bounded identity lookup plus one candle
+        query because its table is keyed by ``instrument_id``. Row mapping,
+        ordering (time ascending) and empty-window semantics match
+        ``fetch_range`` exactly — the caller slices per-symbol calendar
+        windows out of the returned lists.
+        """
+        seen: list[str] = []
+        seen_set: set[str] = set()
+        for symbol in symbols:
+            if symbol not in seen_set:
+                seen_set.add(symbol)
+                seen.append(symbol)
+        out: dict[str, list[DailyCandleRow]] = {symbol: [] for symbol in seen}
+        if not seen:
+            return out
+
+        if market == MarketKey.CRYPTO:
+            norm_to_requested: dict[str, str] = {}
+            for requested in seen:
+                norm_to_requested.setdefault(str(requested).strip().upper(), requested)
+            instrument_ids = await self.resolve_crypto_instrument_ids(
+                symbols=seen, partition=partition
+            )
+            if not instrument_ids:
+                return out
+            by_id: dict[int, str] = {}
+            for normalized, iid in instrument_ids.items():
+                requested = norm_to_requested.get(normalized)
+                if requested is not None:
+                    by_id[iid] = requested
+            sql = text(
+                """
+                SELECT instrument_id, time, :partition AS partition,
+                       open, high, low, close,
+                       NULL::numeric AS adj_close,
+                       base_volume AS volume, quote_volume AS value, source
+                FROM public.crypto_candles_1d
+                WHERE instrument_id IN :instrument_ids
+                  AND time >= :start AND time <= :end
+                ORDER BY instrument_id ASC, time ASC
+                """
+            ).bindparams(bindparam("instrument_ids", expanding=True))
+            result = await self._session.execute(
+                sql,
+                {
+                    "instrument_ids": list(by_id),
+                    "partition": partition,
+                    "start": start,
+                    "end": end,
+                },
+            )
+            for row in result.mappings().all():
+                symbol = by_id.get(row["instrument_id"])
+                if symbol is None:
+                    continue
+                out[symbol].append(
+                    DailyCandleRow(
+                        time_utc=row["time"],
+                        symbol=symbol,
+                        partition=row["partition"],
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        adj_close=None,
+                        volume=float(row["volume"])
+                        if row["volume"] is not None
+                        else 0.0,
+                        value=float(row["value"]) if row["value"] is not None else 0.0,
+                        source=row["source"],
+                    )
+                )
+            return out
+
+        cfg = self._config(market)
+        adj_close_select = (
+            "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
+        )
+        sql = text(
+            f"""
+            SELECT time, symbol, {cfg.partition_col} AS partition,
+                   open, high, low, close, {adj_close_select}volume, value, source
+            FROM public.{cfg.table_name}
+            WHERE symbol IN :symbols AND {cfg.partition_col} = :partition
+              AND time >= :start AND time <= :end
+            ORDER BY symbol ASC, time ASC
+            """
+        ).bindparams(bindparam("symbols", expanding=True))
+        result = await self._session.execute(
+            sql,
+            {"symbols": seen, "partition": partition, "start": start, "end": end},
+        )
+        for row in result.mappings().all():
+            out.setdefault(str(row["symbol"]), []).append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=str(row["symbol"]),
+                    partition=str(row["partition"]),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=(
+                        float(row["adj_close"])
+                        if row["adj_close"] is not None
+                        else None
+                    ),
+                    volume=float(row["volume"]),
+                    value=float(row["value"]),
+                    source=row["source"],
+                )
+            )
+        return out
+
     async def fetch_recent(
         self, *, market: MarketKey, symbol: str, partition: str, count: int
     ) -> list[DailyCandleRow]:

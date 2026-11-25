@@ -170,13 +170,16 @@ async def test_due_batch_forwards_terminal_fail_closed_evidence(monkeypatch):
         assert limit == 25
         return []
 
-    async def fake_resolve(_db, **_kwargs):
-        return {
-            "status": "unresolved_untrusted_source",
-            "changed": False,
-            "reason": "source not trusted",
-            "resolution_evidence": evidence,
-        }
+    async def fake_batch(_db, rows, **_kwargs):
+        assert [r.forecast_id for r in rows] == ["terminal-id"]
+        return [
+            {
+                "status": "unresolved_untrusted_source",
+                "changed": False,
+                "reason": "source not trusted",
+                "resolution_evidence": evidence,
+            }
+        ]
 
     class _StubSession:
         async def __aenter__(self):
@@ -195,7 +198,7 @@ async def test_due_batch_forwards_terminal_fail_closed_evidence(monkeypatch):
         "list_due_quarantined_forecasts",
         fake_quarantined,
     )
-    monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
+    monkeypatch.setattr(forecast_tools, "resolve_forecasts_batch", fake_batch)
     monkeypatch.setattr(forecast_tools, "_session_factory", lambda: _StubSessionMaker())
 
     result = await forecast_resolve(dry_run=True, backfill_missing=False)
@@ -221,15 +224,16 @@ async def test_due_batch_reports_quarantine_without_consuming_due_limit(monkeypa
         assert limit == 1
         return [eligible]
 
-    async def fake_resolve(_db, *, forecast_id, **_kwargs):
-        calls.append(forecast_id)
-        if forecast_id == "legacy-id":
-            return {
+    async def fake_batch(_db, rows, **_kwargs):
+        calls.extend(r.forecast_id for r in rows)
+        return [
+            {
                 "status": "quarantined_legacy_price_target",
                 "changed": False,
                 "reason": "missing outcome rule",
-            }
-        return {"status": "requires_manual", "changed": False}
+            },
+            {"status": "requires_manual", "changed": False},
+        ]
 
     class _StubSession:
         async def __aenter__(self):
@@ -248,7 +252,7 @@ async def test_due_batch_reports_quarantine_without_consuming_due_limit(monkeypa
         fake_quarantined,
     )
     monkeypatch.setattr(forecast_tools, "list_due_forecasts", fake_due)
-    monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
+    monkeypatch.setattr(forecast_tools, "resolve_forecasts_batch", fake_batch)
     monkeypatch.setattr(forecast_tools, "_session_factory", lambda: _StubSessionMaker())
 
     result = await forecast_resolve(
