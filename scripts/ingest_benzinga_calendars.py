@@ -7,7 +7,7 @@ Manual lever only — nothing registers a schedule. Dry-run is the default; the
 Examples:
     # Preview the premarket set for the next week (no network, no writes)
     python -m scripts.ingest_benzinga_calendars \\
-        --category earnings,analyst_rating,guidance,dividend,economics \\
+        --category earnings,analyst_rating,guidance,dividend,economic \\
         --from-date 2026-11-25 --to-date 2026-12-02
 
     # Write ratings for today
@@ -160,9 +160,11 @@ async def _run_compare(from_date: date, to_date: date, symbols: str | None) -> i
     """Read-only coverage comparison over stored earnings rows."""
     from app.core.symbol import to_db_symbol
 
-    symbol = None
-    if symbols and len(symbols.split(",")) == 1:
-        symbol = to_db_symbol(symbols.strip()).upper()
+    requested = {
+        to_db_symbol(token.strip()).upper()
+        for token in (symbols or "").split(",")
+        if token.strip()
+    }
 
     async with AsyncSessionLocal() as db:
         svc = MarketEventsQueryService(db)
@@ -172,7 +174,6 @@ async def _run_compare(from_date: date, to_date: date, symbols: str | None) -> i
             category="earnings",
             market="us",
             source="finnhub",
-            symbol=symbol,
         )
         benzinga = await svc.list_for_range(
             from_date,
@@ -180,18 +181,24 @@ async def _run_compare(from_date: date, to_date: date, symbols: str | None) -> i
             category="earnings",
             market="us",
             source="benzinga",
-            symbol=symbol,
         )
 
     def _rows(events: list[Any]) -> list[dict[str, Any]]:
-        return [
-            {
-                "symbol": event.symbol,
-                "date": event.event_date.isoformat(),
-                "time_hint": event.time_hint,
-            }
-            for event in events
-        ]
+        rows: list[dict[str, Any]] = []
+        for event in events:
+            symbol = to_db_symbol(event.symbol).upper() if event.symbol else None
+            # Every requested symbol narrows both collections (hk 6513 r6): a
+            # multi-symbol ``--symbols`` must not compare unrelated rows.
+            if requested and symbol not in requested:
+                continue
+            rows.append(
+                {
+                    "symbol": event.symbol,
+                    "date": event.event_date.isoformat(),
+                    "time_hint": event.time_hint,
+                }
+            )
+        return rows
 
     report = compare_earnings(_rows(finnhub.events), _rows(benzinga.events))
     report["from_date"] = from_date.isoformat()

@@ -418,6 +418,18 @@ async def _fetch_earnings_calendar_market_events_us(
     }
 
 
+# hk 6513 r6 — ``hour`` is the provider code vocabulary the earnings context
+# consumer maps (``bmo``/``amc``/``dmh``); our own closed ``time_hint`` stays in
+# ``time_hint``. A row whose ``hour`` held ``after_close`` skipped the consumer's
+# mapping and reported its release timing as unknown.
+_TIME_HINT_TO_HOUR = {
+    "before_open": "bmo",
+    "after_close": "amc",
+    "during_market": "dmh",
+    "unknown": "unknown",
+}
+
+
 async def _merge_benzinga_earnings(
     payload: dict[str, Any],
     start: datetime.date,
@@ -481,7 +493,7 @@ async def _merge_benzinga_earnings(
                 "symbol": event.symbol,
                 "company_name": event.company_name,
                 "date": event.event_date.isoformat(),
-                "hour": event.time_hint or "unknown",
+                "hour": _TIME_HINT_TO_HOUR.get(event.time_hint or "unknown", "unknown"),
                 "time_hint": event.time_hint or "unknown",
                 "eps_estimate": _metric_value(event, "eps", "forecast"),
                 "eps_actual": _metric_value(event, "eps", "actual"),

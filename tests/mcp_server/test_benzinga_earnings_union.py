@@ -82,14 +82,22 @@ class _FakeQueryService:
 
 @pytest.fixture
 def no_db(monkeypatch):
-    """Any attempt to open a session fails the test loudly."""
+    """Record any attempt to open a session and fail at teardown.
 
-    class _Exploding:
-        def __call__(self, *args, **kwargs):  # pragma: no cover - guard
-            raise AssertionError("a database session was opened")
+    The merge helper is fail-soft — it catches store errors and returns the
+    Finnhub payload — so raising inside the call would be swallowed and the
+    test would pass anyway. Counting attempts and asserting after the call
+    makes a gate regression visible.
+    """
+    attempts: list[tuple] = []
 
-    monkeypatch.setattr(financials, "AsyncSessionLocal", _Exploding())
-    return None
+    def _open(*args, **kwargs):
+        attempts.append((args, kwargs))
+        raise AssertionError("a database session was opened")
+
+    monkeypatch.setattr(financials, "AsyncSessionLocal", _open)
+    yield attempts
+    assert attempts == [], "a database session was opened with the gate off"
 
 
 @pytest.mark.unit
@@ -171,3 +179,39 @@ async def test_store_read_failure_leaves_the_finnhub_answer(monkeypatch):
     monkeypatch.setattr(financials, "AsyncSessionLocal", lambda *a, **k: _AsyncNull())
     out = await financials._merge_benzinga_earnings(FINNHUB_PAYLOAD, START, END, None)
     assert out == FINNHUB_PAYLOAD
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_added_rows_carry_the_provider_hour_code(monkeypatch):
+    """``hour`` uses the provider vocabulary; ``time_hint`` keeps ours.
+
+    The earnings-context consumer maps only bmo/amc/dmh, so an added row whose
+    ``hour`` was ``after_close`` reported unknown release timing.
+    """
+    monkeypatch.setenv("BENZINGA_CALENDARS_ENABLED", "true")
+    service = _FakeQueryService(
+        events=[
+            _event("NVDA", datetime.date(2026, 11, 19), hint="after_close"),
+            _event("AMD", datetime.date(2026, 11, 20), hint="before_open"),
+            _event("SMH", datetime.date(2026, 11, 21), hint="during_market"),
+            _event("QQQ", datetime.date(2026, 11, 22), hint="unknown"),
+        ]
+    )
+    monkeypatch.setattr(financials, "MarketEventsQueryService", service)
+    monkeypatch.setattr(financials, "AsyncSessionLocal", lambda *a, **k: _AsyncNull())
+
+    out = await financials._merge_benzinga_earnings(FINNHUB_PAYLOAD, START, END, None)
+    added = [row for row in out["earnings"] if row.get("source") == "benzinga"]
+    assert {row["symbol"]: row["hour"] for row in added} == {
+        "NVDA": "amc",
+        "AMD": "bmo",
+        "SMH": "dmh",
+        "QQQ": "unknown",
+    }
+    assert {row["symbol"]: row["time_hint"] for row in added} == {
+        "NVDA": "after_close",
+        "AMD": "before_open",
+        "SMH": "during_market",
+        "QQQ": "unknown",
+    }

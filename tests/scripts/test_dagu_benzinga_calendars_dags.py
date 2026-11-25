@@ -45,6 +45,25 @@ def test_dag_uses_the_eastern_date_and_forces_a_refresh(name: str) -> None:
     assert '"$(cat /root/at-run/deployed-digest)"' in command
 
 
+@pytest.mark.parametrize("name", sorted(DAGS))
+def test_every_scheduled_category_is_registered(name: str) -> None:
+    """A DAG must not schedule a category the CLI rejects.
+
+    ``--category economics`` is not the registry key (``economic``), so the
+    whole step exited during argument validation before any ingestion.
+    """
+    from app.services.benzinga_calendars.spec import CATEGORIES
+
+    command = _step(name)
+    category_arg = command.split("--category ", 1)[1].split(" ", 1)[0]
+    requested = [token for token in category_arg.split(",") if token]
+    assert requested
+    assert set(requested) <= set(CATEGORIES), (
+        f"{name} schedules unregistered categories: "
+        f"{sorted(set(requested) - set(CATEGORIES))}"
+    )
+
+
 def test_short_interest_is_not_scheduled_without_a_symbol_list() -> None:
     for name in DAGS:
         assert "short_interest" not in _step(name)

@@ -114,6 +114,8 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
   캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한
   (기본 20)에 닿았는데 그 페이지가 비어 있지 않으면 잘린 읽기이므로 실패다 — 빈 날로 읽지 않는다.
+  `ok=false` 는 **row key 가 함께 있어도** 실패다: `{"ok": false, "earnings": []}` 를 빈 날로 읽으면 파티션이
+  `succeeded` 가 된다. 읽기를 끝내는 것은 오류 플래그 없는 `{"earnings": []}` 뿐이다.
 - **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
   꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
 - **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,
@@ -132,7 +134,12 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   A→B→A 처럼 같은 내용이 다시 관측되면 그대로 세 번째 revision 이고, 최신 행이 항상 최신 관측을 설명한다.
   `append_revision` 이 False(동시 writer 가 같은 seq 를 가져감)면 현재 행을 갱신하지 않고 파티션을 실패로
   남긴다. `source_event_id` 로 식별되는 행은 개정으로 **`event_date`·`symbol`·`fiscal_year`·`fiscal_quarter`
-  가 움직일 수 있으므로** 갱신 열에 포함된다(자연키 행은 그 값들이 키 자체라 불변).
+  가 움직일 수 있으므로** 갱신 열에 포함된다(자연키 행은 그 값들이 키 자체라 불변). 다만 `None` 은 저장된
+  값을 지우지 않는다 — 해석 실패는 "이제 모른다"가 아니라 그 실행이 증명하지 못한 것이다.
+  `market_event_values` 도 **제공자 행이 그 레코드의 현재 전체 상태**라는 규칙을 따른다
+  (`replace_values=True`, Benzinga 경로만): 개정이 회계 기간을 옮기면 이전 기간의 값 행은 남기지 않고
+  지운다(`period` 가 값 키의 일부라 그대로 두면 같은 지표의 옛 값이 새 값 옆에 남아 first-match 리더가
+  낡은 값을 낸다). 다른 writer 의 기존 upsert 동작은 바뀌지 않는다.
 - **raw payload**: `raw_payload_json` 은 2,000자 넘는 문자열을 절단하고(`…(truncated)`) 리포지토리에서
   redaction 을 거친다. 대체 비교에 필요한 증거는 남기되 무한 blob 은 남기지 않는다.
 - **리더(union/prefer 규칙 명시)**: `get_earnings_calendar` US 성공 응답은 Finnhub 행에 **저장된 Benzinga
@@ -143,12 +150,17 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   Finnhub payload 는 **바이트 동일**하게 그대로 나간다(게이트 off golden, fail-soft). Finnhub 실패 시의
   ROB-1384 fail-closed 계약(저장분 degraded 폴백·`earnings_lookup_failed`)은 변경 없고, 그 폴백 행은 이미
   `source` 별로 라벨링된다. market events 읽기 표면(`/trading/api/market-events/...`)도 `source` 필드로
-  벤징가 행을 그대로 노출한다.
+  벤징가 행을 그대로 노출한다. 추가 행의 `hour` 는 소비자(`earnings_context._TIMING_MAP`)가 매핑하는
+  **제공자 코드**(`bmo`/`amc`/`dmh`, 판단 불가는 `unknown`)이고 우리 닫힌 값은 `time_hint` 에 그대로 남는다 —
+  `hour` 에 `after_close` 같은 닫힌 값을 넣으면 소비자가 시점을 unknown 으로 읽는다.
 - **파티션·재실행**: `(benzinga, category, us, date)` 파티션. `--force` 없이는 `succeeded` 파티션을 건너뛰므로,
   개정을 잡아야 하는 날짜는 **매 실행 `--force` 로 다시 받는다**(같은 payload 는 payload 해시 비교로 0행).
   fetch 실패는 그 창의 처리 대상 파티션 전부를 `failed` 로 남긴 뒤 예외를 다시 올린다. 개정으로
   `event_date` 가 움직이면 새 날짜 파티션에 기록되고 이전 날짜 파티션에는 그 행이 없다(파티션은 그 날짜에
-  관측된 행의 수를 센다).
+  관측된 행의 수를 센다). **`--symbols` 로 좁힌 읽기는 파티션을 완료시키지 않는다** — 그 부분집합만 덮으므로
+  파티션은 `pending` 으로 남고(이미 완료된 파티션을 `pending` 으로 내리지는 않는다) 다음 전체 읽기가 그 날을
+  다시 받는다. AAPL 전용 읽기가 `succeeded` 를 찍으면 이후 MSFT 전용·전체 읽기가 fetch 전에 건너뛰어
+  결손이 영구화된다. `first_received_at` 은 **fetch 가 돌아온 뒤**의 시계다(요청 시각이 아니다).
 - **CLI**: `scripts/ingest_benzinga_calendars.py` — `--category`(콤마/반복, 필수), `--date` 또는
   `--from-date/--to-date`, `--symbols`(short_interest 필수, 그 밖에는 선택 필터), `--commit`(없으면 dry-run,
   네트워크 0), `--force`(succeeded 파티션 재수집 — 개정 포착에 필요), `--max-pages`,

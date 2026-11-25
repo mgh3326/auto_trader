@@ -14,6 +14,14 @@ Idempotency and revisions:
   the current ``market_events`` row is updated. Nothing is overwritten
   silently.
 
+Partition state:
+
+* An unfiltered read that completes marks its ``(category, date)`` partition
+  ``succeeded``; ``skip_succeeded`` then skips it on a rerun.
+* A **symbol-filtered** read covers only that subset, so it never marks the
+  partition ``succeeded`` — it is left ``pending`` (and an already-completed
+  partition is not downgraded) so a later full read still fetches the day.
+
 The fetch, the repository and the session are injectable so the idempotency
 rules can be exercised without a database (``db=None`` skips commit/rollback).
 """
@@ -135,7 +143,6 @@ async def ingest_benzinga_category_for_range(
     if client is None:
         raise ValueError("a BenzingaCalendarClient is required")
 
-    now = fetched_at or datetime.now(UTC)
     fetch_from = min(dates_to_process)
     fetch_to = max(dates_to_process)
 
@@ -159,6 +166,11 @@ async def ingest_benzinga_category_for_range(
             await db.commit()
         raise
 
+    # Our observation clock starts when the bytes are in hand (hk 6513 r6): a
+    # slow fetch must not make ``first_received_at`` claim the rows arrived
+    # before they did. An injected ``fetched_at`` still wins for replay/tests.
+    now = fetched_at or datetime.now(UTC)
+
     grouped, out_of_window = _group_rows(
         category, rows, dates_to_process=dates_to_process, observed_at=now
     )
@@ -177,21 +189,38 @@ async def ingest_benzinga_category_for_range(
             market=MARKET,
             partition_date=target_date,
         )
+        already_complete = partition.status == "succeeded"
+        complete_event_count = partition.event_count
         await repository.mark_partition_running(partition)
         day_rows = grouped[target_date]
         try:
             written = await _write_day(repository, day_rows, observed_at=now)
-            await repository.mark_partition_succeeded(
-                partition, event_count=len(day_rows)
-            )
+            if symbols and not already_complete:
+                # A symbol-filtered read covers only that subset, so it cannot
+                # satisfy the partition for other symbols (hk 6513 r6): leave it
+                # pending so the next full read still fetches the day.
+                await repository.mark_partition_pending(partition)
+                status = "pending"
+            else:
+                # Unfiltered reads complete the day; a forced filtered refetch
+                # of an already-completed day restores the state the running
+                # marker replaced instead of downgrading it.
+                await repository.mark_partition_succeeded(
+                    partition,
+                    event_count=(
+                        complete_event_count if already_complete else len(day_rows)
+                    ),
+                )
+                status = "succeeded"
             if db is not None:
                 await db.commit()
             logger.info(
-                "benzinga %s %s: %d rows (%d written this run)",
+                "benzinga %s %s: %d rows (%d written this run) status=%s",
                 category,
                 target_date,
                 len(day_rows),
                 written,
+                status,
             )
             results.append(
                 IngestionRunResult(
@@ -199,7 +228,7 @@ async def ingest_benzinga_category_for_range(
                     category=category,
                     market=MARKET,
                     partition_date=target_date,
-                    status="succeeded",
+                    status=status,
                     event_count=len(day_rows),
                 )
             )
@@ -272,7 +301,12 @@ async def _write_day(
             raise RuntimeError(
                 f"benzinga revision for {source_event_id} was not recorded"
             )
-        await repository.upsert_event_with_values(event, normalized.values)
+        # The provider row is the complete current record for this event, so a
+        # revision that moves the fiscal period replaces the value rows instead
+        # of leaving the superseded period beside the new one (hk 6513 r6).
+        await repository.upsert_event_with_values(
+            event, normalized.values, replace_values=True
+        )
         written += 1
     return written
 

@@ -148,3 +148,47 @@ async def test_gate_off_covers_the_compare_mode(monkeypatch):
         ]
     )
     assert await cli.run(ns) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compare_applies_every_requested_symbol(monkeypatch, capsys):
+    """``--symbols AAPL,MSFT`` narrows both collections; NVDA must not leak in.
+
+    The old guard only applied the filter for a single symbol, so a
+    multi-symbol request compared every stored row.
+    """
+    import json
+    from types import SimpleNamespace
+
+    class _Event:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+            self.event_date = date(2026, 10, 29)
+            self.time_hint = "after_close"
+
+    class _Service:
+        def __init__(self, _db) -> None:
+            pass
+
+        async def list_for_range(self, *_a, **_kw):
+            return SimpleNamespace(
+                events=[_Event("AAPL"), _Event("NVDA"), _Event("MSFT")]
+            )
+
+    class _Session:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(cli, "MarketEventsQueryService", _Service)
+    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: _Session())
+
+    code = await cli._run_compare(date(2026, 10, 1), date(2026, 11, 25), "AAPL,MSFT")
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)["compare_earnings"]
+    assert report["coverage"]["both_symbols"] == ["AAPL", "MSFT"]
+    assert report["finnhub"]["items"] == 2
+    assert report["benzinga"]["items"] == 2

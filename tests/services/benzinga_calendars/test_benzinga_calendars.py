@@ -393,6 +393,10 @@ class FakeRepo:
         partition.status = "succeeded"
         partition.event_count = event_count
 
+    async def mark_partition_pending(self, partition):
+        partition.status = "pending"
+        partition.event_count = 0
+
     async def mark_partition_failed(self, partition, *, error):
         partition.status = "failed"
         partition.error = error
@@ -427,8 +431,16 @@ class FakeRepo:
         )
         return True
 
-    async def upsert_event_with_values(self, event_data, values):
-        self.events.append({"event": dict(event_data), "values": list(values)})
+    async def upsert_event_with_values(
+        self, event_data, values, *, replace_values=False
+    ):
+        self.events.append(
+            {
+                "event": dict(event_data),
+                "values": list(values),
+                "replace_values": replace_values,
+            }
+        )
         return SimpleNamespace(id=len(self.events))
 
 
@@ -777,3 +789,158 @@ def test_wiim_event_date_uses_eastern_time():
     # 01:30 UTC on Jan 3, but still Jan 2 in New York — the partition day.
     assert item.event["provider_created_at"] == datetime(2024, 1, 3, 1, 30, tzinfo=UTC)
     assert item.event["event_date"] == date(2024, 1, 2)
+
+
+# -- round 6 findings -------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ok_false_fails_the_page_even_with_the_row_key():
+    """``{"ok": false, "earnings": []}`` is an error, not an empty day.
+
+    The row-key exemption used to let it through, so the read looked complete
+    and the partition was marked succeeded.
+    """
+    from app.services.benzinga_http import BenzingaContractError
+
+    client, http = _client([_FakeResponse({"ok": False, "earnings": []})])
+    with pytest.raises(BenzingaContractError):
+        await client.fetch(
+            "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+        )
+    assert len(http.requests) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_row_list_without_an_error_flag_ends_the_read():
+    """A valid ``{"earnings": []}`` is still the end-of-read signal."""
+    client, _ = _client([_FakeResponse({"earnings": []})])
+    rows = await client.fetch(
+        "earnings", from_date=date(2026, 10, 1), to_date=date(2026, 10, 31)
+    )
+    assert rows == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_symbol_filtered_read_does_not_complete_the_partition():
+    """A subset read must not satisfy the partition for other symbols.
+
+    AAPL-only used to mark the day ``succeeded``, so a later MSFT-only read was
+    skipped before its fetch and an unfiltered read skipped the incomplete day.
+    """
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    repo = FakeRepo()
+    client = FakeClient({"earnings": ROWS_BY_CATEGORY["earnings"]})
+    day = date(2026, 10, 29)
+
+    filtered = await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        symbols="AAPL",
+        client=client,
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=True,
+    )
+    assert [result.status for result in filtered] == ["pending"]
+    assert repo.partitions[("earnings", day)].status == "pending"
+
+    # The next unfiltered read still fetches the day instead of skipping it.
+    full = await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        client=client,
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=True,
+    )
+    assert [result.status for result in full] == ["succeeded"]
+    assert [call[3] for call in client.calls] == ["AAPL", None]
+
+    # A forced filtered refetch never downgrades a completed day.
+    await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        symbols="AAPL",
+        client=client,
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+    assert repo.partitions[("earnings", day)].status == "succeeded"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_observation_clock_starts_when_the_fetch_returns(monkeypatch):
+    """``first_received_at`` is our clock at receipt, not at request time."""
+    from app.services.benzinga_calendars import ingestion
+
+    early = datetime(2026, 11, 25, 15, 0, tzinfo=UTC)
+    late = datetime(2026, 11, 25, 15, 1, tzinfo=UTC)
+
+    class _Clock:
+        after_fetch = False
+
+        @classmethod
+        def now(cls, tz=None):
+            return late if cls.after_fetch else early
+
+    class _SlowClient:
+        async def fetch(self, category, *, from_date, to_date, symbols=None):
+            _Clock.after_fetch = True
+            return ROWS_BY_CATEGORY[category]
+
+    monkeypatch.setattr(ingestion, "datetime", _Clock)
+
+    repo = FakeRepo()
+    day = date(2026, 10, 29)
+    await ingestion.ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        client=_SlowClient(),
+        repo=repo,
+        skip_succeeded=False,
+    )
+    revision = repo.revisions[
+        ("earnings", "benzinga:earnings:69030cfb619d3a00015b72a3")
+    ][0]
+    assert revision.observed_at == late
+    assert repo.events[0]["event"]["first_received_at"] == late
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ingestion_replaces_the_superseded_value_set():
+    """The provider row is the complete record, so values are replaced."""
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    repo = FakeRepo()
+    day = date(2026, 10, 29)
+    await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        client=FakeClient({"earnings": ROWS_BY_CATEGORY["earnings"]}),
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+    assert repo.events[0]["replace_values"] is True

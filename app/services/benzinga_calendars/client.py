@@ -91,7 +91,16 @@ def extract_rows(endpoint: CalendarEndpoint, payload: Any) -> list[dict[str, Any
     A provider error envelope, a missing key, a non-list payload or a row that
     is not an object fails the whole page — a silently skipped page would read
     downstream as "no events".
+
+    ``ok=false`` fails the page even when the row key is present (hk 6513 r6):
+    ``{"ok": false, "earnings": []}`` is an error, not an empty day, and
+    reading it as complete would mark the partition succeeded. Only a valid
+    ``{"earnings": []}`` terminates a read.
     """
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        raise BenzingaContractError(
+            f"benzinga {endpoint.category} returned ok=false (path {endpoint.path})"
+        )
     if _is_error_envelope(payload) and not (
         isinstance(payload, dict) and endpoint.row_key in payload
     ):

@@ -26,6 +26,15 @@ from app.models.market_events import (
 from app.services.alpaca_paper_ledger_service import _redact_sensitive_keys
 
 
+def value_keys(values: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
+    """``(metric_name, period)`` pairs a provider record currently holds."""
+    return {
+        (str(value["metric_name"]), value.get("period"))
+        for value in values
+        if value.get("metric_name")
+    }
+
+
 class MarketEventsRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -34,6 +43,8 @@ class MarketEventsRepository:
         self,
         event_data: dict[str, Any],
         values: list[dict[str, Any]],
+        *,
+        replace_values: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
         if payload.get("raw_payload_json") is not None:
@@ -115,6 +126,13 @@ class MarketEventsRepository:
                 await self.db.flush()
             event_id = event.id
 
+        if replace_values:
+            # The caller holds the provider's complete current record for this
+            # event, so a value it no longer reports is superseded, not
+            # additive: a revision that moves the fiscal period must not leave
+            # the old period's rows beside the new one (hk 6513 r6).
+            await self._drop_superseded_values(event_id, values)
+
         for value in values:
             await self._upsert_value(event_id, value)
 
@@ -175,6 +193,34 @@ class MarketEventsRepository:
                 if key != "updated_at":
                     setattr(existing, key, value_)
             existing.updated_at = datetime.now(UTC)
+        await self.db.flush()
+
+    async def _drop_superseded_values(
+        self, event_id: int, values: list[dict[str, Any]]
+    ) -> None:
+        """Delete value rows the incoming record no longer reports (hk 6513 r6).
+
+        Used only for writers whose payload is the provider's complete current
+        record (Benzinga calendar rows): a revision that changes the fiscal
+        period would otherwise leave the superseded period's values beside the
+        new ones, and a reader that takes the first matching metric could serve
+        the stale number.
+        """
+        keep = value_keys(values)
+        existing = (
+            (
+                await self.db.execute(
+                    select(MarketEventValue).where(
+                        MarketEventValue.event_id == event_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in existing:
+            if (row.metric_name, row.period) not in keep:
+                await self.db.delete(row)
         await self.db.flush()
 
     # -- provider revisions (hk 6513) ---------------------------------------

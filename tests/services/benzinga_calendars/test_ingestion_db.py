@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
@@ -10,6 +11,7 @@ from sqlalchemy import func, select, text
 from app.models.market_events import (
     MarketEvent,
     MarketEventRevision,
+    MarketEventValue,
 )
 from app.services.benzinga_calendars.ingestion import (
     ingest_benzinga_category_for_range,
@@ -266,3 +268,42 @@ async def test_provider_keyed_reingest_never_clears_a_resolved_symbol(db_session
     await db_session.refresh(row)
     assert row.symbol == "000660"
     assert row.event_date == date(2026, 5, 14)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_period_revision_replaces_the_superseded_values(db_session):
+    """A revision that moves the fiscal period must not keep the old rows.
+
+    ``period`` is part of the value key, so the superseded period's EPS would
+    otherwise sit beside the new one and a first-match reader could serve the
+    stale number.
+    """
+    await _ingest(db_session, [EARNINGS_ROW])
+
+    moved = {
+        **EARNINGS_ROW,
+        "updated": 1766188000,
+        "period": "Q1",
+        "period_year": 2027,
+        "eps": "2.30",
+        "revenue": "95000000000",
+    }
+    await _ingest(db_session, [moved])
+
+    rows = (
+        (
+            await db_session.execute(
+                select(MarketEventValue).order_by(
+                    MarketEventValue.metric_name, MarketEventValue.period
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [(row.metric_name, row.period) for row in rows] == [
+        ("eps", "Q1-2027"),
+        ("revenue", "Q1-2027"),
+    ]
+    assert {row.actual for row in rows if row.metric_name == "eps"} == {Decimal("2.30")}
