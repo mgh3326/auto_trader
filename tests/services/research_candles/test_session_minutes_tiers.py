@@ -59,10 +59,11 @@ class _Result:
 class _Session:
     """Dispatches by statement text: first captures, minute rows today, pick log."""
 
-    def __init__(self, pick=(), movers=(), have_today=()):
+    def __init__(self, pick=(), movers=(), have_today=(), us_earliest=()):
         self.pick = list(pick)
         self.movers = list(movers)
         self.have_today = list(have_today)
+        self.us_earliest = list(us_earliest)
         self.statements: list[str] = []
         self.calls: list[tuple[str, dict]] = []
 
@@ -74,6 +75,8 @@ class _Session:
             return _Result(self.movers)
         if "kr_candles_1m" in text:
             return _Result(self.have_today)
+        if "us_candles_1m" in text:
+            return _Result(self.us_earliest)
         return _Result(self.pick)
 
     async def rollback(self):
@@ -364,6 +367,37 @@ async def test_us_selects_the_fixed_defaults_and_its_own_movers_tier(
     # US-scoped first captures on the ET trading day: NOW is 2026-11-25 06:10 UTC
     # = 01:10 ET on the 25th (the ET calendar date of that instant).
     assert calls == [("us", NOW.astimezone(ZoneInfo("America/New_York")).date())]
+
+
+@pytest.mark.asyncio
+async def test_us_backfill_retries_until_the_earliest_bar_reaches_the_session_start(
+    monkeypatch,
+) -> None:
+    """hk 6510 r2: a failed earlier page must stay eligible for the next run.
+
+    US backfill completion is the earliest bar of today vs 04:00 ET, not row
+    presence: a mover that only has the newest page (09:30 ET) is retried, one
+    whose earliest bar is the session start is done.
+    """
+
+    async def _captures(session, trading_date, market="kr"):
+        return [_mover("DELL", rank=1), _mover("URBN", rank=2)]
+
+    monkeypatch.setattr(intraday, "first_captures", _captures)
+    # NOW is 2026-11-25 06:10 UTC = 01:10 ET on the 25th, so that ET day's open is
+    # 04:00 ET = 09:00 UTC on the 25th.
+    session_start_utc = datetime(2026, 11, 25, 9, 0, tzinfo=UTC)
+    session = _Session(
+        us_earliest=[
+            ("DELL", session_start_utc),  # paged back to the open: done
+            ("URBN", datetime(2026, 11, 25, 14, 30, tzinfo=UTC)),  # 09:30 ET only
+        ]
+    )
+    targets = await _targets(
+        market="us", session=session, kis=_Kis(us=[]), fixed="SPY", screener=[]
+    )
+    assert set(targets.symbols) == {"SPY", "DELL", "URBN"}
+    assert targets.backfill == ["URBN"]
 
 
 @pytest.mark.asyncio

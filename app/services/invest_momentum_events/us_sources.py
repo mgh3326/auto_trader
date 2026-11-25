@@ -518,9 +518,13 @@ def derive_asset_type(master: SymbolMaster) -> str:
     if master.is_common_stock is True:
         return ASSET_COMMON_STOCK
     if master.is_common_stock is False:
+        # "not a common share" is not fund evidence: the NASDAQ Trader flag is
+        # also False for preferreds, depositary shares, notes and trusts. Only a
+        # warrant/right name is positive evidence here; everything else stays
+        # unknown rather than claiming an ETF.
         if _name_has(master.name_en, _WARRANT_NAME_TOKENS):
             return ASSET_RIGHT_OR_WARRANT
-        return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_ETF
+        return ASSET_UNKNOWN
     return ASSET_UNKNOWN
 
 

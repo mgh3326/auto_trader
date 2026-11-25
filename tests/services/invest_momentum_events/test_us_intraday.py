@@ -160,7 +160,9 @@ def test_alpaca_classification_of_broken_payloads() -> None:
             us_sources.SymbolMaster(security_type=None, is_common_stock=True),
             "common_stock",
         ),
-        (us_sources.SymbolMaster(security_type=None, is_common_stock=False), "etf"),
+        # "not a common share" alone is not fund evidence: preferreds, notes and
+        # trusts are False too, so the class stays unknown.
+        (us_sources.SymbolMaster(security_type=None, is_common_stock=False), "unknown"),
         (
             us_sources.SymbolMaster(
                 security_type=None,
@@ -175,7 +177,7 @@ def test_alpaca_classification_of_broken_payloads() -> None:
                 is_common_stock=False,
                 name_en="Daily 3x Bull Fund",
             ),
-            "leveraged_etf",
+            "unknown",
         ),
         (us_sources.SymbolMaster(), "unknown"),
         (us_sources.SymbolMaster(security_type="SOMETHING_NEW"), "unknown"),

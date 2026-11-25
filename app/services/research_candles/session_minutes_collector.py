@@ -871,12 +871,22 @@ async def build_targets(
         await session.rollback()
         errors.append({"origin": "intraday_movers", "error_class": type(exc).__name__})
     have_today: set[str] = set()
+    earliest_today: dict[str, datetime] = {}
     have_known = False
     if mover_order:
         try:
-            have_today = await load_symbols_with_rows_today(
-                session, mover_order, now, market
-            )
+            if market == "us":
+                # hk 6510: presence is not completion — a failed earlier page
+                # leaves the newest page stored, so the earliest bar of today
+                # decides whether the backfill may stop for this symbol.
+                earliest_today = await load_earliest_rows_today(
+                    session, mover_order, now, market
+                )
+                have_today = set(earliest_today)
+            else:
+                have_today = await load_symbols_with_rows_today(
+                    session, mover_order, now, market
+                )
             have_known = True
         except Exception as exc:  # noqa: BLE001 - no protection, the run continues
             await session.rollback()
@@ -917,8 +927,23 @@ async def build_targets(
     kept = set(selection.selected)
     backfill: list[str] = []
     if have_known:
-        # Kept movers with no minute row yet today get the earlier KIS page (hk 6154).
-        backfill = sorted(s for s in mover_order if s in kept and s not in have_today)
+        if market == "us":
+            # hk 6510: retry until the earlier pages reached 04:00 ET (a symbol
+            # with no rows today has not been paged at all yet).
+            session_start = us_session_start_utc(now)
+            backfill = sorted(
+                s
+                for s in mover_order
+                if s in kept
+                and earliest_today.get(s, session_start + timedelta(minutes=1))
+                > session_start
+            )
+        else:
+            # Kept movers with no minute row yet today get the earlier KIS page
+            # (hk 6154).
+            backfill = sorted(
+                s for s in mover_order if s in kept and s not in have_today
+            )
     return TargetSet(
         symbols=sorted(selection.selected),
         by_origin={origin: len(values) for origin, values in found.items() if values},
@@ -959,6 +984,44 @@ async def load_symbols_with_rows_today(
         text(statement), {"symbols": list(symbols), "day": day}
     )
     return {str(value) for value in rows.scalars().all()}
+
+
+def us_session_start_utc(now: datetime) -> datetime:
+    """04:00 ET of ``now``'s ET trading day, as an aware UTC instant."""
+    et_day = now.astimezone(_ET).date()
+    return datetime.combine(et_day, US_SESSION_START_ET, tzinfo=_ET).astimezone(UTC)
+
+
+async def load_earliest_rows_today(
+    session: AsyncSession, symbols: Sequence[str], now: datetime, market: Market = "us"
+) -> dict[str, datetime]:
+    """Earliest minute row per symbol for today's session (hk 6510).
+
+    US: ``research.us_candles_1m`` rows of today's ET trading day. The earliest
+    bar tells whether the backfill of a newly promoted mover already reached the
+    04:00 ET session start; row presence alone does not, because a failed earlier
+    page still leaves the newest page stored.
+    """
+    if not symbols:
+        return {}
+    if market == "kr":
+        statement = (
+            f"SELECT symbol, MIN(time_utc) FROM {KR_TABLE} "
+            "WHERE symbol = ANY(:symbols) AND session_date_kst = :day "
+            "GROUP BY symbol"
+        )
+        day = now.astimezone(_KST).date()
+    else:
+        statement = (
+            f"SELECT symbol, MIN(time_utc) FROM {US_TABLE} "
+            "WHERE symbol = ANY(:symbols) AND session_date = :day "
+            "GROUP BY symbol"
+        )
+        day = now.astimezone(_ET).date()
+    rows = await session.execute(
+        text(statement), {"symbols": list(symbols), "day": day}
+    )
+    return {str(symbol): earliest for symbol, earliest in rows.all()}
 
 
 async def load_nxt_eligible(session: AsyncSession, symbols: Sequence[str]) -> set[str]:
@@ -1116,6 +1179,7 @@ async def collect(
     nxt = set(nxt_eligible)
     backfill = set(backfill_symbols)
     backfill_pages = 0
+    # KIS frames are labelled in naive ET, so the paging floor is naive ET too.
     us_session_start = (
         datetime.combine(clock().astimezone(_ET).date(), US_SESSION_START_ET)
         if market == "us"
