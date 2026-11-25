@@ -137,13 +137,17 @@ def build_canonical_payload(
     notional: Decimal | None,
     limit_price: Decimal | None,
     asset_class: str,
+    extended_hours: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical, order-independent submit payload.
 
     Identical shape to the historical ROB-73 canonical payload so derived
     client_order_ids are stable across the preview and submit surfaces.
+
+    hk 6497: ``extended_hours`` is added as a key only when True, so the default
+    canonical payload, its hash and its derived client_order_id are unchanged.
     """
-    return {
+    canonical: dict[str, Any] = {
         "symbol": symbol,
         "side": side,
         "type": type,
@@ -153,6 +157,9 @@ def build_canonical_payload(
         "limit_price": str(limit_price) if limit_price is not None else None,
         "asset_class": asset_class,
     }
+    if extended_hours is True:
+        canonical["extended_hours"] = True
+    return canonical
 
 
 def _canonical_blob(canonical: dict[str, Any]) -> bytes:
@@ -669,6 +676,10 @@ class AlpacaPaperSubmitCoordinator:
             limit_price=_to_decimal(submit_canonical.get("limit_price")),
             stop_price=None,
             client_order_id=coid,
+            # hk 6497: only an explicit True reaches the wire; absent stays absent.
+            extended_hours=True
+            if submit_canonical.get("extended_hours") is True
+            else None,
         )
         try:
             order = await broker.submit_order(request)

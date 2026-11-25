@@ -1,4 +1,4 @@
-"""Dockerfile.api ships only the H5 and ROB-1474 paper research dependencies.
+"""Dockerfile.api ships only the H5, ROB-1474 paper and hk 6036 recorder research dependencies.
 
 The H5 entry scripts (``scripts/binance_h5_*.py``: the demo runner, the read-only
 truth gate and the heartbeat watcher) import
@@ -56,6 +56,7 @@ ENTRY_SCRIPTS = tuple(
     "scripts/mock_strategy.py",
     "scripts/mock_strategy_crypto.py",
     "scripts/mock_data_refresh.py",
+    "scripts/upbit_intraday_shadow.py",
 )
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
 SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
@@ -70,6 +71,12 @@ PAPER_RESEARCH_FILES = {
     "research/data_plane/contract.py",
     "research/crypto_universe/__init__.py",
     "research/crypto_universe/universe.py",
+    "research/crypto_universe/public_http.py",
+    "research/upbit_intraday/__init__.py",
+    "research/upbit_intraday/rules.py",
+    "research/upbit_intraday/fetch.py",
+    "research/upbit_intraday/public_http.py",
+    "research/upbit_intraday/frozen_selection.json",
 }
 
 
@@ -497,8 +504,19 @@ def test_only_execution_research_dependencies_are_added(real_image) -> None:
             (
                 "research/crypto_universe/__init__.py",
                 "research/crypto_universe/universe.py",
+                "research/crypto_universe/public_http.py",
             ),
             "/app/research/crypto_universe",
+        ),
+        (
+            (
+                "research/upbit_intraday/__init__.py",
+                "research/upbit_intraday/rules.py",
+                "research/upbit_intraday/fetch.py",
+                "research/upbit_intraday/public_http.py",
+                "research/upbit_intraday/frozen_selection.json",
+            ),
+            "/app/research/upbit_intraday",
         ),
     ]
 

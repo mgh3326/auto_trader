@@ -1,7 +1,7 @@
 """hk 6503: per-symbol KR trading flag state (관리·시장경고·정리매매·거래정지).
 
 Revision ID: 20261125_hk6503_kr_trading_flags
-Revises: 20261125_hk6322_us_venue_val
+Revises: 20261125_hk6036_upbit_shadow
 Create Date: 2026-11-25
 
 Additive. One new ``public.kr_symbol_trading_flags`` table, keyed by
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261125_hk6503_kr_trading_flags"
-down_revision: str | Sequence[str] | None = "20261125_hk6322_us_venue_val"
+down_revision: str | Sequence[str] | None = "20261125_hk6036_upbit_shadow"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

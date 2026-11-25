@@ -525,21 +525,16 @@ def asyncio_run(coro):
     return asyncio.run(coro)
 
 
-def test_alembic_script_directory_has_one_head_and_it_is_the_follow_up() -> None:
+def test_alembic_script_directory_has_one_head_and_it_holds_the_follow_up() -> None:
     """The per-file tests above never resolve the chain; this one does (review r1)."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
-    # hk 6503 added a later revision on top of the venue validation follow-up;
-    # the chain must still end in a single head that descends from it.
-    assert script.get_heads() == ["20261125_hk6503_kr_trading_flags"]
-    assert script.get_revision("20261125_hk6503_kr_trading_flags").down_revision == (
-        "20261125_hk6322_us_venue_val"
-    )
-    assert script.get_revision("20261125_hk6322_us_venue_val").down_revision == (
-        "20261125_hk6322_us_toss_venue"
-    )
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    ancestry = {r.revision for r in script.walk_revisions("base", heads[0])}
+    assert "20261125_hk6322_us_venue_val" in ancestry
     assert script.get_revision("20261125_hk6322_us_toss_venue").down_revision == (
         "20261124_hk6154_momentum_runs"
     )
