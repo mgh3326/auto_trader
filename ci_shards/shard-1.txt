@@ -126,6 +126,7 @@ tests/scripts/test_dagu_account_value_snapshot_dag.py
 tests/scripts/test_dagu_at_pg_backup_dag.py
 tests/scripts/test_dagu_futures_minutes_dags.py
 tests/scripts/test_dagu_intraday_movers_dag.py
+tests/scripts/test_dagu_kr_trading_flags_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
 tests/scripts/test_dagu_session_minutes_dags.py
 tests/scripts/test_diagnose_investment_reports.py
@@ -251,6 +252,15 @@ tests/services/kis_mock_runner/test_domestic_route.py
 tests/services/kis_mock_runner/test_envelope.py
 tests/services/kis_websocket/test_client.py
 tests/services/kis_websocket/test_parsers_execution_classification.py
+tests/services/kr_trading_flags/test_gate.py
+tests/services/kr_trading_flags/test_kis_master.py
+tests/services/kr_trading_flags/test_lookup_offline.py
+tests/services/kr_trading_flags/test_naver_status.py
+tests/services/kr_trading_flags/test_store_db.py
+tests/services/kr_trading_flags/test_store_offline.py
+tests/services/kr_trading_flags/test_sync_guard.py
+tests/services/kr_trading_flags/test_wiring_import.py
+tests/services/kr_trading_flags/test_wrapper_offline.py
 tests/services/market_close_digest/test_service.py
 tests/services/market_events/test_dart_today_pending.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py

@@ -265,6 +265,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with
             # objects materialized by Base.metadata.create_all.
+            # hk 6503 KR trading flags table is later than the boundary; create_all
+            # built it, so drop it or the migration collides with it.
+            await connection.execute(text("DROP TABLE kr_symbol_trading_flags"))
             await connection.execute(
                 text("DROP TABLE review.order_proposal_approval_events")
             )
