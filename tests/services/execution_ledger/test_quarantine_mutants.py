@@ -287,6 +287,9 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/protected_quantity_service.py", "_net_execution_quantity_since"): (
         "test_quarantine_readers_db::READERS[protected_quantity._net_execution_quantity_since]"
     ),
+    ("app/services/protected_quantity_service.py", "prefetch_protection_heads"): (
+        "test_quarantine_readers_db::READERS[protected_quantity._net_execution_quantity_since]"
+    ),
     ("app/services/quotes_consumer/repository.py", "fills_after"): (
         "test_quarantine_readers_db::READERS[quotes_consumer.fills_after]"
     ),
