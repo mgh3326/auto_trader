@@ -1,7 +1,7 @@
 """hk 6513: Benzinga calendar evidence columns + append-only revision log.
 
-Revision ID: 20261125_hk6513_benzinga_calendars
-Revises: 20261125_hk6322_us_venue_val
+Revision ID: 20261125_hk6513_benzinga
+Revises: 20261125_hk6503_kr_trading_flags
 Create Date: 2026-11-25
 
 Additive. Two things are added for the Benzinga calendar ingestion
@@ -42,23 +42,33 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "20261125_hk6513_benzinga_calendars"
-down_revision: str | Sequence[str] | None = "20261125_hk6322_us_venue_val"
+revision: str = "20261125_hk6513_benzinga"
+down_revision: str | Sequence[str] | None = "20261125_hk6503_kr_trading_flags"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_NEW_COLUMNS = (
-    ("provider_created_at", sa.TIMESTAMP(timezone=True)),
-    ("provider_created_raw", sa.Text()),
-    ("provider_updated_at", sa.TIMESTAMP(timezone=True)),
-    ("provider_updated_raw", sa.Text()),
-    ("first_received_at", sa.TIMESTAMP(timezone=True)),
-)
-
 
 def upgrade() -> None:
-    for name, column_type in _NEW_COLUMNS:
-        op.add_column("market_events", sa.Column(name, column_type, nullable=True))
+    op.add_column(
+        "market_events",
+        sa.Column("provider_created_at", sa.TIMESTAMP(timezone=True), nullable=True),
+    )
+    op.add_column(
+        "market_events",
+        sa.Column("provider_created_raw", sa.Text(), nullable=True),
+    )
+    op.add_column(
+        "market_events",
+        sa.Column("provider_updated_at", sa.TIMESTAMP(timezone=True), nullable=True),
+    )
+    op.add_column(
+        "market_events",
+        sa.Column("provider_updated_raw", sa.Text(), nullable=True),
+    )
+    op.add_column(
+        "market_events",
+        sa.Column("first_received_at", sa.TIMESTAMP(timezone=True), nullable=True),
+    )
 
     op.create_table(
         "market_event_revisions",
@@ -109,6 +119,7 @@ def upgrade() -> None:
     # Append-only for every role, not just ``at_app``: the downgrade guard and
     # the "revisions are never overwritten" contract must not depend on who
     # holds table privileges (``at_migration_owner`` can still UPDATE).
+    # expand-contract: contract-step 6513
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.market_event_revisions_reject_mutation()
@@ -122,12 +133,14 @@ def upgrade() -> None:
         $$
         """
     )
+    # expand-contract: contract-step 6513
     op.execute(
         "CREATE TRIGGER trg_market_event_revisions_append_only "
         "BEFORE UPDATE OR DELETE ON market_event_revisions "
         "FOR EACH ROW EXECUTE FUNCTION "
         "public.market_event_revisions_reject_mutation()"
     )
+    # expand-contract: contract-step 6513
     op.execute(
         "CREATE TRIGGER trg_market_event_revisions_truncate "
         "BEFORE TRUNCATE ON market_event_revisions "
@@ -136,6 +149,7 @@ def upgrade() -> None:
     )
 
     # Stage-4 role may not exist in dev/CI databases — conditional GRANT.
+    # expand-contract: contract-step 6513
     op.execute(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
         "THEN GRANT SELECT, INSERT ON market_event_revisions TO at_app; "
@@ -183,5 +197,8 @@ def downgrade() -> None:
     op.execute(
         "DROP FUNCTION IF EXISTS public.market_event_revisions_reject_mutation()"
     )
-    for name, _ in reversed(_NEW_COLUMNS):
-        op.drop_column("market_events", name)
+    op.drop_column("market_events", "first_received_at")
+    op.drop_column("market_events", "provider_updated_raw")
+    op.drop_column("market_events", "provider_updated_at")
+    op.drop_column("market_events", "provider_created_raw")
+    op.drop_column("market_events", "provider_created_at")

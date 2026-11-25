@@ -161,7 +161,7 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   등록은 설계 세션 몫이고, `short_interest` 는 symbols 필수라 DAG 에 넣지 않는다(수동 CLI). 그래서
   `market_events/expected_sources` 의 `EXPECTED_SOURCES` 에도 넣지 않았다 — 스케줄이 없는데 기대 소스로 두면
   신선도·`data_gaps` 가 매일 누락을 보고한다. DAG 를 등록할 때 같은 PR 에서 함께 정한다.
-- **마이그레이션** `20261125_hk6513_benzinga_calendars`: 추가형. `market_events` 에 5개 nullable 열과
+- **마이그레이션** `20261125_hk6513_benzinga`: 추가형. `market_events` 에 5개 nullable 열과
   `market_event_revisions` 표를 더하고 `at_app` 에 조건부 GRANT(SELECT·INSERT, 시퀀스 USAGE·SELECT)를 준다.
   downgrade 는 revision 행이나 provider 증거 열이 채워진 `market_events` 행이 있으면 거부한다.
 - **범위 밖**: 뉴스(hk 6511·후속), Benzinga Pro 웹 엔드포인트, short interest 의 기본 symbol 목록 자동 결정,

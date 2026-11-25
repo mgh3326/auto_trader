@@ -204,7 +204,7 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v79 (hk 6513): public.market_event_revisions is a new ORM table (create_all) and
 # market_events gains five columns — the columns ARE mirrored as ALTERs below, the
 # append-only triggers are mirrored DDL. Production migration:
-# 20261125_hk6513_benzinga_calendars.
+# 20261125_hk6513_benzinga.
 SCHEMA_BOOTSTRAP_VERSION = 79
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----

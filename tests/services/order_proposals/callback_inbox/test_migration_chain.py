@@ -195,6 +195,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     # hk 4702 trend state tables are later than this boundary (intents first).
     "review.binance_trend_intents",
     "review.binance_trend_signals",
+    # hk 6513 provider revision log is later than this boundary (no FKs).
+    "market_event_revisions",
 )
 
 
@@ -318,6 +320,21 @@ async def scratch_database() -> AsyncIterator[str]:
                         "DROP COLUMN expired_at"
                     )
                 )
+                # hk 6513 market_events provider-evidence columns are later
+                # than this boundary; current metadata already contains them,
+                # so drop them and let the migration add them back.
+                for column in (
+                    "provider_created_at",
+                    "provider_created_raw",
+                    "provider_updated_at",
+                    "provider_updated_raw",
+                    "first_received_at",
+                ):
+                    await connection.execute(
+                        text(
+                            f"ALTER TABLE market_events DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
         finally:
             await engine.dispose()
 
