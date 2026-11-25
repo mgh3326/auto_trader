@@ -1,0 +1,22 @@
+# Upbit 원화장 장중 그림자 기록: 15분 봉 마감 1분 뒤마다. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# Upbit 공개 마켓 목록·15분 봉만 읽고(주문 없음) research.upbit_shadow_candidates / upbit_shadow_virtual_trades 에 삽입 전용으로 쓴다.
+# 등록은 마이그레이션 적용 뒤 설계 세션이 한다. 시장 하나라도 실패하면 종료 코드 1 이다.
+description: "Upbit KRW intraday shadow recorder (frozen 15m rules, virtual only, no orders)"
+schedule:
+  - "CRON_TZ=Asia/Seoul 1,16,31,46 * * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: record
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.upbit_intraday_shadow --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 600
+handler_on:
+  success:
+    command: 'logger -t at-dagu-upbit-intraday-shadow "dag=at-upbit-intraday-shadow status=success"'
+  failure:
+    command: 'logger -t at-dagu-upbit-intraday-shadow "dag=at-upbit-intraday-shadow status=failure"'

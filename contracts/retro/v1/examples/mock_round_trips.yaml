@@ -1,0 +1,70 @@
+operation: mock_round_trips
+request:
+  path: /trading/api/retro/v1/mock_round_trips
+  query:
+    strategy_id: SYN_STRATEGY
+    venue: alpaca_paper
+status: 200
+response:
+  as_of: '2026-01-06T00:00:00Z'
+  data_as_of: '2026-01-05T14:30:00Z'
+  timezone: KST
+  total: 2
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: data.0.reason
+    reason: not_applicable
+  data:
+  - strategy_id: SYN_STRATEGY
+    round_trip_ref: ref_synthetic_round_trip_1
+    environment: alpaca_paper
+    mode: mock
+    side: buy
+    state: closed
+    reason: null
+    opened_at: '2026-01-02T14:30:00Z'
+    closed_at: '2026-01-05T14:30:00Z'
+    entry_price: '100.00'
+    exit_price: '103.00'
+    realized_pnl_amount: '3.00'
+    currency: USD
+    unit: currency
+    basis: inference
+    legs:
+    - leg_ref: ref_synthetic_leg_1
+      role: entry
+      side: buy
+      status: closed
+      broker_order_bound: true
+      quantity: '1'
+    - leg_ref: ref_synthetic_leg_2
+      role: exit
+      side: sell
+      status: closed
+      broker_order_bound: true
+      quantity: '1'
+  - strategy_id: SYN_STRATEGY
+    round_trip_ref: ref_synthetic_round_trip_2
+    environment: alpaca_paper
+    mode: mock
+    side: short
+    state: unresolved
+    reason: uncertain_leg
+    opened_at: '2026-01-03T14:30:00Z'
+    closed_at: null
+    entry_price: null
+    exit_price: null
+    realized_pnl_amount: null
+    currency: USD
+    unit: currency
+    basis: inference
+    legs:
+    - leg_ref: ref_synthetic_leg_3
+      role: entry
+      side: short
+      status: uncertain
+      broker_order_bound: false
+      notional: '500'

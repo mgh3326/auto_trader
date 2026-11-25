@@ -11,6 +11,7 @@ from app.services.retro_v1.data_gaps import read_data_gaps
 from app.services.retro_v1.envelope import RetroReadError
 from app.services.retro_v1.get_bars import read_get_bars
 from app.services.retro_v1.mock_experiments import read_mock_experiments
+from app.services.retro_v1.mock_round_trips import read_mock_round_trips
 from app.services.retro_v1.retro_day import read_retro_day
 from app.services.retro_v1.retro_decisions import read_retro_decisions
 from app.services.retro_v1.retro_funnel import read_retro_funnel
@@ -24,6 +25,7 @@ __all__ = [
     "read_data_gaps",
     "read_get_bars",
     "read_mock_experiments",
+    "read_mock_round_trips",
     "read_retro_day",
     "read_retro_decisions",
     "read_retro_funnel",

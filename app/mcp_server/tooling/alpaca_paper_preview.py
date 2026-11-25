@@ -97,6 +97,8 @@ class PreviewOrderInput(BaseModel):
     stop_price: Decimal | None = None
     client_order_id: str | None = None
     asset_class: str = "us_equity"
+    # hk 6497: opt-in pre-market/after-hours eligibility (Alpaca `extended_hours`).
+    extended_hours: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -230,6 +232,26 @@ class PreviewOrderInput(BaseModel):
         if self.limit_price is None:
             raise ValueError("limit_price is required for crypto limit orders")
 
+    def _validate_extended_hours_rules(self) -> None:
+        """Refuse extended-hours requests Alpaca would reject, before any network call.
+
+        Alpaca's extended-hours order rules (docs.alpaca.markets, "Orders at
+        Alpaca", fetched 2026-11-25): the order must be a limit order and the
+        time_in_force must be day or gtc. This surface is narrower on purpose:
+        only ``day`` is accepted, and crypto is out of scope. Fractional qty is
+        documented as permitted in extended hours for exchange-listed,
+        fractionable assets; that eligibility is decided by the broker, so it is
+        not checked here.
+        """
+        if not self.extended_hours:
+            return
+        if self.asset_class != "us_equity":
+            raise ValueError("extended_hours is supported for us_equity orders only")
+        if self.type != "limit":
+            raise ValueError("extended_hours requires type=limit")
+        if self.time_in_force != "day":
+            raise ValueError("extended_hours requires time_in_force=day")
+
     def _validate_equity_rules(self, has_notional: bool) -> None:
         # notional + limit type is rejected for US equities — Alpaca only
         # supports equity notional orders for market orders in this surface.
@@ -250,6 +272,7 @@ class PreviewOrderInput(BaseModel):
             self._validate_crypto_rules()
         else:
             self._validate_equity_rules(has_notional)
+        self._validate_extended_hours_rules()
         return self
 
 
@@ -265,6 +288,7 @@ async def alpaca_paper_preview_order(
     client_order_id: str | None = None,
     asset_class: str = "us_equity",
     account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+    extended_hours: bool = False,
 ) -> dict[str, Any]:
     """Preview and validate an Alpaca paper US equity or narrow crypto order without submitting it.
 
@@ -288,6 +312,7 @@ async def alpaca_paper_preview_order(
         stop_price=stop_price,
         client_order_id=client_order_id,
         asset_class=asset_class,
+        extended_hours=extended_hours,
     )
     if (
         selected == ALPACA_PAPER_LAB_ACCOUNT_MODE
@@ -309,6 +334,9 @@ async def alpaca_paper_preview_order(
         "client_order_id": validated.client_order_id,
         "asset_class": validated.asset_class,
     }
+    # hk 6497: the key appears only when true, so the default echo is unchanged.
+    if validated.extended_hours:
+        order_request["extended_hours"] = True
 
     warnings: list[str] = []
     account_context: dict[str, Any] | None = None
