@@ -349,6 +349,13 @@ async def _observation_events(
     return events, ok
 
 
+#: KR momentum surfaces are ``stock:<trade_type>:<market_type>:<order_type>``
+#: (hk 6154). hk 6510's US runs share the run table on the ET trading date and
+#: their surfaces start with ``us:``, so this read must not count them: a KR
+#: timeline would otherwise report "runs recorded" from US surfaces.
+_KR_RUN_SURFACE_PREFIX = "stock:"
+
+
 async def _observation_runs(
     session: AsyncSession, unknowns: Unknowns, day: date
 ) -> dict[str, int] | None:
@@ -357,7 +364,10 @@ async def _observation_runs(
     async def read() -> dict[str, int]:
         stmt = (
             select(run.status, func.count())
-            .where(run.trading_date == day)
+            .where(
+                run.trading_date == day,
+                run.surface.like(f"{_KR_RUN_SURFACE_PREFIX}%"),
+            )
             .group_by(run.status)
         )
         return {str(s): int(n) for s, n in (await session.execute(stmt)).all()}

@@ -79,6 +79,22 @@ def test_alpaca_most_actives_keep_volume_and_leave_price_null() -> None:
     assert nvda.raw["row"]["trade_count"] == 412000
 
 
+def test_kis_updown_marks_every_unreadable_field_with_a_reason() -> None:
+    outcome = us_sources.classify_kis_updown(
+        {
+            "output1": {"stat": "R"},
+            "output2": [{"symb": "AAPL", "last": "1.5", "tvol": "10", "rank": "1"}],
+        },
+        "NAS",
+    )
+    (row,) = outcome.rows
+    assert row.name is None and row.change_amount is None and row.change_rate is None
+    assert row.reasons["name"] == us_sources.REASON_UNAVAILABLE
+    assert row.reasons["change_amount"] == us_sources.REASON_UNAVAILABLE
+    assert row.reasons["change_rate"] == us_sources.REASON_UNAVAILABLE
+    assert "trade_value" not in row.reasons  # derived from price x volume
+
+
 def test_kis_updown_derives_dollar_volume_from_the_same_row() -> None:
     outcome = us_sources.classify_kis_updown(_kis_down(), "NAS")
     assert outcome.status == "ok"
@@ -494,7 +510,10 @@ async def test_asset_lookup_failure_is_reported_as_unavailable_not_absent() -> N
     async def boom(symbols):
         raise RuntimeError("master read failed")
 
-    await _run(asset_types=boom)
+    _, session = await _run(asset_types=boom)
+    # a DB-level failure must not leave an aborted transaction for the first
+    # surface write (the finding "PendingRollbackError loses a surface").
+    assert session.rollbacks == 1
     dell = next(
         r
         for r in MemoryRepo.rows.values()
@@ -502,6 +521,47 @@ async def test_asset_lookup_failure_is_reported_as_unavailable_not_absent() -> N
     )
     assert dell.asset_type == "unknown"
     assert dell.field_reasons["asset_type"] == "unavailable"
+
+
+# ------------------------------------------------------------------- CLI glue --
+
+
+@pytest.mark.asyncio
+async def test_half_configured_alpaca_credentials_become_source_unavailable(
+    monkeypatch,
+) -> None:
+    """The finding "half-configured env aborts the job": it must not raise."""
+    import scripts.us_intraday_movers as cli
+
+    class Settings:
+        invest_momentum_events_commit_enabled = False
+
+    def _credentials(env=None):
+        raise ValueError("missing or invalid ALPACA_DATA_API_KEY_ID")
+
+    captured: dict = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return us_intraday.RunReport(
+            status="dry_run",
+            snapshot_at=PRE.astimezone(UTC),
+            trading_date=dt.date(2026, 11, 25),
+            run_id=us_intraday.run_id_for(PRE.astimezone(UTC)),
+        )
+
+    monkeypatch.setattr(cli, "settings", Settings())
+    monkeypatch.setattr(cli, "alpaca_data_credentials", _credentials)
+    monkeypatch.setattr(cli, "KISClient", lambda: FakeKis())
+    monkeypatch.setattr(us_intraday, "run_us_intraday_movers", fake_run)
+
+    payload = await cli.run(cli._parse_args(["--dry-run"]))
+    assert captured["alpaca"] is None
+    assert captured["kis"] is not None
+    assert payload["sources"] == {
+        "alpaca_screener": False,
+        "kis_overseas_ranking": True,
+    }
 
 
 # --------------------------------------------------------------- static guard --

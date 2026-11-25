@@ -357,12 +357,15 @@ def classify_alpaca_movers(payload: object, side: str) -> SurfaceOutcome:
     if not isinstance(payload, Mapping):
         return SurfaceOutcome(STATUS_ERROR, "bad_response")
     try:
-        rows, _ = _alpaca_mover_rows(payload, side)
+        rows, skipped = _alpaca_mover_rows(payload, side)
     except ValueError:
         return SurfaceOutcome(STATUS_ERROR, "unparseable")
     if rows:
         return SurfaceOutcome(STATUS_OK, None, tuple(rows))
-    if payload.get("gainers") == [] or payload.get("losers") == []:
+    # Only this side's own list decides empty vs unusable: rows that failed to
+    # parse (``skipped``) mean the ranking came back non-empty but unusable.
+    own = payload.get("gainers" if side == "up" else "losers")
+    if own == [] and skipped == 0:
         return SurfaceOutcome("empty", "no_rows")
     return SurfaceOutcome(STATUS_ERROR, "unparseable")
 
@@ -435,15 +438,25 @@ def classify_kis_updown(payload: object, exchange: str) -> SurfaceOutcome:
             reasons["volume"] = REASON_UNAVAILABLE
         if trade_value is None:
             reasons["trade_value"] = REASON_NOT_IN_PAYLOAD
+        name = str(item.get("name") or "").strip() or None
+        change_amount = _decimal(item.get("diff"))
+        change_rate = _decimal(item.get("rate"))
+        for key, value in (
+            ("name", name),
+            ("change_amount", change_amount),
+            ("change_rate", change_rate),
+        ):
+            if value is None:
+                reasons[key] = REASON_UNAVAILABLE
         return UsRow(
             source=SOURCE_KIS,
             symbol=symbol,
             rank=rank,
             market_type=exchange,
-            name=str(item.get("name") or "").strip() or None,
+            name=name,
             price=price,
-            change_amount=_decimal(item.get("diff")),
-            change_rate=_decimal(item.get("rate")),
+            change_amount=change_amount,
+            change_rate=change_rate,
             volume=volume,
             trade_value=trade_value,
             trade_value_basis=basis,

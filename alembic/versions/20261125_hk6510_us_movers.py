@@ -96,6 +96,15 @@ def downgrade() -> None:
                 RAISE EXCEPTION
                     '{TABLE} has us rows; downgrade would discard US observations';
             END IF;
+            -- hk 6510 widened the run reason vocabulary; a row that the restored
+            -- CHECK cannot hold would abort the downgrade with a raw violation.
+            IF EXISTS (
+                SELECT 1 FROM public.{RUNS_TABLE}
+                WHERE reason = 'source_unavailable'
+            ) THEN
+                RAISE EXCEPTION
+                    '{RUNS_TABLE} has source_unavailable rows; downgrade would discard them';
+            END IF;
         END
         $$
         """

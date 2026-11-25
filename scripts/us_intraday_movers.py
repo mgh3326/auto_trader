@@ -55,12 +55,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     gate_on = bool(settings.invest_momentum_events_commit_enabled)
     commit = not args.dry_run and gate_on
-    credentials = alpaca_data_credentials()
-    if credentials is None:
-        logger.warning("alpaca screener credentials absent vars=%s", "paper-data")
-        alpaca: AlpacaScreenerClient | None = None
-    else:
-        alpaca = AlpacaScreenerClient(*credentials)
+    alpaca: AlpacaScreenerClient | None = None
+    try:
+        credentials = alpaca_data_credentials()
+        if credentials is None:
+            logger.warning("alpaca screener credentials absent")
+        else:
+            alpaca = AlpacaScreenerClient(*credentials)
+    except ValueError as exc:
+        # The message names the env variable, never a value. A half-configured
+        # env is a source that cannot be attempted: its surfaces report
+        # ``source_unavailable`` and the KIS pass still runs.
+        logger.warning("alpaca screener unavailable: %s", exc)
     try:
         kis: KISClient | None = KISClient()
     except Exception as exc:  # noqa: BLE001 - reported as source_unavailable

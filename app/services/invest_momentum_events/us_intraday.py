@@ -416,6 +416,11 @@ async def run_us_intraday_movers(
         try:
             masters = dict(await load_masters(symbols))
         except Exception as exc:  # noqa: BLE001 - rows stay asset_type unknown
+            # A DB-level failure leaves the session in an aborted transaction;
+            # without this rollback the first surface's write would raise
+            # ``PendingRollbackError`` and lose that observation.
+            if session is not None:
+                await session.rollback()
             logger.warning(
                 "us movers asset class lookup failed error=%s", type(exc).__name__
             )
