@@ -64,6 +64,9 @@ class AuthMiddleware:
     EXECUTION_LEDGER_INGEST_PATH_PREFIX: ClassVar[str] = (
         "/trading/api/execution-ledger/"
     )
+    RESEARCH_MINUTES_INGEST_PATH_PREFIX: ClassVar[str] = (
+        "/trading/api/research-minutes/"
+    )
     TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
@@ -86,7 +89,12 @@ class AuthMiddleware:
             return
 
         request = Request(scope, receive=receive)
-        path = request.url.path
+        # Decide on the routed path, not ``request.url.path``: Starlette builds
+        # that URL from ``host_header + path``, so a crafted ``Host`` (e.g.
+        # ``x/auth/?``) can make it look like a public path while routing still
+        # reaches the real one (hk 6343 review). ``scope["path"]`` is what the
+        # router matches.
+        path = scope.get("path") or request.url.path
         is_api_request = self._is_api_request_path(path)
 
         # Handle authentication logic and determine if we should short-circuit
@@ -136,7 +144,8 @@ class AuthMiddleware:
         Check authentication and return a response if access is denied.
         Returns None if request should continue to the downstream app.
         """
-        path = request.url.path
+        # Routed path, not the Host-derived ``request.url.path`` — see __call__.
+        path = scope.get("path") or request.url.path
 
         # Legacy paths must always pass through to deprecated router handlers.
         if self._is_legacy_deprecated_path(path):
@@ -259,6 +268,46 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid execution ledger ingest token"},
+                )
+            return None
+
+        # hk 6343 — research minute-bar HTTP ingest + target read for the Go
+        # quote collector. The gate is checked BEFORE the token so a disabled
+        # surface answers 404 (the same shape an absent route would) and never
+        # reveals whether a token is configured; both happen before any DB
+        # access. An unset token (or header name) is fail-closed 403 and a wrong
+        # token is 401; a session cookie is never a substitute.
+        if path.startswith(self.RESEARCH_MINUTES_INGEST_PATH_PREFIX):
+            if settings.RESEARCH_MINUTES_INGEST_ENABLED is not True:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": "Not Found"},
+                )
+            expected_token = settings.RESEARCH_MINUTES_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Research minutes ingest token not configured"},
+                )
+            header_name = settings.RESEARCH_MINUTES_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Research minutes ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            # Bytes, not str: Starlette decodes header values as latin-1, and
+            # ``compare_digest`` on str raises TypeError for non-ASCII input —
+            # a wrong token must be 401, never a 500.
+            if not hmac.compare_digest(
+                supplied_token.encode("utf-8", "surrogateescape"),
+                expected_token.encode("utf-8", "surrogateescape"),
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid research minutes ingest token"},
                 )
             return None
 
