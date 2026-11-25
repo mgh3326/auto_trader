@@ -23,8 +23,10 @@ KR (KST), only on a confirmed XKRX trading day:
   15:20-16:00 gap) -> UNKNOWN
 US (ET): 04:00-regular open US_PRE; regular session US_REGULAR;
   regular close-20:00 US_POST; 20:00-04:00 and non-session days -> UNKNOWN
-  (``US_DAY`` exists in the table CHECK for a later day-market reader; this
-  function never returns it).
+  without a calendar. With the Toss US calendar (hk 6322, ``us_calendar=``) a bar
+  inside its dayMarket window is US_DAY (any venue), and the TOSS_INTEGRATED venue
+  takes every label from the calendar only (UNKNOWN outside all windows, never a
+  guess). The KIS labels above are unchanged when no calendar is passed.
 
 Futures (hk 6148, ``market="futures"``, venue ignored — one KRX derivatives venue),
 KST on the bar START, ``futures_session_date`` gives the trading date:
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from app.mcp_server.tooling.market_session import (
@@ -70,6 +73,9 @@ from app.services.kis_futures_mock.session_calendar import (
 )
 from app.services.market_events.session_calendar import is_trading_session
 
+if TYPE_CHECKING:  # type only: this module never imports the Toss client at runtime
+    from app.services.brokers.toss.market_calendar import TossMarketCalendar
+
 UNKNOWN = "UNKNOWN"
 
 KRX_REGULAR = "KRX_REGULAR"
@@ -80,6 +86,7 @@ NXT_POST = "NXT_POST"
 US_PRE = "US_PRE"
 US_REGULAR = "US_REGULAR"
 US_POST = "US_POST"
+US_DAY = "US_DAY"
 FUT_DAY = "FUT_DAY"
 FUT_NIGHT = "FUT_NIGHT"
 
@@ -99,6 +106,8 @@ _FUTURES_NEXT_DAY_SEARCH = 10
 
 KR_VENUES = ("KRX", "NTX")
 US_VENUES = ("NASD", "NYSE", "AMEX")
+#: Toss day-market bars (hk 6322): one integrated feed, the execution venue is unknown.
+TOSS_US_VENUE = "TOSS_INTEGRATED"
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
@@ -108,6 +117,13 @@ _US_SEGMENT_BY_SESSION = {
     US_SESSION_REGULAR: US_REGULAR,
     US_SESSION_AFTERHOURS: US_POST,
 }
+#: Toss US calendar window attribute -> segment label (hk 6322).
+_US_CALENDAR_WINDOWS = (
+    ("day_market", US_DAY),
+    ("pre_market", US_PRE),
+    ("regular_market", US_REGULAR),
+    ("after_market", US_POST),
+)
 
 
 @lru_cache(maxsize=512)
@@ -144,6 +160,45 @@ def _us_segment(venue: str, bar_start_utc: datetime) -> str:
     if venue not in US_VENUES:
         return UNKNOWN
     return _US_SEGMENT_BY_SESSION.get(us_market_session(bar_start_utc), UNKNOWN)
+
+
+def us_calendar_segment(
+    bar_start_utc: datetime, calendar: TossMarketCalendar | Any | None
+) -> str | None:
+    """Segment label from the Toss US market calendar (hk 6322), or ``None``.
+
+    Windows are the calendar's own absolute ``start``/``end`` instants, so the
+    day-market hours are never hard-coded. ``None`` means no window of that day
+    (or of any listed day) contains the bar, or there is no calendar. A closed
+    day, whose windows are all null, therefore gives ``None``, never a guess.
+    """
+    if calendar is None or bar_start_utc.tzinfo is None:
+        return None
+    moment = bar_start_utc.astimezone(UTC)
+    for day in calendar.days:
+        for attribute, label in _US_CALENDAR_WINDOWS:
+            window = getattr(day, attribute, None)
+            if window is not None and window.start <= moment < window.end:
+                return label
+    return None
+
+
+def us_day_market_bar(bar_start_utc: datetime, calendar: Any | None) -> bool:
+    """True when the bar starts inside a calendar day-market window (hk 6322)."""
+    return us_calendar_segment(bar_start_utc, calendar) == US_DAY
+
+
+def _us_segment_with_calendar(
+    venue: str, bar_start_utc: datetime, calendar: Any | None
+) -> str:
+    if calendar is None:
+        return _us_segment(venue, bar_start_utc)
+    label = us_calendar_segment(bar_start_utc, calendar)
+    if venue == TOSS_US_VENUE:
+        return label or UNKNOWN
+    if label == US_DAY:
+        return US_DAY
+    return _us_segment(venue, bar_start_utc)
 
 
 def us_session_date(bar_start_utc: datetime) -> date:
@@ -200,11 +255,23 @@ def futures_session_date(bar_start_utc: datetime) -> date | None:
     return _futures_classify(bar_start_utc.astimezone(UTC))[1]
 
 
-def session_segment_of(market: str, venue: str, bar_start_utc: datetime) -> str:
+def session_segment_of(
+    market: str,
+    venue: str,
+    bar_start_utc: datetime,
+    *,
+    us_calendar: Any | None = None,
+) -> str:
     """Session label of the bar that starts at ``bar_start_utc`` (tz-aware).
 
     ``market`` is ``"kr"``, ``"us"`` or ``"futures"``; anything else, a naive
     timestamp or an unknown venue gives ``UNKNOWN``.
+
+    ``us_calendar`` (hk 6322, US only) is the Toss US market calendar of the run.
+    Without it the US labels are exactly the KIS windows (unchanged). With it, a
+    bar inside a calendar day-market window is ``US_DAY`` for any venue, and the
+    ``TOSS_INTEGRATED`` venue takes its label from the calendar alone (``UNKNOWN``
+    outside every window).
     """
     if bar_start_utc.tzinfo is None:
         return UNKNOWN
@@ -212,7 +279,7 @@ def session_segment_of(market: str, venue: str, bar_start_utc: datetime) -> str:
     if market == "kr":
         return _kr_segment(venue, bar_start)
     if market == "us":
-        return _us_segment(venue, bar_start)
+        return _us_segment_with_calendar(venue, bar_start, us_calendar)
     if market == "futures":
         return _futures_classify(bar_start)[0]
     return UNKNOWN

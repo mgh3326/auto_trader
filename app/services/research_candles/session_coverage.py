@@ -174,6 +174,56 @@ def classify_zero_row(symbol: str, runs: Sequence[RunEvidence]) -> str:
     return "not_selected"
 
 
+@dataclass(frozen=True, slots=True)
+class EdgeRow:
+    """One stored bar for the first/last check (hk 6322): bar START, no value."""
+
+    symbol: str
+    source: str
+    venue: str
+    session_segment: str
+    time_utc: datetime
+
+
+def first_last_report(
+    rows: Iterable[EdgeRow], *, market: str, session_date: date
+) -> dict[str, object]:
+    """First and last stored bar per symbol x source x venue x segment.
+
+    This is the check dots asks for ("첫 봉·마지막 봉"): for one session date, the
+    earliest and the latest bar START of every group, with its KST rendering. Rows
+    are not deduplicated across sources: a Toss row and a KIS row are two groups.
+    """
+    groups: dict[tuple[str, str, str, str], list[datetime]] = defaultdict(list)
+    for row in rows:
+        groups[(row.symbol, row.source, row.venue, row.session_segment)].append(
+            row.time_utc
+        )
+    entries: list[dict[str, object]] = []
+    for (symbol, source, venue, segment), stamps in sorted(groups.items()):
+        first, last = min(stamps), max(stamps)
+        entries.append(
+            {
+                "symbol": symbol,
+                "source": source,
+                "venue": venue,
+                "session_segment": segment,
+                "rows": len(stamps),
+                "first_bar_start_utc": first.astimezone(UTC).isoformat(),
+                "first_bar_start_kst": first.astimezone(_KST).isoformat(),
+                "last_bar_start_utc": last.astimezone(UTC).isoformat(),
+                "last_bar_start_kst": last.astimezone(_KST).isoformat(),
+            }
+        )
+    return {
+        "mode": "first_last",
+        "market": market,
+        "session_date": session_date.isoformat(),
+        "bar_start_note": "time_utc is the bar START; Toss timestamps are bar ENDs",
+        "entries": entries,
+    }
+
+
 def coverage_report(
     rows: Iterable[StoredMinute],
     *,

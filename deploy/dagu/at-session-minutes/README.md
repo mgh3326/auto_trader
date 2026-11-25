@@ -6,7 +6,7 @@
 | DAG | 스케줄 | 진입점 |
 |---|---|---|
 | `at-session-minutes-kr` | 월–금 08:00–20:10 KST, 5분 간격 | `scripts.collect_session_minutes --market kr` |
-| `at-session-minutes-us` | 월–금 04:00–20:10 ET, 5분 간격 | `scripts.collect_session_minutes --market us` |
+| `at-session-minutes-us` | 월–금 04:00–20:10 ET + 데이마켓 창(일–금 20:00–23:55 ET, 월–토 00:00–03:55 ET), 5분 간격 (hk 6322) | `scripts.collect_session_minutes --market us` |
 
 - US 스케줄은 ET 기준이다. KST 로는 여름(EDT) 17:00–09:10, 겨울(EST) 18:00–10:10 이다. KST 18:00 고정 시작은 여름 프리장 첫 1시간(04:00–05:00 ET)을 놓친다.
 - 두 DAG 모두 `host: pi` 워커, 배포 이미지 digest, `/root/at-secrets/.env.api`를 쓴다(at-batch2 와 같은 패턴).

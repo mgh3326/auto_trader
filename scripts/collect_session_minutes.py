@@ -22,6 +22,12 @@ spills to the next tier. The union is capped at ``SESSION_MINUTES_MAX_SYMBOLS_{K
 (default 150). ``--symbols`` replaces the union for a targeted run. KR movers with no
 minute row yet today get one extra, earlier KIS page (hour cursor).
 
+US day market (hk 6322): for ``--market us`` with ``TOSS_API_ENABLED`` the run also
+reads Toss 1m candles for the same targets (source ``TOSS``, venue
+``TOSS_INTEGRATED``). The Toss US market calendar is fetched once per run; bars inside
+its dayMarket window are ``US_DAY``. KIS US reads are skipped while a day-market window
+is open. Toss off: no Toss read, and the report says ``toss: disabled``.
+
 Output: one JSON object (inserted / already_present / skipped_forming / errors) plus
 ``targeted_symbols``, ``targets_tiers`` (per-tier budget, allowance, candidates,
 selected, cut) and ``targets_cuts`` (symbol, tier, reason ``budget_cut``). Feed this
@@ -34,15 +40,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from app.core.cli import setup_logging_and_sentry
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import today_kst
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.market_calendar import get_toss_market_calendar
 from app.services.research_candles import session_minutes_collector as collector
+from app.services.research_candles.session_segment import TOSS_US_VENUE
+
+if TYPE_CHECKING:
+    from app.services.brokers.toss.market_calendar import TossMarketCalendar
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -59,10 +73,47 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+async def _toss_us_inputs(
+    market: str,
+) -> tuple[TossReadClient | None, TossMarketCalendar | None, str]:
+    """Toss reader and the run's US calendar (hk 6322). Read-only.
+
+    Returns ``(reader, calendar, status)``. The calendar is fetched once per run.
+    A failed calendar read leaves the calendar ``None``, so no Toss bar is read and
+    the collector reports ``CalendarUnavailable``.
+    """
+    if market != "us":
+        return None, None, "not_requested"
+    if not settings.toss_api_enabled:
+        return None, None, "disabled"
+    calendar = await get_toss_market_calendar("us", today_kst())
+    try:
+        reader = TossReadClient.from_settings()
+    except Exception as exc:  # noqa: BLE001 - reported, the KIS pass still runs
+        logging.getLogger(__name__).warning(
+            "toss reader unavailable error=%s", type(exc).__name__
+        )
+        return None, calendar, "reader_unavailable"
+    return reader, calendar, "ready"
+
+
+def _toss_input_errors(status: str) -> list[dict[str, str]]:
+    """A Toss reader that cannot be built is an error, never a silent skip (review r1).
+
+    The calendar failure is recorded by the collector (``CalendarUnavailable``) when a
+    reader exists; with no reader the collector never runs the Toss block, so the
+    failure is recorded here. Exit stays 1 while Toss is enabled and unreadable.
+    """
+    if status == "reader_unavailable":
+        return [{"venue": TOSS_US_VENUE, "error_class": "TossReaderUnavailable"}]
+    return []
+
+
 async def run(args: argparse.Namespace) -> dict[str, object]:
     market = cast(collector.Market, args.market)
     now = datetime.now(UTC)
     kis = cast(collector.KisMinuteReader, KISClient())
+    toss, us_calendar, toss_input_status = await _toss_us_inputs(market)
     fixed_raw = (
         settings.SESSION_MINUTES_FIXED_SYMBOLS_KR
         if market == "kr"
@@ -105,18 +156,28 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             exchanges, unresolved = await collector.resolve_us_exchanges(
                 session, targets.symbols
             )
-        report = await collector.collect(
-            market=market,
-            symbols=targets.symbols,
-            kis=kis,
-            writer=None if args.dry_run else collector.SqlMinuteWriter(session, market),
-            nxt_eligible=nxt,
-            us_exchanges=exchanges,
-            unresolved_symbols=unresolved,
-            dry_run=args.dry_run,
-            prior_errors=targets.errors,
-            backfill_symbols=targets.backfill,
-        )
+        try:
+            report = await collector.collect(
+                market=market,
+                symbols=targets.symbols,
+                kis=kis,
+                writer=None
+                if args.dry_run
+                else collector.SqlMinuteWriter(session, market),
+                nxt_eligible=nxt,
+                us_exchanges=exchanges,
+                unresolved_symbols=unresolved,
+                dry_run=args.dry_run,
+                prior_errors=[*targets.errors, *_toss_input_errors(toss_input_status)],
+                backfill_symbols=targets.backfill,
+                toss=toss,
+                us_calendar=us_calendar,
+            )
+        finally:
+            if toss is not None:
+                await toss.aclose()
+    if toss is None and toss_input_status != "not_requested":
+        report["toss"] = toss_input_status
     report.update(collector.targets_report(targets))
     return report
 

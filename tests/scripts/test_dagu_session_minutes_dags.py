@@ -20,7 +20,8 @@ EXPECTED = {
         "us",
         [
             "CRON_TZ=America/New_York */5 4-19 * * 1-5",
-            "CRON_TZ=America/New_York 0,5,10 20 * * 1-5",
+            "CRON_TZ=America/New_York */5 20-23 * * 0-5",
+            "CRON_TZ=America/New_York */5 0-3 * * 1-6",
         ],
     ),
 }
