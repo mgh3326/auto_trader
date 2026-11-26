@@ -30,6 +30,31 @@ def test_date_only_and_unparseable_precision() -> None:
     assert invalid.reason == "unparseable"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected", "precision"),
+    [
+        ("202611250941", datetime(2026, 11, 25, 0, 41, tzinfo=UTC), "minute"),
+        ("20261125094107", datetime(2026, 11, 25, 0, 41, 7, tzinfo=UTC), "second"),
+        ("20261125", datetime(2026, 11, 24, 15, 0, tzinfo=UTC), "date"),
+    ],
+)
+def test_compact_naver_time_uses_exact_shape(raw, expected, precision) -> None:
+    parsed = collector.parse_publish_time(raw)
+    assert parsed.raw == raw
+    assert parsed.value == expected
+    assert parsed.precision == precision
+    assert parsed.reason is None
+
+
+@pytest.mark.parametrize("raw", ["20261125094", "2026112509410", "202611250941000"])
+def test_compact_naver_time_rejects_unrecognized_digit_lengths(raw) -> None:
+    parsed = collector.parse_publish_time(raw)
+    assert parsed.raw == raw
+    assert parsed.value is None
+    assert parsed.precision is None
+    assert parsed.reason == "unparseable"
+
+
 def test_naver_article_url_variants_share_canonical_identity() -> None:
     assert (
         canonicalize_naver_news_url(

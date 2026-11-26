@@ -58,6 +58,22 @@ def parse_publish_time(raw: object) -> ParsedPublishTime:
     if raw == "":
         return ParsedPublishTime(raw, None, None, "empty")
     text = raw.strip()
+    if re.fullmatch(r"[0-9]+", text):
+        compact_formats = {
+            8: ("%Y%m%d", "date"),
+            12: ("%Y%m%d%H%M", "minute"),
+            14: ("%Y%m%d%H%M%S", "second"),
+        }
+        compact = compact_formats.get(len(text))
+        if compact is None:
+            return ParsedPublishTime(raw, None, None, "unparseable")
+        fmt, precision = compact
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            return ParsedPublishTime(raw, None, None, "unparseable")
+        parsed = parsed.replace(tzinfo=KST)
+        return ParsedPublishTime(raw, parsed.astimezone(UTC), precision, None)
     try:
         parsed_iso = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
@@ -77,12 +93,9 @@ def parse_publish_time(raw: object) -> ParsedPublishTime:
     formats = (
         ("%Y-%m-%dT%H:%M:%S%z", "second"),
         ("%Y-%m-%d %H:%M:%S", "second"),
-        ("%Y%m%d%H%M%S", "second"),
         ("%Y-%m-%dT%H:%M%z", "minute"),
         ("%Y-%m-%d %H:%M", "minute"),
-        ("%Y%m%d%H%M", "minute"),
         ("%Y-%m-%d", "date"),
-        ("%Y%m%d", "date"),
     )
     for fmt, precision in formats:
         try:
