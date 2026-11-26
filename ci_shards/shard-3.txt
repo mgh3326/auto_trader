@@ -114,6 +114,7 @@ tests/scripts/test_binance_trend_tick_export.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_deploy_ci_gate.py
 tests/scripts/test_diagnose_krx_after_market_eligibility.py
+tests/scripts/test_dockerfile_api_runtime_dependencies.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_invest_perf_report.py
