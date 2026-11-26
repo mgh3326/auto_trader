@@ -15,7 +15,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
 async def _run(
-    *, deadline: float | None, now: float = 0.0, row_seconds: float = 100.0
+    *,
+    deadline: float | None,
+    now: float = 0.0,
+    row_seconds: float = 100.0,
+    project: bool = True,
 ) -> tuple[dict, list[int]]:
     """Three open rows; each takes ``row_seconds`` on a fake clock."""
     clock = [now]
@@ -48,6 +52,7 @@ async def _run(
         closed_pages_capped=False,
         single_fetch_count=0,
     )
+    sweep = AsyncMock(return_value={})
     patches = (
         patch.object(mod, "_monotonic", new=lambda: clock[0]),
         patch.object(mod, "_reconcile_one_toss_row", new=_one),
@@ -58,7 +63,7 @@ async def _run(
             "_repair_terminal_toss_proposal_projections",
             new=AsyncMock(return_value={}),
         ),
-        patch.object(mod, "run_resting_rung_sweep", new=AsyncMock(return_value={})),
+        patch.object(mod, "run_resting_rung_sweep", new=sweep),
         patch.object(
             mod.TossReadClient,
             "from_settings",
@@ -72,7 +77,13 @@ async def _run(
     with ExitStack() as stack:
         for item in patches:
             stack.enter_context(item)
-        result = await mod.toss_reconcile_orders_impl(dry_run=False, **kwargs)
+        result = await mod.toss_reconcile_orders_impl(
+            dry_run=False, project_proposal_rungs=project, **kwargs
+        )
+    if project:
+        sweep.assert_awaited_once_with(dry_run=False)
+    else:
+        sweep.assert_not_awaited()
     source.aclose.assert_awaited_once()
     return result, processed
 
@@ -116,3 +127,11 @@ async def test_without_a_deadline_every_row_runs():
     assert processed == [1, 2, 3]
     assert result["counts"] == {"filled": 3}
     assert "deadline" not in result
+
+
+async def test_auto_veto_reconcile_never_runs_proposal_sweep():
+    result, processed = await _run(deadline=None, project=False)
+
+    assert result["success"] is True
+    assert result["proposal_rung_sweep"] == {"ran": False}
+    assert processed == [1, 2, 3]

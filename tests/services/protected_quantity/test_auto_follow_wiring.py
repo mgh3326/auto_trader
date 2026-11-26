@@ -155,7 +155,13 @@ def test_toss_booking_follows_only_after_its_session_block_closes() -> None:
     tree = ast.parse(
         (ROOT / "app/mcp_server/tooling/toss_live_ledger.py").read_text("utf-8")
     )
-    function = _function(tree, "_reconcile_one_toss_row")
+    entrypoint = _function(tree, "_reconcile_one_toss_row")
+    [book_call] = _calls(entrypoint, "_book_toss_fill")
+    assert any(
+        isinstance(node, ast.Await) and node.value is book_call
+        for node in ast.walk(entrypoint)
+    )
+    function = _function(tree, "_book_toss_fill")
     booking = next(
         node
         for node in function.body

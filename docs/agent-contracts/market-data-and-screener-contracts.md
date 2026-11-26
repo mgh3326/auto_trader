@@ -8,6 +8,7 @@
 - Save+ 뉴스 그림자 비교 소스·개인 관심도 스냅샷 (hk 6694)
 - Market Events Ingestion Foundation (ROB-128)
 - Benzinga calendar ingestion (hk 6513)
+- Crypto exchange notices (hk 6787)
 - KIS KSD dividend calendar (hk 6583)
 - Research Reports Integration (ROB-140)
 - Invest Screener US Activation (ROB-204)
@@ -39,6 +40,17 @@
 - Upbit 원화장 장중 그림자 신호·가상 원장 기록기 (hk 6036)
 
 ## 기준 원문 계약
+
+### KR 시장-wide 일일 맥락 — breadth·투자자별 순매수·예수금/신용잔고 (hk 6786)
+
+`scripts/collect_kr_market_daily.py [--date YYYY-MM-DD] [--dry-run|--commit]`는 기본 드라이런인 수동 수집기다. Naver 공개 JSON만 읽으며 요청은 전체 작업에서 초당 1회 이하, 호스트는 `m.stock.naver.com`과 `stock.naver.com`으로 제한하고 redirect를 따르지 않는다. 응답 `Content-Type`은 `application/json`이어야 한다. HTTP/shape/decimal 오류는 breadth·투자자·예수금/신용별 타입 오류로 남고 수집 CLI는 실패 종료(1)한다. 404를 정상 빈 데이터로 취급하지 않는다.
+
+- Breadth는 `/api/stocks/marketValue/{KOSPI|KOSDAQ}`를 `pageSize=100`으로 끝까지 페이지 처리한다. 종목별 `compareToPreviousClosePrice` 부호로 상승·하락·보합을 세고 `fetched_count == total_count`일 때만 완전하다. 부분 응답도 정상 응답이면 불완전 상태로 보존한다. breadth는 실행 시점의 KST 오늘에만 저장한다. `session_segment_of("kr", "KRX", observed_at)`가 `KRX_REGULAR`이면 `intraday`, 그 외에는 `after_close`로 표시한다. 키는 시장·거래일·세션이며 두 세션 자료를 함께 보존한다.
+- 투자자 자료는 `/api/domestic/market/trend/daily`의 `diffValue`, `buyPrice`, `sellPrice`, `buyQuant`, `sellQuant`를 소수점 손실 없이 저장한다. 단위는 KRW와 주다. 시장·거래일·원시 `investorGubun`이 키다. 알려진 코드만 이름에 연결하고 미등록 코드는 원시 코드와 `null` 이름으로 저장한다.
+- 예수금/신용 자료는 `/api/domestic/market/trendDeposit`의 사업일자별 `customerDeposit`, `creditLoan`, `creditLoanDiff`, 제공 시 `beneficiaryCertificate`를 저장한다. 금액 단위는 페이지가 표시하는 억원이며 DB에도 `amount_unit="억원"`을 명시한다. 시장 공통 사업일자가 키다.
+- 세 테이블은 추가형 마이그레이션으로 만들고 `Numeric`에 십진 값을 저장한다. `(market, trade_date, observed_at)`, `(market, trade_date, investor_code)`, `bizdate` 키를 insert-only로 유지한다. breadth의 `session_label`은 관측 시각과 함께 보존한다. `first_received_at`은 최초 관측이며 재수집이 덮어쓰지 않는다. 다운그레이드는 어느 테이블이든 행이 남아 있으면 거부한다. `at_app`이 있을 때 `SELECT, INSERT`만 조건부 부여한다.
+- `read_market_daily_context(session, today)`는 최신 breadth, 지정한 오늘의 KOSPI/KOSDAQ 투자자 그룹, 독립 business date가 붙은 최신 예수금/신용 자료를 제공한다. 소스가 없으면 값은 `null`이고 각 블록에 닫힌 `reason`을 넣는다. 이 저장소는 기존 closing summary나 intraday alert에 배선하지 않는다.
+- `deploy/dagu/at-kr-market-daily/`는 평일 15:40·18:30 KST 수집을 적은 정적 복사본일 뿐 등록하지 않는다. 주문·계좌 경로, 장중 반복 폴링, KRX/KOFIA 대체 원천은 범위 밖이다.
 
 ### KR/US Category Normalization & Lazy Fill (ROB-512)
 
@@ -862,7 +874,10 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - **Upbit 시장 경보 상태 — `market_event` (hk 6026)**: Upbit 는 2024-11-20 부로 `GET /v1/market/all` 의 `market_warning` 필드를 없애고 `market_event: {warning: bool, caution: {<TYPE>: bool, ...}}` 로 대체했다(근거: docs.upbit.com/kr/changelog/mytrade_market_warning_deprecated_11_20, 필드 정의 docs.upbit.com/kr/reference/list-trading-pairs 2026-07-29 판, 주의 의미 고정 docs.upbit.com/kr/changelog/market_event 2026-01-29: 주의/경고/위험 어느 단계든 경보가 있으면 true). `warning` 은 유의, `caution` 은 주의이며 타입 이름은 Upbit 가 보낸 그대로 보존한다(우리가 목록을 닫지 않는다).
 - **경보 저장과 닫힌 상태**: `upbit_symbol_universe.market_event` JSONB + `market_event_observed_at` TIMESTAMPTZ(마이그레이션 `20261122_hk6026_market_event`, 추가형·백필 없음, 운영자가 적용). `market_warning` 열은 이제 `market_event.warning` 의 유의 투영일 뿐이다(warning→`CAUTION`, false→`NONE`, 없음/판독불가→`UNKNOWN`); 주의는 그 열에 들어가지 않는다. Upbit 가 말하지 않은 시장에 `NONE` 을 쓰지 않는다. `app/services/upbit_market_event.py` 가 시장마다 정확히 하나의 상태를 낸다 — `none` / `warning` / `caution:<TYPE,...>` / `unknown`(market_event 없음·판독 불가) / `stale`(관측이 `MARKET_EVENT_STALE_AFTER`=36시간보다 오래됨; 동기화는 매일 06:15 KST). 신선도는 `market_event_observed_at` 으로만 판정하며 행 `updated_at` 을 쓰지 않는다. `warning` 은 `caution` 보다 우선하고 타입은 표시용으로 남긴다.
 - **경보 리더 계약**: 구매측 리더(암호화폐 스크리너·추천·보유 표시)는 `warning`·`unknown`·`stale` 시장을 신규 매수·추가 매수에서 제외하고 `filtered_by_warning`/`filtered_by_unknown_warning`/`filtered_by_stale_warning` 와 `warnings` 로 이유를 보고한다. `caution:<types>` 는 제외하지 않고 후보의 `market_event_state`·`caution_types` 로 표시한다. 비활성(상장폐지·거래정지) 마켓은 기존대로 제외한다. 경보 조회가 실패하면 대화형 스크리닝은 필터를 건너뛰고 `warnings` 에 남기며, 암호화폐 스크리너 스냅샷 빌드는 `market_warning=false` 를 지어내지 않고 실패한다(스냅샷 행의 유의 플래그는 이제 실제 상태에서 온다 — 이전에는 finalize 가 지워 항상 false 였다). 읽기 모델 `app/services/upbit_public_read_model/market_warnings.py` 는 DB 만 읽고(읽기 시점 HTTP 없음) 엔트리마다 `state`·`caution_types`·`observed_at` 과 레거시 `warning` 을, 블록 `meta.fetchedAt` 은 가장 최근 관측 시각을 낸다 — 오래된 관측은 `stale` 이며 fresh 로 읽히지 않는다(2026-02-21 데이터가 fresh 로 보이던 dots 관측의 원인). `get_crypto_catalysts` 의 `market_warnings` 블록은 유의와 주의를 함께 싣는다.
-- **`market_events` 확인 결과**: 설계 §6 이 물은 "투자유의 세부" 는 `market_events` 에 없다. taxonomy 는 `source="upbit"`·`category="crypto_exchange_notice"` 를 허용하지만 이를 쓰는 normalizer·ingestion 이 레포에 없다.
+- **암호화폐 거래소 공지 수집 (hk 6787)**: 수동 CLI `python -m scripts.collect_crypto_notices [--pages N] [--dry-run|--commit]` 는 Upbit `api-manager.upbit.com/api/v1/announcements` 와 Bithumb `api.bithumb.com/v1/notices` 를 읽어 `MarketEventsRepository` 로만 `market_events` 에 저장한다. Upbit 는 `category=notice` 와 `Referer: https://upbit.com/` 를 보내며 매 실행 1페이지부터 조회한다. `fixed_notices` 는 페이지 경계와 별도로 ID 중복 제거 후 처리하고, 일반 페이지는 저장된 ID 를 만난 공지를 최신 개정 여부 확인에 포함한 뒤 더 오래된 페이지/행 조회를 멈춘다. `--pages` 는 1..20 이고 기본 5다. 제공자별로 독립 commit/rollback 하며 한쪽 실패가 다른 쪽 수집을 막지 않는다. 상한 때문에 전체 창에 닿지 못한 경우 실패로 바꾸지 않고 결과에 `truncated=true`, 사용한 `page_cap`, `older_history_uncollected=true` 를 보고한다. Bithumb 은 `count=20` 으로 조회하고, 20개 창에서 저장 ID 를 만나지 못하면 같은 방식으로 가능한 누락 범위를 보고한다. 기본은 dry-run이며 저장은 `--commit`만 한다.
+  - 출처는 `upbit_notice`·`bithumb_notice`, 카테고리는 `crypto_exchange_notice`, 시장은 `crypto`다. `source_event_id` 는 Upbit `id` 와 Bithumb `pc_url` 의 공지 번호다. Upbit `first_listed_at` 과 Bithumb `published_at`(Asia/Seoul 해석)을 제공자 생성 시각으로 저장하고, `listed_at` 이 다를 때만 Upbit 제공자 수정 시각을 저장한다. Bithumb `modified_at` 은 제공자 수정 시각이다. `first_received_at` 은 최초 insert 에서만 저장된다. 원본 카테고리는 payload 의 `categories` 배열에 보존된다.
+  - 심볼은 제목의 유일한 명시 괄호 ticker 가 Upbit universe(Upbit 공지) 또는 Bithumb 공개 market list 에 정확히 존재할 때만 기록한다. 이름 매칭이나 여러 ticker 중 선택은 하지 않는다. 공지 kind 는 제목·카테고리의 닫힌 phrase 규칙만 적용하며 미인식은 `other`다: `listing`, `delisting`, `warning_designation`, `warning_release`, `deposit_withdrawal_suspend`, `deposit_withdrawal_resume`, `other`.
+  - 제공자 응답을 받은 시각을 관측 시각으로 쓴다. 원문 hash 가 바뀌면 같은 제공자 이벤트의 트랜잭션 잠금 아래 기존 `market_event_revisions` 경로에 append 후 현재 행을 갱신하고, 더 오래된 관측은 최신 행을 덮지 않는다. hash 가 같으면 아무것도 쓰지 않는다. Bithumb 은 최대 20개 반환 행을 모두 살펴 저장 ID 뒤의 공지 수정도 확인한다. 고정 HTTPS host allowlist, redirect 거부, JSON media type 및 typed fetch 오류를 사용하고 각 제공자 오류가 있으면 CLI 는 두 수집 결과를 출력한 뒤 1로 종료한다. 미등록 Dagu 사본은 `deploy/dagu/at-crypto-notices/` 에 5분 간격으로 둔다. 이 작업은 스케줄을 등록하지 않는다.
 
 ### 종목 선별 연구 하네스 (ROB-1474)
 

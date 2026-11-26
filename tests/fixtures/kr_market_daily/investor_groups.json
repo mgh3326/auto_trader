@@ -1,0 +1,11 @@
+{
+  "content": [
+    {
+      "bizdate": "20261125",
+      "netAmounts": [
+        {"investorGubun": "8000", "diffValue": "1,200", "buyPrice": "2,000", "sellPrice": "800", "buyQuant": "10", "sellQuant": "4"},
+        {"investorGubun": "9911", "diffValue": "-2.50", "buyPrice": "1.00", "sellPrice": "3.50", "buyQuant": "1", "sellQuant": "2"}
+      ]
+    }
+  ]
+}

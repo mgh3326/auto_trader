@@ -43,6 +43,12 @@ class _FakeLedger:
 
 
 _NOW = dt.datetime(2026, 7, 20, 12, 0, tzinfo=dt.UTC)
+
+
+def _now_at(ts: int) -> dt.datetime:
+    return dt.datetime.fromtimestamp(ts / 1000, tz=dt.UTC)
+
+
 _SIGNAL = Signal(
     symbol="XRPUSDT",
     side="BUY",
@@ -167,12 +173,15 @@ async def test_run_tick_null_strategy_declines_to_signal(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
 
     outcome = await orchestrator.run_tick(
-        **_common_kwargs(signal_override=None, confirm=True),
+        **_common_kwargs(
+            signal_override=None, confirm=True, now=_now_at(fake_bar.close_ts)
+        ),
     )
     assert outcome.signal is None
     assert outcome.round_trip is None
     assert outcome.blocked_reason == "no_signal"
     assert outcome.decision_ts == fake_bar.close_ts
+    assert {item.reason for item in outcome.symbol_decisions} == {"signal_none"}
 
 
 @pytest.mark.asyncio
@@ -213,13 +222,22 @@ async def test_run_tick_skips_strategy_when_symbols_have_mismatched_latest_bar(
 
     outcome = await orchestrator.run_tick(
         **_common_kwargs(
-            signal_override=None, confirm=True, strategy=_RecordingStrategy()
+            signal_override=None,
+            confirm=True,
+            strategy=_RecordingStrategy(),
+            now=_now_at(fresh_bar.close_ts),
         )
     )
     assert called_with == [], "strategy must not be called on a mismatched bucket"
     assert outcome.signal is None
     assert outcome.round_trip is None
-    assert outcome.blocked_reason == "missing_complete_4h_bar"
+    assert outcome.blocked_reason == "data_unavailable"
+    assert (
+        next(
+            item for item in outcome.symbol_decisions if item.symbol == "DOGEUSDT"
+        ).reason
+        == "data_missing_bars"
+    )
 
 
 @pytest.mark.asyncio
@@ -249,12 +267,109 @@ async def test_run_tick_calls_strategy_when_all_symbols_share_latest_close_ts(
 
     outcome = await orchestrator.run_tick(
         **_common_kwargs(
-            signal_override=None, confirm=True, strategy=_RecordingStrategy()
+            signal_override=None,
+            confirm=True,
+            strategy=_RecordingStrategy(),
+            now=_now_at(bar.close_ts),
         )
     )
     assert called_with == [bar.close_ts]
     assert outcome.decision_ts == bar.close_ts
     assert outcome.blocked_reason == "no_signal"
+
+
+@pytest.mark.asyncio
+async def test_sequential_reads_use_one_close_cutoff_across_a_4h_boundary(
+    monkeypatch,
+) -> None:
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    decision = Bar4h(28_800_000, 43_200_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+    next_close = Bar4h(43_200_000, 57_600_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        bars = (decision,) if symbols == ("XRPUSDT",) else (decision, next_close)
+        return {symbols[0]: bars}
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+    called_with = []
+
+    class _RecordingStrategy:
+        strategy_id = "recording"
+
+        def evaluate(self, bars_4h_multi_symbol, *, decision_ts):
+            called_with.append(decision_ts)
+            assert all(
+                bar.close_ts <= decision_ts
+                for bars in bars_4h_multi_symbol.values()
+                for bar in bars
+            )
+            return None
+
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None,
+            confirm=True,
+            strategy=_RecordingStrategy(),
+            now=_now_at(decision.close_ts),
+        )
+    )
+    assert called_with == [decision.close_ts]
+    assert outcome.blocked_reason == "no_signal"
+
+
+@pytest.mark.asyncio
+async def test_missing_bucket_reports_reason_and_does_not_reach_order(
+    monkeypatch,
+) -> None:
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    expected = Bar4h(28_800_000, 43_200_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+    stale = Bar4h(14_400_000, 28_800_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        return {
+            symbol: ((stale,) if symbol == "DOGEUSDT" else (expected,))
+            for symbol in symbols
+        }
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None, confirm=True, now=_now_at(expected.close_ts)
+        )
+    )
+    missing = next(
+        item for item in outcome.symbol_decisions if item.symbol == "DOGEUSDT"
+    )
+    assert missing.reason == "data_missing_bars"
+    assert missing.missing_buckets == (expected.close_ts,)
+    assert outcome.round_trip is None
+    assert outcome.blocked_reason == "data_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_history_exception_reports_error_class_without_order(monkeypatch) -> None:
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    expected = Bar4h(28_800_000, 43_200_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        if symbols == ("DOGEUSDT",):
+            raise TimeoutError("private diagnostic")
+        return dict.fromkeys(symbols, (expected,))
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None, confirm=True, now=_now_at(expected.close_ts)
+        )
+    )
+    failed = next(
+        item for item in outcome.symbol_decisions if item.symbol == "DOGEUSDT"
+    )
+    assert (failed.reason, failed.error_class) == ("data_fetch_failed", "TimeoutError")
+    assert outcome.round_trip is None
 
 
 @pytest.mark.asyncio

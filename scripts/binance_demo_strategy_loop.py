@@ -204,6 +204,15 @@ def _report_outcome(outcome: Any) -> None:
             }
         ),
         "blocked_reason": outcome.blocked_reason,
+        "symbol_decisions": [
+            {
+                "symbol": item.symbol,
+                "reason": item.reason,
+                "missing_buckets": list(item.missing_buckets),
+                "error_class": item.error_class,
+            }
+            for item in outcome.symbol_decisions
+        ],
         "round_trip": (
             None
             if outcome.round_trip is None
@@ -235,8 +244,8 @@ async def _run_tick(
     *,
     signal_override: Any | None = None,
     already_processed_decision_ts: int | None = None,
-) -> tuple[int, int | None]:
-    """Run one tick. Returns ``(exit_code, decision_ts)``."""
+) -> tuple[int, int | None, Any | None]:
+    """Run one tick. Returns ``(exit_code, decision_ts, outcome)``."""
     from app.services.brokers.binance.demo_strategy_loop import bars as bars_mod
     from app.services.brokers.binance.demo_strategy_loop.kill_switch import (
         LOCKED_LIMITS,
@@ -260,7 +269,7 @@ async def _run_tick(
         execution = BinanceFuturesDemoExecutionClient.from_env()
     except BinanceFuturesDemoMissingCredentials as exc:
         logger.error("strategy loop refused: %s", exc)
-        return 1, None
+        return 1, None, None
 
     import httpx
 
@@ -304,43 +313,62 @@ async def _run_tick(
     except Exception as exc:  # noqa: BLE001 — surfaced as an anomaly evidence line
         _evidence({"event": "strategy_loop_anomaly", "error": str(exc)})
         logger.error("strategy loop tick failed: %s", exc)
-        return 2, None
+        return 2, None, None
     finally:
         await execution.aclose()
         await market_client.aclose()
 
     _report_outcome(outcome)
-    return 0, outcome.decision_ts
+    return 0, outcome.decision_ts, outcome
 
 
 async def _run_once(args: argparse.Namespace) -> int:
-    exit_code, _ = await _run_tick(args)
+    exit_code, _, _ = await _run_tick(args)
     return exit_code
 
 
 async def _run_paper_signal(args: argparse.Namespace) -> int:
     decision_ts = int(_now_utc().timestamp() * 1000)
     signal = _build_paper_signal(args, decision_ts=decision_ts)
-    exit_code, _ = await _run_tick(args, signal_override=signal)
+    exit_code, _, _ = await _run_tick(args, signal_override=signal)
     return exit_code
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataFailureEpisodes,
+        DataQualityMonitor,
+        alert_enabled,
+    )
+
     _trace(f"loop_start poll_interval_seconds={args.poll_interval_seconds}")
     last_decision_ts: int | None = None
+    enabled = alert_enabled(os.environ)
+    monitor = DataQualityMonitor(enabled=enabled)
+    data_failure_episodes = DataFailureEpisodes()
     try:
         while True:
-            exit_code, decision_ts = await _run_tick(
+            exit_code, decision_ts, outcome = await _run_tick(
                 args, already_processed_decision_ts=last_decision_ts
             )
+            failures = (
+                data_failure_episodes.update(outcome.symbol_decisions)
+                if outcome is not None
+                else data_failure_episodes.update(())
+            )
+            await monitor.tick_done(failures)
             if exit_code == 2:
                 return exit_code
-            if decision_ts is not None:
+            if decision_ts is not None and not (
+                outcome is not None and outcome.blocked_reason == "data_unavailable"
+            ):
                 last_decision_ts = decision_ts
             await asyncio.sleep(args.poll_interval_seconds)
     except (KeyboardInterrupt, asyncio.CancelledError):
         _trace("loop_stopped operator_interrupt")
         return 0
+    finally:
+        await monitor.drain()
 
 
 async def _run(args: argparse.Namespace) -> int:

@@ -1,0 +1,7 @@
+{
+  "totalCount": 3,
+  "stocks": [
+    {"stockCode": "005930", "compareToPreviousClosePrice": "+1,000"},
+    {"stockCode": "000660", "compareToPreviousClosePrice": "-500"}
+  ]
+}

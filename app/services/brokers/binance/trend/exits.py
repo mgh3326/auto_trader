@@ -47,6 +47,7 @@ class HardStopObservation:
     minute_high: Decimal | None
     bar_close: Decimal | None
     quote: Decimal | None
+    failure_class: str | None = None
 
 
 @dataclass(frozen=True)

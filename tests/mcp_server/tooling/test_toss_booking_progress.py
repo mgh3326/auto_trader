@@ -42,11 +42,20 @@ def _row(filled_qty: str, status: str = "partial") -> SimpleNamespace:
     )
 
 
-async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
+async def _run(
+    *,
+    scanned: str,
+    locked: SimpleNamespace | None,
+    broker: str,
+    cancelled: bool = False,
+    project: bool = False,
+):
+    events = []
+    projection = AsyncMock(side_effect=lambda *args, **kwargs: events.append("project"))
     evidence = TossFillEvidence(
         verdict="partial",
-        local_status="partial",
-        broker_status="PARTIAL_FILLED",
+        local_status="cancelled" if cancelled else "partial",
+        broker_status="CANCELED" if cancelled else "PARTIAL_FILLED",
         filled_qty=Decimal(broker),
         avg_price=Decimal("190"),
         commission=None,
@@ -57,17 +66,25 @@ async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
         reason="test",
     )
     service = MagicMock()
-    service.lock_row_for_booking = AsyncMock(return_value=locked)
-    service.update_reconcile_outcome = AsyncMock()
+    service.lock_row_for_booking = AsyncMock(
+        side_effect=lambda *args: events.append("lock") or locked
+    )
+    service.update_reconcile_outcome = AsyncMock(
+        side_effect=lambda **kwargs: events.append("commit")
+    )
     service.record_transient_reconcile_error = AsyncMock()
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=object())
-    session.__aexit__ = AsyncMock(return_value=None)
+    session.__aexit__ = AsyncMock(side_effect=lambda *args: events.append("exit"))
     steps = {name: AsyncMock() for name in _BOOKING_STEPS}
+    steps["upsert_toss_execution_fill"].return_value = ("inserted", 42)
     with ExitStack() as stack:
         for name, mock in steps.items():
             stack.enter_context(patch.object(mod, name, new=mock))
         for item in (
+            patch.object(mod, "_converge_toss_proposal_rung", new=projection),
+            patch.object(mod, "follow_committed_fills", new=AsyncMock()),
+            patch.object(mod, "_notify_toss_fill", new=AsyncMock(return_value=False)),
             patch.object(mod, "_order_session_factory", return_value=lambda: session),
             patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
             patch.object(
@@ -81,10 +98,21 @@ async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
             evidence_source=SimpleNamespace(
                 evidence_for=AsyncMock(return_value=evidence)
             ),
-            project_proposal_rungs=False,
+            project_proposal_rungs=project,
         )
-    for step in steps.values():
-        step.assert_not_awaited()
+    if out["action"] == "booked":
+        steps["_save_order_fill"].assert_awaited_once()
+        steps["upsert_toss_execution_fill"].assert_awaited_once()
+    else:
+        for step in steps.values():
+            step.assert_not_awaited()
+    if project:
+        projection.assert_awaited_once_with(
+            _row(scanned),
+            ledger_status="cancelled",
+            filled_qty=Decimal(broker),
+        )
+        assert events == ["project", "lock", "commit", "exit"]
     return out, service
 
 
@@ -155,7 +183,7 @@ def _database_error(sqlstate: str | None, *, invalidated: bool = False):
     return OperationalError("stmt", {}, original, connection_invalidated=invalidated)
 
 
-async def _booking_failure(error: Exception) -> Exception:
+async def _booking_failure(error: Exception, *, project: bool = False) -> Exception:
     """The exception a booking pass raises when a write fails with ``error``."""
     service = MagicMock()
     service.lock_row_for_booking = AsyncMock(return_value=_row("0"))
@@ -164,9 +192,9 @@ async def _booking_failure(error: Exception) -> Exception:
     session.__aenter__ = AsyncMock(return_value=object())
     session.__aexit__ = AsyncMock(return_value=False)
     evidence = TossFillEvidence(
-        verdict="partial",
-        local_status="partial",
-        broker_status="PARTIAL_FILLED",
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
         filled_qty=Decimal("1"),
         avg_price=Decimal("190"),
         commission=None,
@@ -176,7 +204,9 @@ async def _booking_failure(error: Exception) -> Exception:
         raw_order={},
         reason="test",
     )
+    projection = AsyncMock()
     with (
+        patch.object(mod, "_converge_toss_proposal_rung", new=projection),
         patch.object(mod, "_save_order_fill", new=AsyncMock(side_effect=error)),
         patch.object(mod, "_order_session_factory", return_value=lambda: session),
         patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
@@ -191,9 +221,13 @@ async def _booking_failure(error: Exception) -> Exception:
                 evidence_source=SimpleNamespace(
                     evidence_for=AsyncMock(return_value=evidence)
                 ),
-                project_proposal_rungs=False,
+                project_proposal_rungs=project,
             )
     service.update_reconcile_outcome.assert_not_awaited()
+    if project:
+        projection.assert_awaited_once_with(
+            _row("0"), ledger_status="filled", filled_qty=Decimal("1")
+        )
     return raised.value
 
 
@@ -311,3 +345,17 @@ async def test_trade_conflict_in_the_callers_booking_still_returns_none():
     assert await _call_helper("trade", db) is None
 
     db.commit.assert_not_awaited()
+
+
+async def test_cancelled_fill_projects_before_terminal_booking_commit():
+    out, _ = await _run(
+        scanned="2", locked=_row("2"), broker="3", cancelled=True, project=True
+    )
+
+    assert out["action"] == "booked"
+
+
+async def test_confirmed_fill_projects_when_booking_fails():
+    error = RuntimeError("booking unavailable")
+
+    assert await _booking_failure(error, project=True) is error

@@ -415,8 +415,11 @@ async def test_an_uncertain_symbol_blocks_only_itself(rig: Rig) -> None:
     rig.bars["BTCUSDT"] = trend_bars("BUY")
     rig.bars["ETHUSDT"] = trend_bars("BUY")
     rig.client.submit_error = TimeoutError("x")
-    await rig.tick()  # BTC goes uncertain; the loop stops sending new entries
+    result = await rig.tick()  # BTC goes uncertain; the loop stops sending new entries
     assert [s["symbol"] for s in rig.client.sends] == ["BTCUSDT"]
+    projected = {item.symbol: item.reason for item in result.decisions}
+    assert projected["BTCUSDT"] == "signal_entry"
+    assert projected["ETHUSDT"] == "signal_entry"
     rig.client.submit_error = None
     rig.client.auto_fill = True
     rig.client.order_not_found = True
@@ -626,7 +629,16 @@ async def test_unknown_bars_are_no_signal_and_nothing_is_even_observed(
     rig.bars["BTCUSDT"] = trend_bars("BUY")[:-1]  # decision bar missing
     result = await rig.tick()
     assert rig.client.sends == [] and rig.state.signals == {}
-    assert result.events == ()
+    assert any(item.reason == "data_missing_bars" for item in result.decisions)
+
+
+@pytest.mark.asyncio
+async def test_complete_flat_bars_emit_signal_none(rig: Rig) -> None:
+    for symbol in LOCKED_LIMITS.universe:
+        rig.bars[symbol] = flat_bars()
+    result = await rig.tick()
+    assert rig.client.sends == [] and rig.state.signals == {}
+    assert {item.reason for item in result.decisions} == {"signal_none"}
 
 
 # ------------------------------------------------- restart / unresolved
@@ -822,6 +834,46 @@ async def test_a_failed_1m_fetch_falls_back_to_the_4h_decision_only(rig: Rig) ->
     result = await rig.tick()
     assert rig.minute_calls == 1
     assert rig.client.sends == [] and result.events == ()
+    assert any(item.reason == "data_fetch_failed" for item in result.decisions)
+
+
+@pytest.mark.asyncio
+async def test_partial_working_entry_records_failed_minute_watch(rig: Rig) -> None:
+    _partial_rig(rig)
+    await rig.tick()
+    rig.minutes["BTCUSDT"] = RuntimeError("klines down")
+
+    result = await rig.tick()
+
+    assert any(
+        item.symbol == "BTCUSDT" and item.reason == "data_fetch_failed"
+        for item in result.decisions
+    )
+    assert len(rig.client.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_manage_only_reports_4h_gap_alongside_a_minute_gap(rig: Rig) -> None:
+    hold(rig)
+    rig.bars["BTCUSDT"] = flat_bars()[:-1]
+    rig.minutes["BTCUSDT"] = executor_module.TrendKlineGap("minute gap")
+
+    result = await rig.exe.run_tick(now=NOW, confirm=True, manage_only=True)
+
+    reasons = {item.reason for item in result.decisions}
+    assert "data_missing_bars" in reasons
+    assert "data_incomplete_minutes" in reasons
+    assert rig.client.sends == []
+
+
+@pytest.mark.asyncio
+async def test_a_gap_in_hard_stop_minutes_is_reported_separately(rig: Rig) -> None:
+    hold(rig)
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = executor_module.TrendKlineGap("minute gap")
+    result = await rig.tick()
+    assert rig.client.sends == []
+    assert any(item.reason == "data_incomplete_minutes" for item in result.decisions)
 
 
 @pytest.mark.asyncio

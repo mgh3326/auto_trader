@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -130,6 +130,7 @@ async def _accepted(
     side: str = "buy",
     quantity: int = 10,
     correlation_id: str | None = None,
+    trading_day: str = TODAY,
 ) -> None:
     async with AsyncSessionLocal() as session:
         await KiwoomMockOrderLedgerService(session).record_send(
@@ -144,7 +145,7 @@ async def _accepted(
             response_code="0",
             response_message="정상",
             raw_response={"return_code": 0},
-            trading_day=TODAY,
+            trading_day=trading_day,
             correlation_id=correlation_id,
         )
 
@@ -477,6 +478,73 @@ async def _full_run(reader: FakeReader) -> dict[str, Any]:
         reader=reader,
         sleep=_no_sleep,
     )
+
+
+async def test_reused_order_number_keeps_the_first_trade_and_marks_the_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _full_mode(monkeypatch)
+    first_id, second_id = _ids()
+    order_no, symbol = _order_no(), _symbol()
+    prior_day = (datetime.strptime(TODAY, "%Y%m%d") - timedelta(days=1)).strftime(
+        "%Y%m%d"
+    )
+    run_ids: list[str] = []
+    try:
+        await _accepted(first_id, order_no, symbol=symbol, trading_day=prior_day)
+        result = await _full_run(FakeReader(_filled_detail(order_no, 10, symbol)))
+        run_ids.append(result["reconcile_run"]["run_id"])
+        first_trade = await _trade(order_no)
+        assert first_trade is not None
+
+        await _accepted(second_id, order_no, symbol=symbol)
+        result = await _full_run(
+            FakeReader(_filled_detail(order_no, 10, symbol, average_price=71000))
+        )
+        run_ids.append(result["reconcile_run"]["run_id"])
+        outcome = next(
+            row for row in result["reconciled"] if row["client_order_id"] == second_id
+        )
+        assert outcome["action"] == "booked_filled"
+        assert outcome["requires_manual_review"] is True
+        assert (
+            outcome["journal"]["trade_row_unrecorded"] == "trade_row_other_trading_day"
+        )
+
+        fills = await _fills(order_no)
+        assert [fill.filled_qty for fill in fills] == [Decimal("10"), Decimal("10")]
+        assert [fill.filled_price for fill in fills] == [
+            Decimal("70000"),
+            Decimal("71000"),
+        ]
+        second = await _fetch(second_id)
+        assert second.trade_id is None
+        assert (
+            second.last_reconcile_detail["trade_row_unrecorded"]
+            == "trade_row_other_trading_day"
+        )
+        assert Decimal(second.last_reconcile_detail["journaled_qty"]) == Decimal("10")
+        lots = {lot.id: lot for lot in await _journals(symbol)}
+        assert len(lots) == 2
+        assert lots[second.journal_id].entry_price == Decimal("71000")
+        assert lots[second.journal_id].quantity == Decimal("10")
+
+        trade = await _trade(order_no)
+        assert trade is not None
+        assert (trade.id, trade.trade_date, trade.quantity, trade.price) == (
+            first_trade.id,
+            first_trade.trade_date,
+            first_trade.quantity,
+            first_trade.price,
+        )
+    finally:
+        await _cleanup(second_id)
+        await _cleanup_full(
+            client_order_id=first_id,
+            order_no=order_no,
+            symbol=symbol,
+            run_ids=run_ids,
+        )
 
 
 async def test_full_mode_books_one_in_effect_row_and_journals_it(
