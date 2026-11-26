@@ -102,7 +102,9 @@ async def test_missing_input_publishes_watch_with_exact_price(monkeypatch, row_k
     )
     policy = SimpleNamespace(
         version="v1",
-        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
+        daily_plan=SimpleNamespace(
+            no_add_floor_pct=-8, carry_max_sessions=5, max_adopt=10
+        ),
     )
     proposal = request()
     if row_kind == "holding":
@@ -288,7 +290,9 @@ async def test_candidate_hold_without_input_publishes_watch():
         candidate.pop(field)
     policy = SimpleNamespace(
         version="v1",
-        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
+        daily_plan=SimpleNamespace(
+            no_add_floor_pct=-8, carry_max_sessions=5, max_adopt=10
+        ),
     )
     result = await store.write_version(
         fake_db(current=0),
@@ -351,7 +355,9 @@ async def test_watch_preserves_carry_when_request_omits_origin(monkeypatch, curr
     )
     policy = SimpleNamespace(
         version="v1",
-        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
+        daily_plan=SimpleNamespace(
+            no_add_floor_pct=-8, carry_max_sessions=5, max_adopt=10
+        ),
     )
     result = await store.write_version(
         fake_db(current=current),

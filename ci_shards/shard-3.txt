@@ -200,6 +200,7 @@ tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
+tests/services/daily_plan/test_allocation_publication.py
 tests/services/daily_plan/test_watch.py
 tests/services/execution_intent_gateway/test_http_contract_fixtures.py
 tests/services/execution_intent_gateway/test_intent_exposure.py

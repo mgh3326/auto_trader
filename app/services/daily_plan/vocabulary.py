@@ -44,3 +44,60 @@ VENUE_SESSIONS = {
     "KRX": frozenset({"regular", "aftermarket"}),
     "NXT": frozenset({"premarket", "regular", "aftermarket"}),
 }
+
+# hk 6790 plan-only ranking and budget comparison. Stored in version metadata.
+ALLOCATION_METADATA_KEY = "allocation_comparison"
+ALLOCATION_SCHEMA_VERSION = "daily-plan-allocation/v1"
+# A is the design §4.2 control without investor flow; B adds only the rest.
+RANKING_A_INPUTS = ("dist_to_support_pct", "rsi_14", "daily_turnover", "pbr")
+RANKING_B_ADDED_INPUTS = ("foreign_net", "news", "disclosures")
+LIST_INPUTS = ("news", "disclosures")
+NEWS_DIRECTIONS = ("positive", "neutral", "negative")
+INPUT_UNKNOWN_REASONS = (
+    "input_missing",
+    "input_invalid",
+    "observed_time_unproven",
+    "observed_after_cutoff",
+    "input_stale",
+    "direction_unclassified",
+)
+ENTRY_STATES = ("met", "not_met", "unknown")
+BUDGET_POLICIES = ("W", "N")
+# Reasons that keep a row out of both policies in both rankings.
+INELIGIBLE_REASONS = (
+    "expired",
+    "valid_until_unknown",
+    "disposition_dropped",
+    "no_buy_intent",
+    "not_executable",
+    "account_unassigned",
+    "account_facts_missing",
+    "amount_unknown",
+)
+ALLOCATION_STATUSES = (
+    "funded",
+    "partially_funded",
+    "reserved_waiting",
+    "skipped_waiting",
+    "not_funded",
+)
+ALLOCATION_REASONS = (
+    "unranked",
+    "entry_not_met",
+    "entry_unknown",
+    "max_adopt_reached",
+    "cash_unknown",
+    "budget_exhausted",
+)
+PARKING_UNUSABLE_REASONS = (
+    "not_parking_instrument",
+    "duplicate_parking_symbol",
+    "input_invalid",
+    "observed_time_unproven",
+    "observed_after_cutoff",
+    "input_stale",
+    "input_missing",
+)
+PARKING_SALE_REASONS = ("cash_short",)
+# Recorded text only; nothing in this service enforces or executes it.
+PARKING_PRECONDITION = "buy_must_not_proceed_until_broker_orderable_cash_has_increased"

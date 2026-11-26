@@ -9,11 +9,13 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Text, func, literal, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.daily_plan import bundles, heads, links, rows, versions
 from app.schemas.trading_policy import TradingPolicyDocument
+from app.services.daily_plan.allocation import build_comparison
 from app.services.daily_plan.bundle import (
     bundle_sha256,
     canonical_bundle,
@@ -27,7 +29,10 @@ from app.services.daily_plan.validator import (
     require_base_version,
     row_key,
 )
-from app.services.daily_plan.vocabulary import VERSION_KINDS
+from app.services.daily_plan.vocabulary import (
+    ALLOCATION_METADATA_KEY,
+    VERSION_KINDS,
+)
 from app.services.daily_plan.watch import watch_state
 from app.services.market_events.session_calendar import (
     next_trading_session,
@@ -108,8 +113,11 @@ async def _version_rows(db: AsyncSession, version_id: UUID) -> list[dict]:
 
 
 async def _fold(db: AsyncSession, head_id: UUID, seq: int) -> list[dict]:
+    metadata = versions.c.metadata.op("-", return_type=JSONB)(
+        literal(ALLOCATION_METADATA_KEY, Text)
+    ).label("metadata")
     result = await db.execute(
-        select(rows, versions.c.metadata)
+        select(rows, metadata)
         .select_from(versions.outerjoin(rows, rows.c.version_id == versions.c.id))
         .where(versions.c.head_id == head_id, versions.c.seq <= seq)
         .order_by(versions.c.seq, rows.c.id)
@@ -126,6 +134,20 @@ async def _fold(db: AsyncSession, head_id: UUID, seq: int) -> list[dict]:
             replay = by_id[replay_id]
             folded[row_key(replay)] = replay
     return list(folded.values())
+
+
+def _session_view(version: dict) -> dict:
+    """A version as sessions may read it.
+
+    The ranking comparison is operator-only: ranking A is close to control C,
+    and a session that sees it would anchor on it (design §4.2).
+    """
+    metadata = {
+        key: value
+        for key, value in version["metadata"].items()
+        if key != ALLOCATION_METADATA_KEY
+    }
+    return {**version, "metadata": metadata}
 
 
 def _row_view(row: dict) -> dict:
@@ -157,7 +179,7 @@ async def _publication_rows(db: AsyncSession, version: dict) -> list[dict]:
 
 async def _write_result(db: AsyncSession, version: dict) -> dict:
     return {
-        **version,
+        **_session_view(version),
         "rows": [_row_view(row) for row in await _publication_rows(db, version)],
     }
 
@@ -223,6 +245,7 @@ async def write_version(
     if (bundle_id is None) != (bundle_hash is None):
         raise ValueError("invalid_bundle_reference")
     bundle_closed_at = asof
+    bundle_body = None
     evidence = {}
     if bundle_id:
         bundle = (
@@ -247,7 +270,8 @@ async def write_version(
         bundle_closed_at = parse_time(bundle["body"]["bundle_closed_at"])
         if bundle_closed_at > asof or bundle_closed_at > bundle["created_at"]:
             raise ValueError("invalid_bundle_time")
-        evidence = {row_key(row): row for row in bundle["body"]["rows"]}
+        bundle_body = bundle["body"]
+        evidence = {row_key(row): row for row in bundle_body["rows"]}
 
     previous = previous_trading_session("kr", day)
     previous_bounds = regular_session_bounds("kr", previous) if previous else None
@@ -338,10 +362,7 @@ async def write_version(
                 row["carry_count"] = origin["watch_state"]["carry_count"]
         if seq and row["action"] == "watch":
             if current_rows is None:
-                current_rows = {
-                    row_key(item): item["body"]
-                    for item in await _fold(db, head_id, seq)
-                }
+                current_rows = await _current_rows(db, head_id, seq)
             prior = current_rows.get(row_key(row), {})
             if prior.get("carry_count", 0) > row["carry_count"]:
                 row["carry_count"] = prior["carry_count"]
@@ -355,6 +376,28 @@ async def write_version(
         for value in (strategy_id, strategy_version)
     ):
         raise ValueError("invalid_strategy_reference")
+    # Budgets compete across the whole plan, so compare every candidate in
+    # force after this publication, not only the rows it changes.
+    if seq and current_rows is None:
+        current_rows = await _current_rows(db, head_id, seq)
+    candidates = {
+        key[2]: body
+        for key, body in (current_rows or {}).items()
+        if key[0] == "candidate"
+    }
+    candidates.update(
+        {row["symbol"]: row for row in prepared if row["row_kind"] == "candidate"}
+    )
+    comparison = build_comparison(
+        bundle=bundle_body,
+        bundle_sha256=bundle_hash,
+        candidates=candidates,
+        account_facts=(bundle_body or {}).get("accounts"),
+        max_adopt=policy.daily_plan.max_adopt,
+        cutoff_at=bundle_closed_at,
+        stale_before=previous_bounds[1],
+        evaluated_at=now,
+    )
     version = {
         "id": uuid4(),
         "head_id": head_id,
@@ -372,6 +415,7 @@ async def write_version(
         "metadata": {
             "asof": asof.isoformat(),
             "trigger_ref": request.get("trigger_ref"),
+            ALLOCATION_METADATA_KEY: comparison,
         },
     }
     inserts = []
@@ -387,6 +431,10 @@ async def write_version(
     for item in inserts:
         await db.execute(rows.insert().values(**item))
     return await _write_result(db, version)
+
+
+async def _current_rows(db: AsyncSession, head_id: UUID, seq: int) -> dict:
+    return {row_key(item): item["body"] for item in await _fold(db, head_id, seq)}
 
 
 def _session_close(
@@ -493,7 +541,7 @@ async def get_plan(
         if view.get("forecast_link_state", "confirmed") != "confirmed"
     ]
     return {
-        **dict(version),
+        **_session_view(dict(version)),
         "rows": views,
         "link_complete": not incomplete,
         "unresolved_rows": incomplete,

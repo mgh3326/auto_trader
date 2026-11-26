@@ -97,6 +97,16 @@ async def test_replay_publish_fold_and_queue_have_no_side_effects(db_session):
             policy_hash=policy_content_hash(),
         )
         assert retry["id"] == first["id"]
+        stored = await db_session.scalar(
+            text(
+                "SELECT metadata -> 'allocation_comparison' ->> 'schema_version' "
+                "FROM review.daily_plan_versions WHERE id = :id"
+            ),
+            {"id": first["id"]},
+        )
+        assert stored == "daily-plan-allocation/v1"
+        for response in (first, retry):
+            assert "allocation_comparison" not in response["metadata"]
         second_body = request(
             idempotency_key=str(uuid4()),
             expected_prev_seq=1,
@@ -115,6 +125,17 @@ async def test_replay_publish_fold_and_queue_have_no_side_effects(db_session):
             db_session, day=DAY, seq=None, now=expires, max_carries=5
         )
         assert plan and plan["seq"] == 2
+        assert "allocation_comparison" not in plan["metadata"]
+        # The second version compares the row it carried over as well as its own.
+        compared = await db_session.scalar(
+            text(
+                "SELECT jsonb_array_length("
+                "metadata -> 'allocation_comparison' -> 'candidates') "
+                "FROM review.daily_plan_versions WHERE head_id = :head AND seq = 2"
+            ),
+            {"head": plan["head_id"]},
+        )
+        assert compared == 2
         projected = {item["symbol"]: item for item in plan["rows"]}
         assert projected["278470"]["watch_state"]["carry_count"] == 1
         assert projected["005930"]["watch_state"]["reason"] == "expired"
