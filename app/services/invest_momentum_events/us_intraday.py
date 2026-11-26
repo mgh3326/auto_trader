@@ -34,6 +34,7 @@ Rules:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import uuid
@@ -255,6 +256,8 @@ def us_momentum_upsert(
 
 
 # -------------------------------------------------------------------- fetching
+
+MAX_COLLECTION_SECONDS = 120.0
 
 
 async def _fetch_alpaca(
@@ -490,13 +493,42 @@ async def _collect_surfaces(
     top_actives: int,
 ) -> list[tuple[str, str, SurfaceOutcome, dt.datetime, str | None]]:
     """``(source, side, outcome, first_received_at, source_updated_at)`` rows."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MAX_COLLECTION_SECONDS
+
+    async def within_budget(factory, fallback):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return fallback()
+        try:
+            return await asyncio.wait_for(factory(), timeout=remaining)
+        except TimeoutError:
+            return fallback()
+
+    def timeout_outcome():
+        return SurfaceOutcome(STATUS_ERROR, "timeout")
+
     surfaces: list[tuple[str, str, SurfaceOutcome, dt.datetime, str | None]] = []
-    for side, outcome, received, updated in await _fetch_alpaca(
-        alpaca, clock=clock, top_movers=top_movers, top_actives=top_actives
-    ):
+
+    def alpaca_fallback():
+        return [
+            (side, timeout_outcome(), clock(), None)
+            for side in (SIDE_UP, SIDE_DOWN, SIDE_ACTIVE)
+        ]
+
+    alpaca_results = await within_budget(
+        lambda: _fetch_alpaca(
+            alpaca, clock=clock, top_movers=top_movers, top_actives=top_actives
+        ),
+        alpaca_fallback,
+    )
+    for side, outcome, received, updated in alpaca_results:
         surfaces.append((SOURCE_ALPACA, side, outcome, received, updated))
     for side in (SIDE_UP, SIDE_DOWN):
-        outcome, received = await _fetch_kis_side(kis, side=side, clock=clock)
+        outcome, received = await within_budget(
+            lambda side=side: _fetch_kis_side(kis, side=side, clock=clock),
+            lambda: (timeout_outcome(), clock()),
+        )
         surfaces.append((SOURCE_KIS, side, outcome, received, None))
     for source, sides in (
         (SOURCE_KIS_PRICE_FLUCT, (SIDE_UP, SIDE_DOWN)),
@@ -505,13 +537,30 @@ async def _collect_surfaces(
         (SOURCE_KIS_VOLUME_POWER, (SIDE_ACTIVE,)),
     ):
         for side in sides:
-            outcome, received = await _fetch_kis_ranking(
-                kis, source=source, side=side, clock=clock
+            outcome, received = await within_budget(
+                lambda source=source, side=side: _fetch_kis_ranking(
+                    kis, source=source, side=side, clock=clock
+                ),
+                lambda: (timeout_outcome(), clock()),
             )
             surfaces.append((source, side, outcome, received, None))
-    for side, outcome, received in await _fetch_toss(toss, clock=clock):
+
+    def toss_fallback():
+        return [(side, timeout_outcome(), clock()) for side in (SIDE_UP, SIDE_DOWN)]
+
+    toss_results = await within_budget(
+        lambda: _fetch_toss(toss, clock=clock), toss_fallback
+    )
+    for side, outcome, received in toss_results:
         surfaces.append((SOURCE_TOSS, side, outcome, received, None))
-    for side, outcome, received in await _fetch_benzinga(benzinga, clock=clock):
+
+    def benzinga_fallback():
+        return [(side, timeout_outcome(), clock()) for side in (SIDE_UP, SIDE_DOWN)]
+
+    benzinga_results = await within_budget(
+        lambda: _fetch_benzinga(benzinga, clock=clock), benzinga_fallback
+    )
+    for side, outcome, received in benzinga_results:
         surfaces.append((SOURCE_BENZINGA, side, outcome, received, None))
     return surfaces
 

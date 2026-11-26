@@ -706,7 +706,9 @@ def classify_toss_rankings(
                 if _toss_value(item, "price", "change_rate") is not None
                 else _toss_value(item, "price", "changeRate")
             )
-            change_rate = change_rate_ratio * 100 if change_rate_ratio is not None else None
+            change_rate = (
+                change_rate_ratio * 100 if change_rate_ratio is not None else None
+            )
             amount_value = _toss_value(item, "trading_amount")
             if amount_value is None:
                 amount_value = _toss_value(item, "tradingAmount")

@@ -1,5 +1,6 @@
 """Document-example fixture coverage for hk 6663 US mover sources."""
 
+import asyncio
 import datetime as dt
 import json
 from decimal import Decimal
@@ -147,7 +148,10 @@ def test_toss_document_fixture_preserves_ranked_amount_and_volume():
     assert apple.volume == 250000 and apple.trade_value == Decimal("50312500")
     assert berkshire.symbol == "BRK.B"
     assert apple.raw["row"]["price"]["changeRate"] == "0.00625"
-    assert apple.change_amount is None and apple.reasons["change_amount"] == "not_in_payload"
+    assert (
+        apple.change_amount is None
+        and apple.reasons["change_amount"] == "not_in_payload"
+    )
     assert apple.name is None and apple.reasons["name"] == "not_in_payload"
 
 
@@ -207,9 +211,7 @@ async def test_kis_ranking_received_time_is_taken_after_all_requests():
     clock_request_counts = []
 
     class TimedKis(FakeKis):
-        async def inquire_overseas_mover_ranking(
-            self, source, exchange_code, *, side
-        ):
+        async def inquire_overseas_mover_ranking(self, source, exchange_code, *, side):
             nonlocal requests
             requests += 1
             return {"output1": {"stat": "R"}, "output2": []}
@@ -226,6 +228,40 @@ async def test_kis_ranking_received_time_is_taken_after_all_requests():
     )
     assert requests == 3
     assert clock_request_counts == [3]
+
+
+@pytest.mark.asyncio
+async def test_collection_deadline_writes_timeout_status_for_unfinished_surfaces(
+    monkeypatch,
+):
+    class SlowAlpaca(FakeAlpaca):
+        async def screener_movers(self, *, top):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(us_intraday, "MAX_COLLECTION_SECONDS", 0.001)
+    monkeypatch.setattr(
+        us_intraday, "InvestMomentumEventSnapshotsRepository", MemoryRepo
+    )
+    MemoryRepo.statuses.clear()
+    MemoryRepo.rows.clear()
+    report = await us_intraday.run_us_intraday_movers(
+        alpaca=SlowAlpaca(),
+        kis=FakeKis(),
+        toss=FakeToss(),
+        benzinga=FakeBenzinga(),
+        session=FakeSession(),
+        now=PRE,
+        commit=True,
+        clock=lambda: PRE.astimezone(dt.UTC),
+        asset_types=_asset_types,
+        segment_of=lambda _: US_PRE,
+    )
+    assert len(report.surfaces) == 15
+    assert all(
+        line.status == "error" and line.reason == "timeout" and line.written
+        for line in report.surfaces
+    )
+    assert len(MemoryRepo.statuses) == 15
 
 
 @pytest.mark.asyncio
