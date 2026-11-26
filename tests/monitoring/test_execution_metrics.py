@@ -6,7 +6,10 @@ import pytest
 
 from app.monitoring.execution_metrics import (
     account_kind_for_mode,
+    execution_stage,
     record_execution_stage,
+    record_reconnect_recovery,
+    record_stale_quote_block,
 )
 
 
@@ -48,7 +51,8 @@ def test_execution_stage_emits_named_count_and_latency_with_bounded_labels(
         ("kis_mock", False, "mock"),
         ("binance_spot_demo", False, "mock"),
         ("upbit", True, "shadow"),
-        (None, False, "shadow"),
+        (None, False, None),
+        ("unexpected-account-mode", False, None),
     ],
 )
 def test_account_kind_is_closed_and_does_not_expose_account_mode(
@@ -72,3 +76,79 @@ def test_execution_stage_rejects_unbounded_values_without_logging(
         )
 
     assert caplog.records == []
+
+
+@pytest.mark.unit
+def test_execution_stage_emits_failure_observations_when_fake_operation_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="app.monitoring.execution_metrics"):
+        with pytest.raises(RuntimeError, match="fake broker failure"):
+            with execution_stage(
+                venue="kis",
+                market="kr",
+                account_kind="mock",
+                stage="broker_accept",
+            ):
+                raise RuntimeError("fake broker failure")
+
+    assert len(caplog.records) == 2
+    assert all("outcome=failure" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_reconnect_and_stale_quote_events_have_bounded_names_and_labels(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="app.monitoring.execution_metrics"):
+        record_reconnect_recovery(
+            venue="kis",
+            market="multi",
+            account_kind="live",
+            outcome="success",
+            duration_seconds=1.25,
+        )
+        record_stale_quote_block(venue="kis", market="kr", account_kind="mock")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 3
+    assert "metric=execution_reconnect_recovery_total" in messages[0]
+    assert "metric=execution_reconnect_recovery_seconds" in messages[1]
+    assert "stage=reconnect_recovery" in messages[1]
+    assert "market=multi" in messages[1]
+    assert "metric=execution_stale_quote_blocks_total" in messages[2]
+    assert "stage=gate" in messages[2]
+    assert "reason=stale_quote" in messages[2]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stage", ["receive", "detect", "gate", "broker_accept", "fill_reconcile"]
+)
+def test_each_execution_stage_uses_the_same_fixed_metric_names_and_dimensions(
+    caplog: pytest.LogCaptureFixture, stage: str
+) -> None:
+    with caplog.at_level(logging.INFO, logger="app.monitoring.execution_metrics"):
+        record_execution_stage(
+            venue="alpaca",
+            market="us",
+            account_kind="mock",
+            stage=stage,  # type: ignore[arg-type]
+            outcome="blocked",
+            duration_seconds=0.25,
+        )
+
+    assert len(caplog.records) == 2
+    messages = [record.getMessage() for record in caplog.records]
+    assert "metric=execution_stage_total" in messages[0]
+    assert "metric=execution_stage_duration_seconds" in messages[1]
+    for message in messages:
+        assert f"stage={stage}" in message
+        assert "venue=alpaca" in message
+        assert "market=us" in message
+        assert "account_kind=mock" in message
+        assert "outcome=blocked" in message
+        assert not any(
+            key in message
+            for key in ("symbol=", "account_number=", "order_id=", "account_id=")
+        )

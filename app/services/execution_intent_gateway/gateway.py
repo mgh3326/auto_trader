@@ -19,12 +19,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import UUID
 
+from app.monitoring.execution_metrics import (
+    account_kind_for_mode,
+    execution_stage,
+    record_execution_stage,
+)
 from app.schemas.execution_intent import (
     UPBIT_LIVE_ACCOUNT,
     AmendChild,
@@ -198,6 +204,7 @@ class IntentGateway:
         if request.action != "cancel":
             kill_mode = (await read_effective_kill_switch(self._kill_switch)).mode
 
+        detect_started_at = time.perf_counter()
         now = self._clock()
         reservation = await self._store.reserve(
             request,
@@ -214,6 +221,34 @@ class IntentGateway:
                 forwarder_accounts=frozenset(self._forwarders),
             ),
         )
+        intent = reservation.intent
+        if intent is not None:
+            venue = "upbit" if intent.account == UPBIT_LIVE_ACCOUNT else "kis"
+            market = "crypto" if venue == "upbit" else "kr"
+            account_kind = account_kind_for_mode(
+                intent.account, shadow=intent.execution_mode == "shadow"
+            )
+            record_execution_stage(
+                venue=venue,
+                market=market,
+                account_kind=account_kind,
+                stage="detect",
+                outcome="success" if reservation.decision is not None else "blocked",
+                duration_seconds=time.perf_counter() - detect_started_at,
+            )
+            if reservation.decision is not None:
+                record_execution_stage(
+                    venue=venue,
+                    market=market,
+                    account_kind=account_kind,
+                    stage="gate",
+                    outcome=(
+                        "blocked"
+                        if reservation.decision.refusal is not None
+                        else "success"
+                    ),
+                    duration_seconds=0.0,
+                )
 
         if reservation.refusal_without_row is not None:
             return _refused(reservation.refusal_without_row)
@@ -242,7 +277,20 @@ class IntentGateway:
         decision: Decision,
     ) -> GatewayOutcome:
         try:
-            forwarded = await self._forward(request, intent, decision)
+            venue = "upbit" if intent.account == UPBIT_LIVE_ACCOUNT else "kis"
+            market = "crypto" if venue == "upbit" else "kr"
+            account_kind = account_kind_for_mode(
+                intent.account, shadow=intent.execution_mode == "shadow"
+            )
+            with execution_stage(
+                venue=venue,
+                market=market,
+                account_kind=account_kind,
+                stage="broker_accept",
+            ) as broker_observation:
+                forwarded = await self._forward(request, intent, decision)
+                if not forwarded.accepted:
+                    broker_observation.mark("uncertain")
         except Exception as exc:  # noqa: BLE001 - the send may have crossed the wire
             logger.error(
                 "intent gateway forward raised: child_id=%s error_class=%s",
@@ -264,13 +312,21 @@ class IntentGateway:
         result = _bounded_result(forwarded.result)
 
         try:
-            recorded = await self._store.finish(
-                child.child_id,
-                state=state,
-                broker_order_id=broker_order_id,
-                result=result,
-                now=self._clock(),
-            )
+            with execution_stage(
+                venue=venue,
+                market=market,
+                account_kind=account_kind,
+                stage="fill_reconcile",
+            ) as reconcile_observation:
+                recorded = await self._store.finish(
+                    child.child_id,
+                    state=state,
+                    broker_order_id=broker_order_id,
+                    result=result,
+                    now=self._clock(),
+                )
+                if not recorded:
+                    reconcile_observation.mark("uncertain")
         except Exception as exc:  # noqa: BLE001 - the row stays sending, not resent
             logger.error(
                 "intent gateway outcome not recorded: child_id=%s error_class=%s",

@@ -9,6 +9,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from app.monitoring.execution_metrics import (
+    execution_stage,
+    record_stale_quote_block,
+)
+
 from .control import (
     KillMode,
     KillSwitchState,
@@ -20,6 +25,7 @@ from .correlation import kis_mock_runner_correlation_id
 from .envelope import (
     AccountEnvelopeSnapshot,
     EnvelopeDecision,
+    EnvelopeReason,
     OrderIntent,
     assert_no_envelope_overrides,
     evaluate_envelope,
@@ -266,7 +272,17 @@ class KISMockRunner:
                 return RunnerResult(
                     status=RunnerStatus.KRX_RTH_REQUIRED, kill_switch=state
                 )
-            envelope = evaluate_envelope(intent=intent, snapshot=snapshot)
+            with execution_stage(
+                venue="kis",
+                market="kr",
+                account_kind="mock",
+                stage="gate",
+            ) as gate_observation:
+                envelope = evaluate_envelope(intent=intent, snapshot=snapshot)
+                if not envelope.allowed:
+                    gate_observation.mark("blocked")
+            if EnvelopeReason.STALE_QUOTE in envelope.reason_codes:
+                record_stale_quote_block(venue="kis", market="kr", account_kind="mock")
             if envelope.requires_entry_halt:
                 state = await self._kill_switch_store.set_mode(
                     mode=KillMode.ENTRY_HALT,

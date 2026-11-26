@@ -13,6 +13,7 @@ import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -63,6 +64,12 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
+)
+from app.monitoring.execution_metrics import (
+    account_kind_for_mode,
+    execution_stage,
+    record_execution_stage,
+    record_stale_quote_block,
 )
 from app.monitoring.sentry import record_order_performance
 from app.services.brokers.edge_client import (
@@ -985,6 +992,7 @@ async def _execute_and_record(
     correlation_id: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
     approval_hash_digest: str | None = None,
+    received_at: float | None = None,
     idempotency_key: str | None = None,
     reserve_mock_idempotency: bool = True,
     mock_key_was_supplied: bool = True,
@@ -1007,6 +1015,28 @@ async def _execute_and_record(
         if market_type in {"equity_kr", "equity_us"}
         else "upbit_live"
     )
+    metric_market = {
+        "equity_kr": "kr",
+        "equity_us": "us",
+        "crypto": "crypto",
+    }.get(market_type)
+    metric_venue = "upbit" if market_type == "crypto" else "kis"
+    metric_account_kind = account_kind_for_mode(
+        account_scope, shadow=mirror_cohort == "mock_counterfactual"
+    )
+    if metric_market is not None:
+        record_execution_stage(
+            venue=metric_venue,
+            market=metric_market,
+            account_kind=metric_account_kind,
+            stage="receive",
+            outcome="success",
+            duration_seconds=max(
+                0.0,
+                time.perf_counter()
+                - (received_at if received_at is not None else total_started_at),
+            ),
+        )
     broker_ms: float | None = None
     protection_lease_cleanup_warning: str | None = None
     # Pre-submit attribution gate (kis_mock). Deliberately the FIRST thing in
@@ -1017,6 +1047,7 @@ async def _execute_and_record(
     # the POST and the ledger write.
     kis_mock_attribution: KisMockAttribution | None = None
     if is_mock:
+        detect_started_at = time.perf_counter()
         try:
             kis_mock_attribution = resolve_attribution(
                 symbol=normalized_symbol,
@@ -1030,6 +1061,15 @@ async def _execute_and_record(
                 mirror_cohort=mirror_cohort,
             )
         except MissingAttribution as attribution_exc:
+            if metric_market is not None:
+                record_execution_stage(
+                    venue=metric_venue,
+                    market=metric_market,
+                    account_kind=metric_account_kind,
+                    stage="detect",
+                    outcome="blocked",
+                    duration_seconds=time.perf_counter() - detect_started_at,
+                )
             logger.warning(
                 "kis_mock order blocked, unattributed: symbol=%s side=%s missing=%s",
                 normalized_symbol,
@@ -1042,6 +1082,15 @@ async def _execute_and_record(
             )
             err["missing_attribution"] = list(attribution_exc.missing)
             return err
+        if metric_market is not None:
+            record_execution_stage(
+                venue=metric_venue,
+                market=metric_market,
+                account_kind=metric_account_kind,
+                stage="detect",
+                outcome="success",
+                duration_seconds=time.perf_counter() - detect_started_at,
+            )
 
         try:
             async with _order_session_factory()() as signal_db:
@@ -1387,25 +1436,48 @@ async def _execute_and_record(
             )
         broker_started_at = time.perf_counter()
         try:
-            broker_result = await _execute_order(
-                symbol=normalized_symbol,
-                side=side,
-                order_type=order_type,
-                quantity=order_quantity,
-                price=price,
-                market_type=market_type,
-                is_mock=is_mock,
-                identifier=idempotency_key if market_type == "crypto" else None,
-                pre_send_hook=pre_send_hook,
-                send_outcome=send_outcome,
-                idempotency_key=edge_idempotency_key,
-                # Passed only when set, so every other caller's call is unchanged.
-                **(
-                    {"prevalidated_wire": prevalidated_wire}
-                    if prevalidated_wire is not None
-                    else {}
-                ),
+            broker_stage = (
+                execution_stage(
+                    venue=metric_venue,
+                    market=metric_market,
+                    account_kind=metric_account_kind,
+                    stage="broker_accept",
+                )
+                if metric_market is not None
+                else nullcontext(None)
             )
+            with broker_stage as broker_observation:
+                try:
+                    broker_result = await _execute_order(
+                        symbol=normalized_symbol,
+                        side=side,
+                        order_type=order_type,
+                        quantity=order_quantity,
+                        price=price,
+                        market_type=market_type,
+                        is_mock=is_mock,
+                        identifier=idempotency_key if market_type == "crypto" else None,
+                        pre_send_hook=pre_send_hook,
+                        send_outcome=send_outcome,
+                        idempotency_key=edge_idempotency_key,
+                        **(
+                            {"prevalidated_wire": prevalidated_wire}
+                            if prevalidated_wire is not None
+                            else {}
+                        ),
+                    )
+                except PreSendFreshnessError:
+                    if broker_observation is not None:
+                        broker_observation.mark("blocked")
+                    raise
+                except OrderSendOutcomeUnknown:
+                    if broker_observation is not None:
+                        broker_observation.mark("uncertain")
+                    raise
+                except BaseException:
+                    if broker_observation is not None:
+                        broker_observation.mark("failure")
+                    raise
         except BaseException:
             if protection_lease is not None:
                 await release_live_sell_lease_preserving_outcome(
@@ -1426,12 +1498,32 @@ async def _execute_and_record(
             broker_ms = (time.perf_counter() - broker_started_at) * 1000
 
     try:
+        if metric_market is not None:
+            record_execution_stage(
+                venue=metric_venue,
+                market=metric_market,
+                account_kind=metric_account_kind,
+                stage="gate",
+                outcome="success",
+                duration_seconds=max(
+                    0.0,
+                    time.perf_counter() - total_started_at - (broker_ms or 0) / 1000,
+                ),
+            )
         execution_result = await _send_to_broker()
         if send_outcome is not None:
             # A transport response crossed the send boundary. Until the mock
             # result normalizer proves accepted/rejected, the outcome is unknown.
             send_outcome.mark_unknown()
     except PreSendFreshnessError as fresh_exc:
+        if metric_market is not None and any(
+            str(reason).lower() == "stale_quote" for reason in fresh_exc.reason_codes
+        ):
+            record_stale_quote_block(
+                venue=metric_venue,
+                market=metric_market,
+                account_kind=metric_account_kind,
+            )
         await _release_reserved_intent_after_send_failure(
             fresh_exc,
             proven_not_sent=True,
@@ -1587,26 +1679,39 @@ async def _execute_and_record(
     if is_mock:
         from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
 
-        result = await _record_kis_mock_order(
-            normalized_symbol=normalized_symbol,
-            market_type=market_type,
-            side=side,
-            order_type=order_type,
-            dry_run_result=dry_run_result,
-            execution_result=execution_result,
-            reason=reason,
-            thesis=thesis,
-            strategy=strategy,
-            notes=notes,
-            holdings_baseline_qty=kis_mock_baseline_qty,
-            correlation_id=correlation_id,
-            target_price=target_price,
-            min_hold_days=min_hold_days,
-            report_item_uuid=report_item_uuid,
-            mirror_cohort=mirror_cohort,
-            mirror_source_bucket=mirror_source_bucket,
-            extra_metadata=performance_metadata or None,
+        fill_stage = (
+            execution_stage(
+                venue=metric_venue,
+                market=metric_market,
+                account_kind=metric_account_kind,
+                stage="fill_reconcile",
+            )
+            if metric_market is not None
+            else nullcontext(None)
         )
+        with fill_stage as fill_observation:
+            result = await _record_kis_mock_order(
+                normalized_symbol=normalized_symbol,
+                market_type=market_type,
+                side=side,
+                order_type=order_type,
+                dry_run_result=dry_run_result,
+                execution_result=execution_result,
+                reason=reason,
+                thesis=thesis,
+                strategy=strategy,
+                notes=notes,
+                holdings_baseline_qty=kis_mock_baseline_qty,
+                correlation_id=correlation_id,
+                target_price=target_price,
+                min_hold_days=min_hold_days,
+                report_item_uuid=report_item_uuid,
+                mirror_cohort=mirror_cohort,
+                mirror_source_bucket=mirror_source_bucket,
+                extra_metadata=performance_metadata or None,
+            )
+            if fill_observation is not None and result.get("success") is not True:
+                fill_observation.mark("uncertain")
         if send_outcome is not None:
             if result.get("success"):
                 send_outcome.mark_accepted()
@@ -1993,6 +2098,7 @@ async def _place_order_impl(
     reserve_mock_derived_idempotency: bool = False,
     prevalidated_wire: PrevalidatedCryptoWire | None = None,
 ) -> dict[str, Any]:
+    received_at = time.perf_counter()
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
         side,
@@ -2472,6 +2578,7 @@ async def _place_order_impl(
                 correlation_id=attribution_correlation_id,
                 report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
                 approval_hash_digest=approval_digest,
+                received_at=received_at,
                 idempotency_key=idempotency_key,
                 mirror_cohort=mirror_cohort,
                 mirror_source_bucket=mirror_source_bucket,

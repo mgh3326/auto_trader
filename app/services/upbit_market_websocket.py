@@ -8,12 +8,14 @@ import asyncio
 import json
 import logging
 import ssl
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+from app.monitoring.execution_metrics import record_reconnect_recovery
 from app.services.websocket_connection_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -81,12 +83,29 @@ class UpbitPublicWebSocketClient:
 
     async def connect_and_subscribe(self):
         """Connect to Upbit WebSocket and subscribe to market data."""
+        recovery_started_at = time.perf_counter()
         while self.current_attempt < self.max_reconnect_attempts and self.is_running:
             try:
                 await self._connect_and_subscribe_internal()
+                if self.current_attempt:
+                    record_reconnect_recovery(
+                        venue="upbit",
+                        market="crypto",
+                        account_kind="shadow",
+                        outcome="success",
+                        duration_seconds=time.perf_counter() - recovery_started_at,
+                    )
                 self.current_attempt = 0
             except Exception as e:
                 self.current_attempt += 1
+                if self.current_attempt >= self.max_reconnect_attempts:
+                    record_reconnect_recovery(
+                        venue="upbit",
+                        market="crypto",
+                        account_kind="shadow",
+                        outcome="failure",
+                        duration_seconds=time.perf_counter() - recovery_started_at,
+                    )
                 logger.error(
                     f"WebSocket connection failed (attempt {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
                 )

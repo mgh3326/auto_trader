@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -9,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from app.monitoring.execution_metrics import execution_stage, record_execution_stage
 from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
 from app.services.mock_strategy.crypto_brokers import (
     CryptoBroker,
@@ -57,6 +59,25 @@ async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
 async def _send(
     recorder: Any, broker: CryptoBroker, order: Any, *, confirm: bool
 ) -> dict:
+    venue = "binance"
+    record_execution_stage(
+        venue=venue,
+        market="crypto",
+        account_kind="mock",
+        stage="receive",
+        outcome="success",
+        duration_seconds=0.0,
+    )
+    detection_started_at = time.perf_counter()
+    detected = order.status == "planned"
+    record_execution_stage(
+        venue=venue,
+        market="crypto",
+        account_kind="mock",
+        stage="detect",
+        outcome="success" if detected else "blocked",
+        duration_seconds=time.perf_counter() - detection_started_at,
+    )
     require_enabled(order.venue, confirm=confirm)
     if order.status != "planned":
         return {
@@ -64,9 +85,18 @@ async def _send(
             "status": "replayed",
             "submitted": False,
         }
+    gate_started_at = time.perf_counter()
     try:
         await broker.preflight(order, confirm=confirm)
     except PreDispatchRefusal as exc:
+        record_execution_stage(
+            venue=venue,
+            market="crypto",
+            account_kind="mock",
+            stage="gate",
+            outcome="blocked",
+            duration_seconds=time.perf_counter() - gate_started_at,
+        )
         return {
             "client_order_id": order.client_order_id,
             "status": "preflight_refused",
@@ -74,14 +104,46 @@ async def _send(
             "reason_class": exc.reason_class,
         }
     if not await recorder.claim(order.client_order_id):
+        record_execution_stage(
+            venue=venue,
+            market="crypto",
+            account_kind="mock",
+            stage="gate",
+            outcome="blocked",
+            duration_seconds=time.perf_counter() - gate_started_at,
+        )
         return {
             "client_order_id": order.client_order_id,
             "status": "replayed",
             "submitted": False,
         }
     try:
-        evidence = await broker.submit(order, confirm=confirm)
-        await _save(recorder, order, evidence)
+        record_execution_stage(
+            venue=venue,
+            market="crypto",
+            account_kind="mock",
+            stage="gate",
+            outcome="success",
+            duration_seconds=time.perf_counter() - gate_started_at,
+        )
+        with execution_stage(
+            venue=venue,
+            market="crypto",
+            account_kind="mock",
+            stage="broker_accept",
+        ) as broker_observation:
+            evidence = await broker.submit(order, confirm=confirm)
+            if not evidence.broker_order_id:
+                broker_observation.mark("uncertain")
+        with execution_stage(
+            venue=venue,
+            market="crypto",
+            account_kind="mock",
+            stage="fill_reconcile",
+        ) as fill_observation:
+            await _save(recorder, order, evidence)
+            if not evidence.terminal:
+                fill_observation.mark("uncertain")
     except PreDispatchRefusal as exc:
         # Only the broker adapter's checks, before its POST, can grant this proof.
         await recorder.update(
