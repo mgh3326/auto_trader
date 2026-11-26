@@ -94,7 +94,6 @@ class MinuteCandlesRepository:
         """
         if not rows:
             return 0
-        sql = self._build_insert_only()
         payload = [
             {
                 "instrument_id": r.instrument_id,
@@ -115,30 +114,37 @@ class MinuteCandlesRepository:
             }
             for r in rows
         ]
-        result = cast(
-            "_RowcountResult",
-            cast(object, await self._session.execute(sql, payload)),
-        )
-        return max(int(result.rowcount or 0), 0)
+        inserted = 0
+        # 15 values per row; stay below PostgreSQL's 65535 bind parameter cap.
+        for offset in range(0, len(payload), 2000):
+            inserted += await self._insert_only_chunk(payload[offset : offset + 2000])
+        return inserted
 
-    @staticmethod
-    def _build_insert_only() -> TextClause:
-        return text(
-            """
-            INSERT INTO public.crypto_candles_1m (
-                instrument_id, time, open, high, low, close,
-                base_volume, quote_volume, trade_count, vwap,
-                taker_buy_base_volume, taker_buy_quote_volume,
-                is_closed, source, source_event_at
-            ) VALUES (
-                :instrument_id, :time, :open, :high, :low, :close,
-                :base_volume, :quote_volume, :trade_count, :vwap,
-                :taker_buy_base_volume, :taker_buy_quote_volume,
-                :is_closed, :source, :source_event_at
-            )
-            ON CONFLICT (instrument_id, time) DO NOTHING
-            """
+    async def _insert_only_chunk(self, payload: list[dict[str, object]]) -> int:
+        columns = (
+            "instrument_id", "time", "open", "high", "low", "close",
+            "base_volume", "quote_volume", "trade_count", "vwap",
+            "taker_buy_base_volume", "taker_buy_quote_volume", "is_closed",
+            "source", "source_event_at",
         )
+        values = []
+        params: dict[str, object] = {}
+        for row_index, row in enumerate(payload):
+            names = []
+            for column in columns:
+                name = f"{column}_{row_index}"
+                names.append(f":{name}")
+                params[name] = row[column]
+            values.append(f"({', '.join(names)})")
+        sql = text(
+            "INSERT INTO public.crypto_candles_1m ("
+            + ", ".join(columns)
+            + ") VALUES "
+            + ", ".join(values)
+            + " ON CONFLICT (instrument_id, time) DO NOTHING RETURNING time"
+        )
+        result = await self._session.execute(sql, params)
+        return len(result.scalars().all())
 
     @staticmethod
     def _build_upsert() -> TextClause:

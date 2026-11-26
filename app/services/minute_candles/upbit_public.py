@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,7 +17,6 @@ from typing import Any
 from research.crypto_universe.public_http import (
     Fetch,
     FetchResponse,
-    make_urllib_fetch,
     with_retries,
 )
 
@@ -25,6 +27,7 @@ CANDLES_PATH = "/v1/candles/minutes/1"
 PAGE_SIZE = 200
 PAGE_SECONDS = 60
 REQUEST_INTERVAL_SECONDS = 0.15
+USER_AGENT = "auto-trader-upbit-minute-candles/1 (public data)"
 
 
 class UpbitPublicError(RuntimeError):
@@ -77,13 +80,17 @@ def _allowlisted_fetch(fetch: Fetch) -> Fetch:
 
     def checked(url: str) -> FetchResponse:
         parsed = urllib.parse.urlsplit(url)
+        decoded_path = urllib.parse.unquote(parsed.path)
         if (
             parsed.scheme != "https"
             or parsed.hostname != "api.upbit.com"
             or parsed.port not in (None, 443)
             or parsed.username
             or parsed.password
-            or parsed.path not in allowed
+            or decoded_path not in allowed
+            or "\\" in decoded_path
+            or any(part in {".", ".."} for part in decoded_path.split("/"))
+            or decoded_path.count("/") != parsed.path.count("/")
             or parsed.fragment
         ):
             raise UpbitPublicError(
@@ -92,6 +99,27 @@ def _allowlisted_fetch(fetch: Fetch) -> Fetch:
         return fetch(url)
 
     return checked
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+def _make_default_fetch(timeout: float) -> Fetch:
+    opener = urllib.request.build_opener(
+        _NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
+
+    def fetch(url: str) -> FetchResponse:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                return FetchResponse(status=response.status, body=response.read())
+        except urllib.error.HTTPError as exc:
+            return FetchResponse(status=exc.code, body=exc.read() or b"")
+
+    return fetch
 
 
 class UpbitMinutePublicData:
@@ -104,7 +132,7 @@ class UpbitMinutePublicData:
         retry_sleep: Callable[[float], None] | None = None,
     ) -> None:
         raw_fetch = with_retries(
-            fetch or make_urllib_fetch(timeout=20),
+            fetch or _make_default_fetch(timeout=20),
             attempts=4,
             sleep=retry_sleep,
         )

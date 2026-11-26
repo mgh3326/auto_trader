@@ -15,6 +15,7 @@ from app.services.minute_candles.repository import (
 )
 from app.services.minute_candles.upbit_public import (
     PAGE_SIZE,
+    Candle,
     UpbitMinutePublicData,
 )
 
@@ -50,6 +51,12 @@ class CollectionResult:
         return sum(item.status == "error" for item in self.markets) + int(
             self.selection_error is not None
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _PageWalk:
+    rows: list[tuple[Candle, datetime]]
+    incomplete: bool
 
 
 def configured_top_n(value: int | None = None) -> int:
@@ -109,7 +116,7 @@ def _kst_day_start(now: datetime) -> datetime:
     return datetime.combine(local.date(), time.min, tzinfo=KST).astimezone(UTC)
 
 
-def _rows_for_current_day(
+def _walk_rows(
     data: UpbitMinutePublicData,
     market: str,
     now: datetime,
@@ -119,9 +126,13 @@ def _rows_for_current_day(
     start = _kst_day_start(now)
     cursor = now.astimezone(UTC)
     checkpoint = after.astimezone(UTC) if after is not None else None
-    if checkpoint is not None and checkpoint < start:
-        checkpoint = None
-    by_time = {}
+    # A new collector starts with a short overlap so a run at midnight can
+    # still capture the previous day's final closed minutes. Existing
+    # checkpoints are retained across midnight and bound the walk directly.
+    lower_bound = checkpoint or (start - timedelta(minutes=3))
+    by_time: dict[datetime, tuple[Candle, datetime]] = {}
+    reached_bound = False
+    page = None
     for _ in range(MAX_PAGES_PER_MARKET):
         page = data.candles(market, cursor)
         if not page.candles:
@@ -131,7 +142,7 @@ def _rows_for_current_day(
             raise ValueError("Upbit page is not strictly before its to cursor")
         for candle in page.candles:
             if (
-                start <= candle.time_utc
+                candle.time_utc >= lower_bound
                 and (checkpoint is None or candle.time_utc > checkpoint)
                 and candle.time_utc + MINUTE_CLOSE_DELAY <= now
             ):
@@ -139,23 +150,29 @@ def _rows_for_current_day(
         oldest = min(stamps)
         if checkpoint is not None and oldest <= checkpoint:
             break
-        if checkpoint is None and oldest <= start:
+        if oldest <= lower_bound:
+            reached_bound = True
+            break
+        if len(page.candles) < PAGE_SIZE:
             break
         cursor = oldest
-    else:
-        raise ValueError(f"current-day backfill exceeded {MAX_PAGES_PER_MARKET} pages")
-    # A full final page means the bounded walk may have stopped before midnight.
-    if (
-        checkpoint is None
-        and by_time
-        and min(by_time) > start
-        and page.candles
+    incomplete = bool(
+        not reached_bound
+        and page is not None
         and len(page.candles) >= PAGE_SIZE
-    ):
-        raise ValueError(
-            f"current-day backfill incomplete after {MAX_PAGES_PER_MARKET} pages"
-        )
-    return [by_time[key] for key in sorted(by_time)]
+        and len(by_time) > 0
+    )
+    return _PageWalk([by_time[key] for key in sorted(by_time)], incomplete)
+
+
+def _rows_for_current_day(
+    data: UpbitMinutePublicData,
+    market: str,
+    now: datetime,
+    *,
+    after: datetime | None = None,
+):
+    return _walk_rows(data, market, now, after=after).rows
 
 
 async def collect_upbit_minute_candles(
@@ -241,7 +258,8 @@ async def collect_upbit_minute_candles(
                     )
                 )
                 latest_at = latest_result.scalar_one_or_none()
-            rows = _rows_for_current_day(data, market, current, after=latest_at)
+            walk = _walk_rows(data, market, current, after=latest_at)
+            rows = walk.rows
             new_rows = 0 if repo is not None else None
             if repo is not None and rows:
                 new_rows = await repo.insert_rows(
@@ -263,7 +281,15 @@ async def collect_upbit_minute_candles(
                     ]
                 )
                 await session.commit()
-            results.append(MarketResult(market, "ok", len(rows), new_rows))
+            results.append(
+                MarketResult(
+                    market,
+                    "error" if walk.incomplete else "ok",
+                    len(rows),
+                    new_rows,
+                    f"page_limit_{MAX_PAGES_PER_MARKET}_gap" if walk.incomplete else None,
+                )
+            )
         except Exception as exc:
             if session is not None and not dry_run:
                 await session.rollback()

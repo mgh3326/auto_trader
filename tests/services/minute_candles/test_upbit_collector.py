@@ -64,6 +64,39 @@ def test_parser_uses_documented_response_shape_and_keeps_decimal_values() -> Non
     assert page.candles[0].time_utc == datetime(2025, 7, 1, 12, 0, tzinfo=UTC)
 
 
+def test_default_fetcher_allows_exact_collector_paths_without_network(monkeypatch) -> None:
+    requested: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"[]"
+
+    class Opener:
+        def open(self, request, timeout):
+            requested.append(request.full_url)
+            return Response()
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_args: Opener())
+    data = UpbitMinutePublicData(
+        pacer=Pacer(0, sleep=lambda _: None), retry_sleep=lambda _: None
+    )
+    for url in (
+        "https://api.upbit.com/v1/market/all?isDetails=false",
+        "https://api.upbit.com/v1/ticker?markets=KRW-BTC",
+        "https://api.upbit.com/v1/candles/minutes/1?market=KRW-BTC&count=200",
+    ):
+        assert data._fetch(url).status == 200
+    assert len(requested) == 3
+
+
 def test_target_ranking_uses_24h_quote_value() -> None:
     def fetch(url: str) -> FetchResponse:
         if url.endswith("market/all?isDetails=false"):
@@ -154,6 +187,42 @@ def test_existing_latest_bar_limits_repeat_fetch_to_newer_rows() -> None:
     assert [row.time_utc.minute for row, _ in rows] == [2, 3]
 
 
+def test_midnight_checkpoint_collects_closed_previous_day_tail() -> None:
+    now = datetime(2026, 11, 27, 15, 1, tzinfo=UTC)  # 00:01 KST
+    page = CandlePage(
+        tuple(
+            candle("KRW-BTC", now - timedelta(minutes=minute))
+            for minute in range(1, 6)
+        ),
+        now,
+    )
+    rows = _rows_for_current_day(
+        FakeData({"KRW-BTC": [page]}),
+        "KRW-BTC",
+        now,
+        after=datetime(2026, 11, 27, 14, 57, tzinfo=UTC),  # 23:57 KST
+    )
+    assert [row.time_utc for row, _ in rows] == [
+        datetime(2026, 11, 27, 14, 58, tzinfo=UTC),
+        datetime(2026, 11, 27, 14, 59, tzinfo=UTC),
+    ]
+
+
+def test_full_page_crossing_midnight_without_0000_candle_is_complete() -> None:
+    now = datetime(2026, 11, 27, 15, 4, tzinfo=UTC)  # 00:04 KST
+    page = CandlePage(
+        tuple(
+            candle("KRW-BTC", now - timedelta(minutes=minute))
+            for minute in (minute for minute in range(1, 202) if minute != 4)
+        ),
+        now,
+    )
+    rows = _rows_for_current_day(FakeData({"KRW-BTC": [page]}), "KRW-BTC", now)
+    stamps = [row.time_utc for row, _ in rows]
+    assert datetime(2026, 11, 27, 14, 59, tzinfo=UTC) in stamps
+    assert datetime(2026, 11, 27, 15, 0, tzinfo=UTC) not in stamps
+
+
 @pytest.mark.asyncio
 async def test_errors_are_market_rows_and_other_markets_continue() -> None:
     now = datetime(2026, 11, 26, 15, 2, tzinfo=UTC)
@@ -206,10 +275,7 @@ async def _resolved(value: set[str]) -> set[str]:
     return value
 
 
-def test_minute_repository_has_insert_only_conflict_policy() -> None:
-    sql = str(MinuteCandlesRepository._build_insert_only())
-    assert "ON CONFLICT (instrument_id, time) DO NOTHING" in sql
-    assert "DO UPDATE" not in sql
+def test_upbit_collector_source_is_stable() -> None:
     assert SOURCE == "upbit_rest_1m"
 
 
@@ -221,12 +287,24 @@ async def test_insert_only_repository_reports_zero_for_replayed_rows() -> None:
         async def execute(self, statement, payload):
             assert "DO NOTHING" in str(statement)
             added = 0
-            for row in payload:
+            # The insert statement uses indexed bind names and RETURNING.
+            keys = [key for key in payload if key.startswith("instrument_id_")]
+            for key in keys:
+                index = key.removeprefix("instrument_id_")
+                row = {
+                    name: payload[f"{name}_{index}"]
+                    for name in ("instrument_id", "time")
+                }
                 key = (row["instrument_id"], row["time"])
                 if key not in self.rows:
                     self.rows.add(key)
                     added += 1
-            return type("Result", (), {"rowcount": added})()
+            values = [None] * added
+            return type(
+                "Result",
+                (),
+                {"scalars": lambda _self: type("Scalars", (), {"all": lambda _self: values})()},
+            )()
 
     session = Session()
     repo = MinuteCandlesRepository(session=session)
@@ -243,6 +321,35 @@ async def test_insert_only_repository_reports_zero_for_replayed_rows() -> None:
     )
     assert await repo.insert_rows(rows=[row]) == 1
     assert await repo.insert_rows(rows=[row]) == 0
+
+
+@pytest.mark.asyncio
+async def test_insert_only_repository_counts_multirow_insert_without_rowcount():
+    class Session:
+        async def execute(self, statement, payload):
+            assert "RETURNING time" in str(statement)
+            assert isinstance(payload, dict)
+            values = [1, 2]
+            return type(
+                "Result",
+                (),
+                {"scalars": lambda _self: type("Scalars", (), {"all": lambda _self: values})()},
+            )()
+
+    rows = [
+        MinuteCandleRow(
+            instrument_id=1,
+            time_utc=datetime(2026, 11, 26, 0, minute, tzinfo=UTC),
+            open=1,
+            high=2,
+            low=1,
+            close=2,
+            base_volume=3,
+            source=SOURCE,
+        )
+        for minute in (0, 1)
+    ]
+    assert await MinuteCandlesRepository(session=Session()).insert_rows(rows=rows) == 2
 
 
 def test_fixture_is_a_candle_list() -> None:
