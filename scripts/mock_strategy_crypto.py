@@ -118,8 +118,6 @@ async def execute(args: argparse.Namespace) -> dict:
                     "realized_pnl": str(r.realized_pnl)
                     if r.realized_pnl is not None
                     else None,
-                    "gross_pnl": r.meta.get("gross_pnl"),
-                    "net_pnl": r.meta.get("net_pnl"),
                 }
                 for r in rows
                 if r.strategy_id.startswith("rob1474.crypto.")
