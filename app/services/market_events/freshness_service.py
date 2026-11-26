@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.invest_momentum_event_snapshot import InvestMomentumEventRun
 from app.models.market_events import MarketEvent, MarketEventIngestionPartition
 from app.schemas.calendar_freshness import (
@@ -152,7 +153,11 @@ class MarketEventsFreshnessService:
                 _Key(source, category, market)
                 for source, category, market in event_counts.keys()
             }
-            | {_BENZINGA_PRO_BREAKING_NEWS}
+            | (
+                {_BENZINGA_PRO_BREAKING_NEWS}
+                if settings.BENZINGA_PRO_INGEST_ENABLED or benzinga_captures
+                else set()
+            )
         )
         expected_refresh = expected_next_refresh_by_key or {}
         rows = [

@@ -521,11 +521,10 @@ async def test_data_gaps_reports_existing_staleness_signals() -> None:
         "negative_class_recording.us",
         "negative_class_recording.crypto",
     }
-    # A missing Benzinga Pro push capture is an explicit stale/lag signal.
-    benzinga = by_dataset["market_events.benzinga_pro.breaking_news.us"]
-    assert benzinga["missing_reason"] == "stale"
-    # The 5 existing rows, the disabled aggregate OI row, and the Benzinga lag.
-    assert response["total"] == 7
+    # The push source is disabled in this pull-only fixture, so it adds no row.
+    assert "market_events.benzinga_pro.breaking_news.us" not in by_dataset
+    # The 5 existing rows plus crypto_insight.aggregate_oi, disabled by design.
+    assert response["total"] == 6
 
 
 @pytest.mark.asyncio

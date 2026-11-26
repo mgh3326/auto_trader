@@ -84,7 +84,12 @@ async def test_recent_empty_benzinga_capture_is_not_a_data_gap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_benzinga_capture_is_reported_as_stale_lag() -> None:
+async def test_missing_benzinga_capture_is_reported_as_stale_lag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.market_events import freshness_service
+
+    monkeypatch.setattr(freshness_service.settings, "BENZINGA_PRO_INGEST_ENABLED", True)
     response = await _benzinga_gap_response([])
     validate(response, "DataGapsResponse")
     row = by_dataset(response)["market_events.benzinga_pro.breaking_news.us"]

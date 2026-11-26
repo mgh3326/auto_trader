@@ -103,7 +103,10 @@ async def test_recent_empty_push_capture_is_not_reported_stale() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_push_capture_is_stale_lag() -> None:
+async def test_no_push_capture_is_stale_lag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.market_events import freshness_service
+
+    monkeypatch.setattr(freshness_service.settings, "BENZINGA_PRO_INGEST_ENABLED", True)
     session = FakeSession(
         {
             "FROM market_event_ingestion_partitions": [],
@@ -156,7 +159,14 @@ async def test_push_capture_error_is_counted_as_failed_evidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pull_source_freshness_projection_remains_byte_identical() -> None:
+async def test_pull_source_freshness_projection_remains_byte_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.market_events import freshness_service
+
+    monkeypatch.setattr(
+        freshness_service.settings, "BENZINGA_PRO_INGEST_ENABLED", False
+    )
     finished_at = CAPTURED_AT - timedelta(hours=2)
     partition = MarketEventIngestionPartition(
         source="finnhub",
@@ -182,6 +192,7 @@ async def test_pull_source_freshness_projection_remains_byte_identical() -> None
         window_to=CAPTURED_AT.date(),
         now=CAPTURED_AT,
     )
+    assert len(response.rows) == 1
     row = next(item for item in response.rows if item.source == "finnhub")
 
     assert row.model_dump_json() == (
