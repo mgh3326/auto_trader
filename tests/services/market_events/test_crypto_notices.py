@@ -161,21 +161,21 @@ async def test_modified_provider_record_appends_revision_and_updates_current_row
     await collect_crypto_notices(
         None,
         repo=repo,
-        client=FakeClient(bithumb_rows=[]),
+        client=FakeClient(),
         commit=True,
         received_at=RECEIVED,
     )
-    revised = {**UPBIT_NOTICE, "listed_at": "2026-11-26T10:10:00+09:00"}
+    revised = {**BITHUMB_NOTICE, "modified_at": "2026-11-26 10:10:00"}
     report = await collect_crypto_notices(
         None,
         repo=repo,
-        client=FakeClient(upbit_rows=[revised], bithumb_rows=[]),
+        client=FakeClient(upbit_rows=[UPBIT_NOTICE], bithumb_rows=[revised]),
         commit=True,
         received_at=datetime(2026, 11, 26, 2, 0, tzinfo=UTC),
     )
-    assert report[UPBIT_SOURCE]["revised"] == 1
-    assert len(repo.revisions[(UPBIT_SOURCE, "88001")]) == 2
-    current = repo.events[(UPBIT_SOURCE, "88001")]
+    assert report[BITHUMB_SOURCE]["revised"] == 1
+    assert len(repo.revisions[(BITHUMB_SOURCE, "23001")]) == 2
+    current = repo.events[(BITHUMB_SOURCE, "23001")]
     assert current["provider_updated_at"].isoformat() == "2026-11-26T01:10:00+00:00"
     assert current["first_received_at"] == RECEIVED
 
