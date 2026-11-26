@@ -49,11 +49,13 @@ REASON_NO_TRADE_ONE_SIDED = "no_trade_and_one_sided_book"
 REASON_NO_TRADE_NO_BOOK = "no_trade_and_no_book"
 REASON_SESSION_UNKNOWN = "session_unknown"
 
-# Session boundaries come from the same source as research-candle labels.
+# Quote windows follow the venue trading windows. Research-candle labels keep
+# the later NXT boundary because KIS bars cannot distinguish the overlap.
 NXT_PRE_START = KR_PREMARKET_OPEN_KST
 NXT_PRE_END = KR_PREMARKET_CLOSE_KST
 KRX_REGULAR_START = KR_REGULAR_OPEN_KST
-NXT_POST_START = KRX_AFTER_OPEN_KST
+NXT_POST_START = dt.time(15, 40)
+NXT_POST_OHLCV_START = KRX_AFTER_OPEN_KST
 NXT_POST_END = NXT_CLOSE_KST
 
 # A last trade counts only when it is at most this old, the same bound as the
@@ -72,8 +74,10 @@ KRX_AUCTION_WINDOWS: tuple[tuple[dt.time, dt.time], ...] = (
 def quote_session_at(now: dt.datetime, venue: str) -> str | None:
     """Return the quote session for a venue at an aware instant, or ``None``.
 
-    The caller establishes that the KST date is a trading session. These time
-    windows intentionally share their boundaries with research minute labels.
+    The caller establishes that the KST date is a trading session. NXT
+    continuous after-hours quoting starts at 15:40; research minute labels
+    intentionally start NXT_POST at 16:00 because KIS bars cannot distinguish
+    the 15:40–16:00 overlap with the KRX closing auction.
     """
     if not _is_aware(now):
         return None

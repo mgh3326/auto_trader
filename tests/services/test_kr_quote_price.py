@@ -242,7 +242,12 @@ def test_nxt_session_mapping():
 
 
 def test_quote_session_boundaries_match_after_market_contract():
-    assert kqp.quote_session_at(_kst(15, 30), "nxt") is None
+    assert kqp.quote_session_at(_kst(15, 39), "nxt") is None
+    assert kqp.quote_session_at(_kst(15, 40), "nxt") == kqp.PRICE_SESSION_NXT_POST
+    assert kqp.quote_session_at(_kst(15, 41), "nxt") == kqp.PRICE_SESSION_NXT_POST
+    assert kqp.quote_session_at(_kst(15, 39), "krx") is None
+    assert kqp.quote_session_at(_kst(15, 40), "krx") is None
+    assert kqp.quote_session_at(_kst(15, 41), "krx") is None
     assert kqp.quote_session_at(_kst(15, 59), "krx") is None
     assert kqp.quote_session_at(_kst(16, 0), "krx") == kqp.PRICE_SESSION_KRX_AFTER
     assert kqp.quote_session_at(_kst(16, 0), "nxt") == kqp.PRICE_SESSION_NXT_POST
