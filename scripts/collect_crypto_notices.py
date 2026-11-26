@@ -43,7 +43,7 @@ async def _run(args: argparse.Namespace) -> int:
             repo=MarketEventsRepository(db),
         )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 1 if any(source["error"] for source in result.values()) else 0
 
 
 def main(argv: list[str] | None = None) -> int:

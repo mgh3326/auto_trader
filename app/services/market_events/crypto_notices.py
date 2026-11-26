@@ -57,7 +57,8 @@ class CryptoNoticeContractError(CryptoNoticeError):
 
 def classify_notice_kind(title: str, categories: Iterable[str]) -> str:
     """Classify only exact known phrases; an unknown notice remains ``other``."""
-    text = " ".join([title, *categories])
+    category_values = list(categories)
+    text = " ".join([title, *category_values])
     rules = (
         (
             "delisting",
@@ -80,6 +81,7 @@ def classify_notice_kind(title: str, categories: Iterable[str]) -> str:
             "deposit_withdrawal_suspend",
             (
                 "입출금 일시 중단",
+                "입출금 일시 중지",
                 "입출금 중단",
                 "입금 및 출금 중단",
                 "deposit and withdrawal suspension",
@@ -91,12 +93,22 @@ def classify_notice_kind(title: str, categories: Iterable[str]) -> str:
         ),
         (
             "listing",
-            ("신규 거래지원", "거래지원 개시", "신규 상장", "listing", "listed"),
+            (
+                "신규 거래지원",
+                "거래지원 개시",
+                "신규 상장",
+                "원화 마켓 추가",
+                "BTC 마켓 추가",
+                "listing",
+                "listed",
+            ),
         ),
     )
     for kind, phrases in rules:
         if any(phrase in text for phrase in phrases):
             return kind
+    if any(category.strip() == "마켓추가" for category in category_values):
+        return "listing"
     return "other"
 
 
@@ -107,6 +119,11 @@ def extract_ticker(title: str, known_tickers: Iterable[str]) -> str | None:
         return None
     ticker = next(iter(matches))
     return ticker if ticker in set(known_tickers) else None
+
+
+def _notice_symbol_should_clear(title: str) -> bool:
+    """Clear an old attribution only when the revised title disproves it."""
+    return not _TICKER.findall(title) or len(set(_TICKER.findall(title))) != 1
 
 
 def _parse_aware_time(value: Any, *, field: str) -> datetime:
@@ -274,7 +291,9 @@ class CryptoNoticeClient:
     ) -> None:
         self._client_factory = client_factory
 
-    async def fetch_upbit_page(self, page: int) -> tuple[list[dict[str, Any]], int]:
+    async def fetch_upbit_page(
+        self, page: int
+    ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
         payload = await _request_json(
             UPBIT_URL,
             expected_host=UPBIT_HOST,
@@ -284,15 +303,18 @@ class CryptoNoticeClient:
         )
         data = payload.get("data") if isinstance(payload, dict) else None
         notices = data.get("notices") if isinstance(data, dict) else None
+        fixed = data.get("fixed_notices", []) if isinstance(data, dict) else None
         pages = data.get("total_pages") if isinstance(data, dict) else None
         if (
             not isinstance(notices, list)
             or any(not isinstance(row, dict) for row in notices)
+            or not isinstance(fixed, list)
+            or any(not isinstance(row, dict) for row in fixed)
             or type(pages) is not int
             or pages < 0
         ):
             raise CryptoNoticeContractError("invalid Upbit notices response")
-        return notices, pages
+        return notices, pages, fixed
 
     async def fetch_bithumb(self) -> tuple[list[dict[str, Any]], set[str]]:
         markets = await _request_json(
@@ -303,6 +325,7 @@ class CryptoNoticeClient:
         notices = await _request_json(
             BITHUMB_NOTICES_URL,
             expected_host=BITHUMB_HOST,
+            params={"count": 20},
             client_factory=self._client_factory,
         )
         if not isinstance(markets, list) or not isinstance(notices, list):
@@ -339,12 +362,23 @@ async def _write_notice(
             raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode()
     ).hexdigest()
+    lock_revision = getattr(repository, "lock_revision_identity", None)
+    if lock_revision is not None:
+        await lock_revision(
+            source=source,
+            category=CATEGORY,
+            market="crypto",
+            source_event_id=source_event_id,
+        )
     latest = await repository.latest_revision(
         source=source,
         category=CATEGORY,
         market="crypto",
         source_event_id=source_event_id,
     )
+    latest_observed_at = getattr(latest, "observed_at", None)
+    if latest_observed_at is not None and latest_observed_at > observed_at:
+        return "stale"
     if latest is not None and latest.content_hash == digest:
         return "unchanged"
     if not await repository.append_revision(
@@ -359,7 +393,13 @@ async def _write_notice(
         raw_payload_json=event["raw_payload_json"],
     ):
         raise RuntimeError("notice revision was not recorded")
-    await repository.upsert_event_with_values(event, [])
+    await repository.upsert_event_with_values(
+        event,
+        [],
+        clear_notice_symbol=(
+            event["symbol"] is None and _notice_symbol_should_clear(event["title"])
+        ),
+    )
     return "inserted" if latest is None else "revised"
 
 
@@ -371,7 +411,7 @@ async def collect_crypto_notices(
     client: CryptoNoticeClient | None = None,
     repo: MarketEventsRepository | None = None,
     received_at: datetime | None = None,
-) -> dict[str, dict[str, int]]:
+) -> dict[str, dict[str, Any]]:
     """Fetch both feeds, stopping at known IDs and optionally persisting rows."""
     if type(pages) is not int or not 1 <= pages <= 20:
         raise ValueError("pages must be between 1 and 20")
@@ -382,7 +422,6 @@ async def collect_crypto_notices(
     if repo is None:
         raise ValueError("a repository is required to check stored IDs")
     fetcher = client or CryptoNoticeClient()
-    now = received_at or datetime.now(UTC)
     known_upbit: set[str] = set()
     if db is not None:
         known_upbit = set(
@@ -391,80 +430,123 @@ async def collect_crypto_notices(
     else:
         known_upbit = set(getattr(fetcher, "upbit_tickers", ()))
 
-    output = {
+    output: dict[str, dict[str, Any]] = {
         UPBIT_SOURCE: {
             "fetched": 0,
             "inserted": 0,
             "revised": 0,
             "stopped_at_known_id": 0,
+            "truncated": False,
+            "page_cap": None,
+            "older_history_uncollected": False,
+            "stale_observations": 0,
+            "error": None,
         },
         BITHUMB_SOURCE: {
             "fetched": 0,
             "inserted": 0,
             "revised": 0,
             "stopped_at_known_id": 0,
+            "truncated": False,
+            "page_cap": None,
+            "older_history_uncollected": False,
+            "stale_observations": 0,
+            "error": None,
         },
     }
     for source in (UPBIT_SOURCE, BITHUMB_SOURCE):
         try:
+            # Each prior source ends with commit or rollback, so this provider
+            # starts with an isolated unit of work.
             existing = await _existing_ids(repo, source=source)
             if source == UPBIT_SOURCE:
                 tickers = known_upbit
                 total_pages = 0
+                saw_known = False
+                reached_end = False
+                processed_ids: set[str] = set()
+
+                async def process_upbit(
+                    row: dict[str, Any], observed_at: datetime
+                ) -> None:
+                    event_id = str(row.get("id"))
+                    if event_id in processed_ids:
+                        return
+                    processed_ids.add(event_id)
+                    is_known = event_id in existing
+                    event = normalize_upbit_notice(
+                        row, known_tickers=tickers, received_at=observed_at
+                    )
+                    output[source]["fetched"] += 1
+                    if commit:
+                        result = await _write_notice(
+                            repo, event, row, observed_at=observed_at
+                        )
+                        if result in {"inserted", "revised"}:
+                            output[source][result] += 1
+                        elif result == "stale":
+                            output[source]["stale_observations"] += 1
+                    elif not is_known:
+                        output[source]["inserted"] += 1
+
                 for page in range(1, pages + 1):
-                    rows, total_pages = await fetcher.fetch_upbit_page(page)
+                    rows, total_pages, fixed_rows = await fetcher.fetch_upbit_page(page)
+                    now = received_at or datetime.now(UTC)
+                    for row in fixed_rows:
+                        await process_upbit(row, now)
                     stop = False
                     for row in rows:
                         event_id = row.get("id")
                         is_known = str(event_id) in existing
-                        event = normalize_upbit_notice(
-                            row, known_tickers=tickers, received_at=now
-                        )
-                        output[source]["fetched"] += 1
-                        if commit:
-                            result = await _write_notice(
-                                repo, event, row, observed_at=now
-                            )
-                            if result != "unchanged":
-                                output[source][result] += 1
-                        elif not is_known:
-                            output[source]["inserted"] += 1
+                        await process_upbit(row, now)
                         if is_known:
                             output[source]["stopped_at_known_id"] = 1
+                            saw_known = True
                             stop = True
                             break
                     if stop or page >= total_pages or not rows:
+                        reached_end = page >= total_pages
                         break
-                else:
-                    if total_pages > pages:
-                        raise CryptoNoticeContractError("Upbit page cap reached")
+                if not saw_known and not reached_end and total_pages > pages:
+                    output[source]["truncated"] = True
+                    output[source]["page_cap"] = pages
+                    output[source]["older_history_uncollected"] = True
             else:
                 rows, tickers = await fetcher.fetch_bithumb()
+                now = received_at or datetime.now(UTC)
+                saw_known = False
                 for row in rows:
                     event_id = _bithumb_id(row.get("pc_url"))
-                    if event_id in existing:
-                        is_known = True
-                    else:
-                        is_known = False
+                    is_known = event_id in existing
                     event = normalize_bithumb_notice(
                         row, known_tickers=tickers, received_at=now
                     )
                     output[source]["fetched"] += 1
                     if commit:
                         result = await _write_notice(repo, event, row, observed_at=now)
-                        if result != "unchanged":
+                        if result in {"inserted", "revised"}:
                             output[source][result] += 1
+                        elif result == "stale":
+                            output[source]["stale_observations"] += 1
                     elif not is_known:
                         output[source]["inserted"] += 1
                     if is_known:
                         output[source]["stopped_at_known_id"] = 1
-                        break
+                        saw_known = True
+                if not saw_known and len(rows) >= 20:
+                    output[source]["truncated"] = True
+                    output[source]["page_cap"] = 20
+                    output[source]["older_history_uncollected"] = True
             if commit and db is not None:
                 await db.commit()
-        except Exception:
+        except Exception as exc:
             if commit and db is not None:
                 await db.rollback()
-            raise
+                output[source]["inserted"] = 0
+                output[source]["revised"] = 0
+                output[source]["stale_observations"] = 0
+            output[source]["error"] = type(exc).__name__
+            logger.warning("%s notice collection failed: %s", source, type(exc).__name__)
     return output
 
 

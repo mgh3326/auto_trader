@@ -10,6 +10,7 @@ Values are upserted by (event_id, metric_name, period).
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
@@ -109,6 +110,16 @@ class MarketEventsRepository:
         )
         return {value for value in result.scalars() if value is not None}
 
+    async def lock_revision_identity(
+        self, *, source: str, category: str, market: str, source_event_id: str
+    ) -> None:
+        """Serialize revision compare-and-append for one provider event."""
+        identity = "\0".join((source, category, market, source_event_id)).encode()
+        lock_id = int.from_bytes(
+            hashlib.blake2b(identity, digest_size=8).digest(), "big", signed=True
+        )
+        await self.db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
     async def insert_provider_event(self, event_data: dict[str, Any]) -> bool:
         """Keep the first observation of a provider-keyed event."""
         if not event_data.get("source_event_id"):
@@ -139,6 +150,7 @@ class MarketEventsRepository:
         *,
         replace_values: bool = False,
         preserve_dart_detail: bool = False,
+        clear_notice_symbol: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
         _normalize_publication(payload)
@@ -195,6 +207,10 @@ class MarketEventsRepository:
                 value = payload.get(column)
                 if value is not None:
                     update_columns[column] = value
+            if clear_notice_symbol:
+                if payload.get("source") not in {"upbit_notice", "bithumb_notice"}:
+                    raise ValueError("clear_notice_symbol is only valid for notices")
+                update_columns["symbol"] = None
             # A DART list row can be replayed after a typed detail lookup fails
             # or by the paced list-only backfill. Keep the existing evidence and
             # corrected receipt date on conflict while still allowing inserts.
