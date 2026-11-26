@@ -564,7 +564,7 @@ async def test_account_404_is_not_order_absence():
     assert not isinstance(error.value, AlpacaPaperOrderNotFound)
 
 
-async def test_refresh_reachable_broker_calls_are_get_only():
+def _refresh_reachable_methods():
     refresh_tree = ast.parse(Path(us.__file__).read_text())
     strategy_class = next(
         node
@@ -599,7 +599,7 @@ async def test_refresh_reachable_broker_calls_are_get_only():
         "get",
         "list_orders",
     }
-    reachable = (
+    return (
         (us, "UsPaperStrategy", "refresh"),
         (us_broker, "UsPaperBroker", "refresh_account_ref"),
         (us_broker, "UsPaperBroker", "lookup"),
@@ -611,7 +611,28 @@ async def test_refresh_reachable_broker_calls_are_get_only():
         (alpaca_service, "AlpacaPaperBrokerService", "list_fills"),
         (alpaca_service, "AlpacaPaperBrokerService", "_verify_physical_identity"),
     )
-    for module, class_name, method_name in reachable:
+
+
+def _refresh_write_paths(reachable, method_overrides=None):
+    method_overrides = method_overrides or {}
+    pending = list(reachable)
+    visited = set()
+    unsafe = []
+    class_method_cache = {}
+    allowed_service_calls = {
+        "get_account",
+        "get_order",
+        "get_order_by_client_order_id",
+        "list_fills",
+    }
+    write_methods = {"submit", "submit_order", "cancel", "cancel_order"}
+
+    while pending:
+        module, class_name, method_name = pending.pop()
+        key = (module, class_name, method_name)
+        if key in visited:
+            continue
+        visited.add(key)
         source = Path(module.__file__).read_text()
         tree = ast.parse(source)
         cls = next(
@@ -619,11 +640,17 @@ async def test_refresh_reachable_broker_calls_are_get_only():
             for node in ast.walk(tree)
             if isinstance(node, ast.ClassDef) and node.name == class_name
         )
-        method = next(
-            node
-            for node in cls.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == method_name
+        class_methods = class_method_cache.setdefault(
+            (module, class_name),
+            {
+                node.name: node
+                for node in cls.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            },
+        )
+        method = (
+            method_overrides.get((class_name, method_name))
+            or class_methods[method_name]
         )
         calls = [
             node
@@ -632,12 +659,13 @@ async def test_refresh_reachable_broker_calls_are_get_only():
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "_request"
         ]
-        assert all(
+        if not all(
             node.args
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value == "GET"
             for node in calls
-        ), (class_name, method_name)
+        ):
+            unsafe.append((class_name, method_name, "non-GET _request"))
         assert not any(
             isinstance(node, ast.Constant) and node.value in {"POST", "DELETE"}
             for node in ast.walk(method)
@@ -652,32 +680,43 @@ async def test_refresh_reachable_broker_calls_are_get_only():
             and node.func.value.value.id == "self"
             and node.func.value.attr == "_service"
         }
-        assert service_calls <= {
-            "get_account",
-            "get_order",
-            "get_order_by_client_order_id",
-            "list_fills",
-        }, (class_name, method_name, service_calls)
+        if not service_calls <= allowed_service_calls:
+            unsafe.append((class_name, method_name, f"service calls: {service_calls}"))
+        for node in ast.walk(method):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+            ):
+                continue
+            if node.func.attr in write_methods:
+                unsafe.append((class_name, method_name, f"self.{node.func.attr}"))
+            if node.func.attr in class_methods and node.func.attr != "_request":
+                pending.append((module, class_name, node.func.attr))
+    return unsafe
+
+
+async def test_refresh_reachable_broker_calls_are_get_only():
+    assert _refresh_write_paths(_refresh_reachable_methods()) == []
+
+
+async def test_refresh_guard_follows_fills_for_order_self_submit_call():
     mutated = ast.parse(
         "async def fills_for_order(self, order):\n"
-        "    return await self._service.submit_order(order)\n"
+        "    return await self.submit(order, side='buy', asof=None, confirm=True)\n"
     ).body[0]
-    mutated_calls = {
-        node.func.attr
-        for node in ast.walk(mutated)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Attribute)
-        and isinstance(node.func.value.value, ast.Name)
-        and node.func.value.value.id == "self"
-        and node.func.value.attr == "_service"
-    }
-    assert not mutated_calls <= {
-        "get_account",
-        "get_order",
-        "get_order_by_client_order_id",
-        "list_fills",
-    }
+    unsafe = _refresh_write_paths(
+        _refresh_reachable_methods(),
+        method_overrides={("UsPaperBroker", "fills_for_order"): mutated},
+    )
+    assert ("UsPaperBroker", "fills_for_order", "self.submit") in unsafe
+    assert any(
+        class_name == "UsPaperBroker"
+        and method_name == "submit"
+        and "submit_order" in reason
+        for class_name, method_name, reason in unsafe
+    )
 
 
 async def test_refresh_reads_order_and_fill_activity_fixtures_by_client_id():
