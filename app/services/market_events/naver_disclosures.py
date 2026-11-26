@@ -430,7 +430,7 @@ def compare_session_windows(
                     "market": market,
                     "window": window.label,
                     "naver": f"{window.open_at.isoformat()}..{window.close_at.isoformat()}",
-                    "ours": "unavailable"
+                    "ours": "none"
                     if exact is None and not ours
                     else (
                         f"{exact.open_at.isoformat()}..{exact.close_at.isoformat()}"
