@@ -102,6 +102,21 @@ def test_dart_receipt_requires_symbol_date_and_normalized_title_match() -> None:
         source_event_id="rcept-1",
     )
     assert naver.match_dart_receipt(disclosure, [dart]) == "rcept-1"
+    nfkc_disclosure = naver.parse_disclosure(
+        "005930",
+        {
+            "disclosureId": "n_nfkc",
+            "title": "ABC",
+            "datetime": "2026-11-13T09:00:00",
+        },
+    )
+    assert (
+        naver.match_dart_receipt(
+            nfkc_disclosure,
+            [SimpleNamespace(**{**dart.__dict__, "title": "ＡＢＣ"})],
+        )
+        == "rcept-1"
+    )
     assert (
         naver.match_dart_receipt(
             naver.parse_disclosure(
