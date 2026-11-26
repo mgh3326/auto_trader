@@ -234,6 +234,11 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # hk 6750 is newer than this reconstructed boundary; its table
+                # must be created by the Alembic chain, not current metadata.
+                await connection.execute(
+                    text("DROP TABLE public.kr_market_close_summaries")
+                )
                 # hk 6674 publication fields are later than this reconstructed
                 # parent boundary; current metadata already contains them.
                 for column in (
