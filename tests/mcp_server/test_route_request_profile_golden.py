@@ -18,6 +18,10 @@ hk 3717 adds ``kis_live_get_daily_orders`` to ``HARNESS_DENIED_TOOLS``; it shows
 up only as one extra ``blocked_actions`` entry plus one ``harness_denied_tools`` key on DEFAULT, which the test undoes
 (``_undo_3717``) rather than regenerating the golden.
 
+hk 6664 adds two DEFAULT-only read tools to ``READ_ONLY_ADVISORY_TOOLS``. They
+show only in ``allowed_tools`` on DEFAULT route responses, which the test undoes
+(``_undo_6664``) rather than regenerating the prior route behavior.
+
 Regenerate only for an intentional, reviewed route change:
 ``ROUTE_REQUEST_GOLDEN_WRITE=1 uv run pytest tests/mcp_server/test_route_request_profile_golden.py -k regenerate``.
 """
@@ -142,6 +146,7 @@ def _undo_1040(
 
 
 _3717_TOOL = "kis_live_get_daily_orders"
+_6664_TOOLS = {"get_kr_flow_signals", "get_kr_investor_rankings"}
 
 
 def _undo_3717(
@@ -162,6 +167,23 @@ def _undo_3717(
                 if _3717_TOOL in response["blocked_actions"]:
                     response["blocked_actions"].remove(_3717_TOOL)
                 response.get("harness_denied_tools", {}).pop(_3717_TOOL, None)
+            undone[profile][case] = response
+    return undone
+
+
+def _undo_6664(
+    responses: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Remove the two intentional DEFAULT-only read-tool route additions."""
+    undone: dict[str, dict[str, dict[str, Any]]] = {}
+    for profile, cases in responses.items():
+        undone[profile] = {}
+        for case, response in cases.items():
+            if _6664_TOOLS & set(response.get("allowed_tools", [])):
+                response = copy.deepcopy(response)
+                response["allowed_tools"] = sorted(
+                    set(response["allowed_tools"]) - _6664_TOOLS
+                )
             undone[profile][case] = response
     return undone
 
@@ -190,6 +212,16 @@ def test_route_request_is_byte_identical_to_main(
     responses = collect_route_responses(monkeypatch, gates_enabled=gates_enabled)
     undone, moved = _undo_1040(responses)
     undone = _undo_3717(undone)
+    kr_tools_seen_on_default: set[str] = set()
+    for profile, cases in responses.items():
+        for case, response in cases.items():
+            allowed = set(response.get("allowed_tools", []))
+            if profile == "default":
+                kr_tools_seen_on_default.update(allowed & _6664_TOOLS)
+            else:
+                assert not allowed & _6664_TOOLS, (profile, case)
+    assert _6664_TOOLS <= kr_tools_seen_on_default
+    undone = _undo_6664(undone)
     # hk 1040: no kr/us route on any profile still blocks the tool, and at
     # least one moved; with the move undone every byte (crypto included) must
     # still be main's.

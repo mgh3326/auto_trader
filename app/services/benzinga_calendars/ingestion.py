@@ -111,8 +111,9 @@ async def ingest_benzinga_category_for_range(
     unchanged — every affected partition is first recorded as failed, so a
     truncated or failed read never looks like an empty day.
     """
-    endpoint_for(category)  # unknown category fails before any DB work
-    all_dates = dates_in_range(from_date, to_date)
+    endpoint = endpoint_for(category)  # unknown category fails before any DB work
+    partition_from = from_date - timedelta(days=endpoint.lookback_days)
+    all_dates = dates_in_range(partition_from, to_date)
     repository = repo
     if repository is None:
         if db is None:
@@ -125,7 +126,7 @@ async def ingest_benzinga_category_for_range(
             source=SOURCE,
             category=category,
             market=MARKET,
-            from_date=from_date,
+            from_date=partition_from,
             to_date=to_date,
         )
     dates_to_process = [d for d in all_dates if d not in succeeded]

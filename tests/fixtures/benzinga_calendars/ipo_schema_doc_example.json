@@ -1,0 +1,50 @@
+{
+  "ipos": [
+    {
+      "currency": "USD",
+      "date": "2024-01-09",
+      "deal_status": "Priced",
+      "description": "",
+      "exchange": "NASDAQ",
+      "id": "604b6d8a36622a000186b793",
+      "initial_filing_date": "",
+      "insider_lockup_date": "",
+      "insider_lockup_days": 180,
+      "ipo_type": "SPAC Unit",
+      "last_yr_income": 0,
+      "last_yr_income_year": 0,
+      "last_yr_revenue": 0,
+      "last_yr_revenue_year": 0,
+      "lead_underwriters": [
+        "Citigroup",
+        "JP Morgan"
+      ],
+      "market_cap_at_offer": 0,
+      "name": "SEP Growth Holdings Corp",
+      "notes": "",
+      "offering_shares": 25000000,
+      "offering_shares_ord_adr": 0,
+      "offering_value": 0,
+      "open_date_verified": false,
+      "ord_shares_out_after_offer": 0,
+      "other_underwriters": [],
+      "price_max": "",
+      "price_min": "",
+      "price_open": "",
+      "price_public_offering": "68.00",
+      "pricing_date": "",
+      "pricing_date_verified": false,
+      "sec_accession_number": "",
+      "sec_filing_url": "",
+      "shares_outstanding": 0,
+      "sic": 0,
+      "spac_converted_to_target": false,
+      "state_location": "",
+      "ticker": "SEPGU",
+      "time": "08:32:58",
+      "underwriter_quiet_expiration_date": "",
+      "underwriter_quiet_expiration_days": 0,
+      "updated": 1767600431
+    }
+  ]
+}

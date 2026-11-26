@@ -210,6 +210,25 @@ async def test_subtitle_for_earnings_uses_eps_actual_and_forecast():
 
 
 @pytest.mark.unit
+def test_earnings_subtitle_selects_current_period_independent_of_value_order():
+    from app.services.market_events.discover_calendar import _format_subtitle
+
+    event = _evt("NVDA", title="NVDA earnings")
+    event.fiscal_year = 2027
+    event.fiscal_quarter = 2
+    event.values = [
+        MarketEventValueResponse(
+            metric_name="eps", period="Q2-2027", actual="2.30", forecast="2.10"
+        ),
+        MarketEventValueResponse(
+            metric_name="eps", period="Q1-2027", actual="1.25", forecast="1.20"
+        ),
+    ]
+
+    assert _format_subtitle(event) == "EPS 2.30 · 예측 2.10"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_release_time_utc_renders_kst_time_label():
     query = AsyncMock()

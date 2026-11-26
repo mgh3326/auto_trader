@@ -68,6 +68,28 @@ def test_short_interest_accepts_symbols():
 
 
 @pytest.mark.unit
+def test_insider_trade_accepts_optional_symbols():
+    ns = cli.parse_args(["--category", "insider_trade", "--date", "2026-11-25"])
+    assert ns.symbols is None
+
+
+@pytest.mark.unit
+def test_new_category_accepts_documented_symbols_and_dry_run():
+    ns = cli.parse_args(
+        [
+            "--category",
+            "insider_trade,analyst_insight",
+            "--date",
+            "2026-11-25",
+            "--symbols",
+            "AAPL",
+        ]
+    )
+    assert ns.categories == ["insider_trade", "analyst_insight"]
+    assert ns.symbols == "AAPL"
+
+
+@pytest.mark.unit
 def test_reversed_range_is_rejected():
     with pytest.raises(SystemExit):
         cli.parse_args(

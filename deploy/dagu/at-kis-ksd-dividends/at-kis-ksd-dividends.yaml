@@ -1,6 +1,15 @@
-# 제안 복사본: 등록되지 않음. 일정 수집은 운영자 판단 후 수동 CLI로 실행한다.
-# KIS KSD API는 실계좌 읽기 전용이며 이 파일은 스케줄 등록이 아니다.
-description: "KIS KSD 배당 일정 수집 제안 (미등록)"
+# 제안 복사본: 등록되지 않음. 레포는 어떤 스케줄러도 등록하지 않는다.
+# KIS KSD API는 실계좌 읽기 전용이다.
+description: "KIS KSD 기업 일정 일일 수집 (미등록 복사본)"
+schedule: "CRON_TZ=UTC 15 21 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
 steps:
-  - name: manual-example
-    command: docker run --rm --init --network host --workdir /app "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_kis_ksd_dividends --from-date 2026-01-01 --to-date 2026-01-31 --dry-run
+  - name: kis-ksd-events
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_kis_ksd_dividends --kinds dividend paidin_capin bonus_issue purreq merger_split rev_split cap_dcrs list_info pub_offer forfeit mand_deposit sharehld_meet --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date +%F) --commit
+    timeout_sec: 900
+    retry_policy:
+      limit: 1
+      interval_sec: 60
