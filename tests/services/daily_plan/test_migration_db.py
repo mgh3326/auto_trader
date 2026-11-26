@@ -62,7 +62,7 @@ async def test_migration_rejects_all_mutations(db_session):
             for sql in (
                 f"UPDATE review.{table} SET id = id WHERE false",
                 f"DELETE FROM review.{table} WHERE false",
-                f"TRUNCATE review.{table}",
+                f"TRUNCATE review.{table} CASCADE",
             ):
                 with pytest.raises(
                     DBAPIError, match="daily plan records are append-only"

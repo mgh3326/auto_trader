@@ -21,6 +21,7 @@ def watch_state(
     carry_count: int,
     carry_max_sessions: int,
     next_session: date | None,
+    session_date: date | None = None,
 ) -> WatchState:
     """Project an expired row into a single next-session reevaluation.
 
@@ -37,4 +38,6 @@ def watch_state(
         return WatchState("closed", carry_count, reason="expired")
     if next_session is None:
         return WatchState("calendar_unknown", carry_count, reason="calendar_unknown")
+    if session_date is not None and session_date > next_session:
+        return WatchState("closed", carry_count, reason="expired")
     return WatchState("queued", carry_count + 1, next_session)

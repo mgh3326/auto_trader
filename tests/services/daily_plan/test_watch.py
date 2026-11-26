@@ -36,3 +36,15 @@ def test_watch_expiry(asof, allowed, count, next_session, expected):
         )
         == expected
     )
+
+
+def test_watch_closes_after_missed_reevaluation_session():
+    assert watch_state(
+        asof=datetime(2026, 12, 1, tzinfo=UTC),
+        valid_until=EXPIRY,
+        carry_allowed=True,
+        carry_count=0,
+        carry_max_sessions=5,
+        next_session=NEXT_SESSION,
+        session_date=date(2026, 12, 1),
+    ) == WatchState("closed", 0, reason="expired")

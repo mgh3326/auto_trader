@@ -115,6 +115,7 @@ tests/scripts/test_binance_trend_tick_export.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_deploy_ci_gate.py
 tests/scripts/test_diagnose_krx_after_market_eligibility.py
+tests/scripts/test_dockerfile_api_runtime_dependencies.py
 tests/scripts/test_expire_kis_mock_rows_by_inference_cli.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_invest_perf_report.py
@@ -196,6 +197,7 @@ tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
+tests/services/daily_plan/test_watch.py
 tests/services/execution_intent_gateway/test_http_contract_fixtures.py
 tests/services/execution_intent_gateway/test_intent_exposure.py
 tests/services/execution_intent_gateway/test_intent_fills.py

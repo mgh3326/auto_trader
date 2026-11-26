@@ -1,5 +1,7 @@
 """Append-only KR daily plan tables (hk 6751)."""
 
+# The fixed DDL creates the append-only function, triggers and conditional grants.
+# expand-contract: contract-step 6751
 from alembic import op
 
 revision = "20261126_hk6751_daily_plan"
@@ -63,8 +65,8 @@ CREATE TABLE review.daily_plan_versions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     CONSTRAINT pk_daily_plan_versions PRIMARY KEY (id),
     CONSTRAINT fk_daily_plan_versions_head_id_daily_plan_input_bundles FOREIGN KEY(head_id, input_bundle_id, input_bundle_sha256) REFERENCES review.daily_plan_input_bundles (head_id, id, sha256),
-    CONSTRAINT uq_daily_plan_versions_head_id UNIQUE (head_id, seq),
-    CONSTRAINT uq_daily_plan_versions_head_id UNIQUE (head_id, idempotency_key),
+    CONSTRAINT uq_daily_plan_versions_head_seq UNIQUE (head_id, seq),
+    CONSTRAINT uq_daily_plan_versions_head_idempotency UNIQUE (head_id, idempotency_key),
     CONSTRAINT ck_daily_plan_versions_kind CHECK (kind IN ('premarket', 'fill', 'event', 'session', 'close')),
     CONSTRAINT ck_daily_plan_versions_published_seq CHECK (seq > 0 AND status = 'PUBLISHED'),
     CONSTRAINT ck_daily_plan_versions_bundle_pair CHECK ((input_bundle_id IS NULL) = (input_bundle_sha256 IS NULL)),

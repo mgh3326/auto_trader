@@ -108,14 +108,24 @@ async def _version_rows(db: AsyncSession, version_id: UUID) -> list[dict]:
 
 
 async def _fold(db: AsyncSession, head_id: UUID, seq: int) -> list[dict]:
-    stmt = (
-        select(rows)
-        .join(versions, rows.c.version_id == versions.c.id)
+    result = await db.execute(
+        select(rows, versions.c.metadata)
+        .select_from(versions.outerjoin(rows, rows.c.version_id == versions.c.id))
         .where(versions.c.head_id == head_id, versions.c.seq <= seq)
         .order_by(versions.c.seq, rows.c.id)
     )
-    result = await db.execute(stmt)
-    return list({row_key(row): dict(row) for row in result.mappings()}.values())
+    folded = {}
+    by_id = {}
+    for record in result.mappings():
+        row = dict(record)
+        replay_ids = row.pop("metadata").get("adoption_replay_rows", [])
+        if row["id"] is not None:
+            by_id[str(row["id"])] = row
+            folded[row_key(row)] = row
+        for replay_id in replay_ids:
+            replay = by_id[replay_id]
+            folded[row_key(replay)] = replay
+    return list(folded.values())
 
 
 def _row_view(row: dict) -> dict:
@@ -228,18 +238,16 @@ async def write_version(
             .one_or_none()
         )
         if bundle is None:
-            bundle_id = None
-            bundle_hash = None
-        else:
-            if (
-                bundle["sha256"] != bundle_hash
-                or bundle_sha256(bundle["body"]) != bundle_hash
-            ):
-                raise ValueError("bundle_hash_mismatch")
-            bundle_closed_at = parse_time(bundle["body"]["bundle_closed_at"])
-            if bundle_closed_at > asof or bundle_closed_at > bundle["created_at"]:
-                raise ValueError("invalid_bundle_time")
-            evidence = {row_key(row): row for row in bundle["body"]["rows"]}
+            raise ValueError("bundle_not_found")
+        if (
+            bundle["sha256"] != bundle_hash
+            or bundle_sha256(bundle["body"]) != bundle_hash
+        ):
+            raise ValueError("bundle_hash_mismatch")
+        bundle_closed_at = parse_time(bundle["body"]["bundle_closed_at"])
+        if bundle_closed_at > asof or bundle_closed_at > bundle["created_at"]:
+            raise ValueError("invalid_bundle_time")
+        evidence = {row_key(row): row for row in bundle["body"]["rows"]}
 
     previous = previous_trading_session("kr", day)
     previous_bounds = regular_session_bounds("kr", previous) if previous else None
@@ -249,6 +257,7 @@ async def write_version(
     if not proposed or len(proposed) > 1000:
         raise ValueError("invalid_row_count")
     previous_plan = None
+    current_rows = None
     prepared = []
     seen = set()
     for raw in proposed:
@@ -295,7 +304,9 @@ async def write_version(
             raise ValueError("duplicate_row_key")
         seen.add(row_key(row))
         carry_from = row.get("carried_from_row_id")
-        if carry_from is not None:
+        if carry_from is not None or (
+            row["action"] == "watch" and row["carry_allowed"]
+        ):
             if previous_plan is None:
                 previous_plan = (
                     await get_plan(
@@ -307,18 +318,34 @@ async def write_version(
                     )
                     or {}
                 )
-            previous_rows = previous_plan.get("rows", [])
             origin = next(
-                (item for item in previous_rows if str(item["id"]) == carry_from), None
+                (
+                    item
+                    for item in previous_plan.get("rows", [])
+                    if row_key(item) == row_key(row)
+                    and item.get("watch_state", {}).get("next_session") == day
+                ),
+                None,
             )
-            if (
+            if carry_from is not None and (
                 origin is None
-                or row_key(origin) != row_key(row)
-                or origin.get("watch_state", {}).get("next_session") != day
+                or str(origin["id"]) != carry_from
                 or row["action"] != "watch"
             ):
                 raise ValueError("invalid_carry_origin")
-            row["carry_count"] = origin["watch_state"]["carry_count"]
+            if origin is not None:
+                row["carried_from_row_id"] = str(origin["id"])
+                row["carry_count"] = origin["watch_state"]["carry_count"]
+        if seq and row["action"] == "watch":
+            if current_rows is None:
+                current_rows = {
+                    row_key(item): item["body"]
+                    for item in await _fold(db, head_id, seq)
+                }
+            prior = current_rows.get(row_key(row), {})
+            if prior.get("carry_count", 0) > row["carry_count"]:
+                row["carry_count"] = prior["carry_count"]
+                row["carried_from_row_id"] = prior["carried_from_row_id"]
         prepared.append(row)
 
     strategy_id = request["strategy_id"]
@@ -448,6 +475,7 @@ async def get_plan(
                     carry_count=view["carry_count"],
                     carry_max_sessions=max_carries,
                     next_session=next_trading_session("kr", day),
+                    session_date=now.astimezone(_KST).date(),
                 )
             )
         if row["forecast_id"]:

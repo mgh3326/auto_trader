@@ -1175,6 +1175,63 @@ async def test_empty_row_list_without_an_error_flag_ends_the_read():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_top_level_empty_array_on_page_zero_succeeds_empty_partition():
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
+
+    client, http = _client([_FakeResponse([])])
+    repo = FakeRepo()
+    day = date(2026, 11, 26)
+    results = await ingest_benzinga_category_for_range(
+        None,
+        "earnings",
+        day,
+        day,
+        client=client,
+        repo=repo,
+        fetched_at=OBSERVED,
+        skip_succeeded=False,
+    )
+
+    assert [(result.status, result.event_count) for result in results] == [
+        ("succeeded", 0)
+    ]
+    assert repo.partitions[("earnings", day)].status == "succeeded"
+    assert repo.partitions[("earnings", day)].event_count == 0
+    assert [request["params"]["page"] for request in http.requests] == [0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_top_level_empty_array_after_data_ends_read_and_keeps_rows():
+    rows = ROWS_BY_CATEGORY["earnings"]
+    client, http = _client([_FakeResponse({"earnings": rows}), _FakeResponse([])])
+
+    fetched = await client.fetch(
+        "earnings", from_date=date(2026, 11, 26), to_date=date(2026, 11, 26)
+    )
+
+    assert fetched == rows
+    assert [request["params"]["page"] for request in http.requests] == [0, 1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [[{"unexpected": "row"}], "not rows", 42, None])
+async def test_nonempty_top_level_list_and_scalars_remain_contract_errors(payload):
+    from app.services.benzinga_http import BenzingaContractError
+
+    client, _ = _client([_FakeResponse(payload)])
+
+    with pytest.raises(BenzingaContractError):
+        await client.fetch(
+            "earnings", from_date=date(2026, 11, 26), to_date=date(2026, 11, 26)
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_symbol_filtered_read_does_not_complete_the_partition():
     """A subset read must not satisfy the partition for other symbols.
 

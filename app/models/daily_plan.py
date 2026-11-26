@@ -103,8 +103,10 @@ versions = _table(
             "review.daily_plan_input_bundles.sha256",
         ],
     ),
-    UniqueConstraint("head_id", "seq"),
-    UniqueConstraint("head_id", "idempotency_key"),
+    UniqueConstraint("head_id", "seq", name="uq_daily_plan_versions_head_seq"),
+    UniqueConstraint(
+        "head_id", "idempotency_key", name="uq_daily_plan_versions_head_idempotency"
+    ),
     _vocabulary("kind", VERSION_KINDS),
     CheckConstraint("seq > 0 AND status = 'PUBLISHED'", name="published_seq"),
     CheckConstraint(

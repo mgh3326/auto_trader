@@ -175,8 +175,10 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   (모든 `errors[].code` 가 `no_data_found`)만 **빈 페이지**로 읽는다 — 0페이지면 빈 날(파티션 `succeeded`,
   `event_count=0`), 데이터 뒤 페이지면 읽기 종료(모은 행 유지)다. 그 밖의 non-200(5xx·429·그 밖의 4xx)·본문
   불일치와 **200 + `ok=false`** 는 실패다: 200 봉투를 빈 날로 읽으면 파티션이 `succeeded` 가 된다. 읽기를 끝내는
-  나머지 형태는 오류 플래그 없는 `{"earnings": []}` 다. 마지막 페이지 다음 요청이 200 빈 배열인지 이 404 인지는
-  `[unverified]` 이며 클라이언트는 둘 다 받는다 — DAG 등록 전에 설계 세션이 실호출 1회로 확인한다.
+  나머지 형태는 오류 플래그 없는 `{"earnings": []}` 다. **200 최상위 빈 배열도 빈 페이지**다: 2026-11-26
+  실호출에서 earnings(11-26·11-25)와 ratings(11-26)가 HTTP 200 `[]`를 반환했으며, earnings는 US 공휴일의
+  빈 날이었다. 따라서 캘린더 응답은 최상위 `[]`도 빈 날 또는 페이지 종료로 읽는다. 비어 있지 않은 최상위
+  배열과 스칼라 본문은 계약 오류다.
 - **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
   꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
 - **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`·

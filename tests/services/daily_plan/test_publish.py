@@ -14,6 +14,7 @@ from app.services.daily_plan.risk import (
     NOT_APPLICABLE_SKIPS,
     UNAVAILABLE_SKIPS,
 )
+from app.services.mandate.account_ref import derive_account_ref
 from app.services.mechanical_loss_cut.rules import SKIP_REASONS
 
 DAY = date(2026, 11, 26)
@@ -100,12 +101,17 @@ async def test_missing_input_publishes_watch_with_exact_price(monkeypatch, row_k
         lambda _, day: (NOW.replace(day=day.day), CLOSE.replace(day=day.day)),
     )
     policy = SimpleNamespace(
-        version="v1", daily_plan=SimpleNamespace(no_add_floor_pct=-8)
+        version="v1",
+        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
     )
     proposal = request()
     if row_kind == "holding":
         proposal["rows"][0].update(
-            row_kind="holding", account_ref="a" * 64, action="add"
+            row_kind="holding",
+            account_ref=derive_account_ref(
+                "kis_mock", "test-account", secret="test-only"
+            ),
+            action="add",
         )
     result = await store.write_version(
         fake_db(current=0),
@@ -248,5 +254,69 @@ async def test_link_confirmation_reads_only_matching_declined_evidence(
     )
     assert all(
         str(call.args[0]).lstrip().startswith("SELECT")
+        for call in db.execute.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_fold_reapplies_adoption_at_replay_version():
+    adopted_id = uuid4()
+    override_id = uuid4()
+    common = {
+        "row_kind": "candidate",
+        "market": "kr",
+        "symbol": "278470",
+        "account_ref": None,
+    }
+    adopted = {**common, "id": adopted_id, "action": "new", "metadata": {}}
+    override = {**common, "id": override_id, "action": "watch", "metadata": {}}
+    replay = {"id": None, "metadata": {"adoption_replay_rows": [str(adopted_id)]}}
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=Values([adopted, override, replay]))
+    )
+    [result] = await store._fold(db, uuid4(), 3)
+    assert result["id"] == adopted_id
+    assert result["action"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_candidate_hold_without_input_publishes_watch():
+    proposal = request()
+    candidate = proposal["rows"][0]
+    candidate.update(action="hold", side=None)
+    for field in ("max_buy_price", "would_be_limit_price", "would_be_quantity"):
+        candidate.pop(field)
+    policy = SimpleNamespace(
+        version="v1",
+        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
+    )
+    result = await store.write_version(
+        fake_db(current=0),
+        day=DAY,
+        request=proposal,
+        now=NOW,
+        policy=policy,
+        policy_hash="hash",
+    )
+    [row] = result["rows"]
+    assert row["action"] == "watch"
+    assert row["not_executable_reason"] == "input_missing"
+    assert row["trigger"] == {"kind": "event", "value": "inputs_refreshed"}
+
+
+@pytest.mark.asyncio
+async def test_missing_bundle_reference_refuses_publication():
+    db = fake_db(current=0)
+    with pytest.raises(ValueError, match="bundle_not_found"):
+        await store.write_version(
+            db,
+            day=DAY,
+            request=request(input_bundle_id=str(uuid4()), input_bundle_sha256="a" * 64),
+            now=NOW,
+            policy=None,
+            policy_hash="hash",
+        )
+    assert all(
+        not isinstance(call.args[0], Insert) or call.args[0].table is not versions
         for call in db.execute.call_args_list
     )

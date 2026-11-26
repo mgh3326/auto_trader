@@ -14,6 +14,22 @@ from .constants import SLL_BUY_DVSN
 _NO_FILL_TERMINALS = {"취소완료": "cancelled", "만료": "expired"}
 
 
+def futures_order_identity(
+    trading_day: object, order_no: object
+) -> tuple[str, str] | None:
+    """Return the exact KST-day/order identity when the broker number is readable."""
+    if (
+        type(trading_day) is not str
+        or re.fullmatch(r"[0-9]{8}", trading_day) is None
+        or type(order_no) is not str
+    ):
+        return None
+    normalized = order_no.strip()
+    if re.fullmatch(r"[0-9]+", normalized) is None:
+        return None
+    return trading_day, normalized.lstrip("0") or "0"
+
+
 @dataclass(frozen=True)
 class TerminalEvidence:
     status: str

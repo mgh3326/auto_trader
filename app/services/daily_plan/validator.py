@@ -179,7 +179,9 @@ def prepare_row(
         raise ValueError("invalid_account_attribution")
     if kind == "candidate" and account_ref is not None:
         raise ValueError("invalid_account_attribution")
-    if account_ref and not re.fullmatch(r"[0-9a-f]{64}", account_ref):
+    if account_ref and not re.fullmatch(
+        r"(?:acct_[0-9a-f]{32}|[0-9a-f]{64})", account_ref
+    ):
         raise ValueError("invalid_account_attribution")
     action = row["action"]
     if action not in ACTIONS or row["action_basis"] not in ACTION_BASES:
@@ -205,7 +207,7 @@ def prepare_row(
             (evidence or {}).get("routable_account_modes", {}).get(would_be_ref)
         )
         if (
-            not re.fullmatch(r"[0-9a-f]{64}", would_be_ref)
+            not re.fullmatch(r"acct_[0-9a-f]{32}", would_be_ref)
             or account_mode not in ACCOUNT_MODES
         ):
             raise ValueError("invalid_account_attribution")
@@ -282,7 +284,16 @@ def prepare_row(
         if name in required
     ):
         reason = "input_stale"
+    if reason is None and any(sources[name].get("unavailable") for name in required):
+        reason = "input_missing"
     if kind == "holding" and evidence is not None:
+        if action in ("add", "trim", "risk_sell") and reason is None:
+            risk_inputs = evidence.get("risk_inputs") or {}
+            if any(
+                "known" not in (risk_inputs.get(field) or {})
+                for field in ("open_sell_quantity", "protected_quantity")
+            ):
+                reason = "input_missing"
         for field, vocabulary in (
             ("account_mode", ACCOUNT_MODES),
             ("account_scope", ACCOUNT_SCOPES),
@@ -353,7 +364,11 @@ def prepare_row(
         if (
             trigger is None
             or not conditions
-            or (kind == "candidate" and row.get("max_buy_price") is None)
+            or (
+                reason is None
+                and kind == "candidate"
+                and row.get("max_buy_price") is None
+            )
         ):
             raise ValueError("watch_conditions_required")
     if type(row.get("carry_allowed", False)) is not bool:
