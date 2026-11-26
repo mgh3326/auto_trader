@@ -417,6 +417,14 @@ class KISClient(BaseKISClient):
             market,
         )
 
+    async def inquire_vi_status(
+        self, code: str, session_date: datetime.date
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.inquire_vi_status(code, session_date)
+
+    async def inquire_member(self, code: str) -> dict[str, Any]:
+        return await self._market_data.inquire_member(code)
+
     async def inquire_time_dailychartprice(
         self,
         code: str,

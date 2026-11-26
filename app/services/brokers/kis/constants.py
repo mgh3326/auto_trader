@@ -42,6 +42,12 @@ DOMESTIC_DAILY_CHART_TR = "FHKST03010100"  # 일봉·주식·실전/모의 공�
 DOMESTIC_SHORT_SELLING_URL = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
 DOMESTIC_SHORT_SELLING_TR = "FHPST04830000"
 
+# Read-only KR flow/event surfaces from the official KIS domestic stock samples.
+DOMESTIC_VI_STATUS_URL = "/uapi/domestic-stock/v1/quotations/inquire-vi-status"
+DOMESTIC_VI_STATUS_TR = "FHPST01390000"
+DOMESTIC_MEMBER_URL = "/uapi/domestic-stock/v1/quotations/inquire-member"
+DOMESTIC_MEMBER_TR = "FHKST01010600"
+
 DOMESTIC_MINUTE_CHART_URL = (
     "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 )

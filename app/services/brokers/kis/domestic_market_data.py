@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -20,6 +21,7 @@ from ._base_market_data import (
     _aggregate_minute_candles_frame,
     _empty_minute_frame,
 )
+from .flow_signals import parse_member_summary, parse_vi_status_rows
 
 
 def _empty_day_frame() -> pd.DataFrame:
@@ -556,6 +558,50 @@ class DomesticMarketDataMixin(MarketDataBase):
             )
 
         return output1, output2
+
+    async def inquire_vi_status(
+        self, code: str, session_date: datetime.date
+    ) -> list[dict[str, Any]]:
+        """Read KIS VI status for one symbol and KST business date (FHPST01390000)."""
+        if not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("code must be a six-digit Korean stock code")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_VI_STATUS_TR,
+            url=self._kis_url(constants.DOMESTIC_VI_STATUS_URL),
+            params={
+                "FID_DIV_CLS_CODE": "0",
+                "FID_COND_SCR_DIV_CODE": "20139",
+                "FID_MRKT_CLS_CODE": "0",
+                "FID_INPUT_ISCD": code,
+                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_INPUT_DATE_1": session_date.strftime("%Y%m%d"),
+                "FID_TRGT_CLS_CODE": "",
+                "FID_TRGT_EXLS_CLS_CODE": "",
+            },
+            api_name="inquire_vi_status",
+        )
+        rows = js.get("output")
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise RuntimeError("Malformed KIS VI status payload: expected output list")
+        return parse_vi_status_rows(rows, symbol=code)
+
+    async def inquire_member(self, code: str) -> dict[str, Any]:
+        """Read current broker/member buy-sell summary (FHKST01010600)."""
+        if not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("code must be a six-digit Korean stock code")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_MEMBER_TR,
+            url=self._kis_url(constants.DOMESTIC_MEMBER_URL),
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": code,
+            },
+            api_name="inquire_member",
+        )
+        output = js.get("output")
+        if not isinstance(output, dict):
+            raise RuntimeError("Malformed KIS member payload: expected output object")
+        return parse_member_summary(output)
 
     async def inquire_investor(
         self,
