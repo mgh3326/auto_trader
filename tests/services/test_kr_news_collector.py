@@ -185,6 +185,20 @@ async def test_mainnews_404_is_source_error_and_stock_source_continues(
     assert stored[0]["title"] == "삼성전자 소식"
 
 
+def test_cli_returns_failure_when_any_source_reports_error(monkeypatch, capsys) -> None:
+    from scripts import collect_kr_news
+
+    def fake_run(coroutine):
+        coroutine.close()
+        return {
+            "sources": [{"source": collector.MAINNEWS_FEED_SOURCE, "status": "error"}]
+        }
+
+    monkeypatch.setattr(collect_kr_news.asyncio, "run", fake_run)
+    assert collect_kr_news.main(["--dry-run"]) == 1
+    assert json.loads(capsys.readouterr().out)["sources"][0]["status"] == "error"
+
+
 class _TransactionSession:
     def __init__(self):
         self.commits = 0
