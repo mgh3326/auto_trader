@@ -171,6 +171,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # hk 6750 is newer than this reconstructed boundary; its table is
+            # present in current metadata but must be created by its migration.
+            await connection.execute(
+                text("DROP TABLE public.kr_market_close_summaries")
+            )
             # hk 6674 publication fields are later than this reconstructed
             # migration boundary; current metadata already contains them.
             for column in (
