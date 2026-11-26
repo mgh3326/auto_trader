@@ -115,6 +115,9 @@ async def _upsert_feed_articles(
 ) -> tuple[int, int]:
     if not items:
         return 0, 0
+    items_by_key: dict[str, FeedArticleInput] = {}
+    candidate_urls: set[str] = set()
+    candidate_prefixes: set[str] = set()
     if canonical_dedupe and market == "kr":
         # Resolve the collector's canonical identity against both the exact
         # incoming URL and the legacy Naver mobile URL before inserting. Keep
@@ -214,7 +217,6 @@ async def _upsert_feed_articles(
         )
         new_articles = len(inserted_rows.all())
     if canonical_dedupe and market == "kr":
-        candidate_urls = set(candidate_urls)
         candidate_urls.update(item.url for item in items)
         lookup_conditions = [NewsArticle.url.in_(candidate_urls)]
         lookup_conditions.extend(
