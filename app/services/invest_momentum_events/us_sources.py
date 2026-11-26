@@ -1,36 +1,12 @@
-"""hk 6510: US intraday movers sources (Alpaca screener, KIS overseas ranking).
+"""Read-only US intraday movers from official broker/vendor ranking APIs.
 
-Two providers, both official REST endpoints. Each served surface says which one
-answered, because the ``surface`` of a run row and of a snapshot row is
-``us:<source>:<session>:<side>``.
-
-* **Alpaca** (``SOURCE_ALPACA``) — the paper-account market-data credentials the
-  manual paper runner already uses (``scripts/mock_data_sources.py``), two GET
-  endpoints on ``https://data.alpaca.markets``:
-
-  - ``/v1beta1/screener/stocks/movers`` — gainers and losers, ``top`` per side.
-    ``change`` / ``percent_change`` are vs the previous regular close.
-    Documented as resetting at the market open ("Until then, it shows the
-    previous market day's movers", docs.alpaca.markets/us/reference/movers-1,
-    read 2026-11-25), so a pre-open capture states the provider's own
-    ``last_updated`` in ``raw_payload`` instead of claiming it is pre-market
-    movement.
-  - ``/v1beta1/screener/stocks/most-actives`` — volume and trade count for the
-    current trading day (SIP).
-
-  Neither payload carries a dollar volume or an asset class; those are NULL with
-  a closed reason in ``field_reasons``, never 0.
-
-* **KIS** (``SOURCE_KIS``) — 해외주식 상승률/하락률, TR ``HHDFS76290000``,
-  path ``/uapi/overseas-stock/v1/ranking/updown-rate`` (official sample
-  ``examples_llm/overseas_stock/updown_rate/updown_rate.py``; parameters EXCD,
-  NDAY, GUBN, VOL_RANG, AUTH, KEYB; output2 row: ``symb``, ``name``, ``last``,
-  ``sign``, ``diff``, ``rate``, ``tvol``, ``rank``). NDAY=0 (당일), GUBN=1 상승 /
-  0 하락. One call per exchange (NAS/NYS/AMS); the row keeps its exchange in
-  ``market_type``. The payload carries no dollar volume.
-
-Nothing here writes, orders or touches the screener pick log, and the module
-imports no order/ledger/approval code.
+Each source and side gets its own ``us:<source>:<session>:<side>`` surface:
+Alpaca movers/most-actives, the existing KIS up/down ranking, four additional
+KIS overseas rankings, Toss rankings, and the trial Benzinga market movers API.
+KIS source and endpoint details live in ``KIS_RANKINGS`` and the market-data
+client; the Toss and Benzinga request boundaries are in their respective
+readers below. No API here sends orders or writes the screener pick log, and
+this module imports no order, ledger, or approval code.
 """
 
 from __future__ import annotations
@@ -53,7 +29,22 @@ from app.services.invest_momentum_events.intraday import (
 
 SOURCE_ALPACA = "alpaca_screener"
 SOURCE_KIS = "kis_overseas_ranking"
-SOURCES = (SOURCE_ALPACA, SOURCE_KIS)
+SOURCE_KIS_PRICE_FLUCT = "kis_overseas_price_fluct"
+SOURCE_KIS_VOLUME_SURGE = "kis_overseas_volume_surge"
+SOURCE_KIS_NEW_HIGHLOW = "kis_overseas_new_highlow"
+SOURCE_KIS_VOLUME_POWER = "kis_overseas_volume_power"
+SOURCE_TOSS = "toss_rankings"
+SOURCE_BENZINGA = "benzinga_market_movers"
+SOURCES = (
+    SOURCE_ALPACA,
+    SOURCE_KIS,
+    SOURCE_KIS_PRICE_FLUCT,
+    SOURCE_KIS_VOLUME_SURGE,
+    SOURCE_KIS_NEW_HIGHLOW,
+    SOURCE_KIS_VOLUME_POWER,
+    SOURCE_TOSS,
+    SOURCE_BENZINGA,
+)
 
 #: Alpaca market-data host (the trading ``paper-api`` host is not used here).
 ALPACA_DATA_HOST = "https://data.alpaca.markets"
@@ -76,6 +67,41 @@ KIS_NDAY_TODAY = "0"
 KIS_VOL_RANG = "1"
 #: A single page per exchange, so a surface never paginates mid-run.
 KIS_MAX_ROWS_PER_EXCHANGE = 30
+
+KIS_RANKINGS = {
+    SOURCE_KIS_PRICE_FLUCT: (
+        "/uapi/overseas-stock/v1/ranking/price-fluct",
+        "HHDFS76260000",
+    ),
+    SOURCE_KIS_VOLUME_SURGE: (
+        "/uapi/overseas-stock/v1/ranking/volume-surge",
+        "HHDFS76270000",
+    ),
+    SOURCE_KIS_NEW_HIGHLOW: (
+        "/uapi/overseas-stock/v1/ranking/new-highlow",
+        "HHDFS76300000",
+    ),
+    SOURCE_KIS_VOLUME_POWER: (
+        "/uapi/overseas-stock/v1/ranking/volume-power",
+        "HHDFS76280000",
+    ),
+}
+KIS_RANKING_LIMIT = 30
+
+TOSS_RANKING_AMOUNT = "MARKET_TRADING_AMOUNT"
+TOSS_RANKING_VOLUME = "MARKET_TRADING_VOLUME"
+TOSS_RANKING_GAINERS = "TOP_GAINERS"
+TOSS_RANKING_LOSERS = "TOP_LOSERS"
+TOSS_RANKINGS = (
+    TOSS_RANKING_AMOUNT,
+    TOSS_RANKING_VOLUME,
+    TOSS_RANKING_GAINERS,
+    TOSS_RANKING_LOSERS,
+)
+
+BENZINGA_API_HOST = "https://api.benzinga.com"
+BENZINGA_MOVERS_PATH = "/api/v1/market/movers"
+BENZINGA_API_KEY_ENV = "BENZINGA_API_KEY"
 
 #: Closed reasons for a NULL field. ``not_in_payload`` = the provider does not
 #: send this field at all; ``unavailable`` = sent but unreadable; the asset-type
@@ -151,6 +177,22 @@ class KisOverseasRankingReader(Protocol):
         vol_rang: str = KIS_VOL_RANG,
         keyb: str = "",
     ) -> Mapping[str, Any]: ...
+
+    async def inquire_overseas_mover_ranking(
+        self, source: str, exchange_code: str, *, side: str
+    ) -> Mapping[str, Any]: ...
+
+
+class TossRankingReader(Protocol):
+    async def rankings(
+        self,
+        *,
+        ranking_type: str,
+        market_country: str,
+        duration: str,
+        count: int = 100,
+        exclude_investment_caution: bool = False,
+    ) -> Any: ...
 
 
 # ------------------------------------------------------------------- credentials
@@ -238,6 +280,40 @@ class AlpacaScreenerClient:
         self, *, top: int = ALPACA_TOP_ACTIVES
     ) -> Mapping[str, Any]:
         return await self._get(ALPACA_MOST_ACTIVES_PATH, {"top": max(int(top), 1)})
+
+
+class BenzingaMarketMoversClient:
+    """Fixed-host GET reader; the trial key is sent only as query token."""
+
+    def __init__(self, api_key: str, *, client: httpx.AsyncClient | None = None):
+        self._token = _credential(api_key, BENZINGA_API_KEY_ENV)
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(
+            base_url=BENZINGA_API_HOST,
+            headers={"Accept": "application/json"},
+            follow_redirects=False,
+        )
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def market_movers(self) -> Mapping[str, Any]:
+        response = await self._client.get(
+            BENZINGA_MOVERS_PATH, params={"token": self._token}
+        )
+        if response.is_redirect:
+            raise ValueError("redirect refused")
+        response.raise_for_status()
+        if (
+            response.headers.get("content-type", "").split(";")[0].strip()
+            != "application/json"
+        ):
+            raise ValueError("non-json response")
+        payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise ValueError("non-object response")
+        return payload
 
 
 # --------------------------------------------------------------------- parsing
@@ -482,6 +558,285 @@ def classify_kis_updown(payload: object, exchange: str) -> SurfaceOutcome:
     if rows:
         return SurfaceOutcome(STATUS_OK, None, tuple(rows))
     if items == []:
+        return SurfaceOutcome("empty", "no_rows")
+    return SurfaceOutcome(STATUS_ERROR, "unparseable")
+
+
+def _first(row: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def classify_kis_mover_ranking(
+    payload: object, exchange: str, *, source: str, side: str
+) -> SurfaceOutcome:
+    """Normalize a KIS overseas ranking response (official output2 arrays)."""
+    if not isinstance(payload, Mapping):
+        return SurfaceOutcome(STATUS_ERROR, "bad_response")
+    items = payload.get("output2")
+    if not isinstance(items, list):
+        return SurfaceOutcome(STATUS_ERROR, "unparseable")
+    summary = payload.get("output1")
+    response_meta = {
+        "stat": summary.get("stat") if isinstance(summary, Mapping) else None,
+        "zdiv": summary.get("zdiv") if isinstance(summary, Mapping) else None,
+        "exchange": exchange,
+    }
+
+    def build(item: Any, position: int) -> UsRow | None:
+        if not isinstance(item, Mapping):
+            return None
+        symbol = normalize_us_symbol(
+            _first(item, "symb", "ticker", "symbol", "stck_shrn_iscd")
+        )
+        if symbol is None:
+            return None
+        rank = _int(_first(item, "rank", "data_rank", "rnkg")) or position
+        price = _decimal(_first(item, "last", "ovrs_nmix_prpr", "stck_prpr", "price"))
+        volume = _int(_first(item, "tvol", "acml_vol", "volume", "cntg_vol"))
+        change_amount = _decimal(_first(item, "diff", "prdy_vrss", "change"))
+        change_rate = _decimal(
+            _first(item, "rate", "prdy_ctrt", "change_rate", "changeRate")
+        )
+        trade_value, basis = _dollar_volume(
+            price,
+            volume,
+            _decimal(
+                _first(item, "tamt", "acml_tr_pbmn", "trading_amount", "trade_value")
+            ),
+        )
+        reasons: dict[str, str] = {}
+        for key, value in (
+            ("price", price),
+            ("change_amount", change_amount),
+            ("change_rate", change_rate),
+            ("volume", volume),
+            ("trade_value", trade_value),
+        ):
+            if value is None:
+                reasons[key] = (
+                    REASON_UNAVAILABLE
+                    if key != "trade_value"
+                    else REASON_NOT_IN_PAYLOAD
+                )
+        name_value = _first(item, "name", "hts_kor_isnm", "ovrs_item_name")
+        name = str(name_value).strip() if name_value is not None else None
+        if not name:
+            name = None
+            reasons["name"] = REASON_UNAVAILABLE
+        return UsRow(
+            source=source,
+            symbol=symbol,
+            rank=rank,
+            market_type=exchange,
+            name=name,
+            price=price,
+            change_amount=change_amount,
+            change_rate=change_rate,
+            volume=volume,
+            trade_value=trade_value,
+            trade_value_basis=basis,
+            reasons=reasons,
+            raw={"row": dict(item), "response": response_meta},
+        )
+
+    rows, _ = _rows_from_list(items, build=build, limit=KIS_RANKING_LIMIT)
+    if rows:
+        return SurfaceOutcome(STATUS_OK, None, tuple(rows))
+    if items == []:
+        return SurfaceOutcome("empty", "no_rows")
+    return SurfaceOutcome(STATUS_ERROR, "unparseable")
+
+
+def _toss_items(value: Any) -> list[Any]:
+    """Accept the broker's DTO list or a recorded raw rankings envelope."""
+    if hasattr(value, "rankings"):
+        return list(value.rankings)
+    if isinstance(value, Mapping):
+        items = value.get("rankings")
+        if items is None and isinstance(value.get("response"), Mapping):
+            items = value["response"].get("rankings")
+        if isinstance(items, list):
+            return items
+    raise ValueError("unparseable Toss rankings")
+
+
+def _toss_value(row: Any, key: str, nested: str | None = None) -> Any:
+    if isinstance(row, Mapping):
+        value = row.get(key)
+        if nested and isinstance(value, Mapping):
+            return value.get(nested)
+        return value
+    value = getattr(row, key, None)
+    return getattr(value, nested, None) if nested else value
+
+
+def classify_toss_rankings(
+    payload: object, *, side: str, volume_payload: object | None = None
+) -> SurfaceOutcome:
+    """Normalize Toss market-wide amount/volume or rate ranking DTOs."""
+    try:
+        items = _toss_items(payload)
+        volume_by_symbol = {}
+        if volume_payload is not None:
+            for item in _toss_items(volume_payload):
+                symbol = normalize_us_symbol(_toss_value(item, "symbol"))
+                if symbol:
+                    volume = _toss_value(item, "trading_volume")
+                    volume_by_symbol[symbol] = (
+                        volume
+                        if volume is not None
+                        else _toss_value(item, "tradingVolume")
+                    )
+        rows = []
+        for position, item in enumerate(items, 1):
+            symbol = normalize_us_symbol(_toss_value(item, "symbol"))
+            if symbol is None:
+                continue
+            rank = _int(_toss_value(item, "rank")) or position
+            price = _decimal(
+                _toss_value(item, "price", "last_price")
+                or _toss_value(item, "price", "lastPrice")
+            )
+            change_rate = _decimal(
+                _toss_value(item, "price", "change_rate")
+                if _toss_value(item, "price", "change_rate") is not None
+                else _toss_value(item, "price", "changeRate")
+            )
+            amount_value = _toss_value(item, "trading_amount")
+            if amount_value is None:
+                amount_value = _toss_value(item, "tradingAmount")
+            volume_value = volume_by_symbol.get(symbol)
+            if volume_value is None:
+                volume_value = _toss_value(item, "trading_volume")
+            if volume_value is None:
+                volume_value = _toss_value(item, "tradingVolume")
+            amount = _decimal(amount_value)
+            volume = _int(volume_value)
+            reasons = {}
+            for key, val in (
+                ("price", price),
+                ("change_rate", change_rate),
+                ("volume", volume),
+                ("trade_value", amount),
+            ):
+                if val is None:
+                    reasons[key] = REASON_UNAVAILABLE
+            raw_row = (
+                dict(item)
+                if isinstance(item, Mapping)
+                else {
+                    "rank": rank,
+                    "symbol": symbol,
+                    "price": {
+                        "lastPrice": str(price) if price is not None else None,
+                        "changeRate": str(change_rate)
+                        if change_rate is not None
+                        else None,
+                    },
+                    "tradingVolume": str(volume) if volume is not None else None,
+                    "tradingAmount": str(amount) if amount is not None else None,
+                }
+            )
+            rows.append(
+                UsRow(
+                    source=SOURCE_TOSS,
+                    symbol=symbol,
+                    rank=rank,
+                    market_type="US",
+                    price=price,
+                    change_rate=change_rate,
+                    volume=volume,
+                    trade_value=amount,
+                    trade_value_basis=BASIS_PROVIDER if amount is not None else None,
+                    reasons=reasons,
+                    raw={"row": raw_row, "ranking_type": side},
+                )
+            )
+    except (ValueError, TypeError):
+        return SurfaceOutcome(STATUS_ERROR, "unparseable")
+    if rows:
+        return SurfaceOutcome(STATUS_OK, None, tuple(rows))
+    if not items:
+        return SurfaceOutcome("empty", "no_rows")
+    return SurfaceOutcome(STATUS_ERROR, "unparseable")
+
+
+def classify_benzinga_movers(payload: object, side: str) -> SurfaceOutcome:
+    """Normalize Benzinga's ``result.gainers`` / ``result.losers`` envelope."""
+    if not isinstance(payload, Mapping) or not isinstance(
+        payload.get("result"), Mapping
+    ):
+        return SurfaceOutcome(STATUS_ERROR, "bad_response")
+    result = payload["result"]
+    items = result.get("gainers" if side == "up" else "losers")
+    if not isinstance(items, list):
+        return SurfaceOutcome(STATUS_ERROR, "unparseable")
+
+    def build(item: Any, position: int) -> UsRow | None:
+        if not isinstance(item, Mapping):
+            return None
+        symbol = normalize_us_symbol(_first(item, "symbol", "ticker"))
+        if symbol is None:
+            return None
+        price = _decimal(_first(item, "price", "last", "lastPrice"))
+        change_amount = _decimal(
+            _first(item, "change", "changeAmount", "change_amount")
+        )
+        change_rate = _decimal(
+            _first(
+                item,
+                "changePercent",
+                "change_percentage",
+                "percent_change",
+                "changeRate",
+            )
+        )
+        volume = _int(_first(item, "volume", "sharesTraded", "tradingVolume"))
+        amount = _decimal(_first(item, "tradeValue", "tradingAmount", "dollarVolume"))
+        amount, basis = _dollar_volume(price, volume, amount)
+        reasons = {}
+        for key, value in (
+            ("price", price),
+            ("change_amount", change_amount),
+            ("change_rate", change_rate),
+            ("volume", volume),
+            ("trade_value", amount),
+        ):
+            if value is None:
+                reasons[key] = (
+                    REASON_UNAVAILABLE
+                    if key != "trade_value"
+                    else REASON_NOT_IN_PAYLOAD
+                )
+        name = _first(item, "name", "companyName")
+        return UsRow(
+            source=SOURCE_BENZINGA,
+            symbol=symbol,
+            rank=_int(_first(item, "rank")) or position,
+            market_type="US",
+            name=str(name) if name else None,
+            price=price,
+            change_amount=change_amount,
+            change_rate=change_rate,
+            volume=volume,
+            trade_value=amount,
+            trade_value_basis=basis,
+            reasons=reasons,
+            raw={
+                "row": dict(item),
+                "fromDate": result.get("fromDate"),
+                "toDate": result.get("toDate"),
+            },
+        )
+
+    rows, _ = _rows_from_list(items, build=build, limit=50)
+    if rows:
+        return SurfaceOutcome(STATUS_OK, None, tuple(rows))
+    if not items:
         return SurfaceOutcome("empty", "no_rows")
     return SurfaceOutcome(STATUS_ERROR, "unparseable")
 

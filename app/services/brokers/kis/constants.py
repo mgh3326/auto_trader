@@ -115,6 +115,24 @@ OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 # examples_llm/overseas_stock/updown_rate/updown_rate.py (read 2026-11-25).
 OVERSEAS_UPDOWN_RATE_URL = "/uapi/overseas-stock/v1/ranking/updown-rate"
 OVERSEAS_UPDOWN_RATE_TR = "HHDFS76290000"
+OVERSEAS_MOVER_RANKINGS = {
+    "kis_overseas_price_fluct": (
+        "/uapi/overseas-stock/v1/ranking/price-fluct",
+        "HHDFS76260000",
+    ),
+    "kis_overseas_volume_surge": (
+        "/uapi/overseas-stock/v1/ranking/volume-surge",
+        "HHDFS76270000",
+    ),
+    "kis_overseas_new_highlow": (
+        "/uapi/overseas-stock/v1/ranking/new-highlow",
+        "HHDFS76300000",
+    ),
+    "kis_overseas_volume_power": (
+        "/uapi/overseas-stock/v1/ranking/volume-power",
+        "HHDFS76280000",
+    ),
+}
 
 # Overseas Stock - Balance & Orders
 OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"

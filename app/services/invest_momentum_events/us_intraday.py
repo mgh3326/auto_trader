@@ -72,14 +72,28 @@ from app.services.invest_momentum_events.us_sources import (
     REASON_SOURCE_UNAVAILABLE,
     REASON_UNAVAILABLE,
     SOURCE_ALPACA,
+    SOURCE_BENZINGA,
     SOURCE_KIS,
+    SOURCE_KIS_NEW_HIGHLOW,
+    SOURCE_KIS_PRICE_FLUCT,
+    SOURCE_KIS_VOLUME_POWER,
+    SOURCE_KIS_VOLUME_SURGE,
+    SOURCE_TOSS,
+    TOSS_RANKING_AMOUNT,
+    TOSS_RANKING_GAINERS,
+    TOSS_RANKING_LOSERS,
+    TOSS_RANKING_VOLUME,
     AlpacaScreenerReader,
     KisOverseasRankingReader,
     SymbolMaster,
+    TossRankingReader,
     UsRow,
     classify_alpaca_most_actives,
     classify_alpaca_movers,
+    classify_benzinga_movers,
+    classify_kis_mover_ranking,
     classify_kis_updown,
+    classify_toss_rankings,
     derive_asset_type,
 )
 from app.services.research_candles.session_segment import (
@@ -338,10 +352,139 @@ async def _fetch_kis_side(
     return SurfaceOutcome(STATUS_EMPTY, "no_rows"), received
 
 
+async def _fetch_kis_ranking(
+    kis: KisOverseasRankingReader | None,
+    *,
+    source: str,
+    side: str,
+    clock: Callable[[], dt.datetime],
+) -> tuple[SurfaceOutcome, dt.datetime]:
+    if kis is None:
+        return SurfaceOutcome(STATUS_ERROR, REASON_SOURCE_UNAVAILABLE), clock()
+    received = clock()
+    try:
+        outcomes = []
+        for exchange in KIS_EXCHANGES:
+            payload = await kis.inquire_overseas_mover_ranking(
+                source, exchange, side=side
+            )
+            outcomes.append(
+                classify_kis_mover_ranking(payload, exchange, source=source, side=side)
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "us movers kis ranking failed source=%s side=%s error=%s",
+            source,
+            side,
+            type(exc).__name__,
+        )
+        return SurfaceOutcome(STATUS_ERROR, classify_error(exc)), clock()
+    failed = [item for item in outcomes if item.status == STATUS_ERROR]
+    if failed:
+        return SurfaceOutcome(STATUS_ERROR, failed[0].reason), received
+    rows = tuple(row for item in outcomes for row in item.rows)
+    return (
+        SurfaceOutcome(STATUS_OK, None, rows)
+        if rows
+        else SurfaceOutcome(STATUS_EMPTY, "no_rows")
+    ), received
+
+
+async def _fetch_toss(
+    toss: TossRankingReader | None, *, clock: Callable[[], dt.datetime]
+):
+    result = []
+    for side, ranking_type in (
+        (SIDE_UP, TOSS_RANKING_GAINERS),
+        (SIDE_DOWN, TOSS_RANKING_LOSERS),
+    ):
+        if toss is None:
+            result.append(
+                (side, SurfaceOutcome(STATUS_ERROR, REASON_SOURCE_UNAVAILABLE), clock())
+            )
+            continue
+        try:
+            payload = await toss.rankings(
+                ranking_type=ranking_type, market_country="US", duration="1d", count=50
+            )
+            outcome = classify_toss_rankings(payload, side=side)
+            result.append((side, outcome, clock()))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "us movers toss ranking failed side=%s error=%s",
+                side,
+                type(exc).__name__,
+            )
+            result.append(
+                (side, SurfaceOutcome(STATUS_ERROR, classify_error(exc)), clock())
+            )
+    if toss is None:
+        result.append(
+            (
+                SIDE_ACTIVE,
+                SurfaceOutcome(STATUS_ERROR, REASON_SOURCE_UNAVAILABLE),
+                clock(),
+            )
+        )
+    else:
+        try:
+            amount = await toss.rankings(
+                ranking_type=TOSS_RANKING_AMOUNT,
+                market_country="US",
+                duration="realtime",
+                count=50,
+            )
+            volume = await toss.rankings(
+                ranking_type=TOSS_RANKING_VOLUME,
+                market_country="US",
+                duration="realtime",
+                count=50,
+            )
+            result.append(
+                (
+                    SIDE_ACTIVE,
+                    classify_toss_rankings(
+                        amount, side=TOSS_RANKING_AMOUNT, volume_payload=volume
+                    ),
+                    clock(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "us movers toss activity ranking failed error=%s", type(exc).__name__
+            )
+            result.append(
+                (
+                    SIDE_ACTIVE,
+                    SurfaceOutcome(STATUS_ERROR, classify_error(exc)),
+                    clock(),
+                )
+            )
+    return result
+
+
+async def _fetch_benzinga(benzinga: Any | None, *, clock: Callable[[], dt.datetime]):
+    result = []
+    if benzinga is None:
+        unavailable = SurfaceOutcome(STATUS_ERROR, REASON_SOURCE_UNAVAILABLE)
+        return [(side, unavailable, clock()) for side in (SIDE_UP, SIDE_DOWN)]
+    try:
+        payload = await benzinga.market_movers()
+        for side in (SIDE_UP, SIDE_DOWN):
+            result.append((side, classify_benzinga_movers(payload, side), clock()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("us movers Benzinga fetch failed error=%s", type(exc).__name__)
+        error = SurfaceOutcome(STATUS_ERROR, classify_error(exc))
+        return [(side, error, clock()) for side in (SIDE_UP, SIDE_DOWN)]
+    return result
+
+
 async def _collect_surfaces(
     *,
     alpaca: AlpacaScreenerReader | None,
     kis: KisOverseasRankingReader | None,
+    toss: TossRankingReader | None,
+    benzinga: Any | None,
     clock: Callable[[], dt.datetime],
     top_movers: int,
     top_actives: int,
@@ -355,6 +498,21 @@ async def _collect_surfaces(
     for side in (SIDE_UP, SIDE_DOWN):
         outcome, received = await _fetch_kis_side(kis, side=side, clock=clock)
         surfaces.append((SOURCE_KIS, side, outcome, received, None))
+    for source, sides in (
+        (SOURCE_KIS_PRICE_FLUCT, (SIDE_UP, SIDE_DOWN)),
+        (SOURCE_KIS_VOLUME_SURGE, (SIDE_ACTIVE,)),
+        (SOURCE_KIS_NEW_HIGHLOW, (SIDE_UP, SIDE_DOWN)),
+        (SOURCE_KIS_VOLUME_POWER, (SIDE_ACTIVE,)),
+    ):
+        for side in sides:
+            outcome, received = await _fetch_kis_ranking(
+                kis, source=source, side=side, clock=clock
+            )
+            surfaces.append((source, side, outcome, received, None))
+    for side, outcome, received in await _fetch_toss(toss, clock=clock):
+        surfaces.append((SOURCE_TOSS, side, outcome, received, None))
+    for side, outcome, received in await _fetch_benzinga(benzinga, clock=clock):
+        surfaces.append((SOURCE_BENZINGA, side, outcome, received, None))
     return surfaces
 
 
@@ -365,6 +523,8 @@ async def run_us_intraday_movers(
     *,
     alpaca: AlpacaScreenerReader | None,
     kis: KisOverseasRankingReader | None,
+    toss: TossRankingReader | None = None,
+    benzinga: Any | None = None,
     session: AsyncSession | None,
     now: dt.datetime,
     commit: bool,
@@ -391,6 +551,8 @@ async def run_us_intraday_movers(
     collected = await _collect_surfaces(
         alpaca=alpaca,
         kis=kis,
+        toss=toss,
+        benzinga=benzinga,
         clock=tick,
         top_movers=top_movers,
         top_actives=top_actives,

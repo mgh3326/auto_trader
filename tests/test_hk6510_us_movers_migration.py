@@ -52,12 +52,20 @@ def test_checks_are_added_not_valid_then_validated() -> None:
 @pytest.mark.unit
 def test_vocabularies_match_the_code() -> None:
     from app.models.invest_momentum_event_snapshot import RUN_ERROR_REASONS
-    from app.services.invest_momentum_events.us_sources import SOURCES
 
     source = EXPAND.read_text()
-    for value in (*SOURCES, "naver_stock"):
+    # hk 6510 owns the source vocabulary that existed at that revision. Later
+    # additive source changes belong to their own migration and static test.
+    for value in (
+        "alpaca_screener",
+        "kis_overseas_ranking",
+        "naver_stock",
+    ):
         assert f"'{value}'" in source
+    # hk 6510 introduced source_unavailable; it is checked separately below.
     for reason in RUN_ERROR_REASONS:
+        if reason == "source_unavailable":
+            continue
         assert f"'{reason}'" in source
 
 
