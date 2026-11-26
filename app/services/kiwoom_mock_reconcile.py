@@ -423,9 +423,9 @@ async def _journal_buy_delta(
 
 #: Manual-review reasons for a fill whose cumulative trade row was not written
 #: (hk 5642): the row belongs to another trading day, or the day is unreadable.
-#: Both make the omission visible in ``last_reconcile_detail`` and put the row
-#: back in the journal-recovery scan instead of leaving it silent.
-TRADE_ROW_DAY_CONFLICT = "trade_row_day_conflict"
+#: Both make the omission visible in ``last_reconcile_detail`` independently of
+#: any unmatched sell remainder.
+TRADE_ROW_OTHER_TRADING_DAY = "trade_row_other_trading_day"
 TRADE_ROW_DAY_UNAVAILABLE = "trade_row_day_unavailable"
 
 
@@ -509,7 +509,7 @@ async def _journal_unjournaled(
             trade_day=trade_day,
         )
         if trade_id is None:
-            trade_review = TRADE_ROW_DAY_CONFLICT
+            trade_review = TRADE_ROW_OTHER_TRADING_DAY
     details: dict[str, Any] = {"trade_id": trade_id}
     manual_review_reason: str | None = None
     if booking.side == "buy":
@@ -548,14 +548,6 @@ async def _journal_unjournaled(
         journaled_now = unjournaled - unmatched
         if unmatched > 0:
             manual_review_reason = f"unmatched_sell_quantity:{unmatched}"
-    if trade_review is not None:
-        # The cumulative trade row was not written: keep it reviewable next to
-        # any sell remainder instead of silently advancing the journal only.
-        manual_review_reason = (
-            f"{manual_review_reason};{trade_review}"
-            if manual_review_reason
-            else trade_review
-        )
     new_qty = booking.journaled_qty + journaled_now
     new_avg = (
         (booking.journaled_qty * booking.journaled_avg + journaled_now * price)
@@ -570,12 +562,15 @@ async def _journal_unjournaled(
         journaled_qty=new_qty,
         journaled_avg=new_avg,
         manual_review_reason=manual_review_reason,
+        trade_row_reason=trade_review,
         commit=False,
     )
     details["journaled_qty"] = str(new_qty)
     details["journaled_avg"] = str(new_avg)
     if manual_review_reason is not None:
         details["manual_review"] = manual_review_reason
+    if trade_review is not None:
+        details["trade_row_unrecorded"] = trade_review
     return details
 
 
@@ -980,7 +975,7 @@ async def _reconcile_orders(
         outcome["delta_qty"] = str(booking.delta_qty)
         outcome["booked_cumulative_qty"] = str(booking.cumulative_qty)
         outcome["journal"] = journal
-        if journal.get("manual_review"):
+        if journal.get("manual_review") or journal.get("trade_row_unrecorded"):
             outcome["requires_manual_review"] = True
         if booking.execution_ledger_row_id is not None:
             outcome["execution_ledger_row_id"] = booking.execution_ledger_row_id
@@ -1034,13 +1029,14 @@ async def _reconcile_orders(
             outcome["requires_manual_review"] = True
             return
         outcome["journal"] = details
+        if details.get("manual_review") or details.get("trade_row_unrecorded"):
+            outcome["requires_manual_review"] = True
         if details.get("skipped"):
             if not keep_action:
                 outcome["action"] = "noop_already_journaled"
         elif details.get("manual_review"):
             if not keep_action:
                 outcome["action"] = "journal_unmatched"
-            outcome["requires_manual_review"] = True
         elif not keep_action:
             outcome["action"] = "journaled"
 

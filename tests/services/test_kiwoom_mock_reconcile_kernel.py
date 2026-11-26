@@ -41,6 +41,7 @@ from app.models.trading import InstrumentType
 from app.services import kiwoom_mock_reconcile as kernel
 from app.services.kiwoom_mock_order_ledger_service import (
     FillBooking,
+    KiwoomMockOrderLedgerService,
     KiwoomMockTransitionRefused,
     journaled_progress,
     unmatched_sell_since,
@@ -223,6 +224,9 @@ class FakeSession:
         return None
 
     async def rollback(self) -> None:
+        return None
+
+    async def refresh(self, obj: Any) -> None:
         return None
 
 
@@ -473,6 +477,7 @@ class FakeService:
         journaled_qty=None,
         journaled_avg=None,
         manual_review_reason=None,
+        trade_row_reason=None,
         commit=True,
     ):
         row = self._row(ledger_id)
@@ -496,6 +501,8 @@ class FakeService:
         elif journaled_qty is not None:
             detail.pop("journal_manual_review", None)
             detail.pop("unmatched_sell_since", None)
+        if trade_row_reason is not None:
+            detail.setdefault("trade_row_unrecorded", trade_row_reason)
         row.last_reconcile_detail = detail
         self.writes.append(
             ("journal_progress", ledger_id, str(journaled_qty), manual_review_reason)
@@ -1543,13 +1550,6 @@ async def test_a_refused_trade_row_is_flagged_for_review(
     monkeypatch: pytest.MonkeyPatch,
     fake_ledger: Any,
 ) -> None:
-    """hk 5642 review r4690545271: the omitted trade row must not be silent.
-
-    The order number's ``review.trades`` row belongs to another trading day, so
-    the trade write is refused. The fill is still journaled, but the row keeps
-    a manual-review marker so the missing trade row is visible (and the row is
-    a journal-recovery candidate) instead of being journaled and forgotten.
-    """
     from app.mcp_server.tooling import order_journal
 
     FakeSession.journals = []
@@ -1568,11 +1568,13 @@ async def test_a_refused_trade_row_is_flagged_for_review(
     details = await kernel._journal_unjournaled(db, service, booking)
 
     assert details["trade_id"] is None
-    assert details["manual_review"] == kernel.TRADE_ROW_DAY_CONFLICT
+    assert details["trade_row_unrecorded"] == "trade_row_other_trading_day"
+    assert "manual_review" not in details
     assert (
-        row.last_reconcile_detail["journal_manual_review"]
-        == kernel.TRADE_ROW_DAY_CONFLICT
+        row.last_reconcile_detail["trade_row_unrecorded"]
+        == details["trade_row_unrecorded"]
     )
+    assert journaled_progress(row)[0] == Decimal("4")
 
 
 async def test_an_unreadable_day_writes_no_trade_row_and_flags_itself(
@@ -1597,8 +1599,83 @@ async def test_an_unreadable_day_writes_no_trade_row_and_flags_itself(
     details = await kernel._journal_unjournaled(db, service, booking)
 
     assert details["trade_id"] is None
-    assert details["manual_review"] == kernel.TRADE_ROW_DAY_UNAVAILABLE
+    assert details["trade_row_unrecorded"] == "trade_row_day_unavailable"
     assert (
-        row.last_reconcile_detail["journal_manual_review"]
-        == kernel.TRADE_ROW_DAY_UNAVAILABLE
+        row.last_reconcile_detail["trade_row_unrecorded"]
+        == details["trade_row_unrecorded"]
+    )
+    assert journaled_progress(row)[0] == Decimal("4")
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+async def test_trade_row_omission_flags_review_without_sell_shortfall(
+    fake_ledger, monkeypatch: pytest.MonkeyPatch, recovery: bool
+) -> None:
+    from app.mcp_server.tooling import order_journal
+
+    async def refused_trade(*args, **kwargs):
+        return None
+
+    for name in FULL_GATE_ENVS:
+        monkeypatch.setenv(name, "true")
+    monkeypatch.setattr(order_journal, "_record_trade_for_fill", refused_trade)
+    row = _row(1)
+    if recovery:
+        row.status = "filled"
+        row.filled_qty = Decimal("10")
+        row.avg_fill_price = Decimal("70000")
+        row.last_reconcile_detail = {"journaled_qty": "0"}
+    FakeService.rows = [row]
+    FakeService.total = 1
+
+    result = await _run(
+        _partial_reader(quantity=10, average_price=70000),
+        dry_run=False,
+        terminal_only=False,
+    )
+
+    outcome = result["reconciled"][0]
+    assert outcome["action"] == ("journaled" if recovery else "booked_filled")
+    assert outcome["requires_manual_review"] is True
+    assert outcome["journal"]["trade_row_unrecorded"] == "trade_row_other_trading_day"
+    assert journaled_progress(row)[0] == Decimal("10")
+
+
+async def test_trade_row_marker_survives_sell_recovery_and_terminal_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _row(1, status="partial", side="sell", filled_qty=4, avg_fill_price=70000)
+    row.reconcile_attempts = 0
+    service = KiwoomMockOrderLedgerService(FakeSession())
+
+    async def lock_row(ledger_id, **kwargs):
+        assert ledger_id == row.id
+        return row
+
+    monkeypatch.setattr(service, "_lock_row", lock_row)
+    await service.record_journal_progress(
+        ledger_id=row.id,
+        journaled_qty=Decimal("2"),
+        manual_review_reason="unmatched_sell_quantity:2",
+        trade_row_reason="trade_row_other_trading_day",
+    )
+    assert unmatched_sell_since(row) is not None
+    await service.record_journal_progress(
+        ledger_id=row.id,
+        journaled_qty=Decimal("4"),
+    )
+    assert unmatched_sell_since(row) is None
+    assert "journal_manual_review" not in row.last_reconcile_detail
+    await service.record_journal_progress(
+        ledger_id=row.id, trade_row_reason="trade_row_day_unavailable"
+    )
+    await service.close_filled_as_terminal(
+        ledger_id=row.id,
+        status="cancelled",
+        reason="broker_cancel_confirmed",
+        filled_quantity=4,
+    )
+    assert (
+        row.last_reconcile_detail["trade_row_unrecorded"]
+        == "trade_row_other_trading_day"
     )

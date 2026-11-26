@@ -35,6 +35,7 @@ from app.mcp_server.tooling.proposal_rung_convergence import (
 from app.mcp_server.tooling.toss_live_evidence import (
     TossBatchEvidenceSource,
     TossEvidenceAdapter,
+    TossFillEvidence,
     classify_toss_evidence_boundary,
 )
 from app.models.review import TossLiveOrderLedger
@@ -292,7 +293,7 @@ async def _converge_toss_proposal_rung(
     ledger_status: str,
     filled_qty: Decimal | None,
 ) -> dict[str, Any] | None:
-    """Project committed Toss evidence in an independent committed session."""
+    """Project confirmed Toss evidence in an independent committed session."""
     from app.services.order_proposals import OrderProposalsService
 
     if ledger_status not in {
@@ -601,7 +602,19 @@ async def _reconcile_one_toss_row(
         base["requires_session_reconcile"] = True
         return base
 
-    if not dry_run and project_proposal_rungs:
+    if dry_run:
+        if delta <= 0:
+            base["action"] = "noop_already_booked"
+            if evidence.expired_at is not None:
+                base["expired_at"] = evidence.expired_at.isoformat()
+            return base
+        base["action"] = "would_book"
+        return base
+
+    # The broker confirmed the fill independently of local booking. Record it
+    # before acquiring the ledger row lock or publishing a terminal ledger
+    # state that another proposal writer could act on.
+    if project_proposal_rungs:
         projection_status = (
             evidence.local_status
             if evidence.local_status in {"cancelled", "expired"}
@@ -615,14 +628,18 @@ async def _reconcile_one_toss_row(
         if converged is not None:
             base["proposal_rung"] = converged
 
-    if dry_run:
-        if delta <= 0:
-            base["action"] = "noop_already_booked"
-            if evidence.expired_at is not None:
-                base["expired_at"] = evidence.expired_at.isoformat()
-            return base
-        base["action"] = "would_book"
-        return base
+    return await _book_toss_fill(row, evidence, base)
+
+
+async def _book_toss_fill(
+    row: TossLiveOrderLedger,
+    evidence: TossFillEvidence,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    broker_cum = evidence.filled_qty
+    already = row.filled_qty or Decimal("0")
+    delta = broker_cum - already
+    avg_price = evidence.avg_price or Decimal("0")
 
     # ROB-568 — US FX spot capture.  A network read, so it happens before the
     # row lock.  Committed filled_qty only grows, so a delta that is positive
@@ -1020,7 +1037,14 @@ async def toss_reconcile_orders_impl(
     # ROB-1284: rung-driven guaranteed-convergence sweep (untruncated,
     # evidence-first, no broker call) — closes the rungs the ledger-driven
     # repair above structurally cannot reach.
-    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
+    # Auto-veto already holds proposal locks across its rungs. A sweep in a
+    # separate session could wait on those same locks after an earlier rung
+    # committed its terminal Toss ledger evidence.
+    rung_sweep = (
+        await run_resting_rung_sweep(dry_run=dry_run)
+        if project_proposal_rungs
+        else {"ran": False}
+    )
 
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
