@@ -1,11 +1,12 @@
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
 
 from app.services import yahoo_ohlcv_cache
+from app.services.brokers.yahoo import client as yahoo_client
 from tests.ohlcv_cache_fakes import FakeRedis
 
 
@@ -23,6 +24,58 @@ def _build_daily_frame(end_date: date, rows: int) -> pd.DataFrame:
             "value": [10000.0 + idx for idx in range(rows)],
         }
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_external_providers")
+async def test_fetch_ohlcv_populates_cache_through_keyword_callback(monkeypatch):
+    fake_redis = FakeRedis()
+    target_closed_date = date(2026, 11, 25)
+    raw_frame = _build_daily_frame(target_closed_date, 5)
+    monkeypatch.setattr(
+        yahoo_ohlcv_cache,
+        "_get_redis_client",
+        AsyncMock(return_value=fake_redis),
+    )
+    monkeypatch.setattr(
+        yahoo_ohlcv_cache,
+        "get_last_closed_bucket_nyse",
+        lambda period, now=None: target_closed_date,
+    )
+    monkeypatch.setattr(
+        yahoo_ohlcv_cache.settings,
+        "yahoo_ohlcv_cache_enabled",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        yahoo_ohlcv_cache.settings,
+        "yahoo_ohlcv_cache_max_days",
+        400,
+        raising=False,
+    )
+    raw_fetcher = AsyncMock(return_value=raw_frame)
+    monkeypatch.setattr(yahoo_client, "_fetch_ohlcv_raw", raw_fetcher)
+    monkeypatch.setattr(
+        yahoo_client.settings,
+        "yahoo_ohlcv_cache_enabled",
+        True,
+        raising=False,
+    )
+
+    result = await yahoo_client.fetch_ohlcv("AAPL", days=5)
+
+    assert len(result) == 5
+    raw_fetcher.assert_awaited_once()
+    assert raw_fetcher.await_args.kwargs == {
+        "ticker": "AAPL",
+        "days": 5,
+        "period": "day",
+        "end_date": datetime.combine(target_closed_date, time(23, 59, 59)),
+    }
+    dates_key, rows_key, _, _ = yahoo_ohlcv_cache._keys("AAPL", "day")
+    assert await fake_redis.zcard(dates_key) == 5
+    assert len(fake_redis.hashes[rows_key]) == 5
 
 
 @pytest.fixture(autouse=True)

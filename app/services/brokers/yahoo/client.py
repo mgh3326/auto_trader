@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import urllib.error
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ from app.core.symbol import to_yahoo_symbol
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
 logger = logging.getLogger(__name__)
+_YFINANCE_LOCK = threading.Lock()
 
 
 def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,11 +94,12 @@ def yfinance_tracing_session() -> Iterator[Any]:
     Keep this wrapper local so tests and retry paths that monkeypatch
     build_yfinance_tracing_session still exercise fresh-session behavior.
     """
-    session = build_yfinance_tracing_session()
-    try:
-        yield session
-    finally:
-        close_yfinance_session(session)
+    with _YFINANCE_LOCK:
+        session = build_yfinance_tracing_session()
+        try:
+            yield session
+        finally:
+            close_yfinance_session(session)
 
 
 def _is_crumb_auth_error(exc: BaseException) -> bool:
@@ -113,6 +116,7 @@ async def fetch_ohlcv(
     end_date: datetime | None = None,
     *,
     prepost: bool = False,
+    empty_ok: bool = False,
 ) -> pd.DataFrame:
     normalized_period = str(period or "").strip().lower()
 
@@ -120,7 +124,8 @@ async def fetch_ohlcv(
     # cache is built from regular-session-only data (_filter_closed_buckets_nyse),
     # so mixing in extended-hours candles would silently corrupt it.
     if (
-        not prepost
+        not empty_ok
+        and not prepost
         and normalized_period in {"day", "week", "month"}
         and settings.yahoo_ohlcv_cache_enabled
     ):
@@ -130,7 +135,7 @@ async def fetch_ohlcv(
             ticker,
             count=days,
             period=normalized_period,
-            raw_fetcher=_fetch_ohlcv_raw,
+            raw_fetcher=_fetch_cache_raw,
             end_date=end_date,
         )
         if cached is not None:
@@ -142,10 +147,20 @@ async def fetch_ohlcv(
         period=normalized_period,
         end_date=end_date,
         prepost=prepost,
+        empty_ok=empty_ok,
     )
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
     return raw
+
+
+async def _fetch_cache_raw(
+    *, ticker: str, days: int, period: str, end_date: datetime | None
+) -> pd.DataFrame:
+    """Fetch cache data with the cache flow's keyword-only callback contract."""
+    return await _fetch_ohlcv_raw(
+        ticker=ticker, days=days, period=period, end_date=end_date
+    )
 
 
 async def fetch_52w_high_date(ticker: str) -> date | None:
@@ -173,6 +188,7 @@ async def _fetch_ohlcv_raw(
     end_date: datetime | None = None,
     *,
     prepost: bool = False,
+    empty_ok: bool = False,
 ) -> pd.DataFrame:
     period_map = {"day": "1d", "week": "1wk", "month": "1mo", "1h": "60m"}
     if period not in period_map:
@@ -192,17 +208,21 @@ async def _fetch_ohlcv_raw(
     last_exc: BaseException | None = None
     for attempt in range(_CRUMB_RETRY_MAX + 1):
         try:
-            with yfinance_tracing_session() as session:
-                df = yf.download(
-                    yahoo_ticker,
-                    start=start,
-                    end=end,
-                    interval=period_map[period],
-                    progress=False,
-                    auto_adjust=False,
-                    session=session,
-                    **extra_kwargs,
-                )
+
+            def _download() -> pd.DataFrame:
+                with yfinance_tracing_session() as session:
+                    return yf.download(
+                        yahoo_ticker,
+                        start=start,
+                        end=end,
+                        interval=period_map[period],
+                        progress=False,
+                        auto_adjust=False,
+                        session=session,
+                        **extra_kwargs,
+                    )
+
+            df = await asyncio.to_thread(_download)
             df = _flatten_cols(df).reset_index(names="date")
             df = (
                 df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
@@ -211,6 +231,8 @@ async def _fetch_ohlcv_raw(
                 .reset_index(drop=True)
             )
             if df.empty:
+                if empty_ok:
+                    return df
                 raise ValueError(f"{ticker} OHLCV not found")
             return df
         except Exception as exc:

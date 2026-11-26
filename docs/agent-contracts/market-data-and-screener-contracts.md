@@ -5,6 +5,7 @@
 ## 목차
 
 - KR/US Category Normalization & Lazy Fill (ROB-512)
+- Save+ 뉴스 그림자 비교 소스·개인 관심도 스냅샷 (hk 6694)
 - Market Events Ingestion Foundation (ROB-128)
 - Benzinga calendar ingestion (hk 6513)
 - KIS KSD dividend calendar (hk 6583)
@@ -293,6 +294,12 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 - **런북**: `docs/runbooks/research-reports-integration.md`
 
 **안전 경계**: 풀 PDF 본문 / 전체 추출 텍스트는 스키마 단계에서 거부 (`full_text_exported`/`pdf_body_excluded=true` 페이로드는 reject). `summary_text` 1000자, `detail.excerpt` 500자로 트렁케이트. 모든 DB 쓰기는 `ResearchReportsRepository` 경유. 브로커/주문/감시 mutation 없음.
+
+**네이버 리서치 공개 JSON 수집 (hk 6681)**: `app/services/research_reports/naver_client.py`는 `https://stock.naver.com/api/stockSecurity/researches/v2`의 `market`·`company`·`industry`·`invest`·`economy` 목록, `/{category}/{nid}` 상세, `/company/by-items`만 읽는다. `httpx` timeout, redirect 거부, 고정 User-Agent, 요청 간 최소 0.5초 간격 및 응답 shape 검증을 적용한다. API 목록의 `index`는 offset이며 `page`를 사용하지 않는다. `content` HTML은 텍스트로 바꿔 `summary_text` 1000자·`detail.excerpt` 500자로 제한한다. PDF는 상세의 `attachUrl`·`attachName` 참조만 보존하며 내려받거나 본문을 읽지 않는다.
+
+`app/services/research_reports/naver_collector.py`는 카테고리마다 최신 offset 0부터 읽어 이미 저장된 `source_report_id`(NID)를 만나면 해당 카테고리 폴링을 멈춘다. 다섯 카테고리는 독립 실행되어 한 카테고리 실패를 기록하고 나머지는 계속 수집한다. NID는 `source_report_id`와 dedup key에 보존한다. `writeDate`는 `published_at_text`에 `YYYY-MM-DD` 정밀도로만 기록하고 `published_at` 시각은 만들지 않는다. 목표주가는 정확한 decimal 문자열로 심볼 후보 메타데이터에 기록하고(종목 코드가 없는 보고서는 허용된 report detail metadata에 둔다), 값이 없으면 NULL과 `not_provided` 사유를 보존한다. 첫 수신 시각 전용 열은 현재 모델에 없으며 이 작업에서 추가하지 않는다.
+
+수동 실행은 `python -m scripts.ingest_naver_research --dry-run`(DB 세션 없이 미리보기) 또는 `--commit`(기존 ingestion service 경유)이다. `deploy/dagu/at-naver-research/at-naver-research.yaml`은 07:00–20:00 KST 30분 간격 실행을 기술한 미등록 복사본이다. 스케줄러 연결은 없다.
 
 ### Invest Screener US Activation (ROB-204)
 
@@ -792,6 +799,7 @@ Internet Archive 캡처(2008→) + 자체 일별 스냅샷으로 상장 구간 �
 - **Dagu 제안 (배치 1, hk 3848)**: `deploy/dagu/at-batch/*.yaml` 11개 — Prefect 배치 11개의 이전 후보. 🔴 **등록 안 됨**: 등록·Prefect pause 는 `docs/runbooks/dagu-batch1-cutover.md` 를 잡별로 따를 때만, 8·10·11번은 hk 3846/3845 수정 배포 후. 정적 검사 `tests/scripts/test_dagu_at_batch_dags.py`.
 - **Dagu 배치 2 (hk 4896)**: `deploy/dagu/at-batch2/*.yaml` 4개 — at-scheduler(TaskIQ) 은퇴로 체결 원장 대사(`scripts.reconcile_execution_ledger`, KIS·Upbit 독립 두 단계, 한쪽이 실패하면 run 실패, 30분마다, `EXECUTION_LEDGER_COMMIT_ENABLED` 가 참일 때만 `--commit`)와 종목 목록 3종(`scripts.sync_{kr,us,upbit}_symbol_universe`, 태스크와 같은 시각)을 옮긴 것. 운영자 승인(2026-11-17 채팅 "새로 만들 Dagu 잡의 스케줄 등록 승인", hk:doc consult/2026-11-17/at-go-1117-fable52)으로 OCI Dagu 에 **등록됨**. 레포 파일은 사본이며 어떤 배포 단계도 적용하지 않는다. 명령 안에서 셸 변수를 쓰지 않는다(Dagu 가 `${VAR}` 를 먼저 펼칠 수 있다). `docker run --init` 으로 시간 초과 시 컨테이너도 멈춘다.
   KR 일봉 동기화(`at-batch2-daily-candles-kr`)는 아직 거래 중인 KST 당일 봉을 쓰지 않는다: `DailyCandleSyncService._sync_kr` 가 KIS·Toss 양쪽 행에서 KST 봉 날짜가 실행 날짜(`today_kst()`)와 같거나 늦은 행을 버리고 실행마다 한 번 로그를 남긴다. 16:30 KST 실행은 과거 날짜를 다시 쓰고, 화–토 07:10 KST 추가 실행이 전일 정산 봉을 확정한다. US·crypto 경로는 바뀌지 않았다. 이 컷오프는 `sync_one` 을 쓰는 모든 KR 경로(예약 실행·`scripts/backfill_daily_candles.py`·`forecast_service._backfill_daily_candles`)에 적용되며, 같은 날 해소는 다음 날 확정 봉까지 미뤄진다(운영자 결정 hk 6245 댓글).
+- **US 일봉 동기화 source lanes (hk 6634)**: `DailyCandleSyncService`는 US target을 KIS와 Toss lane에 교대로 배정하고, lane별 동시성 및 요청 예산을 따로 둔다(KIS `HHDFS76240000` 최대 10/s, Toss `MARKET_DATA_CHART` 최대 5/s). Toss 공식 그룹 상한은 20/s이며 이 로컬 예산은 hk 6655/6669의 cross-process Redis 예산 전까지 공유 chart caller와 함께 보수적으로 유지한다. 한 symbol은 배정된 lane, 아직 시도하지 않은 다른 lanes, Yahoo 순으로 진행하며 source lane은 symbol당 한 번만 호출한다. Yahoo 동기 호출은 event loop 밖에서 실행하고, 빈 응답은 오류가 아니라 no-data로 처리한다. 한 symbol에 저장하는 봉은 선택된 단일 source만 사용하며 Toss 저장 source는 기존 `toss_fallback`을 쓴다. 조회는 병렬로 하되 `DailyCandlesRepository`의 US upsert는 chunk 단위로 직렬화하고 commit한다. KR·crypto 흐름은 이 병렬화에 포함되지 않는다.
 - 기존 `*_candles_1d`·`*_symbol_universe`·뉴스 테이블은 서빙용으로 유지하되 덮어쓰기라 학습 입력으로 쓰지 않는다.
 
 ### KR 부스팅 베이스라인·동결 대조군 (ROB-1441)
@@ -1098,6 +1106,36 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - `captured_at`은 수집기의 UTC 관측 시각이다. 해당 시각의 첫 캡처를 단일 트랜잭션으로 기록하고 재전송의 삽입 건수는 모두 0이다. 상승·하락 스냅샷은 각각 `us:benzinga_pro:<session>:<side>`에 기록하며 각 방향에 run을 하나 남긴다. 빈 배열은 `empty/no_rows`, 행이 있는 배열은 `ok`다. 쓰기 실패는 캡처 전체를 롤백한다. `no_session_price`는 `order_type=excluded`와 원본 사유로 남긴다.
 - 속보는 `market_events`에 `source=benzinga_pro`, `category=breaking_news`로 기록한다. 제공자 ID 단위로 최초 행을 유지하며 `first_received_at`은 캡처 시각이다. 이 캡처의 DB 행이 있으면 마이그레이션 다운그레이드가 중단된다.
 - `SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED`(기본 false)는 US 분봉 수집 대상 승격에만 적용된다. 켜면 제외 행을 뺀 Benzinga Pro movers가 기존 점수 규칙에 들어간다.
+
+### Save+ 뉴스 그림자 비교 소스·개인 관심도 스냅샷 (hk 6694)
+
+`scripts/benzinga_news_shadow.py` 는 `--saveticker` 가 있을 때만 Save+ 의 공개 앱 백엔드
+`https://api.prod.fivelines.co.kr` 를 읽고 기존 외부 JSONL 에 기록한다. DB 저장·`get_news` 노출·인증
+endpoint·`www.saveticker.com`/Cloudflare·SSE·캘린더 ingest 는 범위 밖이다. Save+ 백엔드는 비공식이고
+변경될 수 있다. 목록 `/api/news` 는 1–10 페이지, 페이지당 1–100건으로 제한하며 정렬은 최신순이다.
+`/api/news/top-stories` 도 함께 읽는다. 요청은 timeout, redirect 금지, 고정 User-Agent 와 요청 간
+최소 0.5초 간격을 쓴다. 출력 폴더의 bounded seen-ID sidecar 에서 이전 Save+ ID 를 처음 만나면
+뉴스 페이지 탐색을 멈춘다. 이미 본 경계 항목도 해당 poll 의 attention 스냅샷에는 남긴다.
+
+- 목록 응답은 `news_list` 배열이어야 한다. 항목은 유효한 `id`, `title`, timezone 포함 `created_at` 을
+  요구한다. `created_at` 원문과 UTC 파싱값을 모두 보존한다. 잘못된 항목은 버리고 `malformed_count` 를
+  남기며, 알 수 없는 제공자 필드는 `raw_item` 에 보존한다. 요청 실패는 `poll_status/status=error` 와
+  예외 클래스만 기록하고 종료 코드를 실패로 만든다. 다른 뉴스 소스 polling 은 계속한다 — 오류를 0건으로
+  숨기지 않는다.
+- 심볼은 fixture 의 `tickers[].symbol` 만 사용하고 `app/core/symbol.py::to_db_symbol` 로 정규화한다.
+  미국 티커는 `NVDA` 같은 그대로의 심볼, 한국 종목/ETF 표기는 캡처에서 관측된 `0256C0.KR` 처럼
+  `.KR` 접미를 보존하며 DB 구분자 `.` 을 쓴다. 폴링 대상과 일치하는 ticker 마다 기사 행을 하나 쓴다.
+  미일치 기사도 `query_symbol=null` 로 한 번 기록한다.
+- `record_type=attention` 은 수집된 각 provider ID 당 poll 별 하나다: `observed_at`, 조회·댓글 수,
+  전체 like/vote stats 와 정수 count, top-story 여부, 라벨, ticker 를 저장한다. 한 기사가 여러 폴링 심볼에
+  일치해도 attention 은 중복 쓰지 않는다.
+- summary 는 Save+ 커버리지와 첫 관측 순서를 별도 `saveticker` 블록에 포함한다. 한국어 번역 제목은
+  정규화 제목 기준으로 Save+ 내부에서만 중복을 비교한다. 다른 소스와의 headline overlap 은 제목을
+  비교하지 않고 ticker 교집합 + provider `created_at` 차이 10분 이내로 판정한다. 이 값은 순차 요청의
+  관측 신호이지 정밀 지연 측정이 아니다.
+- `deploy/dagu/at-news-shadow/` 의 Benzinga/Finnhub/KIS 주기는 기존 ET 30분으로 유지한다.
+  Save+ 3분 주기는 별도 `deploy/dagu/at-saveticker-shadow/` 미등록 복사본에만 둔다.
+  주기 등록·DB 적재는 별도 승인 없이는 하지 않는다.
 
 ### KIS KSD 기업 일정 (hk 6583, hk 6662)
 

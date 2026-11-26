@@ -394,7 +394,7 @@ async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
         horizon_bars=1,
     )
 
-    assert result.fallback_used is True
+    assert result.fallback_used is False  # Toss was this symbol's assigned lane
     assert upserted_rows[0].source == "toss_fallback"
 
 
@@ -726,14 +726,14 @@ async def test_pool_and_invalidated_connection_errors_abort_the_job(
 
     repo = _repo_with_session()
     target_market = MarketKey.KR if market == "kr" else MarketKey.US
+    db_error = infra_error()
     svc = DailyCandleSyncService(
         repository=repo,
-        kis_kr_fetcher=AsyncMock(),
-        kis_us_fetcher=AsyncMock(),
+        kis_kr_fetcher=AsyncMock(side_effect=db_error if market == "kr" else None),
+        kis_us_fetcher=AsyncMock(side_effect=db_error if market == "us" else None),
         yahoo_us_fetcher=AsyncMock(),
         upbit_crypto_fetcher=AsyncMock(),
     )
-    svc.sync_one = AsyncMock(side_effect=infra_error())
     svc._resolve_universe = AsyncMock(
         return_value=[
             SyncTarget(market=target_market, symbol="A", partition="KRX"),
@@ -744,9 +744,37 @@ async def test_pool_and_invalidated_connection_errors_abort_the_job(
     with pytest.raises(Exception) as raised:
         await svc.sync_market_universe(market=market, horizon_bars=1)
 
-    assert type(raised.value) is type(infra_error())
-    assert svc.sync_one.await_count == 1
+    assert type(raised.value) is type(db_error)
     repo.session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kr_database_error_stops_after_first_symbol() -> None:
+    """The US lane rewrite keeps the existing sequential KR failure boundary."""
+    from sqlalchemy.exc import OperationalError
+
+    repo = _repo_with_session()
+    service = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+    )
+    service.sync_one = AsyncMock(
+        side_effect=OperationalError("SELECT 1", {}, Exception("connection lost"))
+    )
+    service._resolve_universe = AsyncMock(
+        return_value=[
+            SyncTarget(market=MarketKey.KR, symbol="A", partition="KRX"),
+            SyncTarget(market=MarketKey.KR, symbol="B", partition="KRX"),
+        ]
+    )
+
+    with pytest.raises(OperationalError):
+        await service.sync_market_universe(market="kr", horizon_bars=1)
+
+    assert service.sync_one.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -941,3 +969,29 @@ async def test_kr_run_logs_dropped_in_progress_count_once_per_run(caplog):
     ]
     assert len(dropped_logs) == 1
     assert "dropped 2 in-progress bar(s)" in dropped_logs[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_default_service_constructs_toss_client_only_on_first_fetch(monkeypatch):
+    from app.core import db
+    from app.core.config import settings
+    from app.services.brokers.kis import client as kis_client_module
+    from app.services.brokers.toss import client as toss_client_module
+    from app.services.daily_candles.sync_service import _build_default_service
+
+    session = MagicMock()
+    session.close = AsyncMock()
+    kis = MagicMock()
+    kis.close = AsyncMock()
+    factory = MagicMock(side_effect=RuntimeError("invalid Toss settings"))
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(kis_client_module, "KISClient", lambda: kis)
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(toss_client_module.TossReadClient, "from_settings", factory)
+
+    service = await _build_default_service()
+
+    factory.assert_not_called()
+    await service.close()
+    session.close.assert_awaited_once()
+    kis.close.assert_awaited_once()

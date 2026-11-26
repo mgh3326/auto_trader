@@ -202,7 +202,13 @@ class TossReadClient:
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
 
-        async def send() -> tuple[httpx.Response, TossRateLimitHeaders]:
+        async def send(
+            *, acquire_rate_limit: bool = True
+        ) -> tuple[httpx.Response, TossRateLimitHeaders]:
+            # Retries consume provider capacity too; charge every HTTP attempt
+            # through the same group limiter before any pre-send hook or send.
+            if acquire_rate_limit:
+                await self._rate_limiter.acquire(group)
             if pre_send_hook is not None:
                 # The hook sees the account this very request carries (hk 3795 I15).
                 account_token = PRE_SEND_ACCOUNT.set(
@@ -221,7 +227,7 @@ class TossReadClient:
             return response, rate_limit_headers
 
         try:
-            response, _rate_limit_headers = await send()
+            response, _rate_limit_headers = await send(acquire_rate_limit=False)
         except httpx.HTTPError as exc:
             await self._publish_error(
                 status_code=None,
@@ -257,12 +263,13 @@ class TossReadClient:
                 exc.envelope.code in _TOKEN_CODES
                 or _should_retry_get_non_json_auth_error(method, exc)
             ):
+                await self._rate_limiter.acquire(group)
                 token = await self._token_manager.get_access_token(
                     force_reissue=True, failed_token=token
                 )
                 headers["Authorization"] = f"Bearer {token}"
                 try:
-                    retry, _rate_limit_headers = await send()
+                    retry, _rate_limit_headers = await send(acquire_rate_limit=False)
                 except httpx.HTTPError as retry_exc:
                     await self._publish_error(
                         status_code=None,

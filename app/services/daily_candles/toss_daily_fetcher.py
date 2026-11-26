@@ -64,12 +64,17 @@ async def fetch_kr_daily_toss(
     return _to_daily_frame(raw)
 
 
-async def fetch_daily_toss_unclamped(*, symbol: str, n: int) -> pd.DataFrame:
-    """Fetch daily candles from Toss using a settings-configured client."""
-    from app.services.brokers.toss.client import TossReadClient
+async def fetch_daily_toss_unclamped(
+    *, symbol: str, n: int, client: _TossDailyClient | None = None
+) -> pd.DataFrame:
+    """Fetch daily candles from Toss, optionally reusing a run-owned client."""
+    owned_client = client is None
+    if client is None:
+        from app.services.brokers.toss.client import TossReadClient
 
-    client = TossReadClient.from_settings()
+        client = TossReadClient.from_settings()
     try:
         return await fetch_kr_daily_toss(client=client, symbol=symbol, n=n)
     finally:
-        await client.aclose()
+        if owned_client:
+            await client.aclose()  # type: ignore[attr-defined]

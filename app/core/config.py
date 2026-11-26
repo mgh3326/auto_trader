@@ -68,6 +68,12 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 1,
         "period": 0.2,
     },
+    # US daily sync is intentionally held below the KIS app-key ceiling so
+    # serving traffic and other jobs retain headroom.
+    "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice": {
+        "rate": 10,
+        "period": 1.0,
+    },
     # hk 6661 news shadow: headline reads, one call per pass (brknews) or per
     # symbol (overseas/domestic news). Low rate keeps them far under the shared
     # appkey quota used by the trading paths.
