@@ -6,12 +6,15 @@ import datetime
 import logging
 import math
 import re
-from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.core.market import market_instrument_type
+from app.core.price_rounding import (
+    round_price_for_market,
+    to_float,
+    to_optional_float,
+)
 from app.core.symbol import to_db_symbol
-from app.core.upbit_tick import upbit_krw_tick
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
@@ -227,15 +230,6 @@ def normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def to_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if value in (None, ""):
-            return default
-        return float(value)
-    except Exception:
-        return default
-
-
 def _to_optional_float(value: Any) -> float | None:
     """Convert value to float; return None for None, empty string, or NaN."""
     if value is None or value == "":
@@ -265,15 +259,6 @@ def _to_optional_int(value: Any) -> int | None:
         return None
 
 
-def to_optional_float(value: Any) -> float | None:
-    try:
-        if value in (None, ""):
-            return None
-        return float(value)
-    except Exception:
-        return None
-
-
 def to_optional_int(value: Any) -> int | None:
     try:
         if value in (None, ""):
@@ -290,32 +275,6 @@ def to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
-
-
-#: Markets whose prices snap to the Upbit KRW order tick. Every other market
-#: (equity_kr, equity_us, None) keeps the historical two-decimal rounding.
-_TICK_PRICED_MARKETS = frozenset({"crypto"})
-
-
-def round_price_for_market(value: float, market_type: str | None) -> float:
-    """Round a price to the precision its instrument actually trades at.
-
-    Crypto (Upbit KRW) prices snap to the Upbit order tick
-    (``app.core.upbit_tick``), so sub-0.01 coins such as KRW-XEC keep distinct
-    levels instead of collapsing to 0.0/0.01. KR and US keep ``round(value, 2)``,
-    which is already at or finer than their tick. ``None`` means the equity
-    path. Percentages and indicator values (RSI, ADX, distance_pct) must keep
-    their own 2-decimal rounding and must not use this helper.
-    """
-    if market_type not in _TICK_PRICED_MARKETS:
-        return round(value, 2)
-    price = float(value)
-    if not math.isfinite(price) or price <= 0:
-        return price
-    exact = Decimal(repr(price))
-    tick = upbit_krw_tick(exact)
-    snapped = (exact / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
-    return float(snapped)
 
 
 # ---------------------------------------------------------------------------
@@ -872,6 +831,7 @@ __all__ = [
     "normalize_value",
     "normalize_rows",
     # Type conversion
+    "round_price_for_market",
     "to_float",
     "to_optional_float",
     "to_optional_int",
