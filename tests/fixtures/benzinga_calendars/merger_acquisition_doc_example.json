@@ -1,0 +1,27 @@
+{
+  "ma": [
+    {
+      "acquirer_cusip": "233377407",
+      "acquirer_exchange": "NASDAQ",
+      "acquirer_isin": "US2333774071",
+      "acquirer_name": "DXP Enterprises",
+      "acquirer_ticker": "DXPE",
+      "currency": "USD",
+      "date": "2026-01-05",
+      "date_completed": "2026-01-05",
+      "date_expected": "",
+      "deal_payment_type": "",
+      "deal_size": "",
+      "deal_status": "Completed",
+      "deal_terms_extra": "Terms of the transaction are not being disclosed.",
+      "deal_type": "Acquisition",
+      "id": "695bc1b183cac20001bec44e",
+      "importance": 2,
+      "notes": "",
+      "target_exchange": "",
+      "target_name": "PREMIERflow, LLC",
+      "target_ticker": "",
+      "updated": 1767621689
+    }
+  ]
+}

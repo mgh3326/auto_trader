@@ -1,0 +1,60 @@
+{
+  "source_note": "Fixture rows use the documented output fields shown by the matching KIS examples_llm/domestic_stock/ksdinfo_*/ksdinfo_*.py sample.",
+  "events": [
+    {
+      "kind": "paidin_capin",
+      "sample": "examples_llm/domestic_stock/ksdinfo_paidin_capin/ksdinfo_paidin_capin.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "tot_issue_stk_qty": "1000000", "issue_stk_qty": "250000", "fix_rate": "0.25", "disc_rate": "0.10", "fix_price": "72000", "right_dt": "20261119", "sub_term_ft": "20261125", "sub_term": "20261126", "list_date": "20261210", "stk_kind": "보통주"}
+    },
+    {
+      "kind": "bonus_issue",
+      "sample": "examples_llm/domestic_stock/ksdinfo_bonus_issue/ksdinfo_bonus_issue.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "fix_rate": "0.5", "odd_rec_price": "100", "right_dt": "20261119", "odd_pay_dt": "20261215", "list_date": "20261210", "tot_issue_stk_qty": "1000000", "issue_stk_qty": "500000", "stk_kind": "보통주"}
+    },
+    {
+      "kind": "purreq",
+      "sample": "examples_llm/domestic_stock/ksdinfo_purreq/ksdinfo_purreq.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "stk_kind": "보통주", "opp_opi_rcpt_term": "2026/11/25", "buy_req_rcpt_term": "2026/11/30", "buy_req_price": "73500"}
+    },
+    {
+      "kind": "merger_split",
+      "sample": "examples_llm/domestic_stock/ksdinfo_merger_split/ksdinfo_merger_split.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "opp_cust_cd": "001", "opp_cust_nm": "피합병회사", "cust_cd": "002", "cust_nm": "합병회사", "merge_type": "합병", "merge_rate": "1.25", "td_stop_dt": "2026/11/25~2026/11/30", "list_dt": "20261210", "odd_amt_pay_dt": "20261215", "tot_issue_stk_qty": "1000000", "issue_stk_qty": "250000", "seq": "1"}
+    },
+    {
+      "kind": "rev_split",
+      "sample": "examples_llm/domestic_stock/ksdinfo_rev_split/ksdinfo_rev_split.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "inter_bf_face_amt": "100", "inter_af_face_amt": "500", "td_stop_dt": "2026/11/25~2026/11/30", "list_dt": "20261210"}
+    },
+    {
+      "kind": "cap_dcrs",
+      "sample": "examples_llm/domestic_stock/ksdinfo_cap_dcrs/ksdinfo_cap_dcrs.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "stk_kind": "보통주", "reduce_cap_type": "유상감자", "reduce_cap_rate": "0.2", "comp_way": "현금", "td_stop_dt": "2026/11/25~2026/11/30", "list_dt": "20261210"}
+    },
+    {
+      "kind": "list_info",
+      "sample": "examples_llm/domestic_stock/ksdinfo_list_info/ksdinfo_list_info.py",
+      "row": {"list_dt": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "stk_kind": "보통주", "issue_type": "신주상장", "issue_stk_qty": "250000", "tot_issue_stk_qty": "1000000", "issue_price": "72000"}
+    },
+    {
+      "kind": "pub_offer",
+      "sample": "examples_llm/domestic_stock/ksdinfo_pub_offer/ksdinfo_pub_offer.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "fix_subscr_pri": "72000.00", "face_value": "5000", "subscr_dt": "2026/11/20 ~ 2026/11/21", "pay_dt": "2026/11/25", "refund_dt": "2026/11/24", "list_dt": "2026/12/10", "lead_mgr": "한국투자증권", "pub_bf_cap": "1000000000", "pub_af_cap": "1250000000", "assign_stk_qty": "250000"}
+    },
+    {
+      "kind": "forfeit",
+      "sample": "examples_llm/domestic_stock/ksdinfo_forfeit/ksdinfo_forfeit.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "subscr_dt": "2026/11/25 ~ 2026/11/26", "subscr_price": "72000", "subscr_stk_qty": "250000", "refund_dt": "2026/11/30", "list_dt": "2026/12/10", "lead_mgr": "한국투자증권"}
+    },
+    {
+      "kind": "mand_deposit",
+      "sample": "examples_llm/domestic_stock/ksdinfo_mand_deposit/ksdinfo_mand_deposit.py",
+      "row": {"sht_cd": "005930", "isin_name": "삼성전자", "stk_qty": "250000", "depo_date": "20261120", "depo_reason": "상장주선인 의무예치", "tot_issue_qty_per_rate": "0.25"}
+    },
+    {
+      "kind": "sharehld_meet",
+      "sample": "examples_llm/domestic_stock/ksdinfo_sharehld_meet/ksdinfo_sharehld_meet.py",
+      "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "gen_meet_dt": "20261201", "gen_meet_type": "정기주주총회", "agenda": "재무제표 승인", "vote_tot_qty": "1000000"}
+    }
+  ]
+}

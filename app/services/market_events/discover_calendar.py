@@ -14,7 +14,10 @@ from app.schemas.market_events_calendar import (
     DiscoverCalendarResponse,
 )
 from app.services.market_events.prioritization import Priority, compute_priority
-from app.services.market_events.query_service import MarketEventsQueryService
+from app.services.market_events.query_service import (
+    MarketEventsQueryService,
+    select_current_metric_value,
+)
 from app.services.market_events.user_context import UserEventContext
 
 PER_DAY_VISIBLE_LIMIT = 8
@@ -79,14 +82,14 @@ def _event_sort_time(event: MarketEventResponse) -> datetime:
 
 def _format_subtitle(event: MarketEventResponse) -> str | None:
     if event.category == "earnings":
-        eps = next((v for v in event.values if v.metric_name == "eps"), None)
+        eps = select_current_metric_value(event, "eps")
         if eps and (eps.actual is not None or eps.forecast is not None):
             actual = "-" if eps.actual is None else str(eps.actual)
             forecast = "-" if eps.forecast is None else str(eps.forecast)
             return f"EPS {actual} · 예측 {forecast}"
         return None
     if event.category == "economic":
-        actual = next((v for v in event.values if v.metric_name == "actual"), None)
+        actual = select_current_metric_value(event, "actual")
         if actual is None:
             return None
         unit = actual.unit or ""

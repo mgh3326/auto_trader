@@ -12,7 +12,7 @@
 # payload 해시 비교로 0행이다.
 #
 # 게이트·키는 premarket DAG 과 같다. short_interest 는 symbols 필수라 여기 없다.
-description: "Benzinga calendars intraday (earnings/ratings/wiim/conference)"
+description: "Benzinga calendars intraday (earnings/ratings/wiim/conference/splits/M&A/offerings/FDA/IPO/options/congress/analyst insights)"
 schedule: "CRON_TZ=America/New_York */30 9-16 * * 1-5"
 max_active_runs: 1
 hist_retention_days: 60
@@ -20,7 +20,7 @@ worker_selector:
   host: pi
 steps:
   - name: intraday
-    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga -e BENZINGA_CALENDARS_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_benzinga_calendars --category earnings,analyst_rating,wiim,conference --date $(TZ=America/New_York date +%F) --force --commit
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga -e BENZINGA_CALENDARS_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_benzinga_calendars --category earnings,analyst_rating,wiim,conference,split,merger_acquisition,offering,fda,ipo,option_activity,insider_trade,congress_trade,analyst_insight --date $(TZ=America/New_York date +%F) --force --commit
     timeout_sec: 600
     retry_policy:
       limit: 1
