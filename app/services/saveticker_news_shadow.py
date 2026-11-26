@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +16,7 @@ USER_AGENT = "auto_trader-news-shadow/1.0 (read-only; contact: operator)"
 MIN_REQUEST_INTERVAL_S = 0.5
 MAX_PAGES = 10
 DEFAULT_PAGE_SIZE = 50
+_US_TICKER_TAG = re.compile(r"\$([A-Z][A-Z0-9.\-]{0,14})\Z")
 
 
 class SaveTickerError(RuntimeError):
@@ -89,14 +91,21 @@ class SaveTickerClient:
             raise SaveTickerError("InvalidResponse")
         return payload
 
-    async def news_page(self, page: int, page_size: int) -> dict[str, Any]:
-        payload = await self._get(
+    async def news_page(
+        self, page: int, page_size: int, *, sort: str = "created_at_desc"
+    ) -> dict[str, Any]:
+        return await self._get(
             "/api/news",
-            {"page": page, "page_size": page_size, "sort": "created_at_desc"},
+            {"page": page, "page_size": page_size, "sort": sort},
         )
-        if type(payload.get("has_older")) is not bool:
-            raise SaveTickerError("InvalidNewsPagination")
-        return payload
+
+    async def search_page(
+        self, search: str, page: int, page_size: int
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/api/search",
+            {"search": search, "page": page, "page_size": page_size},
+        )
 
     async def top_stories(self) -> dict[str, Any]:
         return await self._get("/api/news/top-stories", {})
@@ -151,6 +160,30 @@ def _parse_created(value: Any) -> tuple[str | None, str | None]:
     return raw, parsed.astimezone(UTC).isoformat()
 
 
+def _us_ticker_symbols(item: dict[str, Any]) -> list[str]:
+    symbols: list[str] = []
+    tickers = item.get("tickers")
+    if isinstance(tickers, list):
+        for ticker in tickers:
+            symbol = _text(ticker.get("symbol")) if isinstance(ticker, dict) else None
+            if symbol is not None and not symbol.upper().endswith(".KR"):
+                normalized = to_db_symbol(symbol.upper())
+                if normalized not in symbols:
+                    symbols.append(normalized)
+    tag_names = item.get("tag_names")
+    if isinstance(tag_names, list):
+        for tag in tag_names:
+            if not isinstance(tag, str):
+                continue
+            match = _US_TICKER_TAG.fullmatch(tag.strip().upper())
+            if match is None:
+                continue
+            normalized = to_db_symbol(match.group(1))
+            if normalized not in symbols:
+                symbols.append(normalized)
+    return symbols
+
+
 def normalize_item(item: Any) -> dict[str, Any] | None:
     """Project a valid provider item while retaining the unmodified wire row."""
     if not isinstance(item, dict):
@@ -190,15 +223,7 @@ def normalize_item(item: Any) -> dict[str, Any] | None:
     for field in ("is_top_story", "is_headline_only"):
         if field in item and item[field] is not None and type(item[field]) is not bool:
             return None
-    ticker_symbols: list[str] = []
-    raw_tickers = item.get("tickers")
-    if isinstance(raw_tickers, list):
-        for ticker in raw_tickers:
-            symbol = _text(ticker.get("symbol")) if isinstance(ticker, dict) else None
-            if symbol is not None:
-                normalized = to_db_symbol(symbol.upper())
-                if normalized not in ticker_symbols:
-                    ticker_symbols.append(normalized)
+    ticker_symbols = _us_ticker_symbols(item)
     like_stats = item.get("like_stats")
     vote_stats = item.get("vote_stats")
     likes = (
@@ -210,6 +235,10 @@ def normalize_item(item: Any) -> dict[str, Any] | None:
     comments = _count(item.get("comment_count"))
     views = _count(item.get("view_count"))
     labels = _name_list(item.get("content_labels"))
+    extra = item.get("extra")
+    source_created_raw, source_created_utc = _parse_created(
+        extra.get("source_created_at") if isinstance(extra, dict) else None
+    )
     return {
         "record_type": "article",
         "source": "saveticker",
@@ -227,6 +256,8 @@ def normalize_item(item: Any) -> dict[str, Any] | None:
         "channel": _text(item.get("channel")),
         "created_raw": created_raw,
         "created_utc": created_utc,
+        "source_created_raw": source_created_raw,
+        "source_created_utc": source_created_utc,
         "view_count": views,
         "comment_count": comments,
         "like_stats": like_stats,
@@ -272,4 +303,5 @@ __all__ = [
     "normalize_envelope",
     "normalize_item",
     "summary_key_title",
+    "_us_ticker_symbols",
 ]

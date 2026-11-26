@@ -135,15 +135,19 @@ BENZINGA_NEWS_SHADOW_ENABLED=true \
   Save+ 호출이 실패하면 해당 요청의 `poll_status` 에 `status=error` 와 예외 클래스가
   남고 CLI 는 실패로 끝난다. Benzinga/Finnhub/KIS 는 계속 polling 한다. 실패를 빈
   피드로 보지 않는다.
-- `/api/news` 최신 페이지와 `/api/news/top-stories` 를 읽는다. 페이지 수 1–10,
-  페이지 크기 1–100, 페이지 사이 최소 0.5초 간격, timeout, redirect 거부를 적용한다.
-  제한된 `.saveticker-seen-ids.json` sidecar 에서 이전 ID 를 처음 만나면 뉴스 페이지
-  탐색을 멈추되, 경계 항목은 해당 poll 의 관심도 행으로 다시 기록한다.
-- 제공 `tickers[].symbol` 만 `app/core/symbol.py::to_db_symbol` 로 정규화한다.
-  캡처에는 `NVDA`, `DIS`, `0256C0.KR` 등이 있어 미국 티커는 그대로, 한국 티커는
-  캡처된 `.KR` 접미와 DB `.` 구분자를 유지한다. 매칭된 폴링 심볼마다 기사 행을 쓰며,
-  미일치 항목도 `query_symbol=null` 로 남긴다.
-- 각 항목은 원문 `created_at` 과 파싱된 UTC 시각, 참여 수치와 라벨을 기록한다.
+- `/api/news` 는 `page`, `page_size`, `total_count` 로 페이지를 계산하며 1–10페이지,
+  페이지 크기 1–100으로 제한한다. `window`, `next_window`, `has_older` 는 사용하지 않는다.
+  검색 요청은 `/api/search?search=<term>` 이다. `/api/news/top-stories` 는 page 를 무시해
+  반환된 15개를 읽는다. 매 run 마다 `/api/news?sort=view_count_desc&page=1&page_size=50` 도
+  읽어 인기 상위 항목의 조회 수를 기록한다. 유효 sort 는 `created_at_desc`,
+  `created_at_asc`, `view_count_desc` 다. 요청 간 최소 0.5초 간격, timeout, redirect 거부를 적용한다.
+  bounded `.saveticker-seen-ids.json` sidecar 는 article 중복만 막으며, 이전 ID도 관심도를 관측한다.
+- 미국 ticker 만 매핑한다. `$SYMBOL` 형식의 `tag_names` 와 `tickers[{id,symbol,name,primary}]` 를
+  읽고 `app/core/symbol.py::to_db_symbol` 로 정규화한다. 한국 기사는 ticker 가 없는 label-only
+  항목이므로 `symbol=null` 로 미매칭하며 summary 에서도 이를 표시한다.
+- 각 항목은 `created_at`(Save+ publish time)과 `extra.source_created_at`(provider event time)을
+  UTC 값과 함께 기록한다. `observed_at` 은 수집기 시계다. first-seen 순서는 observed time 으로
+  정렬하고 event-time 비교는 source-created time 을 쓴다. 참여 수치와 라벨도 기록한다.
   알 수 없는 wire 필드는 `raw_item` 에 보존한다. 잘못된 항목은 버리고
   `malformed_count` 에 기록한다.
 - 한 provider item 마다 poll 당 `record_type=attention` JSONL 행을 하나 써서
