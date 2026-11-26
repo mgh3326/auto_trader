@@ -11,6 +11,12 @@ count, or the error class), plus one ``poll_header`` row (planned symbols)
 and one ``poll_completion`` row (polled symbols) per pass. A ``summary``
 subcommand compares the two streams over a window.
 
+hk 6661: the poll also reads KIS news headlines (``source="kis"``): one
+market-wide ``brknews_title`` call per US pass matched to symbols by
+``iscd1``..``iscd10``, and per-symbol ``overseas_news_title`` (US) or
+``domestic_news_title`` (KR, ``--market kr``). ``--skip-kis`` drops them.
+KR polls read KIS only (Benzinga and Finnhub are US sources).
+
 Usage:
     uv run python -m scripts.benzinga_news_shadow poll \\
         --symbols NVDA,AMD --out-dir /tmp/benzinga-shadow [--limit 50]
@@ -46,6 +52,7 @@ from pathlib import Path
 
 from app.core.cli import setup_logging_and_sentry
 from app.services import benzinga_news as bz
+from app.services import kis_news_shadow as kn
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +76,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--skip-finnhub",
         action="store_true",
         help="Benzinga only (e.g. Finnhub quota exhausted)",
+    )
+    poll.add_argument(
+        "--skip-kis",
+        action="store_true",
+        help="no KIS news-headline source (KIS outage or quota)",
+    )
+    poll.add_argument(
+        "--market",
+        choices=("us", "kr"),
+        default="us",
+        help="us: Benzinga+Finnhub+KIS; kr: KIS domestic headlines only",
     )
 
     summary = sub.add_parser("summary", help="compare two streams over JSONL input")
@@ -97,6 +115,13 @@ def _resolve_out_dir(raw: str) -> Path:
     except ValueError:
         return path
     raise ValueError(f"--out-dir must be outside the repo: {raw}")
+
+
+def _open_kis_reader():  # noqa: ANN202
+    """Build the read-only KIS client. Lazy: gate-off and summary never reach it."""
+    from app.services.brokers.kis.client import KISClient
+
+    return KISClient(is_mock=False)
 
 
 def _check_gate() -> int | None:
@@ -282,10 +307,106 @@ def _status_row(
     }
 
 
+async def _kis_poll(
+    *,
+    reader: object | None,
+    open_error: str | None,
+    query_symbol: str | None,
+    poll_id: str,
+    query_param: str,
+    fetch,  # noqa: ANN001 - async callable(reader) -> list[dict]
+    normalize,  # noqa: ANN001 - callable(raw, seen) -> list[dict]
+) -> tuple[list[dict], list[str]]:
+    """One KIS read: a status row for the call, never an exception outward."""
+    label = query_symbol or query_param
+    if reader is None:
+        seen = datetime.now(UTC)
+        error_class = open_error or "KISClientUnavailable"
+        return [
+            _status_row(
+                source=kn.SOURCE,
+                symbol=query_symbol,
+                poll_id=poll_id,
+                status="error",
+                count=0,
+                error_class=error_class,
+                seen_at=seen,
+                query_param=query_param,
+            )
+        ], [f"kis {label} [{query_param}]: {error_class}"]
+    try:
+        raw = await fetch(reader)
+        seen = datetime.now(UTC)
+        records = normalize(raw, seen)
+        return [
+            *records,
+            _status_row(
+                source=kn.SOURCE,
+                symbol=query_symbol,
+                poll_id=poll_id,
+                status="ok" if raw else "empty",
+                count=len(raw),
+                error_class=None,
+                seen_at=seen,
+                query_param=query_param,
+            ),
+        ], []
+    except Exception as exc:  # noqa: BLE001 - KIS failure must not stop other sources
+        seen = datetime.now(UTC)
+        logger.warning(
+            "kis poll failed for %s [%s]: %s",
+            label,
+            query_param,
+            bz.redact_token(str(exc)),
+        )
+        return [
+            _status_row(
+                source=kn.SOURCE,
+                symbol=query_symbol,
+                poll_id=poll_id,
+                status="error",
+                count=0,
+                error_class=type(exc).__name__,
+                seen_at=seen,
+                query_param=query_param,
+            )
+        ], [f"kis {label} [{query_param}]: {type(exc).__name__}"]
+
+
+def _kis_symbol_calls(market: str, poll_id: str, symbol: str):  # noqa: ANN202
+    """(query_param, fetch, normalize) for one KIS per-symbol read."""
+    if market == "us":
+
+        async def fetch_us(reader):  # noqa: ANN001, ANN202
+            return await reader.news_titles_overseas(symbol)
+
+        def normalize_us(raw, seen):  # noqa: ANN001, ANN202
+            return kn.normalize_overseas_rows(
+                raw, poll_id=poll_id, first_received_at=seen, symbol=symbol
+            )
+
+        return kn.PARAM_OVERSEAS_NEWS, fetch_us, normalize_us
+
+    async def fetch_kr(reader):  # noqa: ANN001, ANN202
+        return await reader.news_titles_domestic(symbol)
+
+    def normalize_kr(raw, seen):  # noqa: ANN001, ANN202
+        return kn.normalize_domestic_rows(
+            raw, poll_id=poll_id, first_received_at=seen, symbol=symbol
+        )
+
+    return kn.PARAM_DOMESTIC_NEWS, fetch_kr, normalize_kr
+
+
 async def _run_poll(args: argparse.Namespace) -> int:
     symbols = _parse_symbols(args.symbols)
     if not symbols:
         print("no symbols given", file=sys.stderr)
+        return 2
+    if args.market == "kr" and args.skip_kis:
+        print(
+            "--market kr polls KIS only; --skip-kis leaves no source", file=sys.stderr
+        )
         return 2
     try:
         out_dir = _resolve_out_dir(args.out_dir)
@@ -297,11 +418,13 @@ async def _run_poll(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    try:
-        api_key = bz.read_api_key()
-    except bz.BenzingaApiKeyMissing as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+    api_key = None
+    if args.market == "us":
+        try:
+            api_key = bz.read_api_key()
+        except bz.BenzingaApiKeyMissing as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = (out_dir / f"{poll_id}.jsonl").resolve()
@@ -313,80 +436,149 @@ async def _run_poll(args: argparse.Namespace) -> int:
         print(f"output path must be outside the repo: {out_path}", file=sys.stderr)
         return 2
 
+    kis_on = not args.skip_kis
+    kis_reader: object | None = None
+    kis_open_error: str | None = None
+    if kis_on:
+        try:
+            kis_reader = _open_kis_reader()
+        except Exception as exc:  # noqa: BLE001 - recorded as a KIS error row
+            kis_open_error = type(exc).__name__
+            logger.warning("kis client unavailable: %s", kis_open_error)
+
     counts: dict[str, dict[str, int]] = {}
     errors: list[str] = []
     completed: list[str] = []
-    with open(out_path, "a", encoding="utf-8") as fh:
-        fh.write(
-            json.dumps(
-                {
-                    "record_type": "poll_header",
-                    "poll_id": poll_id,
-                    "symbols": symbols,
-                    "started_at": datetime.now(UTC).astimezone(UTC).isoformat(),
-                },
-                ensure_ascii=False,
+    try:
+        with open(out_path, "a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "record_type": "poll_header",
+                        "poll_id": poll_id,
+                        "symbols": symbols,
+                        "started_at": datetime.now(UTC).astimezone(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        for symbol in symbols:
-            rows, errs = await _poll_symbol(
-                symbol,
-                api_key=api_key,
-                poll_id=poll_id,
-                limit=args.limit,
-                date_from=args.date_from,
-                date_to=args.date_to,
-                skip_finnhub=args.skip_finnhub,
+            brk_by_symbol: dict[str, int] = {}
+            if kis_on and args.market == "us":
+                brk_rows, brk_errs = await _kis_poll(
+                    reader=kis_reader,
+                    open_error=kis_open_error,
+                    query_symbol=None,
+                    poll_id=poll_id,
+                    query_param=kn.PARAM_BRKNEWS,
+                    fetch=lambda r: r.news_titles_overseas_brknews(),
+                    normalize=lambda raw, seen: kn.normalize_brknews_rows(
+                        raw,
+                        poll_id=poll_id,
+                        first_received_at=seen,
+                        polled_symbols=symbols,
+                    ),
+                )
+                errors.extend(brk_errs)
+                for record in brk_rows:
+                    if record.get("record_type") == "article":
+                        sym = record.get("query_symbol")
+                        if sym is not None:
+                            brk_by_symbol[sym] = brk_by_symbol.get(sym, 0) + 1
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            for symbol in symbols:
+                if args.market == "us":
+                    rows, errs = await _poll_symbol(
+                        symbol,
+                        api_key=api_key,
+                        poll_id=poll_id,
+                        limit=args.limit,
+                        date_from=args.date_from,
+                        date_to=args.date_to,
+                        skip_finnhub=args.skip_finnhub,
+                    )
+                else:
+                    rows, errs = [], []
+                if kis_on:
+                    kis_param, kis_fetch, kis_norm = _kis_symbol_calls(
+                        args.market, poll_id, symbol
+                    )
+                    kis_rows, kis_errs = await _kis_poll(
+                        reader=kis_reader,
+                        open_error=kis_open_error,
+                        query_symbol=symbol,
+                        poll_id=poll_id,
+                        query_param=kis_param,
+                        fetch=kis_fetch,
+                        normalize=kis_norm,
+                    )
+                    rows = [*rows, *kis_rows]
+                    errs = [*errs, *kis_errs]
+                errors.extend(errs)
+                for record in rows:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if args.market == "us":
+                    counts[symbol] = {
+                        "benzinga": sum(
+                            1
+                            for r in rows
+                            if r.get("record_type") == "article"
+                            and r.get("source") == "benzinga"
+                            and r.get("query_param") == "primaryTickers"
+                        ),
+                        "benzinga_tickers": sum(
+                            1
+                            for r in rows
+                            if r.get("record_type") == "article"
+                            and r.get("source") == "benzinga"
+                            and r.get("query_param") == "tickers"
+                        ),
+                        "finnhub": sum(
+                            1
+                            for r in rows
+                            if r.get("record_type") == "article"
+                            and r.get("source") == "finnhub"
+                        ),
+                    }
+                    if kis_on:
+                        counts[symbol]["kis"] = brk_by_symbol.get(symbol, 0) + sum(
+                            1
+                            for r in rows
+                            if r.get("record_type") == "article"
+                            and r.get("source") == kn.SOURCE
+                            and r.get("query_symbol") == symbol
+                            and r.get("query_param") == kn.PARAM_OVERSEAS_NEWS
+                        )
+                else:
+                    counts[symbol] = {
+                        "kis": sum(
+                            1
+                            for r in rows
+                            if r.get("record_type") == "article"
+                            and r.get("source") == kn.SOURCE
+                        )
+                    }
+                completed.append(symbol)
+                # Explicit zeros stay visible: a symbol with no coverage is a
+                # gap data point (the tickers=NVDA anomaly), not silence.
+                logger.info("poll %s %s: %s", poll_id, symbol, counts[symbol])
+            fh.write(
+                json.dumps(
+                    {
+                        "record_type": "poll_completion",
+                        "poll_id": poll_id,
+                        "symbols_completed": completed,
+                        "finished_at": datetime.now(UTC).astimezone(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
             )
-            errors.extend(errs)
-            for record in rows:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            counts[symbol] = {
-                "benzinga": sum(
-                    1
-                    for r in rows
-                    if r.get("record_type") == "article"
-                    and r.get("source") == "benzinga"
-                    and r.get("query_param") == "primaryTickers"
-                ),
-                "benzinga_tickers": sum(
-                    1
-                    for r in rows
-                    if r.get("record_type") == "article"
-                    and r.get("source") == "benzinga"
-                    and r.get("query_param") == "tickers"
-                ),
-                "finnhub": sum(
-                    1
-                    for r in rows
-                    if r.get("record_type") == "article"
-                    and r.get("source") == "finnhub"
-                ),
-            }
-            completed.append(symbol)
-            # Explicit zeros stay visible: a symbol with no coverage is a
-            # gap data point (the tickers=NVDA anomaly), not silence.
-            logger.info(
-                "poll %s %s: benzinga=%d benzinga_tickers=%d finnhub=%d",
-                poll_id,
-                symbol,
-                counts[symbol]["benzinga"],
-                counts[symbol]["benzinga_tickers"],
-                counts[symbol]["finnhub"],
-            )
-        fh.write(
-            json.dumps(
-                {
-                    "record_type": "poll_completion",
-                    "poll_id": poll_id,
-                    "symbols_completed": completed,
-                    "finished_at": datetime.now(UTC).astimezone(UTC).isoformat(),
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+    finally:
+        if kis_reader is not None:
+            close = getattr(kis_reader, "close", None)
+            if close is not None:
+                await close()
 
     report = {
         "poll_id": poll_id,
@@ -424,7 +616,7 @@ def _run_summary(args: argparse.Namespace) -> int:
     if not paths:
         print("no JSONL inputs", file=sys.stderr)
         return 2
-    ben, fin, frames = [], [], []
+    ben, fin, frames, kis = [], [], [], []
     for path in paths:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -443,7 +635,10 @@ def _run_summary(args: argparse.Namespace) -> int:
                     ben.append(record)
                 elif record.get("source") == "finnhub":
                     fin.append(record)
+                elif record.get("source") == kn.SOURCE:
+                    kis.append(record)
     summary = bz.summarize_shadow(ben, fin, frames)
+    summary["kis"] = kn.summarize_kis(kis, ben, fin, frames)
     summary["poll_id"] = args.poll_id
     summary["inputs"] = [str(p) for p in paths]
     print(json.dumps(summary, sort_keys=True, indent=2))
