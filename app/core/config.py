@@ -323,11 +323,13 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # hk 6751 KR plan-only publication and read tools.
+    daily_plan_enabled: bool = False
+
     # #849 NHPLUG Stage 2: registers the nh_mock_* MCP tools in the DEFAULT
     # profile only. Registration is all this flag does; every call still needs
     # NHPLUG_MOCK_ENABLED, the five NHPLUG_STAGE2_*_CONFIRMED gates, a retained
     # key registry, and a fresh acct_type=03 verification before any order.
-    daily_plan_enabled: bool = False
     nh_mock_mcp_enabled: bool = False
 
     # Kiwoom LIVE read-only market data (charts only). Disabled by default.

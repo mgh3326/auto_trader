@@ -116,11 +116,13 @@ CREATE TABLE review.daily_plan_row_links (
     id UUID NOT NULL,
     row_id UUID NOT NULL,
     state TEXT NOT NULL,
+    seq INTEGER NOT NULL,
     decision_id UUID,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     CONSTRAINT pk_daily_plan_row_links PRIMARY KEY (id),
     CONSTRAINT ck_daily_plan_row_links_state CHECK (state IN ('confirmed', 'link_no_decision', 'link_ambiguous', 'link_mismatch', 'link_unresolved')),
-    CONSTRAINT uq_daily_plan_row_links_row_id UNIQUE (row_id, state),
+    CONSTRAINT uq_daily_plan_row_links_row_id UNIQUE (row_id, seq),
+    CONSTRAINT ck_daily_plan_row_links_link_seq CHECK (seq > 0),
     CONSTRAINT ck_daily_plan_row_links_decision_binding CHECK ((state = 'confirmed') = (decision_id IS NOT NULL)),
     CONSTRAINT fk_daily_plan_row_links_row_id_daily_plan_rows FOREIGN KEY(row_id) REFERENCES review.daily_plan_rows (id)
 )

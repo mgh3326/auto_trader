@@ -3,11 +3,20 @@
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
 
 from app.core.symbol import to_db_symbol
-from app.services.daily_plan.vocabulary import TRIGGER_KINDS, VENUE_SESSIONS
+from app.services.daily_plan.vocabulary import (
+    ACCOUNT_MODES,
+    ACTION_BASES,
+    ACTIONS,
+    DISPOSITIONS,
+    REASON_CODES,
+    ROW_KINDS,
+    TRIGGER_KINDS,
+    VENUE_SESSIONS,
+)
 
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
@@ -112,8 +121,41 @@ def prepare_row(
     oldest_accepted_at: datetime,
     no_add_floor_pct: Decimal,
 ) -> dict[str, Any]:
-    from app.services.daily_plan.vocabulary import ACTION_BASES, ACTIONS, ROW_KINDS
-
+    allowed = {
+        "row_kind",
+        "market",
+        "symbol",
+        "account_ref",
+        "action",
+        "action_basis",
+        "venue",
+        "session",
+        "side",
+        "thesis",
+        "valid_until",
+        "trigger",
+        "invalidation_conditions",
+        "max_buy_price",
+        "min_sell_price",
+        "would_be_limit_price",
+        "would_be_quantity",
+        "would_be_notional",
+        "planned_amount",
+        "carry_allowed",
+        "carried_from_row_id",
+        "disposition",
+        "reason_code",
+        "would_be_account_ref",
+        "sector_key",
+        "candidate_call_id",
+        "candidate_row_id",
+        "thesis_status",
+        "grade_value",
+        "grade_quality",
+        "forecast_request",
+    }
+    if raw.keys() - allowed:
+        raise ValueError("unknown_row_field")
     row = dict(raw)
     row["symbol"] = normalize_symbol(
         row["symbol"], row["market"], row["venue"], row["session"]
@@ -133,6 +175,27 @@ def prepare_row(
     if kind == "holding" and action == "new":
         raise ValueError("invalid_action")
     validate_side(action, row.get("side"))
+    if row.get("disposition") is not None and (
+        kind != "candidate" or row["disposition"] not in DISPOSITIONS
+    ):
+        raise ValueError("invalid_disposition")
+    if row.get("reason_code") is not None and row["reason_code"] not in REASON_CODES:
+        raise ValueError("invalid_reason")
+    if row.get("sector_key") is not None and (
+        type(row["sector_key"]) is not str or len(row["sector_key"]) > 100
+    ):
+        raise ValueError("invalid_sector")
+    would_be_ref = row.get("would_be_account_ref")
+    if would_be_ref is not None:
+        account_mode = (
+            (evidence or {}).get("routable_account_modes", {}).get(would_be_ref)
+        )
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", would_be_ref)
+            or account_mode not in ACCOUNT_MODES
+        ):
+            raise ValueError("invalid_account_attribution")
+        row["would_be_account_mode"] = account_mode
     thesis = row["thesis"]
     if type(thesis) is not str or not thesis.strip() or len(thesis) > 1000:
         raise ValueError("invalid_thesis")
@@ -180,6 +243,7 @@ def prepare_row(
             if key in ("event_at", "first_observed_at")
         }
         for name, source in sources.items()
+        if "unavailable" not in source
     }
     required = frozenset({"price", "holdings"} if kind == "holding" else {"price"})
     if action in ("add", "trim", "risk_sell"):
@@ -212,21 +276,33 @@ def prepare_row(
                 row["not_executable_reason"] = "position_unknown"
             else:
                 close = parse_positive_decimal(evidence["last_close"])
-                if any(
-                    close * 100
-                    <= parse_positive_decimal(cost) * (100 + no_add_floor_pct)
-                    for cost in costs
-                ):
-                    row["not_executable_reason"] = "add_blocked_lot_at_or_below_floor"
-        if action == "risk_sell":
-            # Risk-sale evidence must come from the server's evaluator, never from the proposal.
-            if row["action_basis"] != "rule" or evidence.get(
-                "risk_sell_quantity"
-            ) != row.get("would_be_quantity"):
-                raise ValueError("risk_rule_mismatch")
-            if not evidence.get("risk_sell_quantity"):
-                raise ValueError("risk_rule_mismatch")
+                with localcontext(prec=100):
+                    if any(
+                        close * 100
+                        <= parse_positive_decimal(cost) * (100 + no_add_floor_pct)
+                        for cost in costs
+                    ):
+                        row["not_executable_reason"] = (
+                            "add_blocked_lot_at_or_below_floor"
+                        )
+    if (
+        row.get("disposition") == "adopted"
+        and would_be_ref is None
+        and not row["not_executable_reason"]
+    ):
+        row["not_executable_reason"] = "account_attribution_unknown"
     if row["action"] == "watch":
+        if reason and trigger is None:
+            max_buy = row.get("max_buy_price")
+            trigger = row["trigger"] = (
+                {"kind": "price_at_or_below", "value": max_buy}
+                if max_buy is not None
+                else {"kind": "event", "value": "inputs_refreshed"}
+            )
+        if reason and not conditions:
+            conditions = row["invalidation_conditions"] = [
+                {"kind": "event", "value": "session_closed"}
+            ]
         if (
             trigger is None
             or not conditions

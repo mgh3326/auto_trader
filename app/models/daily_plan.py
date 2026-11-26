@@ -177,10 +177,12 @@ links = _table(
     _id(),
     _ref("row_id", "rows"),
     Column("state", Text, nullable=False),
+    Column("seq", Integer, nullable=False),
     Column("decision_id", Uuid),
     _created(),
     _vocabulary("state", tuple(state for state in LINK_STATES if state != "pending")),
-    UniqueConstraint("row_id", "state"),
+    UniqueConstraint("row_id", "seq"),
+    CheckConstraint("seq > 0", name="link_seq"),
     CheckConstraint(
         "(state = 'confirmed') = (decision_id IS NOT NULL)", name="decision_binding"
     ),

@@ -10,7 +10,6 @@ from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.daily_plan import bundles, heads, links, rows, versions
@@ -19,7 +18,9 @@ from app.services.daily_plan.bundle import (
     canonical_bundle,
     canonical_json,
 )
+from app.services.daily_plan.risk import replay_risk
 from app.services.daily_plan.validator import (
+    parse_positive_decimal,
     parse_time,
     prepare_row,
     require_base_version,
@@ -128,10 +129,14 @@ def _row_view(row: dict) -> dict:
 
 
 async def _write_result(db: AsyncSession, version: dict) -> dict:
-    return {
-        **version,
-        "rows": [_row_view(row) for row in await _version_rows(db, version["id"])],
-    }
+    result = await _version_rows(db, version["id"])
+    replay_ids = version["metadata"].get("adoption_replay_rows", [])
+    if replay_ids:
+        replay = await db.execute(
+            select(rows).where(rows.c.id.in_([UUID(item) for item in replay_ids]))
+        )
+        result.extend(dict(row) for row in replay.mappings())
+    return {**version, "rows": [_row_view(row) for row in result]}
 
 
 async def write_version(
@@ -236,15 +241,42 @@ async def write_version(
     for raw in proposed:
         key_for_row = row_key({**raw, "symbol": raw["symbol"].strip().upper()})
         close = _session_close(day, raw["venue"], raw["session"], regular[1])
+        row_evidence = evidence.get(key_for_row)
         row = prepare_row(
             raw,
-            evidence=evidence.get(key_for_row),
+            evidence=row_evidence,
             asof=now,
             session_close=close,
             bundle_closed_at=bundle_closed_at,
             oldest_accepted_at=previous_bounds[1],
             no_add_floor_pct=Decimal(str(policy.daily_plan.no_add_floor_pct)),
         )
+        if row["row_kind"] == "holding" and row_evidence:
+            verdict = replay_risk(
+                row_evidence,
+                policy.mechanical_loss_cut.markets["kr"],
+                symbol=row["symbol"],
+            )
+            verdict.update(
+                policy_version=policy.version, policy_content_hash=policy_hash
+            )
+            row["rule_verdict"] = verdict
+            if (
+                row["not_executable_reason"] is None
+                and row_evidence.get("account_scope") == "routable"
+            ):
+                if verdict["result"] == "cut":
+                    if (
+                        row["action"] != "risk_sell"
+                        or row["action_basis"] != "rule"
+                        or parse_positive_decimal(row["would_be_quantity"])
+                        != Decimal(verdict["quantity"])
+                    ):
+                        raise ValueError("risk_rule_mismatch")
+                elif row["action"] == "risk_sell":
+                    raise ValueError("risk_rule_mismatch")
+            if row["action"] == "risk_sell" and verdict["result"] != "cut":
+                raise ValueError("risk_rule_mismatch")
         if row_key(row) in seen:
             raise ValueError("duplicate_row_key")
         seen.add(row_key(row))
@@ -301,9 +333,18 @@ async def write_version(
             "trigger_ref": request.get("trigger_ref"),
         },
     }
-    await db.execute(versions.insert().values(**version))
+    inserts = []
+    replay_ids = []
     for row in prepared:
-        await _insert_row(db, version, row)
+        item = await _prepare_insert(db, version, row)
+        if isinstance(item, UUID):
+            replay_ids.append(str(item))
+        else:
+            inserts.append(item)
+    version["metadata"]["adoption_replay_rows"] = replay_ids
+    await db.execute(versions.insert().values(**version))
+    for item in inserts:
+        await db.execute(rows.insert().values(**item))
     return await _write_result(db, version)
 
 
@@ -316,7 +357,7 @@ def _session_close(
     return regular_close
 
 
-async def _insert_row(db: AsyncSession, version: dict, row: dict) -> None:
+async def _prepare_insert(db: AsyncSession, version: dict, row: dict) -> dict | UUID:
     adoption_key = content_hash = forecast_id = None
     if row.get("disposition") == "adopted":
         if (
@@ -342,29 +383,27 @@ async def _insert_row(db: AsyncSession, version: dict, row: dict) -> None:
         if existing is not None:
             if existing["adoption_content_sha256"] != content_hash:
                 raise ValueError("adoption_conflict")
-            return
+            return existing["id"]
         forecast_id = uuid5(_PLAN_NAMESPACE, adoption_key)
-    await db.execute(
-        rows.insert().values(
-            id=uuid4(),
-            version_id=version["id"],
-            **{
-                key: row.get(key)
-                for key in (
-                    "row_kind",
-                    "market",
-                    "symbol",
-                    "account_ref",
-                    "action",
-                    "action_basis",
-                )
-            },
-            adoption_key=adoption_key,
-            adoption_content_sha256=content_hash,
-            forecast_id=forecast_id,
-            body=row,
-        )
-    )
+    return {
+        "id": uuid4(),
+        "version_id": version["id"],
+        **{
+            key: row.get(key)
+            for key in (
+                "row_kind",
+                "market",
+                "symbol",
+                "account_ref",
+                "action",
+                "action_basis",
+            )
+        },
+        "adoption_key": adoption_key,
+        "adoption_content_sha256": content_hash,
+        "forecast_id": forecast_id,
+        "body": row,
+    }
 
 
 async def get_plan(
@@ -400,7 +439,7 @@ async def get_plan(
             state = await db.scalar(
                 select(links.c.state)
                 .where(links.c.row_id == row["id"])
-                .order_by(links.c.created_at.desc(), links.c.id.desc())
+                .order_by(links.c.seq.desc())
                 .limit(1)
             )
             view["forecast_link_state"] = state or "pending"
@@ -460,31 +499,59 @@ async def confirm_links(
 ) -> dict:
     """Attach evidence already committed by forecast_save to adopted rows."""
     await _lock_head(db, day)
-    version_id = await db.scalar(
-        select(versions.c.id)
-        .join(heads, heads.c.id == versions.c.head_id)
-        .where(heads.c.session_date == day, versions.c.seq == seq)
+    version = (
+        (
+            await db.execute(
+                select(versions)
+                .join(heads, heads.c.id == versions.c.head_id)
+                .where(heads.c.session_date == day, versions.c.seq == seq)
+            )
+        )
+        .mappings()
+        .one_or_none()
     )
-    if version_id is None:
+    if version is None:
         raise ValueError("version_not_found")
+    candidates = await _version_rows(db, version["id"])
+    replay_ids = version["metadata"].get("adoption_replay_rows", [])
+    if replay_ids:
+        found = await db.execute(
+            select(rows).where(rows.c.id.in_([UUID(item) for item in replay_ids]))
+        )
+        candidates.extend(dict(row) for row in found.mappings())
     results = []
-    for row in await _version_rows(db, version_id):
+    next_day = next_trading_session("kr", day)
+    for row in candidates:
         if row["forecast_id"] is None:
             continue
         state, decision_id = await _link_state(db, row)
-        next_day = next_trading_session("kr", day)
         if state == "pending" and next_day and now.astimezone(_KST).date() >= next_day:
             state = "link_unresolved"
-        if state != "pending":
+        previous = (
+            (
+                await db.execute(
+                    select(links)
+                    .where(links.c.row_id == row["id"])
+                    .order_by(links.c.seq.desc())
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if state != "pending" and (
+            previous is None
+            or previous["state"] != state
+            or previous["decision_id"] != decision_id
+        ):
             await db.execute(
-                insert(links)
-                .values(
+                links.insert().values(
                     id=uuid4(),
                     row_id=row["id"],
                     state=state,
                     decision_id=decision_id,
+                    seq=1 if previous is None else previous["seq"] + 1,
                 )
-                .on_conflict_do_nothing(index_elements=[links.c.row_id, links.c.state])
             )
         results.append(
             {
@@ -550,8 +617,6 @@ async def _link_state(db: AsyncSession, row: dict) -> tuple[str, UUID | None]:
         .all()
     )
     body = row["body"]
-    from app.services.daily_plan.validator import parse_positive_decimal
-
     if (
         forecast["correlation_id"] != row["adoption_key"]
         or forecast["decision_bucket"] != "deferred_no_action"
