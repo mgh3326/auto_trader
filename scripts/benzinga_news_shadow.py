@@ -397,9 +397,9 @@ def _saveticker_article_rows(
         symbols = [symbol for symbol in polled_symbols if symbol in item["symbols"]]
         if symbols:
             for symbol in symbols:
-                articles.append({**record, "query_symbol": symbol})
+                articles.append({**record, "query_symbol": symbol, "symbol": symbol})
         else:
-            articles.append({**record, "query_symbol": None})
+            articles.append({**record, "query_symbol": None, "symbol": None})
         attention.append(
             {
                 "record_type": "attention",
@@ -407,6 +407,8 @@ def _saveticker_article_rows(
                 "provider_id": item["provider_id"],
                 "poll_id": poll_id,
                 "observed_at": observed_at.astimezone(UTC).isoformat(),
+                "event_time": item["source_created_utc"],
+                "publish_time": item["created_utc"],
                 "view_count": item["view_count"],
                 "comment_count": item["comment_count"],
                 "like_stats": item["like_stats"],
@@ -431,6 +433,8 @@ def _saveticker_attention_row(
         "provider_id": item["provider_id"],
         "poll_id": poll_id,
         "observed_at": observed_at.astimezone(UTC).isoformat(),
+        "event_time": item["source_created_utc"],
+        "publish_time": item["created_utc"],
         "view_count": item["view_count"],
         "comment_count": item["comment_count"],
         "like_stats": item["like_stats"],
@@ -464,17 +468,25 @@ async def _saveticker_poll(
     errors: list[str] = []
 
     def observe_item(
-        item: dict, *, seen_at: datetime, query_param: str, is_top_story: bool
+        item: dict,
+        *,
+        seen_at: datetime,
+        query_param: str,
+        is_top_story: bool,
+        attention_priority: bool = False,
     ) -> bool:
         """Record a fresh article once and an attention observation once per run."""
         provider_id = item["provider_id"]
         if provider_id not in state_id_set:
             state_id_set.add(provider_id)
             state_ids.append(provider_id)
-        if provider_id not in attention_by_id:
+        previous_attention = attention_by_id.get(provider_id)
+        if previous_attention is None or attention_priority:
             attention_by_id[provider_id] = _saveticker_attention_row(
                 item, poll_id=poll_id, observed_at=seen_at, is_top_story=is_top_story
             )
+            if previous_attention is not None and previous_attention["is_top_story"]:
+                attention_by_id[provider_id]["is_top_story"] = True
         elif is_top_story:
             attention_by_id[provider_id]["is_top_story"] = True
         existing = articles_by_id.get(provider_id)
@@ -497,7 +509,7 @@ async def _saveticker_poll(
         return True
 
     async with st.SaveTickerClient() as client:
-        for source_name in ("news", "top_stories"):
+        for source_name in ("news", "search", "top_stories", "view_count_desc"):
             malformed = 0
             fetched_count = 0
             new_count = 0
@@ -511,32 +523,56 @@ async def _saveticker_poll(
                         normalized, dropped = st.normalize_envelope(payload)
                         malformed += dropped
                         fetched_count += len(normalized)
-                        stop = False
                         for item in normalized:
-                            provider_id = item["provider_id"]
                             new_count += observe_item(
                                 item,
                                 seen_at=seen_at,
                                 query_param=source_name,
                                 is_top_story=False,
                             )
-                            if provider_id in old_ids:
-                                stop = True
-                                break
-                        if stop or not payload.get("has_older", False):
+                        if not _saveticker_has_next_page(payload, page, page_size):
                             break
-                else:
+                elif source_name == "search":
+                    for symbol in polled_symbols:
+                        for page in range(1, pages + 1):
+                            payload = await client.search_page(symbol, page, page_size)
+                            seen_at = datetime.now(UTC)
+                            normalized, dropped = st.normalize_envelope(payload)
+                            malformed += dropped
+                            fetched_count += len(normalized)
+                            for item in normalized:
+                                new_count += observe_item(
+                                    item,
+                                    seen_at=seen_at,
+                                    query_param=source_name,
+                                    is_top_story=False,
+                                )
+                            if not _saveticker_has_next_page(payload, page, page_size):
+                                break
+                elif source_name == "top_stories":
                     payload = await client.top_stories()
                     seen_at = datetime.now(UTC)
                     normalized, malformed = st.normalize_envelope(payload)
                     fetched_count = len(normalized)
-                    truncated_count = max(0, fetched_count - page_size)
-                    for item in normalized[:page_size]:
+                    for item in normalized:
                         new_count += observe_item(
                             item,
                             seen_at=seen_at,
                             query_param=source_name,
                             is_top_story=True,
+                        )
+                else:
+                    payload = await client.news_page(1, 50, sort="view_count_desc")
+                    seen_at = datetime.now(UTC)
+                    normalized, malformed = st.normalize_envelope(payload)
+                    fetched_count = len(normalized)
+                    for item in normalized:
+                        observe_item(
+                            item,
+                            seen_at=seen_at,
+                            query_param=source_name,
+                            is_top_story=False,
+                            attention_priority=True,
                         )
             except Exception as exc:  # noqa: BLE001 - other feeds continue independently
                 seen_at = datetime.now(UTC)
@@ -580,6 +616,13 @@ def _saveticker_error_class(exc: Exception) -> str:
     if isinstance(exc, st.SaveTickerError) and str(exc):
         return str(exc)
     return type(exc).__name__
+
+
+def _saveticker_has_next_page(payload: dict, page: int, page_size: int) -> bool:
+    total_count = payload.get("total_count")
+    if type(total_count) is not int or total_count < 0:
+        raise st.SaveTickerError("InvalidNewsPagination")
+    return page * page_size < total_count
 
 
 async def _kis_poll(
@@ -1013,7 +1056,12 @@ def _record_symbols(record: dict) -> set[str]:
 
 
 def _record_time(record: dict) -> datetime | None:
-    for field in ("created_utc", "created_at"):
+    fields = (
+        ("source_created_utc",)
+        if record.get("source") == "saveticker"
+        else ("created_utc", "created_at")
+    )
+    for field in fields:
         raw = record.get(field)
         if not isinstance(raw, str):
             continue
@@ -1137,6 +1185,13 @@ def summarize_saveticker(
                         "source": source_name,
                         "provider_id": record.get("provider_id"),
                         "first_received_at": record.get("first_received_at"),
+                        "observed_at": record.get("first_received_at"),
+                        "event_time": record.get("source_created_utc")
+                        if source_name == "saveticker"
+                        else record.get("created_utc"),
+                        "publish_time": record.get("created_utc")
+                        if source_name == "saveticker"
+                        else None,
                     }
                 )
     other_by_source = {source: unique_sources[source] for source in pair_matches}
@@ -1202,6 +1257,13 @@ def summarize_saveticker(
                 for row in statuses
             ],
             "attention_rows": len(attention),
+            "unmatched_symbol_articles": sum(
+                not _record_symbols(row) for row in unique_sources["saveticker"]
+            ),
+            "ticker_matching_note": (
+                "Save+는 미국 기사에만 티커를 제공합니다. 한국 기사는 라벨만 있고 "
+                "symbol=null로 미매칭 처리됩니다."
+            ),
         },
         "first_seen_ordering": first_seen,
         "headline_overlap": {

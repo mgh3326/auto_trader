@@ -616,6 +616,8 @@ def test_saveticker_real_capture_normalizes_engagement_and_symbols() -> None:
     assert item["source"] == "saveticker"
     assert item["created_raw"].endswith("Z")
     assert item["created_utc"].endswith("+00:00")
+    assert item["source_created_raw"] == "2026-11-26T01:10:16.782298+00:00"
+    assert item["source_created_utc"] == "2026-11-26T01:10:16.782298+00:00"
     assert item["symbols"] == ["DIS"]
     assert any(row["labels"] == ["시황/분석"] for row in rows)
     assert item["view_count"] == 23
@@ -623,15 +625,43 @@ def test_saveticker_real_capture_normalizes_engagement_and_symbols() -> None:
     assert item["like_count"] == 0
     assert item["vote_count"] == 0
     assert item["raw_item"]["translations"]
+    tag_only = st.normalize_item(
+        {
+            "id": "tag-only-us",
+            "title": "US 티커 태그 기사",
+            "created_at": "2026-11-26T00:00:00Z",
+            "tag_names": ["$NVDA", "속보"],
+            "tickers": [],
+        }
+    )
+    assert tag_only is not None
+    assert tag_only["symbols"] == ["NVDA"]
 
 
-def test_saveticker_capture_keeps_korean_etf_suffix_in_db_symbol_format() -> None:
+def test_saveticker_kr_etf_tickers_remain_unmatched() -> None:
     payload = json.loads((SAVETICKER_FIXTURES / "real-capture-top.json").read_text())
     rows, malformed = st.normalize_envelope({"news_list": payload["items"]})
-    # The saved top-story projection reuses its `tickers` field for tag names
-    # when no ticker is present; strict wire parsing drops those non-object rows.
     assert malformed == 5
-    assert any("0256C0.KR" in row["symbols"] for row in rows)
+    assert all(".KR" not in symbol for row in rows for symbol in row["symbols"])
+    label_only = st.normalize_item(
+        {
+            "id": "kr-label-only",
+            "title": "국내 시장 기사",
+            "created_at": "2026-11-26T00:00:00Z",
+            "tag_names": ["시황/분석"],
+            "tickers": [],
+        }
+    )
+    assert label_only is not None
+    assert label_only["symbols"] == []
+    article, _attention = cli._saveticker_article_rows(
+        [label_only],
+        poll_id="p-kr-unmatched",
+        observed_at=datetime(2026, 11, 26, tzinfo=UTC),
+        polled_symbols=["NVDA"],
+        query_param="search",
+    )
+    assert article[0]["symbol"] is None
 
 
 def test_saveticker_malformed_items_are_counted_and_dropped() -> None:
@@ -671,6 +701,39 @@ async def test_saveticker_client_uses_user_agent_and_refuses_redirects() -> None
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_saveticker_client_uses_search_and_view_count_sort_parameters() -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"news_list": [], "total_count": 0, "page": 1, "page_size": 50},
+        )
+
+    http_client = httpx.AsyncClient(
+        base_url=st.BASE_URL, transport=httpx.MockTransport(handler)
+    )
+    async with st.SaveTickerClient(client=http_client, min_interval_s=0) as client:
+        await client.search_page("NVDA", 1, 5)
+        await client.news_page(1, 50, sort="view_count_desc")
+    assert requests[0].url.path == "/api/search"
+    assert dict(requests[0].url.params) == {
+        "search": "NVDA",
+        "page": "1",
+        "page_size": "5",
+    }
+    assert requests[1].url.path == "/api/news"
+    assert dict(requests[1].url.params) == {
+        "page": "1",
+        "page_size": "50",
+        "sort": "view_count_desc",
+    }
+    await http_client.aclose()
+
+
 def test_saveticker_attention_row_is_once_per_provider_item() -> None:
     item = st.normalize_item(
         {
@@ -693,10 +756,10 @@ def test_saveticker_attention_row_is_once_per_provider_item() -> None:
         polled_symbols=["NVDA", "0256C0.KR"],
         query_param="news",
     )
-    assert len(articles) == 2
+    assert len(articles) == 1
     assert len(attention) == 1
     assert attention[0]["observed_at"] == observed.isoformat()
-    assert attention[0]["tickers"] == ["NVDA", "0256C0.KR"]
+    assert attention[0]["tickers"] == ["NVDA"]
     assert attention[0]["view_count"] == 9
     assert attention[0]["comment_count"] == 2
     assert attention[0]["like_count"] == 3
@@ -725,9 +788,33 @@ async def test_saveticker_old_boundary_still_writes_attention_and_scans_top_stor
         async def __aexit__(self, *_args):
             return None
 
-        async def news_page(self, page, page_size):
-            requests.append(("news", page))
-            return {"news_list": [new_top, old], "has_older": True}
+        async def news_page(self, page, page_size, *, sort="created_at_desc"):
+            requests.append(("news", page, page_size, sort))
+            if sort == "view_count_desc":
+                return {
+                    "news_list": [old, new_top],
+                    "total_count": 2,
+                    "page": 1,
+                    "page_size": 50,
+                }
+            return {
+                "news_list": [new_top] if page == 1 else [old],
+                "total_count": 2,
+                "page": page,
+                "page_size": page_size,
+                "window": None,
+                "next_window": None,
+                "has_older": False,
+            }
+
+        async def search_page(self, search, page, page_size):
+            requests.append(("search", search, page))
+            return {
+                "news_list": [],
+                "total_count": 0,
+                "page": page,
+                "page_size": page_size,
+            }
 
         async def top_stories(self):
             requests.append(("top", None))
@@ -739,9 +826,15 @@ async def test_saveticker_old_boundary_still_writes_attention_and_scans_top_stor
         out_dir=tmp_path,
         polled_symbols=["NVDA"],
         pages=3,
-        page_size=10,
+        page_size=1,
     )
-    assert requests == [("news", 1), ("top", None)]
+    assert requests == [
+        ("news", 1, 1, "created_at_desc"),
+        ("news", 2, 1, "created_at_desc"),
+        ("search", "NVDA", 1),
+        ("top", None),
+        ("news", 1, 50, "view_count_desc"),
+    ]
     assert errors == []
     assert not [
         row
@@ -787,8 +880,16 @@ async def test_saveticker_all_malformed_items_are_a_source_error(
         async def __aexit__(self, *_args):
             return None
 
-        async def news_page(self, *_args):
-            return {"news_list": [{"id": "missing-title"}], "has_older": False}
+        async def news_page(self, *_args, **_kwargs):
+            return {
+                "news_list": [{"id": "missing-title"}],
+                "total_count": 1,
+                "page": 1,
+                "page_size": 10,
+            }
+
+        async def search_page(self, *_args):
+            return {"news_list": [], "total_count": 0, "page": 1, "page_size": 10}
 
         async def top_stories(self):
             return {"news_list": []}
@@ -846,7 +947,10 @@ def test_saveticker_failure_is_recorded_and_does_not_stop_other_sources(
         async def __aexit__(self, *_args):
             return None
 
-        async def news_page(self, *_args):
+        async def news_page(self, *_args, **_kwargs):
+            raise st.SaveTickerError("HTTPStatusError")
+
+        async def search_page(self, *_args):
             raise st.SaveTickerError("HTTPStatusError")
 
         async def top_stories(self):
@@ -909,8 +1013,11 @@ def test_saveticker_only_cli_needs_no_benzinga_finnhub_or_kis(
         async def __aexit__(self, *_args):
             return None
 
-        async def news_page(self, *_args):
-            return {"news_list": [], "has_older": False}
+        async def news_page(self, *_args, **_kwargs):
+            return {"news_list": [], "total_count": 0, "page": 1, "page_size": 50}
+
+        async def search_page(self, *_args):
+            return {"news_list": [], "total_count": 0, "page": 1, "page_size": 50}
 
         async def top_stories(self):
             return {"news_list": []}
@@ -957,8 +1064,17 @@ def test_saveticker_cli_writes_each_attention_row_once(monkeypatch, tmp_path) ->
         async def __aexit__(self, *_args):
             return None
 
-        async def news_page(self, *_args):
-            return {"news_list": [item], "has_older": False}
+        async def news_page(self, page, page_size, *, sort="created_at_desc"):
+            ranked = {**item, "view_count": 77} if sort == "view_count_desc" else item
+            return {
+                "news_list": [ranked],
+                "total_count": 1,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def search_page(self, *_args):
+            return {"news_list": [], "total_count": 0, "page": 1, "page_size": 50}
 
         async def top_stories(self):
             return {"news_list": []}
@@ -988,6 +1104,8 @@ def test_saveticker_cli_writes_each_attention_row_once(monkeypatch, tmp_path) ->
     ]
     attention = [row for row in lines if row.get("record_type") == "attention"]
     assert [row["provider_id"] for row in attention] == ["attention-once"]
+    assert attention[0]["view_count"] == 77
+    assert attention[0]["observed_at"]
 
 
 def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
@@ -1001,9 +1119,10 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         "provider_id": "save-1",
         "poll_id": "p-save",
         "query_symbol": "NVDA",
-        "symbols": ["NVDA", "0256C0.KR"],
+        "symbols": ["NVDA"],
         "title": "엔비디아 실적 전망",
         "created_utc": "2026-11-26T00:01:00+00:00",
+        "source_created_utc": "2026-11-26T00:00:30+00:00",
         "first_received_at": "2026-11-26T00:02:00+00:00",
     }
     benzinga = {
@@ -1014,13 +1133,13 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         "query_symbol": "NVDA",
         "stocks": ["NVDA"],
         "title": "Nvidia earnings outlook",
-        "created_utc": "2026-11-26T00:00:00+00:00",
+        "created_utc": "2026-11-26T00:10:45+00:00",
         "first_received_at": "2026-11-26T00:01:00+00:00",
     }
     save_repeat = {
         **save,
         "poll_id": "p-later",
-        "query_symbol": "0256C0.KR",
+        "query_symbol": None,
         "first_received_at": "2026-11-26T00:03:00+00:00",
     }
     benzinga_repeat = {
@@ -1051,17 +1170,40 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         },
     ]
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    unmatched_save = {
+        **save,
+        "provider_id": "save-kr-label-only",
+        "symbols": [],
+        "query_symbol": None,
+        "symbol": None,
+        "poll_id": "p-save-kr",
+    }
+    path.write_text(
+        "".join(
+            json.dumps(row) + "\n" for row in [*rows[:4], unmatched_save, *rows[4:]]
+        )
+    )
     assert cli.main(["summary", "--input", str(path)]) == 0
     summary = json.loads(capsys.readouterr().out)
     save_summary = summary["saveticker"]
-    assert save_summary["coverage"]["article_count_by_source"]["saveticker"] == 1
+    assert save_summary["coverage"]["article_count_by_source"]["saveticker"] == 2
     assert save_summary["coverage"]["attention_rows"] == 1
     assert {row["source"] for row in save_summary["first_seen_ordering"]} == {
         "saveticker",
         "benzinga",
     }
-    assert len(save_summary["first_seen_ordering"]) == 3
+    assert len(save_summary["first_seen_ordering"]) == 2
+    assert save_summary["coverage"]["unmatched_symbol_articles"] == 1
+    assert "한국 기사" in save_summary["coverage"]["ticker_matching_note"]
+    save_first_seen = next(
+        row
+        for row in save_summary["first_seen_ordering"]
+        if row["source"] == "saveticker"
+    )
+    assert save_first_seen["event_time"] == "2026-11-26T00:00:30+00:00"
+    assert save_first_seen["publish_time"] == "2026-11-26T00:01:00+00:00"
+    assert save_first_seen["observed_at"] == "2026-11-26T00:02:00+00:00"
     assert (
         save_summary["headline_overlap"]["cross_source_pairs_by_source"]["benzinga"]
-        == 1
+        == 0
     )

@@ -1112,26 +1112,34 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 `scripts/benzinga_news_shadow.py` 는 `--saveticker` 가 있을 때만 Save+ 의 공개 앱 백엔드
 `https://api.prod.fivelines.co.kr` 를 읽고 기존 외부 JSONL 에 기록한다. DB 저장·`get_news` 노출·인증
 endpoint·`www.saveticker.com`/Cloudflare·SSE·캘린더 ingest 는 범위 밖이다. Save+ 백엔드는 비공식이고
-변경될 수 있다. 목록 `/api/news` 는 1–10 페이지, 페이지당 1–100건으로 제한하며 정렬은 최신순이다.
-`/api/news/top-stories` 도 함께 읽는다. 요청은 timeout, redirect 금지, 고정 User-Agent 와 요청 간
-최소 0.5초 간격을 쓴다. 출력 폴더의 bounded seen-ID sidecar 에서 이전 Save+ ID 를 처음 만나면
-뉴스 페이지 탐색을 멈춘다. 이미 본 경계 항목도 해당 poll 의 attention 스냅샷에는 남긴다.
+변경될 수 있다. `/api/news` 는 1–10 페이지, 페이지당 1–100건으로 제한하고 `page`, `page_size`,
+`total_count` 로 페이지를 계산한다(`window`/`next_window`/`has_older` 는 미사용). 검색은
+`/api/search?search=<term>` 이며 `query`/`q`/`keyword` 는 쓰지 않는다. `/api/news/top-stories` 는
+page 를 무시하는 고정 목록(기본 15건)을 함께 읽는다. 매 run 에
+`/api/news?sort=view_count_desc&page=1&page_size=50` 인기 스냅샷도 읽는다. 유효 sort 는
+`created_at_desc`, `created_at_asc`, `view_count_desc` 다. 요청은 timeout, redirect 금지, 고정
+User-Agent 와 요청 간 최소 0.5초 간격을 쓴다. 출력 폴더의 bounded seen-ID sidecar 는 article 행
+중복만 막는다. 이미 본 ID도 검색된 페이지에서 attention 을 관측하며, item 당 run 별 attention 행은
+하나만 기록한다.
 
 - 목록 응답은 `news_list` 배열이어야 한다. 항목은 유효한 `id`, `title`, timezone 포함 `created_at` 을
   요구한다. `created_at` 원문과 UTC 파싱값을 모두 보존한다. 잘못된 항목은 버리고 `malformed_count` 를
   남기며, 알 수 없는 제공자 필드는 `raw_item` 에 보존한다. 요청 실패는 `poll_status/status=error` 와
   예외 클래스만 기록하고 종료 코드를 실패로 만든다. 다른 뉴스 소스 polling 은 계속한다 — 오류를 0건으로
   숨기지 않는다.
-- 심볼은 fixture 의 `tickers[].symbol` 만 사용하고 `app/core/symbol.py::to_db_symbol` 로 정규화한다.
-  미국 티커는 `NVDA` 같은 그대로의 심볼, 한국 종목/ETF 표기는 캡처에서 관측된 `0256C0.KR` 처럼
-  `.KR` 접미를 보존하며 DB 구분자 `.` 을 쓴다. 폴링 대상과 일치하는 ticker 마다 기사 행을 하나 쓴다.
-  미일치 기사도 `query_symbol=null` 로 한 번 기록한다.
+- 미국 ticker 만 매핑한다: `$SYMBOL` 형식의 `tag_names` 와 `tickers[{id,symbol,name,primary}]` 에서
+  ticker 를 읽고 `app/core/symbol.py::to_db_symbol` 로 정규화한다. Save+ 는 한국 기사에 ticker 를
+  제공하지 않는다. KR 기사는 label-only 이므로 `symbol=null` 로 미매칭하고 summary 에 미매칭 사실을
+  표시한다. 폴링 대상과 일치하는 US ticker 마다 기사 행을 하나 쓰고, 미일치 기사도 한 번 기록한다.
 - `record_type=attention` 은 수집된 각 provider ID 당 poll 별 하나다: `observed_at`, 조회·댓글 수,
   전체 like/vote stats 와 정수 count, top-story 여부, 라벨, ticker 를 저장한다. 한 기사가 여러 폴링 심볼에
   일치해도 attention 은 중복 쓰지 않는다.
+- `created_at` 은 Save+ publish time 이고 `extra.source_created_at` 은 provider event time 이다.
+  둘은 각각 `created_utc` 와 `source_created_utc` 로 보존한다. `observed_at` 은 수집기 시계다.
+  first-seen 순서는 `observed_at` 으로 정렬하고 event-time 비교는 `source_created_at` 을 쓴다.
 - summary 는 Save+ 커버리지와 첫 관측 순서를 별도 `saveticker` 블록에 포함한다. 한국어 번역 제목은
   정규화 제목 기준으로 Save+ 내부에서만 중복을 비교한다. 다른 소스와의 headline overlap 은 제목을
-  비교하지 않고 ticker 교집합 + provider `created_at` 차이 10분 이내로 판정한다. 이 값은 순차 요청의
+  비교하지 않고 ticker 교집합 + provider event time 차이 10분 이내로 판정한다. 이 값은 순차 요청의
   관측 신호이지 정밀 지연 측정이 아니다.
 - `deploy/dagu/at-news-shadow/` 의 Benzinga/Finnhub/KIS 주기는 기존 ET 30분으로 유지한다.
   Save+ 3분 주기는 별도 `deploy/dagu/at-saveticker-shadow/` 미등록 복사본에만 둔다.
