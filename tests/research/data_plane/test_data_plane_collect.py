@@ -450,6 +450,16 @@ def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, caps
     code = cli.main(["collect", "--root", str(tmp_path), "--market", "crypto"])
     out = capsys.readouterr()
     assert code == 2
+    assert (
+        "dataset_outcome universe crypto 2026-10-30 status=written reason=none"
+    ) in out.out
+    assert (
+        "dataset_outcome bars_1d crypto 2026-10-30 "
+        'status=not_collected reason="bars_1d crypto 2026-10-30: coverage'
+    ) in out.out
+    assert (
+        "dataset_outcome corporate_actions crypto 2026-10-30 status=written reason=none"
+    ) in out.out
     assert "written universe crypto 2026-10-30" in out.out
     assert "written corporate_actions crypto 2026-10-30" in out.out
     assert "not collected: bars_1d crypto 2026-10-30" in out.err

@@ -154,11 +154,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_results(results) -> None:  # noqa: ANN001
+def _print_results(results, failures=()) -> None:  # noqa: ANN001
     for r in results:
+        reason = "no_session" if r.action == "skipped_no_session" else "none"
+        print(
+            f"dataset_outcome {r.dataset} {r.market} {r.partition_date} "
+            f"status={r.action} reason={reason} rows={r.rows}"
+        )
         print(
             f"{r.action} {r.dataset} {r.market} {r.partition_date} "
             f"rows={r.rows} sha256={r.sha256[:12]}"
+        )
+    for failure in failures:
+        print(
+            f"dataset_outcome {failure.dataset} {failure.market} "
+            f"{failure.partition_date} status={failure.status} "
+            f"reason={json.dumps(failure.reason, ensure_ascii=True)}"
         )
 
 
@@ -285,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (RefusedRowError, CollectError) as exc:
             # Every dataset was attempted; print what succeeded, then the errors.
-            _print_results(getattr(exc, "results", []))
+            _print_results(
+                getattr(exc, "results", []),
+                getattr(exc, "failures", []),
+            )
             kind = "refused" if isinstance(exc, RefusedRowError) else "not collected"
             print(f"{kind}: {exc}", file=sys.stderr)
             for note in getattr(exc, "__notes__", []):
