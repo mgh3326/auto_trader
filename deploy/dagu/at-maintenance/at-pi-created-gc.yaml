@@ -1,8 +1,8 @@
-# 등록 대상(hk 6436, 운영자 결정 508(b), hk 6425): 매일 한 번, 한 번도 시작되지 않은 24시간 초과 auto_trader 잡 컨테이너(상태 created)만 지운다.
+# 등록 대상(hk 6436, 운영자 결정 508(b), hk 6425): 매일 한 번, 한 번도 시작되지 않은 1시간 초과(결정 532, 이전 24시간) auto_trader 잡 컨테이너(상태 created)만 지운다.
 # 실행 중·종료된 컨테이너, 이미지, 볼륨은 건드리지 않는다. 서비스 이름(shiftgate-*, at-api*, at-mcp*, at-upbit-ws*, at-worker*, at-scheduler*, at-pg, at-redis, at-trend-*, factortrail, broker-edge, gatewayd)만 제외한다(hk 6438).
 # 스크립트는 레포 deploy/shiftgate/pi/created-gc.sh 를 pi /root/at-run/shiftgate-pi/ 에 설치한 사본이다(인자 없으면 목록만).
-# 05:30 KST: 잡이 거의 없는 시간. 이 파일은 사본이며 저장소가 등록하지 않는다.
-description: "Daily removal of never-started auto_trader job containers older than 24h (decision 508(b))"
+# 매일 05:30 KST(운영자 2026-11-26: 매시 실행은 불필요, 기준만 1시간). 05:45 에 at-pi-shiftgate-prune 이 돈다. 이 파일은 사본이며 저장소가 등록하지 않는다.
+description: "Daily removal of never-started auto_trader job containers older than 1h (decisions 508(b), 532)"
 schedule: "CRON_TZ=Asia/Seoul 30 5 * * *"
 max_active_runs: 1
 hist_retention_days: 30

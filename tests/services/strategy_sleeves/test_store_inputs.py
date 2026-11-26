@@ -44,6 +44,61 @@ async def test_create_refuses_the_reserved_system_actor_before_any_write() -> No
 
 
 @pytest.mark.asyncio
+async def test_create_accepts_4885_trend_rule_for_upbit_crypto(monkeypatch) -> None:
+    class _Session:
+        def __init__(self) -> None:
+            self.rows = []
+
+        def add(self, _row) -> None:
+            self.rows.append(_row)
+
+        async def flush(self) -> None:
+            if len(self.rows) == 1:
+                self.rows[0].id = 42
+
+    async def _no_existing_sleeve(_session, _key):
+        return None
+
+    monkeypatch.setattr(store, "get_sleeve_by_key", _no_existing_sleeve)
+    session = _Session()
+    sleeve, version = await store.create_sleeve(
+        session,
+        sleeve_key="trend-probe",
+        rule_id="trend.upbit_long_tsmom_v1",
+        account_mode="upbit",
+        market="crypto",
+        state="shadow",
+        budget_cap="1",
+        loss_limit="1",
+        reason="probe",
+        actor="operator:probe",
+    )
+
+    assert sleeve.rule_id == "trend.upbit_long_tsmom_v1"
+    assert sleeve.account_mode == "upbit"
+    assert sleeve.market == "crypto"
+    assert (sleeve, version) == tuple(session.rows)
+    assert version.sleeve_id == 42
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_4885_trend_rule_for_equity_market() -> None:
+    with pytest.raises(store.SleeveError, match="does not run in equity_kr"):
+        await store.create_sleeve(
+            None,  # market validation rejects before the first database query
+            sleeve_key="trend-probe",
+            rule_id="trend.upbit_long_tsmom_v1",
+            account_mode="kis_live",
+            market="equity_kr",
+            state="shadow",
+            budget_cap="1",
+            loss_limit="1",
+            reason="probe",
+            actor="operator:probe",
+        )
+
+
+@pytest.mark.asyncio
 async def test_the_mark_is_the_newest_completed_close_whatever_the_row_order(
     monkeypatch,
 ) -> None:

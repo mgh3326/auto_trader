@@ -595,12 +595,12 @@ class InvestHomeService:
             ProtectedQuantityValidationError,
             ProtectionStateUnavailable,
             apply_position_protection,
+            clear_protection_batch_caches,
+            normalize_protection_key,
+            prefetch_protection_heads,
         )
 
-        async def project(holding: Holding) -> None:
-            identity = self._protection_identity(holding)
-            if identity is None:
-                return
+        async def project(holding: Holding, identity: tuple[str, str, str]) -> None:
             scope, market, symbol = identity
             raw_sellable = holding.brokerSellableQuantity
             if raw_sellable is None and holding.sellableObserved:
@@ -643,7 +643,31 @@ class InvestHomeService:
             if "sellable_quantity" in output:
                 holding.sellableQuantity = output["sellable_quantity"]
 
-        await asyncio.gather(*(project(holding) for holding in holdings))
+        targets = [
+            (holding, identity)
+            for holding in holdings
+            if (identity := self._protection_identity(holding)) is not None
+        ]
+        keys = []
+        for _, (scope, market, symbol) in targets:
+            try:
+                keys.append(
+                    normalize_protection_key(
+                        account_scope=scope, market=market, symbol=symbol
+                    )
+                )
+            except ProtectedQuantityValidationError:
+                # Leave invalid identities to the existing unverified projection.
+                continue
+
+        try:
+            # Populate the read-side cache before gather copies the context.
+            await prefetch_protection_heads(keys)
+            await asyncio.gather(
+                *(project(holding, identity) for holding, identity in targets)
+            )
+        finally:
+            clear_protection_batch_caches()
 
     async def _get_home_from_snapshot(
         self,
