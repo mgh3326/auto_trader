@@ -13,12 +13,12 @@ from pathlib import Path
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("command", choices=("run", "close-due", "status"))
+    result.add_argument("command", choices=("run", "close-due", "status", "refresh"))
     result.add_argument("--venue", choices=("alpaca_paper",), required=True)
     result.add_argument(
         "--asof",
         type=date.fromisoformat,
-        required=True,
+        required=False,
         help="execution session date (New York)",
     )
     result.add_argument("--dry-run", action="store_true")
@@ -77,11 +77,19 @@ async def execute(args: argparse.Namespace) -> dict:
 
     if args.top_n < 1 or not args.notional.is_finite() or args.notional <= 0:
         raise ValueError("positive top-n and finite positive notional required")
+    if args.command != "refresh" and args.asof is None:
+        raise ValueError("--asof required for run, close-due, and status")
     changes = parse_symbol_changes(getattr(args, "symbol_change", None))
     if changes and args.command == "run":
         raise ValueError("--symbol-change applies to close-due and status only")
     if args.asset_fixture and (not args.dry_run or args.command != "run"):
         raise ValueError("asset fixture is run --dry-run only")
+    if args.command == "refresh":
+        from app.services.mock_strategy.us_broker import UsPaperBroker
+
+        recorder = MockStrategyRecorder()
+        strategy = UsPaperStrategy(recorder, UsPaperBroker(read_only=True))
+        return await strategy.refresh(dry_run=args.dry_run)
     if args.command == "run" and args.dry_run:
         from app.services.brokers.alpaca.schemas import Asset
 

@@ -1622,6 +1622,7 @@ components:
       - leg_ref
       - role
       - side
+      - broker_side
       - status
       - broker_order_bound
       properties:
@@ -1638,6 +1639,11 @@ components:
           - sell
           - short
           - cover
+        broker_side:
+          type: string
+          enum:
+          - buy
+          - sell
         status:
           type: string
           enum:
@@ -1671,6 +1677,8 @@ components:
       - reason
       - opened_at
       - closed_at
+      - fill_time
+      - fill_time_basis
       - entry_price
       - exit_price
       - realized_pnl_amount
@@ -1724,6 +1732,21 @@ components:
           - string
           - 'null'
           format: date-time
+        fill_time:
+          description: Broker fill time when known; closed_at remains the journal evidence time.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        fill_time_basis:
+          type:
+          - string
+          - 'null'
+          enum:
+          - broker_filled_at
+          - broker_activity_time
+          - observed_snapshot
+          - null
         entry_price:
           $ref: '#/components/schemas/DecimalValue'
         exit_price:

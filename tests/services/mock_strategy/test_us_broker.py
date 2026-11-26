@@ -10,13 +10,14 @@ import httpx
 import pytest
 
 from app.core.config import settings
+from app.services.brokers.alpaca import service as alpaca_service
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
 from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperIdentityMismatch,
     AlpacaPaperOrderNotFound,
     AlpacaPaperRequestError,
 )
-from app.services.brokers.alpaca.schemas import OrderRequest
+from app.services.brokers.alpaca.schemas import Fill, OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.mock_strategy import recorder as recorder_module
 from app.services.mock_strategy import us, us_broker
@@ -561,3 +562,108 @@ async def test_account_404_is_not_order_absence():
             "fixture-order", report_not_found=True
         )
     assert not isinstance(error.value, AlpacaPaperOrderNotFound)
+
+
+async def test_refresh_reachable_broker_calls_are_get_only():
+    reachable = (
+        (us, "UsPaperStrategy", "refresh"),
+        (us_broker, "UsPaperBroker", "refresh_account_ref"),
+        (us_broker, "UsPaperBroker", "lookup"),
+        (us_broker, "UsPaperBroker", "lookup_for_refresh"),
+        (us_broker, "UsPaperBroker", "fills_for_order"),
+        (alpaca_service, "AlpacaPaperBrokerService", "get_account"),
+        (alpaca_service, "AlpacaPaperBrokerService", "get_order"),
+        (alpaca_service, "AlpacaPaperBrokerService", "get_order_by_client_order_id"),
+        (alpaca_service, "AlpacaPaperBrokerService", "list_fills"),
+        (alpaca_service, "AlpacaPaperBrokerService", "_verify_physical_identity"),
+    )
+    for module, class_name, method_name in reachable:
+        source = Path(module.__file__).read_text()
+        tree = ast.parse(source)
+        cls = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        method = next(
+            node
+            for node in cls.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+        )
+        calls = [
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_request"
+        ]
+        assert all(
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "GET"
+            for node in calls
+        ), (class_name, method_name)
+        assert not any(
+            isinstance(node, ast.Constant) and node.value in {"POST", "DELETE"}
+            for node in ast.walk(method)
+        ), (class_name, method_name)
+
+
+async def test_refresh_reads_order_and_fill_activity_fixtures_by_client_id():
+    order_fixture = {
+        "id": "paper-order-123",
+        "client_order_id": "fixture-coid",
+        "symbol": "AAPL",
+        "qty": "10",
+        "filled_qty": "10",
+        "side": "buy",
+        "type": "market",
+        "time_in_force": "day",
+        "status": "filled",
+        "filled_avg_price": "100.25",
+        "submitted_at": "2026-11-02T14:30:00Z",
+        "filled_at": "2026-11-02T14:40:00Z",
+    }
+    fill_fixture = [
+        {
+            "id": "activity-123",
+            "activity_type": "FILL",
+            "symbol": "AAPL",
+            "qty": "10",
+            "price": "100.25",
+            "side": "buy",
+            "transaction_time": "2026-11-02T14:40:00Z",
+            "order_id": "paper-order-123",
+        }
+    ]
+
+    class RefreshTransport(Transport):
+        async def request(self, method, path, **kwargs):
+            if path == "/v2/orders:by_client_order_id":
+                self.calls.append((method, path, kwargs))
+                return httpx.Response(200, json=order_fixture)
+            if path == "/v2/orders/paper-order-123":
+                self.calls.append((method, path, kwargs))
+                return httpx.Response(200, json=order_fixture)
+            if path == "/v2/account/activities/FILL":
+                self.calls.append((method, path, kwargs))
+                return httpx.Response(200, json=fill_fixture)
+            return await super().request(method, path, **kwargs)
+
+    transport = RefreshTransport()
+    broker = UsPaperBroker(settings=config(), transport=transport, read_only=True)
+    await broker.refresh_account_ref()
+    order = await broker.lookup_for_refresh("fixture-coid")
+    assert order is not None and order.id == "paper-order-123"
+    fills = await broker.fills_for_order(order)
+    assert [fill.model_dump() for fill in fills] == [
+        Fill.model_validate(fill_fixture[0]).model_dump()
+    ]
+    assert [(method, path) for method, path, _ in transport.calls] == [
+        ("GET", "/v2/account"),
+        ("GET", "/v2/account"),
+        ("GET", "/v2/orders:by_client_order_id"),
+        ("GET", "/v2/orders/paper-order-123"),
+        ("GET", "/v2/account/activities/FILL"),
+    ]

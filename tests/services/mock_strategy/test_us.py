@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
@@ -12,7 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.models.mock_strategy import OPEN_STATUSES, MockStrategyOrder
-from app.services.brokers.alpaca.schemas import Asset, Order
+from app.services.brokers.alpaca.schemas import Asset, Fill, Order
 from app.services.mock_strategy.recorder import record_alpaca_absence
 from app.services.mock_strategy.us import UsPaperStrategy, plan_orders
 from app.services.mock_strategy.us_broker import PreDispatchRefusal
@@ -50,6 +51,7 @@ class MemoryRecorder:
     def __init__(self):
         self.rows = {}
         self.fail_updates = False
+        self.update_calls = 0
 
     @asynccontextmanager
     async def account_lock(self, **kwargs):
@@ -90,6 +92,7 @@ class MemoryRecorder:
         return row
 
     async def update(self, client_order_id, *, status, meta=None, **kwargs):
+        self.update_calls += 1
         if self.fail_updates:
             raise RuntimeError("fixture database unavailable")
         row = self.rows[client_order_id]
@@ -109,6 +112,15 @@ class MemoryRecorder:
             and (strategy_id is None or r.strategy_id == strategy_id)
         ]
 
+    async def list_open(self, *, venue, account_ref=None, strategy_id=None):
+        return [
+            row
+            for row in await self.list_orders(
+                venue=venue, account_ref=account_ref, strategy_id=strategy_id
+            )
+            if row.status in OPEN_STATUSES
+        ]
+
     async def list_due(self, *, asof, **kwargs):
         return [
             r
@@ -124,6 +136,7 @@ class PaperBroker:
     def __init__(self):
         self.account_ref = "fixture-paper"
         self.orders = {}
+        self.fills = {}
         self.posts = []
         self.fail_submit = False
         self.accept_only = False
@@ -138,6 +151,15 @@ class PaperBroker:
 
     async def lookup(self, coid):
         return self.orders.get(coid)
+
+    async def lookup_for_refresh(self, coid):
+        return await self.lookup(coid)
+
+    async def refresh_account_ref(self):
+        return self.account_ref
+
+    async def fills_for_order(self, order):
+        return self.fills.get(order.id, [])
 
     async def prepare(self, request, *, side, asof, confirm):
         assert confirm is True
@@ -340,6 +362,89 @@ async def test_accepted_is_not_fill_and_partial_terminal_entry_closes_only_prove
     result = await strategy.close_due(asof=date(2026, 11, 9), confirm=True)
     assert broker.posts[-1][0] == "cover" and broker.posts[-1][1].qty == Decimal("7")
     assert entry.status == "closed" and entry.realized_pnl == Decimal("70")
+
+
+async def test_refresh_records_alpaca_fill_activities_once():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    intent = plan_orders(
+        selection(), broker.asset_map, account_ref=broker.account_ref
+    ).orders[0]
+    row = await recorder.record(intent)
+    row.status = "accepted"
+    row.broker_order_id = "alpaca-order-1"
+    filled_at = datetime(2026, 11, 2, 14, 40, tzinfo=UTC)
+    order = Order(
+        id="alpaca-order-1",
+        client_order_id=row.client_order_id,
+        symbol="AAPL",
+        qty=None,
+        notional=Decimal("10000"),
+        filled_qty=Decimal("100"),
+        side="buy",
+        type="market",
+        time_in_force="day",
+        status="filled",
+        filled_avg_price=Decimal("100"),
+        submitted_at=datetime(2026, 11, 2, 14, 30, tzinfo=UTC),
+        filled_at=filled_at,
+    )
+    broker.orders[row.client_order_id] = order
+    broker.fills[order.id] = [
+        Fill(
+            id="fill-1",
+            activity_type="FILL",
+            symbol="AAPL",
+            qty=Decimal("100"),
+            price=Decimal("100"),
+            side="buy",
+            transaction_time=filled_at,
+            order_id=order.id,
+        )
+    ]
+    strategy = UsPaperStrategy(recorder, broker)
+
+    result = await strategy.refresh()
+
+    assert result["orders"][0]["changed"] is True
+    assert row.status == "filled"
+    assert row.meta["filled_qty"] == "100"
+    assert row.entry_price == Decimal("100")
+    assert row.opened_at == filled_at
+    assert row.meta["filled_at"] == filled_at.isoformat()
+    assert row.meta["fill_time_basis"] == "broker_filled_at"
+    assert recorder.update_calls == 1
+
+    second = await strategy.refresh()
+    assert second["orders"][0]["changed"] is False
+    assert recorder.update_calls == 1
+
+
+async def test_refresh_dry_run_reports_change_without_journal_write():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    intent = plan_orders(
+        selection(), broker.asset_map, account_ref=broker.account_ref
+    ).orders[0]
+    row = await recorder.record(intent)
+    row.status = "accepted"
+    broker.orders[row.client_order_id] = Order(
+        id="alpaca-order-2",
+        client_order_id=row.client_order_id,
+        symbol="AAPL",
+        notional=Decimal("10000"),
+        filled_qty=Decimal("100"),
+        side="buy",
+        type="market",
+        time_in_force="day",
+        status="filled",
+        filled_avg_price=Decimal("100"),
+        filled_at=datetime(2026, 11, 2, 14, 40, tzinfo=UTC),
+    )
+    result = await UsPaperStrategy(recorder, broker).refresh(dry_run=True)
+    json.dumps(result)
+    assert result["orders"][0]["changed"] is True
+    assert result["orders"][0]["would_change"]["status"] == "filled"
+    assert row.status == "accepted"
+    assert recorder.update_calls == 0
 
 
 @pytest.mark.parametrize(

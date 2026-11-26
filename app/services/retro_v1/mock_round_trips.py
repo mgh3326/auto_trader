@@ -106,6 +106,7 @@ def _leg(leg: Any, role: str) -> dict[str, Any]:
         "leg_ref": make_ref("mock_leg", leg.id),
         "role": role,
         "side": leg.side,
+        "broker_side": "sell" if leg.side in {"sell", "short"} else "buy",
         "status": leg.status,
         "broker_order_bound": leg.broker_order_id is not None,
     }
@@ -120,6 +121,17 @@ def round_trip_row(key: tuple[str, str, str], entry: Any, exits: list[Any]) -> R
     strategy_id, venue, episode_id = key
     state, reason = _state(entry, exits)
     closed = state == "closed" and entry is not None
+    fill_leg = (
+        next(
+            (leg for leg in reversed(exits) if leg.meta.get("filled_at")),
+            None,
+        )
+        if closed
+        else None
+    )
+    fill_leg = fill_leg or (
+        entry if entry is not None and entry.meta.get("filled_at") else None
+    )
     legs = []
     if entry is not None:
         legs.append(_leg(entry, "entry"))
@@ -136,6 +148,10 @@ def round_trip_row(key: tuple[str, str, str], entry: Any, exits: list[Any]) -> R
         "reason": reason,
         "opened_at": iso(entry.opened_at) if entry is not None else None,
         "closed_at": iso(entry.closed_at) if closed else None,
+        "fill_time": fill_leg.meta.get("filled_at") if fill_leg is not None else None,
+        "fill_time_basis": fill_leg.meta.get("fill_time_basis")
+        if fill_leg is not None
+        else None,
         "entry_price": dec(entry.entry_price) if entry is not None else None,
         # Exit price and P&L are the episode's totals: shown only once it closed.
         "exit_price": dec(entry.exit_price) if closed else None,
