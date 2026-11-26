@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.core.symbol import to_db_symbol
 from app.models.mock_strategy import MockStrategyOrder
@@ -254,7 +254,7 @@ class UsPaperStrategy:
                 "plan_orders": len(rows),
             }
 
-    async def _observe(self, row: MockStrategyOrder, order: Order) -> MockStrategyOrder:
+    def _observation(self, row: MockStrategyOrder, order: Order, fills=()) -> dict:
         request = order_request(row)
         if (
             order.client_order_id != row.client_order_id
@@ -276,7 +276,28 @@ class UsPaperStrategy:
             or (row.qty is not None and qty > row.qty)
         ):
             raise ValueError("invalid broker fill quantity")
-        price = order.filled_avg_price
+        matching_fills = [fill for fill in fills if fill.order_id == order.id]
+        if any(
+            fill.qty is None
+            or fill.price is None
+            or not fill.qty.is_finite()
+            or fill.qty <= 0
+            or not fill.price.is_finite()
+            or fill.price <= 0
+            or fill.side != order.side
+            for fill in matching_fills
+        ):
+            raise ValueError("invalid broker fill activity")
+        fill_qty = sum((fill.qty for fill in matching_fills), Decimal(0))
+        if matching_fills and fill_qty != qty:
+            raise ValueError("broker fill activities do not match cumulative quantity")
+        activity_price = (
+            sum((fill.qty * fill.price for fill in matching_fills), Decimal(0))
+            / fill_qty
+            if matching_fills
+            else None
+        )
+        price = activity_price or order.filled_avg_price
         if qty > 0 and (price is None or not price.is_finite() or price <= 0):
             raise ValueError("broker fill price missing")
         if order.status == "filled" and qty <= 0:
@@ -292,27 +313,247 @@ class UsPaperStrategy:
             status = "rejected" if order.status == "rejected" else "canceled"
         else:
             status = "accepted"
+        fill_time = order.filled_at
+        fill_time_basis = (
+            "broker_filled_at" if fill_time is not None else "observed_snapshot"
+        )
+        if fill_time is None and matching_fills:
+            activity_time = max(
+                (
+                    fill.transaction_time
+                    for fill in matching_fills
+                    if fill.transaction_time
+                ),
+                default=None,
+            )
+            if activity_time is not None:
+                fill_time = activity_time
+                fill_time_basis = "broker_activity_time"
+        previous_qty = Decimal(row.meta.get("filled_qty", "0"))
+        if qty > 0 and fill_time is None and qty == previous_qty:
+            prior_time = row.meta.get("filled_at")
+            if prior_time:
+                fill_time = datetime.fromisoformat(prior_time)
+                fill_time_basis = row.meta.get("fill_time_basis") or "observed_snapshot"
         observed = datetime.now(UTC)
-        opened = (order.filled_at or observed) if qty > 0 else None
-        return await self.recorder.update(
-            row.client_order_id,
-            status=status,
-            broker_order_id=order.id,
-            opened_at=opened
-            if row.side in {"buy", "short"} and row.opened_at is None
+        effective_fill_time = fill_time or observed
+        if price is not None:
+            price = price.quantize(
+                Decimal("0.000000000000000001"), rounding=ROUND_HALF_UP
+            )
+        return {
+            "status": status,
+            "broker_order_id": order.id,
+            "opened_at": effective_fill_time
+            if qty > 0 and row.side in {"buy", "short"} and row.opened_at is None
             else None,
-            entry_price=price if qty > 0 and row.side in {"buy", "short"} else None,
-            exit_price=price if qty > 0 and row.side in {"sell", "cover"} else None,
-            meta={
+            "entry_price": price if qty > 0 and row.side in {"buy", "short"} else None,
+            "exit_price": price if qty > 0 and row.side in {"sell", "cover"} else None,
+            "meta": {
                 "filled_qty": str(qty),
                 "broker_status": order.status,
                 "broker_terminal": order.status in BROKER_TERMINAL,
-                "fill_time_basis": "broker_filled_at"
-                if order.filled_at
-                else "observed_snapshot",
+                "filled_at": effective_fill_time.isoformat() if qty > 0 else None,
+                "fill_time_basis": fill_time_basis if qty > 0 else None,
                 "evidence_observed_at": observed.isoformat(),
             },
+        }
+
+    async def _observe(
+        self, row: MockStrategyOrder, order: Order, fills=()
+    ) -> MockStrategyOrder:
+        update = self._observation(row, order, fills)
+        return await self.recorder.update(
+            row.client_order_id,
+            status=update["status"],
+            broker_order_id=update["broker_order_id"],
+            opened_at=update["opened_at"],
+            entry_price=update["entry_price"],
+            exit_price=update["exit_price"],
+            meta=update["meta"],
         )
+
+    @staticmethod
+    def _observation_changes(row: MockStrategyOrder, update: dict) -> bool:
+        return any(
+            (
+                row.status != update["status"],
+                row.broker_order_id != update["broker_order_id"],
+                update["opened_at"] is not None
+                and row.opened_at != update["opened_at"],
+                update["entry_price"] is not None
+                and row.entry_price != update["entry_price"],
+                update["exit_price"] is not None
+                and row.exit_price != update["exit_price"],
+                any(
+                    row.meta.get(key) != value
+                    for key, value in update["meta"].items()
+                    if key != "evidence_observed_at"
+                ),
+            )
+        )
+
+    async def refresh(self, *, dry_run: bool = False) -> dict:
+        """Refresh accepted Alpaca paper legs using GET-only broker evidence."""
+        account = await self.broker.refresh_account_ref()
+        async with self.recorder.account_lock(venue=VENUE, account_ref=account):
+            rows = await self.recorder.list_open(venue=VENUE, account_ref=account)
+            results = []
+            changed_episode_ids: set[str] = set()
+            for row in rows:
+                if row.status not in {"accepted", "partially_filled", "filled"}:
+                    continue
+                order = await self.broker.lookup_for_refresh(row.client_order_id)
+                if order is None:
+                    results.append(
+                        {
+                            **projection(row),
+                            "changed": False,
+                            "reason": "order_not_found",
+                        }
+                    )
+                    continue
+                fills = await self.broker.fills_for_order(order)
+                update = self._observation(row, order, fills)
+                changed = self._observation_changes(row, update)
+                if changed and not dry_run:
+                    row = await self.recorder.update(
+                        row.client_order_id,
+                        status=update["status"],
+                        broker_order_id=update["broker_order_id"],
+                        opened_at=update["opened_at"],
+                        entry_price=update["entry_price"],
+                        exit_price=update["exit_price"],
+                        meta=update["meta"],
+                    )
+                    changed_episode_ids.add(row.episode_id)
+                results.append(
+                    {
+                        **projection(row),
+                        "changed": changed,
+                        "would_change": (
+                            {
+                                **update,
+                                "opened_at": update["opened_at"].isoformat()
+                                if update["opened_at"]
+                                else None,
+                                "entry_price": str(update["entry_price"])
+                                if update["entry_price"] is not None
+                                else None,
+                                "exit_price": str(update["exit_price"])
+                                if update["exit_price"] is not None
+                                else None,
+                            }
+                            if dry_run and changed
+                            else None
+                        ),
+                    }
+                )
+            if not dry_run:
+                all_rows = await self.recorder.list_orders(
+                    venue=VENUE, account_ref=account
+                )
+                for episode_id in changed_episode_ids:
+                    episode_rows = [
+                        item for item in all_rows if item.episode_id == episode_id
+                    ]
+                    entry = next(
+                        (
+                            item
+                            for item in episode_rows
+                            if item.side in {"buy", "short"}
+                        ),
+                        None,
+                    )
+                    exits = [
+                        item for item in episode_rows if item.side in {"sell", "cover"}
+                    ]
+                    if (
+                        entry is None
+                        or entry.status != "filled"
+                        or not exits
+                        or not all(
+                            item.status
+                            in {
+                                "filled",
+                                "partially_filled",
+                                "closed",
+                                "canceled",
+                                "rejected",
+                            }
+                            for item in exits
+                        )
+                    ):
+                        continue
+                    try:
+                        quantity = Decimal(entry.meta.get("filled_qty", "0"))
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                    if quantity > 0 and entry.entry_price is not None:
+                        await self._finalize_refreshed_entry(
+                            entry, episode_rows, quantity
+                        )
+                for result in results:
+                    current = await self.recorder.get(result["client_order_id"])
+                    if current is not None:
+                        result.update(projection(current))
+            return {"venue": VENUE, "dry_run": dry_run, "orders": results}
+
+    async def _finalize_refreshed_entry(
+        self,
+        entry: MockStrategyOrder,
+        episode_rows: list[MockStrategyOrder],
+        qty: Decimal,
+    ) -> bool:
+        """Close only a fully evidenced existing exit chain; never dispatch here."""
+        side = "sell" if entry.side == "buy" else "cover"
+        exits = [row for row in episode_rows if row.side in {"sell", "cover"}]
+        if any(
+            type(row.meta.get("exit_leg", 0)) is not int
+            or row.meta.get("exit_leg", 0) < 0
+            for row in exits
+        ):
+            return False
+        exits.sort(key=lambda row: row.meta.get("exit_leg", 0))
+        if not exits or [row.meta.get("exit_leg", 0) for row in exits] != list(
+            range(len(exits))
+        ):
+            return False
+        filled = Decimal(0)
+        proceeds = Decimal(0)
+        for index, leg in enumerate(exits):
+            if (
+                leg.side != side
+                or leg.client_order_id != self._exit_id(entry, side, index)
+                or leg.meta.get(
+                    "entry_client_order_id",
+                    entry.client_order_id if index == 0 else None,
+                )
+                != entry.client_order_id
+            ):
+                return False
+            evidence = self._exit_fill(leg)
+            if evidence is None or evidence[0] != qty - filled:
+                return False
+            filled += evidence[0]
+            proceeds += evidence[1]
+        if filled != qty or entry.entry_price is None:
+            return False
+        now = datetime.now(UTC)
+        for leg in exits:
+            if leg.status in {"filled", "partially_filled"}:
+                await self.recorder.update(
+                    leg.client_order_id, status="closed", closed_at=now
+                )
+        pnl = (proceeds - entry.entry_price * qty) * (1 if entry.side == "buy" else -1)
+        await self.recorder.update(
+            entry.client_order_id,
+            status="closed",
+            closed_at=now,
+            exit_price=proceeds / qty,
+            realized_pnl=pnl,
+        )
+        return True
 
     async def _execute(
         self, row: MockStrategyOrder, asof: date, change: dict | None = None

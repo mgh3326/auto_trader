@@ -186,6 +186,28 @@ def test_cli_reports_unresolved_episode_as_failure(monkeypatch, capsys):
     )
 
 
+@pytest.mark.asyncio
+async def test_refresh_requires_confirm_for_commit():
+    from argparse import Namespace
+
+    from scripts.mock_strategy import execute
+
+    with pytest.raises(ValueError, match="--confirm required"):
+        await execute(
+            Namespace(
+                command="refresh",
+                venue="alpaca_paper",
+                asof=None,
+                dry_run=False,
+                confirm=False,
+                top_n=10,
+                notional=Decimal("10000"),
+                symbol_change=None,
+                asset_fixture=None,
+            )
+        )
+
+
 def test_producer_universe_cutoff_and_observation_provenance(tmp_path):
     from app.services.brokers.alpaca.schemas import Asset
     from app.services.mock_strategy.us import plan_orders
