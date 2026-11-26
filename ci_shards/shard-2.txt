@@ -213,6 +213,8 @@ tests/services/brokers/toss/test_smoke_script.py
 tests/services/brokers/toss/test_token_issuance_gatewayd.py
 tests/services/buy_gate_ab_shadow/test_evaluate.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
+tests/services/daily_plan/test_static_boundary.py
+tests/services/daily_plan/test_validator.py
 tests/services/dots_history_export/test_leak_check.py
 tests/services/execution_intent_gateway/test_gateway.py
 tests/services/execution_intent_gateway/test_http_route.py
