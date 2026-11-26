@@ -1,0 +1,42 @@
+{
+  "fda": [
+    {
+      "commentary": "",
+      "companies": [
+        {
+          "cik": "",
+          "id": "62b3773a118ebc0001427b67",
+          "name": "Alpha Tau Medical Ltd.",
+          "securities": [
+            {
+              "exchange": "NASDAQ",
+              "symbol": "DRTS"
+            }
+          ]
+        }
+      ],
+      "created": 1767621777,
+      "date": "2026-01-05",
+      "drug": {
+        "generic": false,
+        "id": "62b3771c9c3cd100011418ce",
+        "indication_symptom": [
+          "Prostate cancer"
+        ],
+        "name": "Alpha DaRT"
+      },
+      "event_type": "Provided Update",
+      "id": "695bc49183cac20001bec514",
+      "nic_number": "",
+      "notes": "",
+      "outcome": "Alpha Tau Medical Ltd.  announced the submission of the first module of its pre-market approval (PMA) application to the U.S. Food and Drug Administration (FDA), following the FDA's previous decision to allow the Company to use the more flexible modular approach.",
+      "outcome_brief": "",
+      "source_link": "https://www.benzinga.com/pressreleases/26/01/g49690927/alpha-tau-submits-first-pre-market-approval-module-to-the-fda-for-alpha-dart-for-the-treatment-of-",
+      "source_type": "Press Release",
+      "status": "",
+      "target_date": "",
+      "time": "09:00:00",
+      "updated": 1767621823
+    }
+  ]
+}

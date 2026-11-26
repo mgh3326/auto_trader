@@ -46,6 +46,59 @@ def _value_response(value: MarketEventValue) -> MarketEventValueResponse:
     return response
 
 
+def select_current_metric_value(
+    event: MarketEventResponse, metric_name: str
+) -> MarketEventValueResponse | None:
+    """Select a metric row by current fiscal period, then a stable value key.
+
+    Earnings revisions can move an event from one period to another. Prefer
+    the value whose period matches the event's current fiscal year/quarter;
+    if no such row exists, choose the greatest period label. Rows with the
+    same period use their full serialized value fields as an explicit
+    deterministic tie-break, independent of database/insertion order.
+    """
+    values = [value for value in event.values if value.metric_name == metric_name]
+    if not values:
+        return None
+
+    current_period = None
+    if event.fiscal_year is not None and event.fiscal_quarter is not None:
+        current_period = f"Q{event.fiscal_quarter}-{event.fiscal_year}"
+
+    value_fields = (
+        "actual",
+        "forecast",
+        "previous",
+        "revised_previous",
+        "unit",
+        "surprise",
+        "surprise_pct",
+        "released_at",
+        "reason",
+    )
+
+    def order_key(
+        value: MarketEventValueResponse,
+    ) -> tuple[bool, str, tuple[tuple[str, bool, str], ...]]:
+        stable_values = tuple(
+            (
+                field,
+                item is not None,
+                item.isoformat()
+                if hasattr(item, "isoformat")
+                else str(item)
+                if item is not None
+                else "",
+            )
+            for field in value_fields
+            for item in (getattr(value, field, None),)
+        )
+        period = getattr(value, "period", None) or ""
+        return (period == current_period, period, stable_values)
+
+    return max(values, key=order_key)
+
+
 class MarketEventsQueryService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db

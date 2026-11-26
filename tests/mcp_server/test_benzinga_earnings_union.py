@@ -215,3 +215,75 @@ async def test_added_rows_carry_the_provider_hour_code(monkeypatch):
         "SMH": "during_market",
         "QQQ": "unknown",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_revised_event_reads_the_value_for_its_current_fiscal_period(monkeypatch):
+    monkeypatch.setenv("BENZINGA_CALENDARS_ENABLED", "true")
+    event = _event("NVDA", datetime.date(2026, 11, 19))
+    event.fiscal_year = 2027
+    event.fiscal_quarter = 2
+    event.values = [
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q1-2027",
+            actual=1.25,
+            forecast=1.20,
+        ),
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=2.30,
+            forecast=2.10,
+        ),
+    ]
+    service = _FakeQueryService(events=[event])
+    monkeypatch.setattr(financials, "MarketEventsQueryService", service)
+    monkeypatch.setattr(financials, "AsyncSessionLocal", lambda *a, **k: _AsyncNull())
+
+    out = await financials._merge_benzinga_earnings(FINNHUB_PAYLOAD, START, END, None)
+
+    revised = out["earnings"][-1]
+    assert revised["quarter"] == 2
+    assert revised["year"] == 2027
+    assert revised["eps_actual"] == 2.30
+    assert revised["eps_estimate"] == 2.10
+
+    # Conflicting same-period rows are ordered by their value fields rather
+    # than whatever order the query happened to return.
+    event.values = [
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=2.10,
+            forecast=2.00,
+        ),
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=2.30,
+            forecast=2.10,
+        ),
+    ]
+    assert financials._metric_value(event, "eps", "actual") == 2.30
+    event.values.reverse()
+    assert financials._metric_value(event, "eps", "actual") == 2.30
+
+    event.values = [
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=2.30,
+            forecast=None,
+        ),
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=None,
+            forecast=2.30,
+        ),
+    ]
+    selected = financials._metric_value(event, "eps", "actual")
+    event.values.reverse()
+    assert financials._metric_value(event, "eps", "actual") == selected
