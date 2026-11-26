@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,7 +28,8 @@ from app.services.order_send_intent_service import (
     OrderSendIntentService,
 )
 
-from .constants import ACCOUNT_MODE, BROKER, RESERVATION_SCOPE
+from .constants import ACCOUNT_MODE, BROKER, MINI_KOSPI200, RESERVATION_SCOPE
+from .history import TerminalEvidence, futures_order_identity, terminal_evidence
 from .rules import DailyLossState
 
 CLIENT_ORDER_ID_PREFIX = "kfm"
@@ -205,16 +207,210 @@ class FuturesMockOrderLedgerService:
     async def get_by_broker_order(
         self, *, trading_day: str, broker_order_id: str
     ) -> KISFuturesMockOrderLedger | None:
-        return (
-            await self._db.execute(
+        identity = futures_order_identity(trading_day, broker_order_id)
+        if identity is None:
+            return None
+        rows = (
+            await self._db.scalars(
                 select(KISFuturesMockOrderLedger).where(
                     KISFuturesMockOrderLedger.account_mode == ACCOUNT_MODE,
                     KISFuturesMockOrderLedger.trading_day == trading_day,
-                    KISFuturesMockOrderLedger.broker_order_id == broker_order_id,
                     KISFuturesMockOrderLedger.operation_kind == "place",
                 )
             )
-        ).scalar_one_or_none()
+        ).all()
+        matches = [
+            row
+            for row in rows
+            if futures_order_identity(row.trading_day, row.broker_order_id) == identity
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def reconcile_day(
+        self, *, trading_day: str, history: list[dict[str, Any]], commit: bool = False
+    ) -> list[dict[str, Any]]:
+        """Plan or atomically book exact same-day place-order evidence."""
+        query = (
+            select(KISFuturesMockOrderLedger)
+            .where(
+                KISFuturesMockOrderLedger.account_mode == ACCOUNT_MODE,
+                KISFuturesMockOrderLedger.trading_day == trading_day,
+                KISFuturesMockOrderLedger.operation_kind == "place",
+            )
+            .order_by(KISFuturesMockOrderLedger.id)
+        )
+        if commit:
+            query = query.with_for_update()
+        orders = (await self._db.scalars(query)).all()
+        history_by_id: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for item in history:
+            identity = futures_order_identity(item.get("ord_dt"), item.get("odno"))
+            if identity is not None and identity[0] == trading_day:
+                history_by_id[identity].append(item)
+
+        details: dict[int, dict[str, Any]] = {}
+        evidence: dict[int, TerminalEvidence] = {}
+        fills_by_symbol: dict[str, list[KISFuturesMockOrderLedger]] = defaultdict(list)
+        matched_terminals: set[tuple[str, str]] = set()
+        cancelled_by_id: dict[tuple[str, str], KISFuturesMockOrderLedger] = {}
+        blocked_symbols: set[str] = set()
+        for order in orders:
+            identity = futures_order_identity(order.trading_day, order.broker_order_id)
+            rows = history_by_id.get(identity, []) if identity is not None else []
+            verdict = details[order.id] = {
+                "ledger_id": order.id,
+                "result": "no_evidence",
+            }
+            if order.status not in (
+                "accepted",
+                "pending",
+                "partial",
+                "filled",
+                "cancelled",
+                "expired",
+            ):
+                verdict["result"] = "state_preserved"
+                continue
+            if not rows:
+                continue
+            verdict["result"] = "ambiguous_evidence"
+            if len(rows) != 1:
+                continue
+            proof = terminal_evidence(
+                rows[0],
+                broker_symbol=order.broker_symbol,
+                side=order.side,
+                quantity=order.quantity,
+            )
+            if proof is None:
+                continue
+            if (
+                order.status in ("filled", "cancelled", "expired")
+                and order.status != proof.status
+            ):
+                verdict["result"] = "conflicting_evidence"
+                continue
+            if order.reconciled_at is not None:
+                verdict["result"] = "already_reconciled"
+                if (order.status, order.filled_qty, order.avg_fill_price) != (
+                    proof.status,
+                    proof.quantity,
+                    proof.price,
+                ):
+                    verdict["result"] = "conflicting_evidence"
+                    continue
+            evidence[order.id] = proof
+            if identity is not None:
+                matched_terminals.add(identity)
+                if proof.status == "cancelled":
+                    cancelled_by_id[identity] = order
+            if proof.status == "filled":
+                fills_by_symbol[order.broker_symbol].append(order)
+
+        blocked_symbols.update(
+            order.broker_symbol
+            for order in orders
+            if order.id not in evidence
+            and order.status not in ("rejected", "cancelled", "expired")
+        )
+
+        # A fill outside our exact joins can consume or establish a position.
+        # Disable close attribution on that contract if history cannot rule it out.
+        for item in history:
+            identity = futures_order_identity(item.get("ord_dt"), item.get("odno"))
+            if identity is not None:
+                if identity[0] != trading_day:
+                    continue
+                if identity in matched_terminals:
+                    continue
+                original_identity = futures_order_identity(
+                    item.get("ord_dt"), item.get("orgn_odno")
+                )
+                original = cancelled_by_id.get(original_identity)
+                if (
+                    original is not None
+                    and len(history_by_id[identity]) == 1
+                    and identity[1]
+                ):
+                    cancel = terminal_evidence(
+                        item,
+                        broker_symbol=original.broker_symbol,
+                        side=original.side,
+                        quantity=original.quantity,
+                    )
+                    if cancel is not None and cancel.status == "cancelled":
+                        continue
+            symbol = item.get("pdno")
+            if isinstance(symbol, str) and symbol:
+                blocked_symbols.add(symbol)
+            else:
+                blocked_symbols.update(fills_by_symbol)
+
+        realized_pnl: dict[int, Decimal] = {}
+        for symbol, fills in fills_by_symbol.items():
+            # Order time is not execution time. Extra fills make the basis
+            # ambiguous even if their order times are distinct.
+            if symbol in blocked_symbols or len(fills) != 2:
+                continue
+            opening, closing = sorted(
+                fills, key=lambda order: evidence[order.id].order_time
+            )
+            entry, exit_ = evidence[opening.id], evidence[closing.id]
+            if (
+                opening.position_effect != "open"
+                or closing.position_effect != "close"
+                or opening.side == closing.side
+                or entry.order_time == exit_.order_time
+            ):
+                continue
+            assert entry.price is not None and exit_.price is not None
+            difference = (
+                exit_.price - entry.price
+                if closing.side == "sell"
+                else entry.price - exit_.price
+            )
+            realized_pnl[opening.id] = Decimal(0)
+            realized_pnl[closing.id] = (
+                difference * MINI_KOSPI200.multiplier * exit_.quantity
+            )
+
+        timestamp = datetime.now(UTC)
+        for order in orders:
+            proof = evidence.get(order.id)
+            if proof is None:
+                continue
+            pnl = realized_pnl.get(order.id)
+            if order.reconciled_at is not None and (
+                pnl is None or order.realized_pnl_krw is not None
+            ):
+                continue
+            detail = details[order.id]
+            if (
+                proof.status == "filled"
+                and order.position_effect == "close"
+                and pnl is None
+            ):
+                detail["result"] = "entry_fill_unverified"
+                continue
+            detail.update(
+                result="booked" if commit else "would_book",
+                status=proof.status,
+                filled_qty=proof.quantity,
+                avg_fill_price=proof.price,
+                fee=proof.fee,
+                realized_pnl_krw=pnl,
+            )
+            if commit:
+                order.status = proof.status
+                order.filled_qty = proof.quantity
+                order.avg_fill_price = proof.price
+                order.fee = proof.fee
+                order.realized_pnl_krw = pnl
+                if order.reconciled_at is None:
+                    order.reconciled_at = timestamp
+        if commit and any(detail["result"] == "booked" for detail in details.values()):
+            await self._db.commit()
+        return list(details.values())
 
     async def daily_loss_state(self, *, trading_day: str) -> DailyLossState:
         """당일 확정 손실. 정산 증거 없는 당일 place 행이 있으면 ``unverified`` (설계 §8)."""

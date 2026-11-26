@@ -9,11 +9,11 @@ Completeness: the page-number pager exposes no total or next-page flag, so the
 read ends on an **empty page**, never on "shorter than requested". A provider
 that silently caps ``pagesize`` below the requested value is therefore still
 read to exhaustion instead of being mistaken for a complete single page.
-"Empty" is either a 200 body with an empty row list or the documented no-data
-answer (HTTP 404 whose body is ``ok=false`` with every ``errors[].code`` equal
-to ``no_data_found``) — that answer is how Benzinga reports a window with no
-rows, so failing it would fail every quiet day. Any other non-200 status or
-200 ``ok=false`` body stays a failure.
+"Empty" is a 200 body with an empty row list, a 200 top-level empty JSON array,
+or the documented no-data answer (HTTP 404 whose body is ``ok=false`` with
+every ``errors[].code`` equal ``no_data_found``) — that answer is how Benzinga
+reports a window with no rows, so failing it would fail every quiet day. Any
+other non-200 status or 200 ``ok=false`` body stays a failure.
 
 Safety: the caller must pass :func:`app.services.benzinga_http.
 require_calendars_enabled` before constructing this client; the client itself
@@ -131,8 +131,8 @@ def extract_rows(endpoint: CalendarEndpoint, payload: Any) -> list[dict[str, Any
 
     ``ok=false`` fails the page even when the row key is present (hk 6513 r6):
     ``{"ok": false, "earnings": []}`` is an error, not an empty day, and
-    reading it as complete would mark the partition succeeded. Only a valid
-    ``{"earnings": []}`` terminates a read.
+    reading it as complete would mark the partition succeeded. A valid
+    ``{"earnings": []}`` or a top-level empty JSON array terminates a read.
 
     The provider's *documented* empty answer is different: HTTP 404 with
     ``ok=false`` and every ``errors[].code`` equal to ``no_data_found``. It
@@ -151,6 +151,8 @@ def extract_rows(endpoint: CalendarEndpoint, payload: Any) -> list[dict[str, Any
             f"benzinga {endpoint.category} returned an error envelope "
             f"(path {endpoint.path})"
         )
+    if endpoint.row_key is not None and isinstance(payload, list) and not payload:
+        return []
     if endpoint.row_key is None:
         rows = payload
     else:
