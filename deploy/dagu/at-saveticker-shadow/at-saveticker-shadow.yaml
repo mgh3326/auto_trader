@@ -11,7 +11,7 @@ steps:
   - name: poll
     script: |
       rc=0
-      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/saveticker-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH,DELL,URBN,0256C0.KR --out-dir /out --saveticker --saveticker-pages 3 --skip-benzinga --skip-finnhub --skip-kis || rc=$?
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/saveticker-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH,DELL,URBN,0256C0.KR --out-dir /out --saveticker --saveticker-pages 3 --saveticker-page-size 20 --skip-benzinga --skip-finnhub --skip-kis || rc=$?
       exit "$rc"
     timeout_sec: 300
 handler_on:

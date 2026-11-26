@@ -59,6 +59,7 @@ def test_saveticker_dag_is_separate_and_does_not_poll_other_sources() -> None:
     (step,) = doc["steps"]
     script = step["script"]
     assert "--saveticker --saveticker-pages 3" in script
+    assert "--saveticker-page-size 20" in script
     assert "--skip-benzinga --skip-finnhub --skip-kis" in script
     assert "/root/at-run/saveticker-shadow:/out" in script
     assert "--env-file /root/at-secrets/.env.benzinga" not in script

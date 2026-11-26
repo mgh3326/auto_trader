@@ -547,7 +547,11 @@ async def _saveticker_poll(
                                     query_param=source_name,
                                     is_top_story=False,
                                 )
-                            if not _saveticker_has_next_page(payload, page, page_size):
+                            if not _saveticker_has_next_page(
+                                payload,
+                                page,
+                                st.effective_search_page_size(page_size),
+                            ):
                                 break
                 elif source_name == "top_stories":
                     payload = await client.top_stories()
