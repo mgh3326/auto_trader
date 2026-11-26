@@ -56,7 +56,7 @@ async def test_rerun_inserts_zero_rows_and_keeps_the_first_observation(
         db_session, rows=rows, first_received_at=first_at
     )
     await db_session.commit()
-    assert first == 2
+    assert first == len(rows) == 3  # the captured KOSPI sample has three rows
 
     # Change only non-NULL prices so incomplete facts still exercise duplicate handling.
     changed = [
