@@ -940,6 +940,56 @@ def test_saveticker_only_cli_needs_no_benzinga_finnhub_or_kis(
     )
 
 
+def test_saveticker_cli_writes_each_attention_row_once(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv(bz.SHADOW_ENABLED_ENV, "true")
+
+    item = {
+        "id": "attention-once",
+        "title": "관심 기사",
+        "created_at": "2026-11-26T00:00:00Z",
+        "tickers": [{"symbol": "NVDA"}],
+    }
+
+    class _OneItemSaveTicker:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, *_args):
+            return {"news_list": [item], "has_older": False}
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _OneItemSaveTicker)
+    assert (
+        cli.main(
+            [
+                "poll",
+                "--symbols",
+                "NVDA",
+                "--out-dir",
+                str(tmp_path),
+                "--poll-id",
+                "p-attention-once",
+                "--saveticker",
+                "--skip-benzinga",
+                "--skip-finnhub",
+                "--skip-kis",
+            ]
+        )
+        == 0
+    )
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "p-attention-once.jsonl").read_text().splitlines()
+    ]
+    attention = [row for row in lines if row.get("record_type") == "attention"]
+    assert [row["provider_id"] for row in attention] == ["attention-once"]
+
+
 def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
     monkeypatch, tmp_path, capsys
 ) -> None:

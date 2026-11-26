@@ -751,7 +751,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                 try:
                     (
                         saveticker_rows,
-                        attention_rows,
+                        _attention_rows,
                         saveticker_errors,
                         saveticker_state,
                     ) = await _saveticker_poll(
@@ -762,7 +762,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                         page_size=args.saveticker_page_size,
                     )
                     errors.extend(saveticker_errors)
-                    for record in [*saveticker_rows, *attention_rows]:
+                    for record in saveticker_rows:
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                     try:
                         _save_saveticker_seen_ids(out_dir, saveticker_state)
