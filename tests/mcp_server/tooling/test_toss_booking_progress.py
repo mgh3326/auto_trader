@@ -42,11 +42,20 @@ def _row(filled_qty: str, status: str = "partial") -> SimpleNamespace:
     )
 
 
-async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
+async def _run(
+    *,
+    scanned: str,
+    locked: SimpleNamespace | None,
+    broker: str,
+    cancelled: bool = False,
+    project: bool = False,
+):
+    events = []
+    projection = AsyncMock(side_effect=lambda *args, **kwargs: events.append("project"))
     evidence = TossFillEvidence(
         verdict="partial",
-        local_status="partial",
-        broker_status="PARTIAL_FILLED",
+        local_status="cancelled" if cancelled else "partial",
+        broker_status="CANCELED" if cancelled else "PARTIAL_FILLED",
         filled_qty=Decimal(broker),
         avg_price=Decimal("190"),
         commission=None,
@@ -58,16 +67,19 @@ async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
     )
     service = MagicMock()
     service.lock_row_for_booking = AsyncMock(return_value=locked)
-    service.update_reconcile_outcome = AsyncMock()
+    service.update_reconcile_outcome = AsyncMock(
+        side_effect=lambda **kwargs: events.append("commit")
+    )
     service.record_transient_reconcile_error = AsyncMock()
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=object())
-    session.__aexit__ = AsyncMock(return_value=None)
+    session.__aexit__ = AsyncMock(side_effect=lambda *args: events.append("exit"))
     steps = {name: AsyncMock() for name in _BOOKING_STEPS}
     with ExitStack() as stack:
         for name, mock in steps.items():
             stack.enter_context(patch.object(mod, name, new=mock))
         for item in (
+            patch.object(mod, "_converge_toss_proposal_rung", new=projection),
             patch.object(mod, "_order_session_factory", return_value=lambda: session),
             patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
             patch.object(
@@ -81,10 +93,17 @@ async def _run(*, scanned: str, locked: SimpleNamespace | None, broker: str):
             evidence_source=SimpleNamespace(
                 evidence_for=AsyncMock(return_value=evidence)
             ),
-            project_proposal_rungs=False,
+            project_proposal_rungs=project,
         )
     for step in steps.values():
         step.assert_not_awaited()
+    if project:
+        expected = (
+            ["commit", "exit", "project"]
+            if out["action"] == "noop_already_booked"
+            else ["exit"]
+        )
+        assert events == expected
     return out, service
 
 
@@ -311,3 +330,22 @@ async def test_trade_conflict_in_the_callers_booking_still_returns_none():
     assert await _call_helper("trade", db) is None
 
     db.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("locked", "broker", "action"),
+    [
+        (None, "1", "skipped_row_locked"),
+        (_row("2"), "1", "noop_stale_evidence"),
+        (_row("2", status="cancelled"), "2", "noop_terminal"),
+        (_row("2"), "2", "noop_already_booked"),
+    ],
+)
+async def test_cancelled_fill_projects_only_after_booking_accepts_evidence(
+    locked, broker, action
+):
+    out, _ = await _run(
+        scanned="2", locked=locked, broker=broker, cancelled=True, project=True
+    )
+
+    assert out["action"] == action
