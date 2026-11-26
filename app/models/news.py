@@ -93,6 +93,21 @@ class NewsArticle(Base):
     article_published_at: Mapped[datetime | None] = mapped_column(
         nullable=True, index=True, comment="기사 발행일시"
     )
+    published_at_raw: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="제공자 발행 시각 원문"
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True, comment="시간대가 보존된 발행 시각"
+    )
+    published_precision: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, comment="제공자 발행 시각 정밀도"
+    )
+    published_at_reason: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, comment="발행 시각 해석 실패 사유"
+    )
+    first_received_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True, comment="최초 수신 시각"
+    )
     scraped_at: Mapped[datetime] = mapped_column(
         nullable=False, comment="스크래핑 수집일시"
     )

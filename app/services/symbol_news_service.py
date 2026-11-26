@@ -323,6 +323,8 @@ async def _persist_and_load(
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
+                from app.services.kr_news_collector import parse_publish_time
+
                 await symbol_news_store.upsert_feed_articles(
                     db,
                     market,
@@ -334,6 +336,42 @@ async def _persist_and_load(
                             source=a.source_name,
                             published_at=a.published_at,
                             summary=a.summary,
+                            published_at_raw=(
+                                parse_publish_time(
+                                    (a.provider_metadata.get("source_item") or {}).get(
+                                        "datetime_raw",
+                                        (
+                                            a.provider_metadata.get("source_item") or {}
+                                        ).get("datetime"),
+                                    )
+                                ).raw
+                                if market == "kr"
+                                else None
+                            ),
+                            published_precision=(
+                                parse_publish_time(
+                                    (a.provider_metadata.get("source_item") or {}).get(
+                                        "datetime_raw",
+                                        (
+                                            a.provider_metadata.get("source_item") or {}
+                                        ).get("datetime"),
+                                    )
+                                ).precision
+                                if market == "kr"
+                                else None
+                            ),
+                            published_at_reason=(
+                                parse_publish_time(
+                                    (a.provider_metadata.get("source_item") or {}).get(
+                                        "datetime_raw",
+                                        (
+                                            a.provider_metadata.get("source_item") or {}
+                                        ).get("datetime"),
+                                    )
+                                ).reason
+                                if market == "kr"
+                                else None
+                            ),
                         )
                         for a in fetched
                     ],

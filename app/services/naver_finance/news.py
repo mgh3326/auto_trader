@@ -85,6 +85,7 @@ def _normalize_news_item(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
             "url": url,
             "source": str(raw.get("officeName") or "").strip(),
             "datetime": published,
+            "datetime_raw": raw.get("datetime"),
             "id": str(raw.get("id") or "").strip() or None,
             "officeId": str(office_id) if office_id is not None else None,
             "articleId": str(article_id) if article_id is not None else None,
