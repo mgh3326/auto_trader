@@ -2,114 +2,139 @@
 
 Status: design only. This document changes no code, config or env.
 Authority: operator decision `decision/2026-11-27/at-autonomous-strategy-orders` (hk 6939, 2026-11-27 07:17 KST).
-Context: hk 6667 comment 37005 (dots pilot rules), comment 35372 (what exists).
-Pins: auto_trader `d3e8c77ed`, fillwire `b257db5` (read only).
+Context: hk 6667 comment 37005 (dots pilot rules), comment 35372 (what exists); operator/dots direction 11-27 (hk 6667).
+Revision: hk 6942 (one plan store = daily_plan, supersession timing, session acceptance/fill table, retro linkage, ticket reuse).
+Pins: auto_trader `a30bd7d27`, fillwire `b257db5` (read only).
+
+**Scope of this phase (hk 6942).** Design closure plus replay, mock and shadow verification. Live arming stays governed by the
+decision record above and its arming rules (§2.2); this document and its PR change no live switch, cap or gate.
 
 ## 0. Summary
 
-Strategy orders leave without a human in the loop, on `kis_live` (KR NXT+KRX, US), `toss_live` (KR, US), `upbit_live`
-(KRW) and on every mock/demo venue, inside the envelope of the decision. The shape is the one the E1 gateway already
-has for `kis_mock` and `upbit_live`:
+Strategy orders leave without a per-order human approval, on `kis_live` (KR NXT+KRX, US), `toss_live` (KR, US),
+`upbit_live` (KRW) and on every mock/demo venue, inside the envelope of the decision.
 
 ```
-AT strategy plan (vN, immutable)  ──publish──▶  E1 intent (immutable, caps)  ◀──child request──  Fillwire executor
-          ▲                                          │ journal (write-ahead, one send per key)          ▲
-          │ supersede vN→vN+1, budget re-reserve      ▼                                                 │ quotes/fills (WS)
-   ledger evidence (execution_ledger, order ledgers) ◀── reconcile ── broker ◀── forwarder (per account)
+Claude/dots (propose/change/stop, retro) ──▶ AT daily_plan vN (validate, publish; budget/risk state per account)
+                                                   │ AT intent issuer (binds head, seq, row_key)
+                                                   ▼
+Fillwire detector (socket quotes → condition met) ──child request──▶ AT E1 gateway (permission checks, journal, broker send)
+                                                   ▲                                    │
+                         ledger evidence (execution_ledger, order ledgers) ◀── reconcile ◀── broker
 ```
 
-- AT owns **what** (plan, caps, invalidation, budget, kill). Fillwire owns **when/at what price inside the plan**.
-- Fillwire never talks to a broker or DB for orders; it posts child requests to the loopback E1 route
-  (`app/routers/execution_intent_gateway.py:207`, `fillwire internal/exec/e1/client.go:305`).
-- Every guard that exists today stays. New guards are added at the gateway (`decisions.py` / per-account decision module)
-  and re-checked in the forwarder's pre-send hook, the same two places `upbit_live` uses
-  (`upbit_decisions.py:608 decide_upbit_child`, `upbit_decisions.py:687 check_before_send`).
+### 0.1 Roles (hard rule 4 framing)
 
-## 1. Data shape and field ownership
+| Actor | Does | Never does |
+|---|---|---|
+| Claude / dots (out-of-process) | Propose, change or stop a strategy from price and non-price evidence (news, disclosures, flow); write the retro | Hold broker credentials; send orders; write ledgers; bypass a daily_plan validation |
+| AT daily_plan (hk 6751/6790/6902) | Validate and publish plan versions; own per-account/currency budget and risk state; score and compare budgets | Create proposals, orders, watches or mandates from publish itself (5750 §8.2) |
+| AT intent issuer + E1 gateway (ROB-1440, hk 5441) | Turn a published row into an immutable intent; every permission check (kill, arming, caps, session, quote, supersession); journal; the only broker access | Choose when a condition is met |
+| Fillwire | Detect conditions from socket quotes; post child requests to the loopback E1 route | Talk to a broker or DB for orders; name a broker order id; resend an uncertain child |
 
-### 1.1 Strategy plan (AT source of truth) — new table `review.strategy_order_plans` (+ `..._plan_versions`, append-only)
+Manual paths (MCP order tools, proposals, Telegram/web approval) keep their order approval (`approval_hash`), ledger and
+duplicate-send rules unchanged. The **E1 confirm header** is a service-to-service idempotency echo, not an order approval.
 
-| Field | Type | Owner | Notes |
-|---|---|---|---|
-| `plan_id` | uuid | AT | stable across versions |
-| `version` | int, +1 only | AT | DB trigger: previous+1; publishing vN+1 supersedes vN atomically (§3 I9) |
-| `account` | enum `kis_live`/`toss_live`/`upbit_live`/mock accounts | AT | binds forwarder |
-| `market` / `venue` | `equity_kr`(KRX/NXT) / `equity_us` / `crypto` | AT | |
-| `symbol` | DB format (`app/core/symbol.py`) | AT | |
-| `side_program` | entry buy, then exit sell legs | AT | cash only; no short/margin on live |
-| `sessions` | subset of {`nxt_pre`,`regular`,`nxt_after`,`krx_after`,`us_pre`,`us_regular`,`us_post`,`crypto_24h`} | AT | §2 table decides what is legal |
-| `valid_from`/`valid_until` | timestamptz | AT | ≤ intent TTL ceiling |
-| `entry_price_cap` | exact decimal | AT | limit ceiling for buys |
-| `quantity_cap` / `notional_cap` | exact decimal | AT | must fit §3 I1 |
-| `invalidation_price` | exact decimal, required for entry | AT | recorded at entry; the only loss-sell exception (§3 I4) |
-| `target_price` | exact decimal, optional | AT | take-profit; not a loss sell |
-| `arming_state_at_publish` | enum | AT | copied from arming table (§2.2) |
-| `plan_sha256` | hex | AT | canonical JSON hash, bound into intent |
+## 1. One plan store: daily_plan is the canonical plan
 
-### 1.2 E1 intent (existing tables, new `schema_version` 3)
+The 6939 first draft created `review.strategy_order_plans` (+ versions). hk 6942 drops it. The canonical plan is the
+daily_plan head/version/row store (hk 6751, `app/models/daily_plan.py`), with inputs from the bundle (hk 6902) and the
+scoring/budget comparison from hk 6790. Execution binding is the 6728 intent reference `(plan_head_id, plan_version, row_key)`.
 
-`review.execution_intents` stays immutable (`docs/design/1440-intent-gateway-contract.md`). v3 adds
-`plan_id`, `plan_version`, `plan_sha256`, `invalidation_price`, `target_price`, `session_set` and per-account caps.
-Owner: AT (written by the plan publisher, never by Fillwire). The CHECK that binds `schema_version` ↔ account
-(`20261101_rob1440_intent_gw`, `20261120_hk5441_upbit_gw`) gains v3 rows for the new accounts.
+### 1.1 Field map — every 6939 §1 execution field to its single owner
 
-### 1.3 Fillwire child request (existing wire)
+| 6939 draft field | Owner table / column | Notes |
+|---|---|---|
+| `plan_id` | `review.daily_plan_heads.id` | one head per (market, session_date) |
+| `version` (+1 only) | `review.daily_plan_versions.seq` (`uq_daily_plan_versions_head_seq`, CAS `expected_prev_seq`) | append-only, triggers refuse UPDATE/DELETE |
+| `plan_sha256` | `daily_plan_versions.request_sha256` + `input_bundle_sha256` | bound into intent with seq |
+| `account` | row `account_ref` / `would_be_account_ref` (+ `routable_account_modes`) | `derive_account_ref`; E1 intent carries the forwarder account |
+| `market` / `venue` / `sessions` | row `market`, body `venue`, `session` (validator `VENUE_SESSIONS`) | one row = one venue×session |
+| `symbol` | row `symbol` (`app/core/symbol.py`) | |
+| `side_program` | row `action` ∈ new/add/trim/risk_sell/hold/watch | buy vs sell is the action, not a program field |
+| `valid_from`/`valid_until` | body `valid_until` (≤ session close), version `asof` | effective expiry = min(plan, approval, session) (6728 §1) |
+| `entry_price_cap` | body `max_buy_price`, `would_be_limit_price` | |
+| `quantity_cap` / `notional_cap` | body `would_be_quantity` xor `would_be_notional` | E1 intent caps are the binding copy |
+| `invalidation_price` | body `invalidation_conditions[]` (`price_at_or_below`) | required for an autonomous entry row |
+| `target_price` | body `trigger` on a `trim` row (`price_at_or_above`) | not a loss sell |
+| `arming_state_at_publish` | **not stored in the plan**: read live by E1 from `review.autonomous_arming_events` fold | arming is gateway state, not plan content |
+| budget per account/currency | 6790 `daily_plan_versions.metadata.allocation_comparison` (W/N) | operator-only, not served to sessions |
+| remaining qty / budget after fills | E1 fills projection (6728 §3) | never written back into the plan |
+| journal / send state | `review.execution_child_requests` (E1) | unchanged |
+| fills | `execution_ledger_in_effect()` + order ledgers | unchanged |
 
-`fillwire internal/exec/machine.go:45 Child` / `internal/exec/upbit/plan.go:29 Child`: `idempotency_key`, `intent_id`,
-kind submit/amend/cancel, limit price, quantity, `reason` (new closed value `invalidation_break` / `target_hit`).
-Owner: Fillwire. It may choose price and quantity only inside the intent; it cannot name a broker order id
-(amend/cancel target by journal key, as today).
+Required widenings (additive CHECK changes, owned by ticket N1 below, not a new store): `daily_plan_heads` market `kr`→
+`kr|us|crypto` and `mode` `plan_only`→`plan_only|executable`; `daily_plan_rows.execution_state` `plan_only`→
+`plan_only|executable` (an `executable` row is the only kind the intent issuer may read); `ACCOUNT_MODES` gains `upbit_live`
+and the mock accounts; symbol CHECK per market. No field above needs its own table.
 
-### 1.4 Gateway journal (existing)
+### 1.2 Scoring and budget (reuse 6790, extend)
 
-`review.execution_child_requests` write-ahead, `sending` committed before the broker call, `accepted`/`uncertain`/
-`refused`/`not_sent`. Owner: gateway store (`store.py`, `upbit_store.py`). Unchanged rules: same key replays first answer,
-`uncertain` is never resent.
+- New buy, add-on buy and trim/sell are scored as **separate cohorts** (row `action`), each with its own rank list; no cohort
+  is fixed to three symbols — the size cap is `daily_plan.max_adopt` per cohort and the budget, not a symbol count.
+- Ranking A (price only) and ranking B (price + news/disclosure/flow) stay side by side in every version (6790). A missing
+  input is the closed `unavailable` reason (`input_missing`, `input_stale`, `observed_time_unproven`, …), never 0 (hk 6769).
+- Policy W (wait for a top candidate) and N (allow the next one) are both computed per account and currency, cash vs parking.
+  **Orderable cash** = broker-confirmed cash only. An assumed parking sale (`would_sell_parking`) and an unconfirmed fill
+  amount are recorded beside the allocation and never added to orderable cash; a buy that needs them carries the 6790
+  precondition and is not issued until the broker's orderable cash has risen.
+- A fill updates only remaining quantity and remaining budget (6728 §3 projection). Strategy re-evaluation happens only at
+  named events — premarket, disclosure, VI, halt/resume, session change, operator/dots request — and each produces a new
+  version (`VERSION_KINDS` premarket/fill/event/session/close). A `fill` version records observation; it does not re-score.
 
-### 1.5 Ledger evidence (existing)
+### 1.3 E1 intent (existing tables, new `schema_version` 3)
 
-Fills only from `execution_ledger_in_effect()` and the per-broker order ledgers through their services
-(`kis_live_order_ledger`, `live_order_ledger`, `toss_live_order_ledger`, Upbit order evidence `order_evidence.py`,
-mock ledgers). Owner: reconcilers. Fillwire reads fills through `GET /execution-intents/intents/<id>/fills`
-(`fillwire internal/exec/e1/reads.go:59`). `accepted` is never a fill.
+`review.execution_intents` stays immutable. v3 adds `plan_head_id`, `plan_version` (= `daily_plan_versions.seq`),
+`row_key`, `invalidation_price`, `target_price`, `session`, per-account caps and the FX snapshot. These are copies bound at
+issue time for the gateway; the daily_plan row stays the source. Owner: AT intent issuer, never Fillwire.
 
-## 2. Account × market × session table
+### 1.4 Fillwire child request, gateway journal, ledger evidence (existing, unchanged)
 
-Legend — Path: G = new gateway forwarder calling the existing send function; `G*` = existing gateway path.
-Order forms are per cell (operator correction 2026-11-27: limit-only/integer/no-amount applies to Toss US pre/post only). Gates: Q = fresh best bid **and** ask present (age ≤ 5 s,
-reuse `proposal_gate.ASK_MAX_AGE`), S = spread gate in bps (regular / extended), H = halt/VI/expected-price block.
-Arming: MF = mock-first (10 clean mock round trips then live full cap), LH = live half cap (1,000,000 KRW) for 10 round trips.
+Child: `idempotency_key`, `intent_id`, submit/amend/cancel, limit price, quantity, `reason` (`entry_condition` /
+`invalidation_break` / `target_hit`). Journal: `sending` committed before the broker call; same key replays the first answer;
+`uncertain` is never resent. Fills only from `execution_ledger_in_effect()` and the order-ledger services; `accepted` is never a fill.
 
-| Account / market / session | Send path (existing function behind G) | Order rule | Carry / expiry | Gates | Arming |
-|---|---|---|---|---|---|
-| kis_live KR KRX regular 09:00–15:30 | G → `_place_order_impl` (`order_execution.py:2066`) with `order_send_intents` reservation | code sends `ORD_DVSN` 00 limit / 01 market, integer quantity only (`domestic_orders.py:386,394`); no amount order in KIS client | DAY; SOR buy conservative 20:00 (`live_order_expiry.py:140`) | Q, S≤regular, H | MF (kis_mock KR regular via `G*` `kis_mock_forwarder.py:159`) |
-| kis_live KR NXT pre 08:00–08:50 | G → `_place_order_impl` (NXT route, `nxt_tradable` only; routing `SOR`/`KRX` `domestic_orders.py:65`) | code: 00 limit / 01 market, int qty. Market and other NXT `ORD_DVSN` codes on pre-session [unverified: check KIS official `examples_llm/domestic_stock/order_cash` + KIS NXT notice; until confirmed send 00 limit]. KIS has no amount order field — NXT amount orders (operator note) not reachable via KIS | DAY; carries to 20:00 if SOR [unverified: confirm KIS ODNO survives 08:50→09:00 boundary via `kis_live_get_daily_orders` on first live day] | Q, S≤ext, H, NXT eligibility | LH (no mock session) |
-| kis_live KR NXT after 15:30–20:00 (continuous from 16:00) | G → `_place_order_impl` | same as NXT pre [unverified: market order acceptance in NXT after] | expires 20:00 (`live_order_expiry.py`) | Q, S≤ext, H; 15:30–16:00 refused (`session_segment_of` UNKNOWN) | LH |
-| kis_live KR KRX after-market 16:00–20:00 | G → `_place_order_impl` KRX-after route | 00 limit, int [unverified: market order in KRX after-market — KRX rulebook]; listed-eligible only (`approval_window.py:339 resolve_krx_after_capability`) | expires 20:00 (`REASON_KRX_AFTER_CLOSE`, `live_order_expiry.py:83`) | Q, S≤ext, H, eligibility fresh ≤7d | LH |
-| kis_live US regular | G → `_place_order_impl` (`equity_us`) | limit; int; KIS overseas market order [unverified: overseas `ORD_DVSN` 00 only in client — check `overseas_orders.py` + KIS sample] | DAY, US trading day rolls 20:00 ET (`us_trading_day_window`) | Q, S≤regular, H | MF (kis_mock US via kis_mock path; see T5) |
-| kis_live US pre/post | G → `_place_order_impl` | limit, int [unverified] | [unverified: KIS overseas pre/after order TR & DAY carry — verify from KIS official sample `examples_llm/overseas_stock/order*` before T11; if unsupported, cell is closed `unsupported`] | Q, S≤ext, H | LH |
-| toss_live KR regular / NXT / after | G → `toss_place_order` (`orders_toss_variants.py:2183`) w/ `nxt_preflight` | quantity or `orderAmount` (amount order, `orders_toss_variants.py:409-416`) in all KR sessions per operator note; limit/market per session [unverified: Toss OpenAPI 1.2.28 order schema per NXT session — check `openapi.json` `orderType` enum; first live NXT amount order recorded] | DAY per Toss; NXT carry [unverified: Toss KR SOR carry 15:30→20:00 — verify by `toss_get_order_history` on first after-session fill] | Q, S, H, `krx_after` preflight (#969) | LH |
-| toss_live US regular | G → `toss_place_order` | limit/market, quantity incl. fractional, or `orderAmount` | DAY | Q, S, H | LH |
-| toss_live US pre/post | G → `toss_place_order`; requires policy key `toss_live_us_sessions` include pre/post (`config/trading_policy.yaml:458`) | **only cell with limit-only, integer qty, no `orderAmount`** (`approval_window.py:448-466`) | pre: expires next Toss regular close (doc, `measured=false`); post: [unverified] measure per #908/#1032 | Q, S≤ext, H | LH |
-| toss_live US day market | — | closed `unsupported` (not in decision) | — | — | — |
-| upbit_live KRW 24h | `G*` `upbit_live_forwarder.py` | Upbit accepts `limit`, market buy by KRW amount (`price`), market sell by `volume` (`upbit/orders.py:138,180`); gateway path today sends limit only (tick-validated `app/core/upbit_tick.py`); keep limit for autonomous v1 | GTC until cancel; intent TTL ≤12 h (`mandates.py:61`) | Q, S, market_event warning/unknown/stale block | LH |
-| kis_mock KR regular | `G*` `kis_mock_forwarder.py:185` (`is_mock=True`) | L/M; attribution required (hard rule 7) | DAY | existing | mock — no arming |
-| kis_mock US | G (new v3 kis_mock US forwarder) → `_place_order_impl(is_mock=True)` | L; int | DAY ET | existing | mock |
-| kiwoom_mock KR / US | G → `place_kiwoom_mock_order` / `place_kiwoom_mock_us_order` (`kiwoom_mock_place.py:737`, `:1293`) | KRX regular / XNYS regular only; attribution (hk 4723) | DAY | existing preflight | mock |
-| alpaca_paper (US, ext hours LIMIT+day) | G → existing paper submit | L, `extended_hours` per hk 6497 | DAY | paper URL + account suffix | mock |
-| binance spot / futures demo | G → demo execution clients | L/M per client; futures 1x, reduceOnly exits | GTC | demo host allowlist | mock |
-| nh_mock KR | G → `nhplug_mock/operations.py` (only `_dispatch_new_intent`) | exact `"limit"`, KRX non-SOR | DAY | Stage 2 gates all true (hard rule 14) | mock |
-| kis_futures_mock day | G → `kis_futures_mock/place.py` | MF200 limit 1 contract (`constants.py:91 LOCKED_LIMITS`) | day session only | locked consts | mock |
+## 2. Broker × market × session table
 
-Spread gate values (S): regular ≤ 30 bp, extended ≤ 15 bp is the recommended start (Q3); policy key, not code constant.
+Columns: **Supported** = path exists in code today (`yes`) or must be confirmed (`[unverified]`, with how it is checked).
+**Acceptance** = when the broker accepts a new order. **Fill** = when matching can occur. They differ in several cells.
+Gates for every cell: fresh best bid and ask (≤ 5 s, `proposal_gate.ASK_MAX_AGE`), spread gate (regular / extended policy
+key), halt/VI/expected-price block. Arming: MF = mock-first, LH = live half cap (§2.2).
+
+| Broker / market / session | Supported | Acceptance (KST unless noted) | Fill | Order forms | How checked | Arming |
+|---|---|---|---|---|---|---|
+| KIS KR KRX regular | yes (`_place_order_impl`, `order_send_intents`) | 08:30–15:30 (from 08:30 auction) | 09:00–15:20 continuous, 15:20–15:30 closing auction | `ORD_DVSN` 00 limit / 01 market, integer qty; no amount field | code `domestic_orders.py:386,394` | MF (kis_mock KR) |
+| KIS KR NXT pre | yes for limit (NXT route, `nxt_tradable`) | 08:00–08:50 | 08:00–08:50 | 00 limit int; market [unverified] | KIS official `examples_llm/domestic_stock/order_cash` + NXT notice; until confirmed send 00 only | LH |
+| KIS KR NXT after | yes for limit | **from 15:30** (orders accepted for the after session) | **15:40–20:00** continuous (15:30–15:40 no NXT matching) | 00 limit int; market [unverified] | same as pre; first live day `kis_live_get_daily_orders` shows ODNO/fill time | LH; entries refused 15:30–15:40 by gateway (no fill possible, `session_segment_of` UNKNOWN until 16:00 label) |
+| KIS KR KRX after-market | yes, listed-eligible only (`resolve_krx_after_capability`) | 16:00–20:00 | 16:00–20:00 | 00 limit int; market [unverified] | KRX rulebook + first live order | LH |
+| KIS KR NXT amount order | **no** — KIS client has no amount field | — | — | — | not reachable via KIS; not claimed | — |
+| KIS US regular | yes (`equity_us`) | ET 09:30–16:00 (KIS accepts earlier reservation) | ET 09:30–16:00 | limit int | `overseas_orders.py` | MF (kis_mock US) |
+| KIS US pre/post | [unverified] | [unverified] | [unverified] | limit int [unverified] | KIS `examples_llm/overseas_stock/order*`; cell closed `unsupported` until confirmed | LH |
+| Toss KR regular | yes (`toss_place_order`) | 08:30–15:30 | 09:00–15:30 | qty or `orderAmount` | `orders_toss_variants.py:409-416` | LH |
+| Toss KR NXT pre/after | yes for qty limit with `nxt_preflight`; **amount orders [unverified]** | pre 08:00–08:50; after from 15:30 | pre 08:00–08:50; after 15:40–20:00 | qty limit; `orderAmount` [unverified] | Toss OpenAPI 1.2.28 `orderType`/amount per NXT session; first live NXT amount order recorded; until then qty only | LH |
+| Toss KR KRX after | yes, `krx_after` preflight (#969) | 16:00–20:00 | 16:00–20:00 | qty limit | `nxt_preflight_krx_after.py` | LH |
+| Toss US regular | yes | ET 09:30–16:00 | ET 09:30–16:00 | limit/market, fractional qty, `orderAmount` | code | LH |
+| Toss US pre/post | yes only if `toss_live_us_sessions` lists them | Toss calendar pre/after windows | same windows | **limit, integer qty, no `orderAmount` — this rule is Toss US pre/post only; it is not applied to KR NXT** | `apply_toss_us_extended_order_shape` | LH |
+| Toss US day market | no | — | — | — | closed `unsupported` | — |
+| Upbit KRW | yes (`upbit_live_forwarder.py`) | 24h | 24h | limit (tick-validated) for v1 | code | LH |
+| kis_mock KR / US | KR yes (`kis_mock_forwarder.py`), US new forwarder | KRX regular / XNYS regular | same | limit/market; attribution required | existing | mock |
+| kiwoom_mock KR / US | yes (`kiwoom_mock_place.py`) | KRX regular / XNYS regular | same | limit | existing | mock |
+| alpaca_paper | yes | ET regular + ext (limit+day, hk 6497) | same | limit | existing | mock |
+| binance spot / futures demo | yes | 24h | 24h | per client; futures 1x reduceOnly exits | existing | mock |
+| nh_mock KR | yes (`_dispatch_new_intent`) | KRX regular | same | exact `"limit"`, non-SOR | existing | mock |
+| kis_futures_mock day | yes | 08:45–15:45 | same | MF200 limit 1 contract | `LOCKED_LIMITS` | mock |
+
+Rule: the gateway refuses a new entry when the current time is inside acceptance but outside fill for that cell
+(`entry_no_fill_window`), so an accepted-but-unmatchable order is never left resting by the autonomous path.
 
 ### 2.2 Arming state machine (per account × market × session-class)
 
 `frozen` (default) → `mock_proving` (MF cells) or `live_half` (LH cells) → `live_full`.
-- MF: 10 consecutive mock round trips (entry fill + exit fill) through the **same** gateway path with zero
-  `uncertain`/`refused(error)`/cancel failure/reconcile mismatch → `live_full`. Any error resets the counter.
-- LH: live with per-order cap 1,000,000 KRW for 10 clean live round trips → `live_full`. Per the decision text "(1,000,000 KRW; one-share exception unchanged)", a qty=1 order whose one share costs more than 1,000,000 KRW may still go up to 10,000,000 KRW during `live_half`; this is the operator's explicit choice (Q7 offers a stricter alternative). T2 tests pin the order: I1b half cap first, then I1a evaluated against the cap in force.
-- Stored in new append-only `review.autonomous_arming_events`; state is a fold. Kill freeze does not reset arming.
+- MF: 10 consecutive mock round trips through the **same** gateway path with zero `uncertain`/`refused(error)`/cancel
+  failure/reconcile mismatch → `live_full`. Any error resets the counter.
+- LH: live with per-order cap 1,000,000 KRW for 10 clean live round trips → `live_full`. A qty=1 order whose one share costs
+  more than the cap in force may go up to `ONE_SHARE_CEILING_KRW` (10,000,000 KRW) (decision text; Q7 offers a stricter start).
+- Stored in append-only `review.autonomous_arming_events`; state is a fold. Kill freeze does not reset arming.
 
 ## 3. Invariant table
 
@@ -123,9 +148,9 @@ Spread gate values (S): regular ≤ 30 bp, extended ≤ 15 bp is the recommended
 | I4 | Stop-loss exception only for invalidation break | plan `invalidation_price`, fresh trade price (not bid) below it, ledger-confirmed lot | sell child `reason=invalidation_break` | gateway decision: loss-sell guard (`upbit_decisions.py:65` factor 1.01 and KIS/Toss guard in `order_execution.py`) bypass only when intent v3 carries invalidation and price evidence ≤ it; same check in pre-send hook | other loss sells → `loss_sell_requires_card` (existing human card) |
 | I5 | Upbit 8-day cooldown, buy-only | `crypto_trade_cooldown_service.py:18` | buy child | existing `upbit_decisions.py:672` | `cooldown_active` |
 | I6 | One send per claim; uncertain never resent | journal key | `sending` committed before POST | existing gateway store + forwarders (ROB-1440); `order_send_intents` for KIS; Toss `clientOrderId` | replay first answer; `uncertain` stays until reconcile |
-| I7 | Plan supersession: old version never sends after new is published | plan_version | publish vN+1 appends a plan_versions row; intent rows stay immutable (trigger `20261101_rob1440_intent_gateway.py:53`) — an intent is live only if its `plan_version` equals the latest published version of its `plan_id` | gateway decision reads the plan head under the plan advisory lock (taken by publisher too) + pre-send hook re-read | refused `plan_superseded`; cancels of vN orders still allowed |
+| I7 | Plan supersession: old version never sends after new is published (§5) | `(plan_head_id, plan_version, row_key)` in the intent; `daily_plan_versions.seq` | daily_plan publish commits seq N+1 under the (account, symbol, venue) lock; intent rows stay immutable | gateway reservation + pre-send re-read under the same lock (§5.1) | refused `plan_version_stale`; cancels of vN orders still allowed |
 | I8 | Partial fill → exit only ledger-confirmed net quantity | `GET .../fills` lineage `filled_qty` (in-effect, ROB-1379) | exit child | gateway decision (as `upbit` S-rules: sell ≤ proven own holding) | refused `exit_exceeds_confirmed_qty` |
-| I9 | Budget re-reservation | plan notional − filled − working | supersede / partial fill | AT publisher under sleeve lock; gateway high-water cap per intent (`decisions.py` existing) | new intent budget = remaining only; cancel never releases (D-4) |
+| I9 | Budget re-reservation | approved budget − ledger-confirmed fills − working (6728 §3) | supersede / partial fill | AT intent issuer under the same lock; gateway high-water cap per intent (`decisions.py` existing) | new intent budget = remaining only; cancel never releases (D-4); a fill never rewrites the plan |
 | I10 | Halt / stale / expected-price block | `halted_suspect`, `kr_symbol_trading_flags`, `price_kind=expected`, quote age | child reserve + pre-send | gateway decision + pre-send hook (reuse `halt_detection.py`, `kr_trading_flags/gate.py`, `kr_quote_price.py`) | refused `halt_suspect`/`quote_stale`/`expected_price` |
 | I11 | Per venue×session order shape (§2 column), both sides fresh in all sessions, stricter spread when thin; Toss US pre/post limit-int-no-amount only | session segment, book, order form | child reserve | gateway decision via `session_segment_of` (`session_segment.py:258`) + per-cell allow-list; Toss US shape `apply_toss_us_extended_order_shape` | refused `order_form_not_accepted` / `spread_too_wide` |
 | I12 | Discord alerts for every live order, fill, auto stop-loss, freeze | journal/ledger/kill transitions | after commit | new alert emitter (ops webhook `config.py:561 discord_webhook_alerts`), fail-open | message per event; alert failure never blocks |
@@ -133,49 +158,122 @@ Spread gate values (S): regular ≤ 30 bp, extended ≤ 15 bp is the recommended
 | I14 | Live-only scope: cash buy/sell; no short/margin/futures/options | intent side/product | intent store | intent CHECK + decision | refused at store |
 | I15 | Existing manual gates unchanged (approval_hash, W5, kis_mock attribution) | — | — | untouched paths | golden tests byte-identical |
 
-## 4. AGENTS.md hard-rule-4 exception paragraph (to be committed by T3)
+## 4. AGENTS.md hard-rule-4 exception paragraph (to be committed by N4)
 
-> hk 6939 의 명시 운영자 결정(2026-11-27, `decision/2026-11-27/at-autonomous-strategy-orders`)은 의도 게이트웨이의 전략 주문 forwarder(`kis_live` KR(KRX·NXT)/US, `toss_live` KR/US, `upbit_live` 원화, 그리고 기존 게이트 아래의 모의·데모 계좌)만 예외로 허용한다 — `EXECUTION_INTENT_GATEWAY_ENABLED` AND 계좌별 `EXECUTION_INTENT_GATEWAY_KIS_LIVE_ENABLED`·`EXECUTION_INTENT_GATEWAY_TOSS_LIVE_ENABLED`·`EXECUTION_INTENT_GATEWAY_UPBIT_LIVE_ENABLED`(모두 기본 false, 정확히 `"true"`) AND `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED` AND 계좌 kill 행 `ACTIVE`(부재·판독 실패·일일 손실 미측정은 freeze) AND 계좌×시장×세션 arming 상태 AND 발행된 최신 계획 버전 AND 호출별 confirm 헤더가 모두 필요하다. 잠금 상수는 주문당 2,000,000원(미국은 원화 환산), 1주가 그보다 비쌀 때만 1주·10,000,000원, 계좌당 미체결 4건, 일일 손실 500,000원 이상이면 자동 freeze, 미모의 시장의 첫 10회 왕복은 주문당 1,000,000원(1주 예외는 유지)이며 어떤 CLI·env 로도 올릴 수 없다. 손실매도 가드는 그대로이고 예외는 계획에 진입 시 기록된 무효화 가격을 실제 가격이 이탈한 기계식 매도 하나뿐이다(그 밖의 손실 매도는 사람 카드). 주문 형태는 브로커·세션별 허용 목록을 따르며(토스 미국 프리·애프터만 지정가·정수 수량·금액 주문 금지), 모든 세션에서 신선한 양쪽 호가와 얇은 호가의 더 엄격한 스프레드를 요구한다. Upbit 손절 쿨다운·`loss_cut` 상수·`LOCKED_ENVELOPE`(5,000,000원)·`MAX_INTENT_NOTIONAL_KRW` 를 포함한 기존 게이트, 서비스 경유 원장 쓰기·증거 우선 체결·불명 송신 재전송 금지·kis_mock 귀속·W5 inbox·수동 경로 approval_hash 는 바뀌지 않으며, 공매도·신용·선물·옵션 실계좌와 스케줄러 등록은 허용되지 않는다.
+Wording: the service-to-service header is the **E1 confirm header**; the operator's per-order decision is **order approval** (`approval_hash`, card). The autonomous path has no order approval; manual paths keep theirs.
 
-## 5. Tickets (ordered "possible first")
+> hk 6939 의 명시 운영자 결정(2026-11-27, `decision/2026-11-27/at-autonomous-strategy-orders`)은 의도 게이트웨이의 전략 주문 forwarder(`kis_live` KR(KRX·NXT)/US, `toss_live` KR/US, `upbit_live` 원화, 그리고 기존 게이트 아래의 모의·데모 계좌)만 예외로 허용한다 — `EXECUTION_INTENT_GATEWAY_ENABLED` AND 계좌별 `EXECUTION_INTENT_GATEWAY_KIS_LIVE_ENABLED`·`EXECUTION_INTENT_GATEWAY_TOSS_LIVE_ENABLED`·`EXECUTION_INTENT_GATEWAY_UPBIT_LIVE_ENABLED`(모두 기본 false, 정확히 `"true"`) AND `EXECUTION_INTENT_GATEWAY_ROUTE_ENABLED` AND 계좌 kill 행 `ACTIVE`(부재·판독 실패·일일 손실 미측정은 freeze) AND 계좌×시장×세션 arming 상태 AND daily_plan 의 최신 발행 버전 AND 호출별 E1 확인 헤더(서비스 간 confirm, 운영자 주문 승인과 별개)가 모두 필요하다. 잠금 상수는 주문당 2,000,000원(미국은 원화 환산), 1주가 그보다 비쌀 때만 수량 1주·10,000,000원(별도 잠금 상수 `ONE_SHARE_CEILING_KRW`; `LOCKED_ENVELOPE`·`MAX_INTENT_NOTIONAL_KRW` 5,000,000원은 그대로), 계좌당 미체결 4건, 일일 손실 500,000원 이상이면 자동 freeze, 미모의 시장의 첫 10회 왕복은 주문당 1,000,000원(1주 예외는 유지)이며 어떤 CLI·env 로도 올릴 수 없다. 손실매도 가드는 그대로이고 예외는 계획에 진입 시 기록된 무효화 가격을 실제 가격이 이탈한 기계식 매도 하나뿐이다(그 밖의 손실 매도는 사람 카드). 주문 형태는 브로커·세션별 허용 목록을 따르며(토스 미국 프리·애프터만 지정가·정수 수량·금액 주문 금지), 모든 세션에서 신선한 양쪽 호가와 얇은 호가의 더 엄격한 스프레드를 요구한다. Upbit 손절 쿨다운·`loss_cut` 상수·`LOCKED_ENVELOPE`(5,000,000원)·`MAX_INTENT_NOTIONAL_KRW` 를 포함한 기존 게이트, 서비스 경유 원장 쓰기·증거 우선 체결·불명 송신 재전송 금지·kis_mock 귀속·W5 inbox·수동 경로 approval_hash 는 바뀌지 않으며, 공매도·신용·선물·옵션 실계좌와 스케줄러 등록은 허용되지 않는다.
 
-Tier T3 = order path / guard wiring → strong model. M = needs migration.
+## 5. Supersession: when a previous version's requests are refused
 
-| # | Repo | Title | Tier/Grade | M | Blocks on |
+### 5.1 The deciding lock and timestamp
+
+The order is decided by **commit order under one lock**, not by wall-clock timestamps. The lock is the 6728 shared
+serialization boundary: a transaction-scoped advisory lock keyed on (account, normalized symbol, venue), taken by
+(a) daily_plan publish for every row it changes, (b) the E1 child reservation, (c) the pre-send re-read, and (d) the event
+block writer (VI/halt/session). `daily_plan_versions.created_at` is recorded for audit only; it never decides.
+
+- **At reservation.** Inside the reservation transaction, after replay/conflict on the key, the gateway reads the head's
+  latest `PUBLISHED` seq under the lock. If it is greater than the intent's `plan_version`, the submit/amend is
+  `refused/plan_version_stale`, no journal `sending`, broker calls 0.
+- **At the pre-send re-read.** After the `sending` row is committed and immediately before the adapter's first send, the
+  forwarder's pre-send hook takes the same lock and re-reads the latest seq and block state. If a newer version or block
+  committed in between, the child ends `not_sent` (proven unsent, reason `plan_version_stale`) and the reservation is
+  released. If the hook returned, the send happened or may have happened: later errors are `uncertain`.
+- **Already accepted orders** of the old version stay tracked: cancel (own key, kill/supersession not checked, account
+  fingerprint checked — ROB-1440 rule) and reconcile continue. A new version never cancels or replaces an order by itself.
+- **Uncertain** is never resent, under any version. A new submit on the same (account, symbol, venue) is
+  `refused/prior_intent_unsettled` while any prior intent has an open order, an uncertain send or unreconciled fills.
+
+### 5.2 Replay cases (fake clock, fake broker spy; extends 6728 §6)
+
+| # | Case | Input | Expected journal | Expected ledger / projection |
+|---|---|---|---|---|
+| R1 | Send just before the version switch | v1 child reserved; hook returns and broker accepts 10 shares; then v2 publish commits | v1 row `sending→accepted`; a v1 retry key replays `accepted` (sends 0); a new v1 child → `refused/plan_version_stale`; v2 child for same symbol → `refused/prior_intent_unsettled` until v1 settles | `kis_live_order_ledger` 1 accepted row; no fill row; broker sends = 1 |
+| R1b | Publish wins the lock first | v2 commits after v1 reservation, before hook | v1 row `sending→not_sent` (`plan_version_stale`) | no ledger row; broker sends = 0 |
+| R2 | Version switch after a partial fill | v1 10 shares, 4 filled (in-effect ledger), v2 publishes with a smaller size | v1 open 6 remain cancellable: cancel child accepted when `broker_cancel_confirmed`; v2 submit refused `prior_intent_unsettled` until cancel + fills reconcile, then allowed for remaining budget only | projection 4 held / 0 open, cancelled 6; v2 intent budget = approved − 4×price; budget not reset by v2 |
+| R3 | Socket disconnect and reconnect | quotes stream, gap, reconnect, resubscribe ACK, REST snapshot, then new-generation WS tick | during gap and until resubscribe ACK + fresh WS book: children 0 (Fillwire `blocked`); REST snapshot alone: 0; backlog touches: 0; first eligible new tick: 1 child | broker sends = 1 after recovery; an `uncertain` child from before the disconnect is not resent |
+
+Tests: AT `tests/services/execution_intent_gateway/test_plan_version.py` (R1, R1b, R2), FW
+`./internal/exec/plandetector -run TestEntryBlockedUntilSubscriptionReplayAndFreshQuote` (R3).
+
+## 6. Retro linkage: why a buy did not happen
+
+Every candidate row of a published version keeps a link chain `plan head + seq + row_key + 6790 score snapshot
+(ranking A/B ranks, inputs_used, W/N allocation)` → intent → child → fill or block code. The retro (Claude/dots) reads it
+through `retro_timeline` (hk 6171, one row per symbol per day) extended with a `plan` source, and through `block_reason`
+(hk 5610) where the stop happened at proposal/approval.
+
+| Reason (closed) | Evidence | Reused surface |
+|---|---|---|
+| `candidate_not_captured` | symbol absent from the bundle candidate set (`candidate_set_sha256`) | `retro_timeline` `not_observed`/`observed_only` |
+| `condition_not_reached` | row published `executable`, no child before expiry, detector saw no qualifying tick | new `plan` event kind in `retro_timeline` |
+| `data_delayed_or_missing` | input `unavailable` reason in score snapshot, or detector `blocked` (gap/stale quote) | 6790 `unavailable`; FW block log |
+| `budget_or_guard_block` | E1 refusal code (`order_cap_exceeded`, `working_orders_limit`, kill, arming, `plan_version_stale`, `prior_intent_unsettled`, `entry_no_fill_window`) or 6790 `reserved_waiting`/`skipped_waiting` | E1 journal; `block_reason` vocabulary extended by these codes |
+| `unfilled` | child `accepted`, ledger shows 0 fill at expiry/cancel | existing chain `order_expired`/`order_cancelled` |
+
+Unknown evidence is reported as unknown (`source_unavailable`), never collapsed into one of the five.
+
+## 7. Tickets
+
+Status columns: Design = design doc merged; Impl = implementation merged on main; Pi = deployed on pi; Mock = verified on a
+mock/replay path. `—` = not applicable or not yet. Statuses read from `origin/main` at `a30bd7d27`; pi/mock columns marked
+[unverified] are to be confirmed by the design session.
+
+### 7.1 Existing tasks (reused, not re-ticketed)
+
+| hk | What | Design | Impl | Pi | Mock |
 |---|---|---|---|---|---|
-| T1 | AT | Plan tables + publisher + supersession | T3/S | M | — |
-| T2 | AT | Autonomous decision module (I1–I2, I7–I11, I14) pure + tests | T3/S | — | T1 |
-| T3 | AT | AGENTS.md exception + contracts + `LOCKED_ENVELOPE`/intent ceiling raise for 1-share | T3/S | — | T2 |
-| T4 | AT | Daily-loss monitor + kill freeze writer + per-account kill rows | T3/S | M | T1 |
-| T5 | AT | Arming fold + kis_mock US forwarder (v3) | T3/A | M | T2 |
-| T6 | AT | Discord alert emitter | T2/B | — | T1 |
-| T7 | AT | Gateway deploy on pi (loopback server unit file copy, env names, runbook) | T2/A | — | T3 |
-| T8 | FW | hk 5874 fillwire serve install (pi) | T2/A | — | — |
-| T9 | FW | Fillwire plan follower: reads intent v3, emits children (entry/target/invalidation) | T3/S | — | T2, T8 |
-| T10 | AT | kis_live KR forwarder (KRX regular, NXT pre/after, KRX after) | T3/S | — | T3, T4, T5 |
-| T11 | AT | kis_live US forwarder (regular, pre/post if supported) | T3/S | — | T10 |
-| T12 | AT | toss_live KR/US forwarder (+ policy key pre/post via operator PR) | T3/S | — | T10 |
-| T13 | AT | upbit_live: widen mandate ceiling to envelope, invalidation exception | T3/S | M | T3, T4 |
-| T14 | AT | Mock forwarders: kiwoom KR/US, alpaca, binance, NH, KIS futures mock | T3/A | M | T2 |
+| 6751 | daily_plan store/publish (KR) | done (5750) | merged #2632 | [unverified] | — |
+| 6790 | ranking A/B + W/N budget comparison | done | merged #2658 | [unverified] | — |
+| 6902 | premarket input bundle | done | merged #2661 | not deployed (DAG copy unregistered) | — |
+| 6728 | plan → E1 → mock execution design | done #2620 | — (tickets A–F) | — | — |
+| 6939 | this design | done #2663, revised by 6942 | — | — | — |
+| 5874 | Fillwire serve install on pi (FW) | done | [unverified] | [unverified] | — |
+| 6346 | Fillwire socket subscription/continuity (FW) | done | [unverified] | — | — |
 
-Per ticket (Current / Desired / Acceptance / Out of scope / evidence):
+### 7.2 New tickets (missing only)
 
-- **T1** C: no plan entity; intents written by hand (`scripts/execution_mandates.py`). D: append-only plan + versions; publisher writes the new version and its v3 intent in one tx; intents stay immutable. A: DB trigger refuses non +1 version and UPDATE/DELETE; a vN intent's child is refused `plan_superseded` once vN+1 exists. O: no sending. Ev: `app/services/execution_intent_gateway/store.py`, `app/schemas/execution_intent.py:43`.
-- **T2** C: caps per account scattered (`decisions.py:215`, `mandates.py:58`). D: one pure module for envelope/arming/session/quote rules. A: table-driven tests per I1–I2, I7–I11, I14. O: wiring to forwarders. Ev: `app/services/execution_intent_gateway/decisions.py:215`.
-- **T3** C: hard rule 4 has no autonomous exception; `LOCKED_ENVELOPE` 5,000,000. D: §4 paragraph, contracts section; new separate locked `ONE_SHARE_CEILING_KRW` (qty==1). A: static test pins paragraph switches; test pins `LOCKED_ENVELOPE` and `MAX_INTENT_NOTIONAL_KRW` unchanged at 5,000,000. O: forwarders. Ev: `app/services/kis_mock_runner/envelope.py:51`.
-- **T4** C: kill rows only for upbit (`account_control.py:78`). D: rows for kis_live/toss_live seeded `GLOBAL_FREEZE`; loss monitor freezes at ≥500k or unknown. A: unknown P&L → freeze test; freeze is append-only + Discord. O: unfreeze automation (operator only). Ev: `app/services/execution_intent_gateway/account_control.py:47`.
-- **T5** C: kis_mock forwarder KR only (`kis_mock_forwarder.py:159`). D: arming events table + fold; kis_mock US child path. A: 10 clean round trips → `live_full`; any error resets. O: live forwarders. Ev: `app/services/execution_intent_gateway/kis_mock_forwarder.py:185`.
-- **T6** C: no per-order Discord for gateway. D: post-commit emitter, fail-open. A: alert failure never changes journal outcome. O: Telegram. Ev: `app/core/config.py:561`.
-- **T7** C: gateway not on pi. D: unit-file copy + runbook, env names only. A: runbook lists every switch default false. O: enabling. Ev: `scripts/run_execution_intent_gateway.py:31`.
-- **T8** C: pi runs only old KIS fill ingest + Upbit recorder. D: hk 5874 serve install. A: serve health on pi. O: exec mode Send. Ev: fillwire `cmd/fillwire`, `internal/exec/e1/client.go:127 ExecutorSends`.
-- **T9** C: execmock/execsim/execupbit drive fixed intents. D: follower that maps plan v3 boundaries (entry cap, target, invalidation) to children; never amends above cap. A: replay tests; dry-run by default. O: plan creation. Ev: fillwire `internal/exec/intent.go:18`, `internal/exec/exposure.go:10`.
-- **T10** C: kis_live only via MCP/proposal (`orders_kis_variants.py:530`). D: gateway forwarder calling `_place_order_impl` with gateway pre-send hook. A: no send while kill/arming/plan stale; uncertain never resent; NXT/KRX-after session rules tested. O: US. Ev: `app/mcp_server/tooling/order_execution.py:2066`.
-- **T11** C: US live only manual. D: US forwarder; pre/post closed `unsupported` until KIS TR verified. A: XNYS + ET day tests. O: Toss. Ev: same `:2066`.
-- **T12** C: Toss via MCP with `approval_hash` (`orders_toss_variants.py:1310`). D: forwarder passing gateway-issued hash; US ext shape enforced. A: day-market refused; pre/post only if policy key lists them. O: policy flip. Ev: `app/mcp_server/tooling/orders_toss_variants.py:2183`.
-- **T13** C: mandate per-intent ceiling 480,000 (`mandates.py:58`). D: ceiling = envelope (2,000,000 / half cap), invalidation exception on top of `LOSS_SELL_FLOOR_FACTOR`. A: other loss sells still `loss_sell_requires_card`. O: cooldown change. Ev: `app/services/execution_intent_gateway/upbit_decisions.py:65`.
-- **T14** C: mock venues have their own send functions, no gateway. D: one forwarder each under existing gates. A: attribution/kiwoom/NH/futures locked rules unchanged. O: live. Ev: `app/services/kiwoom_mock_place.py:737`, `app/services/kis_futures_mock/constants.py:91`.
+Tier T3 = order path / guard wiring. M = migration.
 
-## 6. Open questions (recommended answers)
+| # | Repo | Title | Tier/Grade | M | Blocks on | Design | Impl | Pi | Mock |
+|---|---|---|---|---|---|---|---|---|---|
+| N1 | AT | daily_plan widening: markets us/crypto, `executable` rows, account modes (no new plan store) | T3/S | M | 6751 | done (§1.1) | — | — | — |
+| N2 | AT | Intent issuer + v3 intent binding `(head, seq, row_key)` + supersession at reservation/pre-send (§5) = 6728 B | T3/S | M | N1 | done | — | — | — |
+| N3 | AT | Autonomous decision module (I1–I2, I7–I11, I14) pure + tests | T3/S | — | N2 | done | — | — | — |
+| N4 | AT | AGENTS.md exception + contracts + separate `ONE_SHARE_CEILING_KRW` (qty==1); `LOCKED_ENVELOPE` and `MAX_INTENT_NOTIONAL_KRW` stay 5,000,000 | T3/S | — | N3 | done (§4) | — | — | — |
+| N5 | AT | Daily-loss monitor + kill freeze writer + per-account kill rows | T3/S | M | N2 | done | — | — | — |
+| N6 | AT | Arming fold + kis_mock US forwarder (v3) | T3/A | M | N3 | done | — | — | — |
+| N7 | AT | Discord alert emitter | T2/B | — | N2 | done | — | — | — |
+| N8 | AT | Gateway deploy on pi (unit-file copy, env names, runbook) | T2/A | — | N4 | done | — | — | — |
+| N9 | FW | Plan follower: reads intent v3, emits children (entry/target/invalidation) = 6728 E | T3/S | — | N3, 5874, 6346 | done | — | — | — |
+| N10 | AT | kis_live KR forwarder (KRX regular, NXT pre/after, KRX after) | T3/S | — | N4, N5, N6 | done | — | — | — |
+| N11 | AT | kis_live US forwarder (regular; pre/post only after TR verified) | T3/S | — | N10 | done | — | — | — |
+| N12 | AT | toss_live KR/US forwarder (+ policy key pre/post via operator PR) | T3/S | — | N10 | done | — | — | — |
+| N13 | AT | upbit_live: widen mandate ceiling to envelope, invalidation exception | T3/S | M | N4, N5 | done | — | — | — |
+| N14 | AT | Mock forwarders: kiwoom KR/US, alpaca, binance, NH, KIS futures mock | T3/A | M | N3 | done | — | — | — |
+| N15 | AT | Retro linkage: `plan` source in `retro_timeline`, block codes in `block_reason` (§6) | T2/A | — | N2 | done | — | — | — |
+
+6728 tickets A (input→publish read), C (ledger→remaining), D (event→re-evaluation), P (Fillwire subscription evidence) and
+F (mock retro) stay under hk 6728; N2/N9 are its B/E and are not duplicated there.
+
+### 7.3 Per-ticket notes
+
+- **N1** C: daily_plan is KR `plan_only` only (`daily_plan.py:66,135`). D: additive CHECK widening, no new table. A: existing
+  KR tests byte-identical; `executable` row requires invalidation condition. O: sending.
+- **N2** C: no plan reference in intents. D: v3 binding; §5 lock at publish, reservation, pre-send. A: §5.2 R1, R1b, R2. O: forwarders.
+- **N3** C: caps scattered (`decisions.py:215`, `mandates.py:58`). D: one pure module. A: table-driven tests per invariant.
+- **N4 (formerly T3)** Title: "AGENTS.md exception + contracts + separate `ONE_SHARE_CEILING_KRW` (qty==1)". C: hard rule 4 has
+  no autonomous exception. D: §4 paragraph and contract section; one new locked constant `ONE_SHARE_CEILING_KRW =
+  10,000,000` applied only when quantity == 1 and the share price exceeds the cap in force. A: tests
+  `tests/services/execution_intent_gateway/test_autonomous_envelope.py::test_locked_envelope_unchanged_at_5m` (pins
+  `LOCKED_ENVELOPE.max_single_notional_krw == 5_000_000`), `::test_max_intent_notional_unchanged_at_5m` (pins
+  `MAX_INTENT_NOTIONAL_KRW == 5_000_000`), `::test_one_share_ceiling_only_for_qty_one`; static test pins the paragraph's
+  switch list. O: forwarders; no raise of any existing constant. Ev: `envelope.py:51`, `execution_intent.py:48`.
+- **N5..N14**: as in the 6939 first draft (T4..T14), with plan reads replaced by the daily_plan head/seq.
+- **N15** C: `retro_timeline` has no plan source. D: add plan events and the five reasons (§6). A: one fixture per reason.
+
+## 8. Open questions (recommended answers)
 
 1. Q1 FX for US cap: which rate binds? **Rec:** `exchange_rate_service` midRate snapshot stored in intent at publish; refuse if unavailable (no fallback rate).
 2. Q2 Daily-loss measure: realized only or realized + MTM? **Rec:** realized + MTM of open lots, KST day; unknown = frozen.
@@ -183,4 +281,4 @@ Per ticket (Current / Desired / Acceptance / Out of scope / evidence):
 4. Q4 Do mock round trips for KIS KR regular count NXT? **Rec:** no; NXT/after cells are LH.
 5. Q5 KIS US pre/post TR availability [unverified]. **Rec:** keep `unsupported` until KIS official sample confirms; then LH.
 6. Q6 Does a Toss/KIS cancel in kill state remain allowed? **Rec:** yes, cancel ignores kill (ROB-1440 rule) but checks account fingerprint.
-7. Q7 One-share exception during `live_half`: the decision keeps it at 10,000,000 KRW. **Rec:** keep as decided; if the operator wants a stricter start, cap it at 2,000,000 KRW while `live_half` (one policy constant, T2).
+7. Q7 One-share exception during `live_half`: the decision keeps it at 10,000,000 KRW. **Rec:** keep as decided; if the operator wants a stricter start, cap it at 2,000,000 KRW while `live_half` (one policy constant, N3).
