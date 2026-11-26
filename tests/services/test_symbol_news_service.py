@@ -192,6 +192,8 @@ async def test_kr_get_news_keeps_mobile_provider_url_and_live_provenance(
 
     persisted_item = upsert.await_args.args[3][0]
     assert persisted_item.url == raw["url"]
+    assert persisted_item.published_at_raw == raw["datetime_raw"]
+    assert persisted_item.published_precision == "minute"
     assert result.cache_hit is False
     assert result.fallback_source is None
     assert result.provider_provenance[0]["mode"] == "live"
