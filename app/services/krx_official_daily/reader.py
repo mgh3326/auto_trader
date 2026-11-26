@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.krx_official_daily import KRXOfficialDaily
 
-_SHORT_CODE = re.compile(r"^[0-9]{6}$")
+_SHORT_CODE = re.compile(r"[0-9A-Z]{6}")
 
 
 async def read_zero_volume_fact(
@@ -22,7 +22,7 @@ async def read_zero_volume_fact(
 ) -> dict[str, Any]:
     """Return a closed-state fact; an absent or unreadable row is ``unknown``."""
     if not _SHORT_CODE.fullmatch(symbol):
-        raise ValueError("symbol must be a 6-digit short code")
+        raise ValueError("symbol must be a 6-character KRX short code")
     base: dict[str, Any] = {
         "symbol": symbol,
         "session_date": session_date.isoformat(),

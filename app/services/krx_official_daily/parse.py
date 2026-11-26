@@ -29,7 +29,9 @@ NUMERIC_FIELDS: dict[str, str] = {
     "MKTCAP": "market_cap",
     "LIST_SHRS": "listed_shares",
 }
-SHORT_CODE = re.compile(r"^[0-9]{6}$")
+# KRX 6-character short code: digits and upper-case ASCII letters (e.g. 005930, 0256C0).
+# Lower-case and other lengths are refused; this is the kr_symbol_universe rule for ASCII input.
+SHORT_CODE = re.compile(r"[0-9A-Z]{6}")
 FIELD_REASONS = frozenset({"missing", "empty", "unparsable", "negative"})
 REJECT_REASONS = frozenset(
     {"bas_dd_missing", "bas_dd_mismatch", "symbol_not_short_code", "duplicate_symbol"}

@@ -183,6 +183,28 @@ def test_negative_volume_is_null_not_zero() -> None:
     assert row["full_day_zero_volume"] is None
 
 
+def test_alphanumeric_six_character_short_code_is_accepted() -> None:
+    parsed = parse_daily_payload(
+        fixture("stk_bydd_trd_synthetic_alnum_20261125.json"),
+        market="kospi",
+        session_date=SESSION,
+    )
+    assert [r["symbol"] for r in parsed.rows] == ["0256C0"]
+    assert parsed.rejected == Counter()
+
+
+@pytest.mark.parametrize("code", ["0256c0", "0256C", "0256C01", "0256-0", "025 6C0"])
+def test_lower_case_and_wrong_length_or_separator_codes_are_still_rejected(
+    code: str,
+) -> None:
+    payload = {
+        "OutBlock_1": [{"BAS_DD": "20261125", "ISU_CD": code, "ACC_TRDVOL": "1"}]
+    }
+    parsed = parse_daily_payload(payload, market="kospi", session_date=SESSION)
+    assert parsed.rows == []
+    assert parsed.rejected == Counter({"symbol_not_short_code": 1})
+
+
 def test_rows_for_another_day_bad_symbols_and_duplicates_are_counted_not_stored() -> (
     None
 ):
@@ -455,6 +477,36 @@ async def test_an_empty_list_is_not_published_yet_and_writes_nothing() -> None:
     assert result["error_code"] == "not_published_yet"
     assert result["exit_code"] == 4
     assert result["markets"]["kosdaq"]["status"] == "not_published_yet"
+    assert result["markets"]["kospi"]["status"] == "ok"
+    assert result["inserted"] is None
+    assert session.executed == [] and session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_a_market_whose_rows_are_all_rejected_fails_the_run_and_writes_nothing() -> (
+    None
+):
+    session = FakeSession()
+    all_bad = {
+        "OutBlock_1": [
+            {"BAS_DD": "20261125", "ISU_CD": "00593", "ACC_TRDVOL": "1"},
+            {"BAS_DD": "20261125", "ISU_CD": "0256c0", "ACC_TRDVOL": "1"},
+        ]
+    }
+    api = FakeApi(
+        {
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
+            "kosdaq": all_bad,
+        }
+    )
+    result = await collect_official_daily(
+        session_date=SESSION, client=api, session=session
+    )
+    assert result["status"] == "failed"
+    assert result["error_code"] == "all_rows_rejected"
+    assert result["exit_code"] == 1
+    assert result["markets"]["kosdaq"]["status"] == "failed"
+    assert result["markets"]["kosdaq"]["rejected"] == {"symbol_not_short_code": 2}
     assert result["markets"]["kospi"]["status"] == "ok"
     assert result["inserted"] is None
     assert session.executed == [] and session.commits == 0
