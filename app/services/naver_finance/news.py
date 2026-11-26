@@ -6,9 +6,9 @@ symbol-scoped feed is::
 
     GET https://m.stock.naver.com/api/news/stock/{code}?pageSize={groups}&page={page}
 
-returning a JSON array of groups ``[{total, items: [article, ...]}, ...]``
-(newest first; ``pageSize`` counts groups, ``page`` starts at 1). Article keys
-per the desk probe: ``id`` (officeId+articleId dedupe key), ``officeId``,
+returning a JSON envelope ``{total, items: [article, ...]}`` (newest first;
+``pageSize`` counts articles, ``page`` starts at 1). Article keys are
+``id`` (officeId+articleId dedupe key), ``officeId``,
 ``articleId``, ``officeName``, ``datetime`` (``YYYYMMDDHHMM`` KST), ``type``,
 ``title``, ``titleFull``, ``body``, ``photoType``, ``imageOriginLink``,
 ``mobileNewsUrl``.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import Any
 
 import httpx
@@ -28,9 +29,6 @@ from app.services.naver_finance.parser import DEFAULT_HEADERS
 logger = logging.getLogger(__name__)
 
 NAVER_STOCK_NEWS_API = "https://m.stock.naver.com/api/news/stock"
-# ``pageSize`` counts news groups, not articles; request a bounded bundle and
-# flatten. Single request keeps provider fan-out identical to the HTML era.
-_NEWS_GROUPS_PER_REQUEST = 10
 _KST = timezone(timedelta(hours=9))
 
 
@@ -69,6 +67,7 @@ def _normalize_news_item(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     title = (
         str(raw.get("title") or "").strip() or str(raw.get("titleFull") or "").strip()
     )
+    title = unescape(title)
     if not title:
         return None, "missing_title"
     url = str(raw.get("mobileNewsUrl") or "").strip()
@@ -89,6 +88,11 @@ def _normalize_news_item(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
             "id": str(raw.get("id") or "").strip() or None,
             "officeId": str(office_id) if office_id is not None else None,
             "articleId": str(article_id) if article_id is not None else None,
+            "provider_article_id": (
+                f"{office_id}:{article_id}"
+                if office_id is not None and article_id is not None
+                else None
+            ),
         },
         None,
     )
@@ -96,9 +100,12 @@ def _normalize_news_item(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
 
 async def _fetch_json(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET JSON helper — mirrors ``_fetch_html`` so tests patch one seam."""
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
         response = await client.get(url, params=params, headers=DEFAULT_HEADERS)
         response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        if content_type.split(";", 1)[0].strip().lower() != "application/json":
+            raise NaverNewsContractError("non_json_response")
         return response.json()
 
 
@@ -113,14 +120,11 @@ async def fetch_stock_news(code: str, limit: int = 20) -> NaverNewsFetchResult:
     url = f"{NAVER_STOCK_NEWS_API}/{code}"
     payload = await _fetch_json(
         url,
-        params={
-            "pageSize": _NEWS_GROUPS_PER_REQUEST,
-            "page": 1,
-        },
+        params={"page": 1, "pageSize": limit},
     )
-    if not isinstance(payload, list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise NaverNewsContractError(
-            f"unexpected news payload {type(payload).__name__}; expected list of groups"
+            f"unexpected news payload {type(payload).__name__}; expected items envelope"
         )
 
     items: list[dict[str, Any]] = []
@@ -140,23 +144,19 @@ async def fetch_stock_news(code: str, limit: int = 20) -> NaverNewsFetchResult:
             )
         return NaverNewsFetchResult(items=items, skipped=skipped)
 
-    for group in payload:
-        if not isinstance(group, dict) or not isinstance(group.get("items"), list):
-            _count("invalid_group")
+    for raw in payload["items"]:
+        item, reason = _normalize_news_item(raw)
+        if item is None:
+            _count(reason or "invalid_item")
             continue
-        for raw in group["items"]:
-            item, reason = _normalize_news_item(raw)
-            if item is None:
-                _count(reason or "invalid_item")
-                continue
-            dedupe_key = item["id"] or item["url"]
-            if dedupe_key in seen:
-                _count("duplicate")
-                continue
-            seen.add(dedupe_key)
-            items.append(item)
-            if len(items) >= limit:
-                return _result()
+        dedupe_key = item["id"] or item["url"]
+        if dedupe_key in seen:
+            _count("duplicate")
+            continue
+        seen.add(dedupe_key)
+        items.append(item)
+        if len(items) >= limit:
+            return _result()
 
     return _result()
 
