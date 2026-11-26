@@ -125,7 +125,10 @@ def test_execution_stage_preserves_explicit_outcome_when_operation_raises(
 def test_execution_metrics_logger_emits_info_to_stderr_without_stdout_json_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    prior_stream = StringIO()
     stream = StringIO()
+    monkeypatch.setattr(sys, "stderr", prior_stream)
+    configure_execution_metrics_logging()
     monkeypatch.setattr(sys, "stderr", stream)
     configure_execution_metrics_logging()
     configure_execution_metrics_logging()
@@ -147,6 +150,7 @@ def test_execution_metrics_logger_emits_info_to_stderr_without_stdout_json_chang
 
     assert "metric=execution_stage_total" in stream.getvalue()
     assert stream.getvalue().count("metric=execution_stage_total") == 1
+    assert prior_stream.getvalue() == ""
 
 
 @pytest.mark.unit

@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 def configure_execution_metrics_logging() -> None:
     """Send execution observations to stderr even when the host app has no logger setup."""
     logger.setLevel(logging.INFO)
-    if any(
-        getattr(handler, "_execution_metrics_handler", False)
-        for handler in logger.handlers
-    ):
-        return
+    for handler in tuple(logger.handlers):
+        if not getattr(handler, "_execution_metrics_handler", False):
+            continue
+        if handler.stream is sys.stderr:
+            return
+        logger.removeHandler(handler)
+        handler.close()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(
