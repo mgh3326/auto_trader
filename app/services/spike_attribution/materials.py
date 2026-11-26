@@ -6,10 +6,11 @@ kind.
 
 Two things it refuses to do:
 
-* **Guess a clock.** Stored ``article_published_at`` is naive, and the tz it was
+* **Guess a clock.** Legacy ``article_published_at`` is naive, and the tz it was
   naive *in* depends on which ingestor produced the row. Only feeds in
-  :data:`FEED_CLOCKS` with ``confirmed=True`` get an eligible timestamp;
-  everything else is surfaced as ``timestamp_unknown`` and can never be a cause.
+  :data:`FEED_CLOCKS` with ``confirmed=True`` get an eligible timestamp. New
+  mainnews rows use the timezone-aware ``published_at`` observation that carried
+  the accepted precision. Everything else is surfaced as ``timestamp_unknown``.
 * **Fill a gap.** A material that could not be read is reported as unavailable
   with a reason, which is never the same statement as "no cause existed".
 """
@@ -61,13 +62,13 @@ class FeedClock:
     """
 
     tz: ZoneInfo | None
-    precision: str  # "exact" | "date_only" | "unknown"
+    precision: str  # "exact" | "minute" | "date_only" | "unknown"
     confirmed: bool
     basis: str
 
 
-# KST wall-clock, confirmed by the 2026-08 publish-hour histogram: the KR
-# aggregate feed peaks 08:00-17:00 and empties overnight.
+# KST wall-clock for the second-precision mainnews endpoint. Legacy aggregate
+# rows retain their prior confirmed KST clock for read compatibility.
 _KR_EXACT = FeedClock(
     tz=_KST,
     precision="exact",
@@ -81,6 +82,12 @@ _KR_DATE_ONLY = FeedClock(
     confirmed=False,
     basis="all_rows_stored_at_midnight_time_of_day_not_captured",
 )
+_KR_MINUTE_NOT_EXACT = FeedClock(
+    tz=_KST,
+    precision="minute",
+    confirmed=False,
+    basis="provider_precision_minute_not_exact_for_kr_spike_attribution",
+)
 # US feeds look like naive UTC, but "looks like" is not a confirmation and a
 # 9-13 hour error would silently flip pre-move / post-move rulings.
 _US_UNCONFIRMED = FeedClock(
@@ -91,13 +98,14 @@ _US_UNCONFIRMED = FeedClock(
 )
 
 FEED_CLOCKS: dict[str, FeedClock] = {
+    "http_naver_mstock_mainnews": _KR_EXACT,
     "http_naver_stock_aggregate": _KR_EXACT,
     "browser_naver_research": _KR_DATE_ONLY,
     "browser_naver_research_company": _KR_DATE_ONLY,
     "browser_naver_research_economy": _KR_DATE_ONLY,
     "browser_naver_research_industry": _KR_DATE_ONLY,
     "browser_naver_research_invest": _KR_DATE_ONLY,
-    "naver_item_news": _KR_DATE_ONLY,
+    "naver_item_news": _KR_MINUTE_NOT_EXACT,
     "rss_yahoo_finance_topstories": _US_UNCONFIRMED,
     "rss_cnbc_us_markets": _US_UNCONFIRMED,
     "rss_cnbc_earnings": _US_UNCONFIRMED,
@@ -131,6 +139,19 @@ EXTERNALLY_JUDGED_STATUSES: frozenset[str] = frozenset({"confirmed", "excluded"}
 
 def feed_clock(feed_source: str | None) -> FeedClock:
     return FEED_CLOCKS.get(feed_source or "", _UNREGISTERED)
+
+
+def _news_feed_clock(
+    feed_source: str | None, published_precision: str | None
+) -> FeedClock:
+    clock = feed_clock(feed_source)
+    if feed_source == "http_naver_mstock_mainnews":
+        if published_precision == "second":
+            return clock
+        if published_precision == "minute":
+            return _KR_MINUTE_NOT_EXACT
+        return _UNREGISTERED
+    return clock
 
 
 def _localize(naive: dt.datetime | None, clock: FeedClock) -> dt.datetime | None:
@@ -217,6 +238,8 @@ async def _load_news_evidence(
     # the record as ``after_move`` rather than quietly missing.
     lo = event.window_start_exclusive.date() - dt.timedelta(days=1)
     hi = event.window_end_inclusive.date() + dt.timedelta(days=1)
+    lo_utc = dt.datetime.combine(lo, dt.time.min, tzinfo=_KST).astimezone(dt.UTC)
+    hi_utc = dt.datetime.combine(hi, dt.time.max, tzinfo=_KST).astimezone(dt.UTC)
     stmt = sa.text(
         """
         SELECT a.id           AS article_id,
@@ -224,7 +247,9 @@ async def _load_news_evidence(
                a.title        AS title,
                a.source       AS source,
                a.feed_source  AS feed_source,
-               a.article_published_at AS published_at,
+               a.published_precision AS published_precision,
+               a.article_published_at AS article_published_at,
+               a.published_at AS precise_published_at,
                r.status       AS rel_status,
                r.relationship AS rel_relationship,
                r.relevance    AS rel_relevance,
@@ -240,9 +265,26 @@ async def _load_news_evidence(
               AND r.symbol = s.symbol
         WHERE s.market = :market
           AND s.symbol = :symbol
-          AND a.article_published_at >= :lo
-          AND a.article_published_at < :hi
-        ORDER BY a.article_published_at DESC, a.id DESC
+          AND (
+                (
+                    a.feed_source = :mainnews_source
+                    AND a.published_at >= :lo_utc
+                    AND a.published_at < :hi_utc
+                )
+             OR (
+                    a.feed_source = :mainnews_source
+                    AND a.published_at IS NULL
+                    AND a.article_published_at >= :lo
+                    AND a.article_published_at < :hi
+                )
+             OR (
+                    COALESCE(a.feed_source, '') != :mainnews_source
+                    AND a.article_published_at >= :lo
+                    AND a.article_published_at < :hi
+                )
+          )
+        ORDER BY COALESCE(a.published_at, a.article_published_at AT TIME ZONE 'Asia/Seoul') DESC,
+                 a.id DESC
         """
     )
     rows = (
@@ -251,16 +293,31 @@ async def _load_news_evidence(
             {
                 "market": event.market,
                 "symbol": event.symbol,
+                "mainnews_source": "http_naver_mstock_mainnews",
                 "lo": dt.datetime.combine(lo, dt.time.min),
                 "hi": dt.datetime.combine(hi, dt.time.max),
+                "lo_utc": lo_utc,
+                "hi_utc": hi_utc,
             },
         )
     ).all()
 
     items: list[EvidenceItem] = []
     for row in rows:
-        clock = feed_clock(row.feed_source)
-        published = _localize(row.published_at, clock)
+        clock = _news_feed_clock(row.feed_source, row.published_precision)
+        if row.feed_source == "http_naver_mstock_mainnews":
+            precise_published = row.precise_published_at
+            published = (
+                precise_published
+                if clock.confirmed
+                and precise_published is not None
+                and precise_published.utcoffset() is not None
+                else None
+            )
+            published_column = "news_articles.published_at"
+        else:
+            published = _localize(row.article_published_at, clock)
+            published_column = "news_articles.article_published_at"
         eligibility = (
             rule_eligibility(
                 published_at=published,
@@ -289,9 +346,7 @@ async def _load_news_evidence(
                 url=row.url,
                 published_at=published,
                 published_at_precision=clock.precision,
-                published_at_source=(
-                    f"news_articles.article_published_at ({clock.basis})"
-                ),
+                published_at_source=(f"{published_column} ({clock.basis})"),
                 eligibility=eligibility,
                 judgment=judgment,
                 judgment_detail={
