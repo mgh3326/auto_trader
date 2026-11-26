@@ -474,9 +474,7 @@ async def test_production_kr_fixed_list_is_reported_as_targets() -> None:
 
     assert {"069500", "229200"} <= set(targets.symbols)
     assert _tier(targets, "fixed").cut == 0
-    assert not {"069500", "229200"} & {
-        cut["symbol"] for cut in targets.cuts
-    }
+    assert not {"069500", "229200"} & {cut["symbol"] for cut in targets.cuts}
 
 
 def test_fixed_list_report_marks_env_override_and_keeps_effective_symbols() -> None:
