@@ -56,7 +56,7 @@ scoring/budget comparison from hk 6790. Execution binding is the 6728 intent ref
 | `entry_price_cap` | body `max_buy_price`, `would_be_limit_price` | |
 | `quantity_cap` / `notional_cap` | body `would_be_quantity` xor `would_be_notional` | E1 intent caps are the binding copy |
 | `invalidation_price` | body `invalidation_conditions[]` (`price_at_or_below`) | required for an autonomous entry row |
-| `target_price` | body `trigger` on a `trim` row (`price_at_or_above`) | not a loss sell |
+| `target_price` | body `trigger` on a `trim` row (`price_at_or_above`) | own intent bound to the trim row_key (§1.3); not a loss sell |
 | `arming_state_at_publish` | **not stored in the plan**: read live by E1 from `review.autonomous_arming_events` fold | arming is gateway state, not plan content |
 | budget per account/currency | 6790 `daily_plan_versions.metadata.allocation_comparison` (W/N) | operator-only, not served to sessions |
 | remaining qty / budget after fills | E1 fills projection (6728 §3) | never written back into the plan |
@@ -80,13 +80,17 @@ and the mock accounts; symbol CHECK per market. No field above needs its own tab
   precondition and is not issued until the broker's orderable cash has risen.
 - A fill updates only remaining quantity and remaining budget (6728 §3 projection). Strategy re-evaluation happens only at
   named events — premarket, disclosure, VI, halt/resume, session change, operator/dots request — and each produces a new
-  version (`VERSION_KINDS` premarket/fill/event/session/close). A `fill` version records observation; it does not re-score.
+  version (`VERSION_KINDS` premarket/fill/event/session/close). A `fill` version records observation only: it never changes a row's execution fields (trigger, invalidation, price caps,
+  size, venue/session, account), so it never makes an intent stale (§5.1); the validator rejects a `fill`-kind version that does.
 
 ### 1.3 E1 intent (existing tables, new `schema_version` 3)
 
 `review.execution_intents` stays immutable. v3 adds `plan_head_id`, `plan_version` (= `daily_plan_versions.seq`),
-`row_key`, `invalidation_price`, `target_price`, `session`, per-account caps and the FX snapshot. These are copies bound at
-issue time for the gateway; the daily_plan row stays the source. Owner: AT intent issuer, never Fillwire.
+`row_key`, `invalidation_price`, `session`, per-account caps and the FX snapshot. These are copies bound at
+issue time for the gateway; the daily_plan row stays the source. Every copied value comes from the bound row only: an entry
+(`new`/`add`) intent carries the entry row's invalidation; a take-profit exit is a separate intent bound to its own `trim`
+row_key (its `trigger` is the target), checked against that row's supersession. `invalidation_break` children belong to the
+entry intent's lineage; `target_hit` children to the trim intent. Owner: AT intent issuer, never Fillwire.
 
 ### 1.4 Fillwire child request, gateway journal, ledger evidence (existing, unchanged)
 
@@ -171,13 +175,16 @@ Wording: the service-to-service header is the **E1 confirm header**; the operato
 The order is decided by **commit order under one lock**, not by wall-clock timestamps. The lock is the 6728 shared
 serialization boundary: a transaction-scoped advisory lock keyed on (account, normalized symbol, venue), taken by
 (a) daily_plan publish for every row it changes, (b) the E1 child reservation, (c) the pre-send re-read, and (d) the event
-block writer (VI/halt/session). `daily_plan_versions.created_at` is recorded for audit only; it never decides.
+block writer (VI/halt/session). Because only a publish that changes a row takes that row's lock, and only such a publish can
+make the row stale, every supersession of a row is serialized against its reservation and pre-send. `daily_plan_versions.created_at` is recorded for audit only; it never decides.
 
-- **At reservation.** Inside the reservation transaction, after replay/conflict on the key, the gateway reads the head's
-  latest `PUBLISHED` seq under the lock. If it is greater than the intent's `plan_version`, the submit/amend is
+- **At reservation.** Inside the reservation transaction, after replay/conflict on the key, the gateway reads, under the lock, the
+  latest `PUBLISHED` seq **in which this intent's `row_key` changed** (the daily_plan fold already tracks the last change per
+  row key). Staleness is per row, not per head: a publish that changes other rows, or a `fill`-kind version, does not
+  supersede this intent. If that row seq is greater than the intent's `plan_version`, the submit/amend is
   `refused/plan_version_stale`, no journal `sending`, broker calls 0.
 - **At the pre-send re-read.** After the `sending` row is committed and immediately before the adapter's first send, the
-  forwarder's pre-send hook takes the same lock and re-reads the latest seq and block state. If a newer version or block
+  forwarder's pre-send hook takes the same lock and re-reads the same per-row latest seq and block state. If a newer version or block
   committed in between, the child ends `not_sent` (proven unsent, reason `plan_version_stale`) and the reservation is
   released. If the hook returned, the send happened or may have happened: later errors are `uncertain`.
 - **Already accepted orders** of the old version stay tracked: cancel (own key, kill/supersession not checked, account
@@ -261,7 +268,12 @@ F (mock retro) stay under hk 6728; N2/N9 are its B/E and are not duplicated ther
 
 - **N1** C: daily_plan is KR `plan_only` only (`daily_plan.py:66,135`). D: additive CHECK widening, no new table. A: existing
   KR tests byte-identical; `executable` row requires invalidation condition. O: sending.
-- **N2** C: no plan reference in intents. D: v3 binding; §5 lock at publish, reservation, pre-send. A: §5.2 R1, R1b, R2. O: forwarders.
+- **N2** C: no plan reference in intents; the journal trigger (`20261120_hk5441_upbit_intent_gateway.py:591-596`) allows
+  `not_sent` only for `schema_version` 2 with reasons in the closed `NOT_SENT_REASONS` list. D: v3 binding; per-row §5 lock
+  at publish, reservation, pre-send; migration widens that trigger to allow `not_sent` for `schema_version` 3 and adds the v3
+  pre-send codes `plan_version_stale` and `prior_intent_unsettled` to the closed list, with `upbit_decisions.NOT_SENT_REASONS`
+  (or a v3 sibling list) and its pin test kept in sync. A: §5.2 R1, R1b, R2; a fill-kind version or an unrelated-row publish
+  leaves an outstanding intent (incl. its `invalidation_break` child) sendable. O: forwarders.
 - **N3** C: caps scattered (`decisions.py:215`, `mandates.py:58`). D: one pure module. A: table-driven tests per invariant.
 - **N4 (formerly T3)** Title: "AGENTS.md exception + contracts + separate `ONE_SHARE_CEILING_KRW` (qty==1)". C: hard rule 4 has
   no autonomous exception. D: §4 paragraph and contract section; one new locked constant `ONE_SHARE_CEILING_KRW =
