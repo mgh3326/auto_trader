@@ -176,6 +176,16 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE public.kr_market_close_summaries")
             )
+            # hk 6751 tables are in Base.metadata. Drop children before parents.
+            for table in (
+                "daily_plan_row_links",
+                "daily_plan_outcomes",
+                "daily_plan_rows",
+                "daily_plan_versions",
+                "daily_plan_input_bundles",
+                "daily_plan_heads",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
             # hk 6674 news columns are newer than the stamped boundary. Drop
             # current metadata columns so the migration can add them.
             for column in (

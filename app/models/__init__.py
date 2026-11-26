@@ -16,6 +16,7 @@ from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
+from .daily_plan import heads as daily_plan_heads
 from .execution_intent import ExecutionChildRequest, ExecutionIntent
 from .execution_ledger import (
     ExecutionLedger,
@@ -275,6 +276,7 @@ __all__ = [
     "CryptoCandle1m",
     "CryptoInsightSnapshot",
     "CryptoInstrument",
+    "daily_plan_heads",
     "CryptoInstrumentHealth",
     "Exchange",
     "Instrument",

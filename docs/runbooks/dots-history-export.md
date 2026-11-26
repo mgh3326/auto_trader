@@ -460,3 +460,17 @@ What connecting an external AI would need:
   write tools, if dots must not write.
 - **A decision on identifiers.** Add redaction to the tool responses, or accept
   raw order ids. Accepting them changes the operator's current decision.
+
+## 국내 실거래 주간 회고 점수표 (hk 6762)
+
+로컬에 보존한 거래 export와 `trade_retro` 가격 스냅샷으로 실행한다. `--until`은 한국 시간 기준 미포함 날짜이며, 그 전 90일의 매도와 종료일 시점의 미청산 FIFO 조각을 기록한다. 매수 기준일의 5·20거래일 성숙 여부는 별도로 판단하므로 가격 스냅샷은 종료일 이후에도 필요한 만큼 포함한다.
+
+```bash
+uv run python -m research.trade_scorecard.run \
+  --export <export-dir> --prices <price-snapshot-dir> --account kis_live \
+  --until YYYY-MM-DD --public-out <summary.md> --private-dir <outside-repo>
+```
+
+선택 점수는 매수일 종가부터 KOSPI 달력의 5·20번째 후속 정규장 종가까지의 가격수익률과 같은 날짜의 KOSPI 가격수익률 차이다. 체결 점수는 주문별 체결량 가중 평균가를 당일 시가, 시·종가 평균(VWAP 대용값), 다음 정규장 시가 및 원장 주문 지정가와 비교한다. 매도와 미청산 손익은 FIFO 조각별 총손익이며, 추가 매수의 기여는 해당 조각 총손익으로 따로 표시한다. 관측되지 않은 배당과 비용은 결측으로 남기므로 순손익도 결측이다. 결속된 제안의 출처는 `AT proposal`로 표시하고, 나머지 주문의 출처는 export에서 확인 가능한 범위로 제한한다.
+
+Factortrail의 주간 데이터가 제공되면 동일 90일 기준의 점수표를 수동 생성하고, 공개 집계와 비공개 CSV를 함께 검토한다.

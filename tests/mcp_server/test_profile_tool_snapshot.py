@@ -162,6 +162,15 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     expected["default"].add("kis_live_get_daily_orders")
     # hk 6664: KR flow and investor-rank reads are DEFAULT-only.
     expected["default"].update({"get_kr_flow_signals", "get_kr_investor_rankings"})
+    # hk 6751: default-off KR daily plan storage and publication.
+    expected["default"].update(
+        {
+            "daily_plan_write_version",
+            "daily_plan_confirm_links",
+            "daily_plan_get",
+            "daily_plan_list",
+        }
+    )
     # #849: the NHPLUG Stage 2 mock tools register on the default profile only,
     # behind nh_mock_mcp_enabled (default off); no live profile lists them.
     from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
