@@ -112,6 +112,7 @@ tests/scripts/b0x/test_portability_contract.py
 tests/scripts/b0x/test_table_gate.py
 tests/scripts/b0x/us/test_guards.py
 tests/scripts/test_benzinga_news_shadow.py
+tests/scripts/test_benzinga_news_shadow_kis.py
 tests/scripts/test_benzinga_pro_capture.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
@@ -343,6 +344,7 @@ tests/services/test_kis_mock_holdings_reconciler.py
 tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py
 tests/services/test_kr_news_collector.py
+tests/services/test_kis_news_shadow.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krx_after_market_health.py
 tests/services/test_loss_cut_policy_and_settings.py
