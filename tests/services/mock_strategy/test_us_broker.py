@@ -565,6 +565,35 @@ async def test_account_404_is_not_order_absence():
 
 
 async def test_refresh_reachable_broker_calls_are_get_only():
+    refresh_tree = ast.parse(Path(us.__file__).read_text())
+    strategy_class = next(
+        node
+        for node in ast.walk(refresh_tree)
+        if isinstance(node, ast.ClassDef) and node.name == "UsPaperStrategy"
+    )
+    refresh_method = next(
+        node
+        for node in strategy_class.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "refresh"
+    )
+    refresh_calls = {
+        node.func.attr
+        for node in ast.walk(refresh_method)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert refresh_calls <= {
+        "append",
+        "account_lock",
+        "fills_for_order",
+        "isoformat",
+        "list_open",
+        "lookup_for_refresh",
+        "projection",
+        "refresh_account_ref",
+        "update",
+        "_observation",
+        "_observation_changes",
+    }
     reachable = (
         (us, "UsPaperStrategy", "refresh"),
         (us_broker, "UsPaperBroker", "refresh_account_ref"),
