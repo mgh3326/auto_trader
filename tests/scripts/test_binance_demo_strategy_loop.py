@@ -10,7 +10,9 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -100,3 +102,156 @@ def test_build_paper_signal_uses_cli_flags() -> None:
     assert signal.side == "SELL"
     assert signal.decision_ts == 1_700_000_000_000
     assert signal.strategy_id == "rob-993-paper-signal"
+
+
+@pytest.mark.asyncio
+async def test_data_unavailable_tick_does_not_advance_the_loop_cursor(monkeypatch):
+    decision_ts = 1_700_000_000_000
+    seen_cursors = []
+    outcomes = (
+        SimpleNamespace(
+            decision_ts=decision_ts,
+            blocked_reason="data_unavailable",
+            symbol_decisions=(
+                SimpleNamespace(
+                    symbol="BTCUSDT",
+                    reason="data_missing_bars",
+                    missing_buckets=(decision_ts,),
+                    error_class=None,
+                ),
+            ),
+        ),
+        SimpleNamespace(
+            decision_ts=decision_ts,
+            blocked_reason="no_signal",
+            symbol_decisions=(),
+        ),
+    )
+
+    async def run_tick(args, *, already_processed_decision_ts):
+        seen_cursors.append(already_processed_decision_ts)
+        return 0, decision_ts, outcomes[len(seen_cursors) - 1]
+
+    sleeps = 0
+
+    async def sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.delenv("BINANCE_TREND_ALERT_ENABLED", raising=False)
+    monkeypatch.setattr(cli, "_run_tick", run_tick)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    args = SimpleNamespace(poll_interval_seconds=1)
+
+    assert await cli._run_loop(args) == 0
+    assert seen_cursors == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_data_quality_alert_sends_once_per_episode_and_reminds_after_six_hours():
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataFailureEpisodes,
+        DataQualityMonitor,
+    )
+
+    now = {"value": cli._now_utc()}
+    sent = []
+
+    async def send(failure):
+        sent.append(failure)
+        return True
+
+    monitor = DataQualityMonitor(
+        enabled=True,
+        send=send,
+        clock=lambda: now["value"],
+    )
+    episodes = DataFailureEpisodes()
+    missing = SimpleNamespace(
+        symbol="BTCUSDT", reason="data_missing_bars", detail="1730000000000"
+    )
+    assert episodes.update((missing,)) == ()
+    failure = episodes.update((missing,))
+    assert len(failure) == 1
+    await monitor.tick_done(failure)
+    await monitor.drain()
+    await monitor.tick_done(failure)
+    await monitor.drain()
+    assert sent == list(failure)
+
+    import datetime as dt
+
+    now["value"] += dt.timedelta(hours=6)
+    await monitor.tick_done(failure)
+    await monitor.drain()
+    assert sent == [failure[0], failure[0]]
+
+
+@pytest.mark.asyncio
+async def test_failed_data_alert_retries_after_five_minutes():
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataQualityMonitor,
+        TickFailure,
+    )
+
+    now = {"value": cli._now_utc()}
+    attempts = 0
+
+    async def send(_failure):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    monitor = DataQualityMonitor(
+        enabled=True,
+        send=send,
+        clock=lambda: now["value"],
+    )
+    failure = TickFailure("BTCUSDT: data_fetch_failed", "data_quality:BTCUSDT")
+    await monitor.tick_done((failure,))
+    await monitor.drain()
+    await monitor.tick_done((failure,))
+    await monitor.drain()
+    assert attempts == 1
+
+    import datetime as dt
+
+    now["value"] += dt.timedelta(minutes=5)
+    await monitor.tick_done((failure,))
+    await monitor.drain()
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_late_delivery_from_cleared_episode_does_not_suppress_new_episode():
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataQualityMonitor,
+        TickFailure,
+    )
+
+    started = asyncio.Event()
+    release_first = asyncio.Event()
+    sent = []
+
+    async def send(failure):
+        sent.append(failure)
+        if len(sent) == 1:
+            started.set()
+            await release_first.wait()
+        return True
+
+    failure = TickFailure("BTCUSDT: data_missing_bars", "data_quality:BTCUSDT")
+    monitor = DataQualityMonitor(enabled=True, send=send)
+    await monitor.tick_done((failure,))
+    await started.wait()
+
+    await monitor.tick_done(())
+    release_first.set()
+    await monitor.drain()
+
+    await monitor.tick_done((failure,))
+    await monitor.drain()
+
+    assert sent == [failure, failure]
