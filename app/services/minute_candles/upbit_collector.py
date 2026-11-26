@@ -175,9 +175,7 @@ def _walk_rows(
     if page_cap_hit and page is not None:
         oldest_unread_bound = min(row.time_utc for row in page.candles)
         gap_start = (
-            checkpoint + timedelta(minutes=1)
-            if checkpoint is not None
-            else lower_bound
+            checkpoint + timedelta(minutes=1) if checkpoint is not None else lower_bound
         )
         gap_end = oldest_unread_bound - timedelta(minutes=1)
         if gap_start <= gap_end:

@@ -271,12 +271,8 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
                 return None
             if "crypto_instruments.id" in sql:
                 return type("Result", (), {"scalar_one": lambda _self: 1})()
-            latest = max(
-                stamp for market, stamp in self.rows if market == "KRW-BTC"
-            )
-            return type(
-                "Result", (), {"scalar_one_or_none": lambda _self: latest}
-            )()
+            latest = max(stamp for market, stamp in self.rows if market == "KRW-BTC")
+            return type("Result", (), {"scalar_one_or_none": lambda _self: latest})()
 
         async def commit(self) -> None:
             return None
