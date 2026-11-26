@@ -335,23 +335,16 @@ async def _run_paper_signal(args: argparse.Namespace) -> int:
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
-    from app.services.brokers.binance.trend.alerting import (
-        TrendAlerter,
-        TrendRunMonitor,
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataFailureEpisodes,
+        DataQualityMonitor,
         alert_enabled,
-        build_default_channel,
     )
-    from app.services.brokers.binance.trend.control import DataFailureEpisodes
 
     _trace(f"loop_start poll_interval_seconds={args.poll_interval_seconds}")
     last_decision_ts: int | None = None
     enabled = alert_enabled(os.environ)
-    monitor = TrendRunMonitor(
-        TrendAlerter(
-            channel=build_default_channel() if enabled else None,
-            enabled=enabled,
-        )
-    )
+    monitor = DataQualityMonitor(enabled=enabled)
     data_failure_episodes = DataFailureEpisodes()
     try:
         while True:
@@ -363,12 +356,12 @@ async def _run_loop(args: argparse.Namespace) -> int:
                 if outcome is not None
                 else data_failure_episodes.update(())
             )
-            await monitor.tick_done(
-                tuple((failure.signature, failure.bucket) for failure in failures)
-            )
+            await monitor.tick_done(failures)
             if exit_code == 2:
                 return exit_code
-            if decision_ts is not None:
+            if decision_ts is not None and not (
+                outcome is not None and outcome.blocked_reason == "data_unavailable"
+            ):
                 last_decision_ts = decision_ts
             await asyncio.sleep(args.poll_interval_seconds)
     except (KeyboardInterrupt, asyncio.CancelledError):

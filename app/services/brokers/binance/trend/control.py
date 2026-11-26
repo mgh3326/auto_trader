@@ -111,7 +111,11 @@ class DataFailureEpisodes:
                 continue
             bucket = f"data_quality:{symbol}"
             detail = getattr(event, "detail", None)
-            signature = f"{name}:{detail}" if detail else name
+            if detail is None:
+                detail = getattr(event, "error_class", None)
+            signature = f"{symbol}: {name}"
+            if detail:
+                signature = f"{signature}: {detail}"
             previous_count, _ = self._previous.get(bucket, (0, ""))
             current[bucket] = (previous_count + 1, signature)
         self._previous = current

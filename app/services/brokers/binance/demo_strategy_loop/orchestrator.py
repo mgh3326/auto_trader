@@ -239,12 +239,20 @@ async def run_tick(
         # hand the plugin a snapshot where a lagging symbol's bar is stale
         # or absent — the opposite of H1's synchronized-plane semantics
         # (``compute_common_features`` requires the same intersection).
-        latest_close_ts_per_symbol = {
-            symbol: bars[-1].close_ts for symbol, bars in bars_by_symbol.items() if bars
-        }
         decision_ts = (
             int(now.timestamp() * 1000) // bars_mod.FOUR_HOUR_MS
         ) * bars_mod.FOUR_HOUR_MS
+        # Reads are sequential. A symbol fetched after a 4h boundary can
+        # include the next close while an earlier symbol's latest close is
+        # still the decision bucket. Apply one tick-wide cutoff before
+        # checking completeness or synchronizing the history snapshot.
+        bars_by_symbol = {
+            symbol: tuple(bar for bar in bars if bar.close_ts <= decision_ts)
+            for symbol, bars in bars_by_symbol.items()
+        }
+        latest_close_ts_per_symbol = {
+            symbol: bars[-1].close_ts for symbol, bars in bars_by_symbol.items() if bars
+        }
         symbol_decisions: list[SymbolDecision] = []
         for symbol in symbols:
             if symbol in fetch_errors:

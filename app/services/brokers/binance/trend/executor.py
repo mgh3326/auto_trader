@@ -1067,6 +1067,7 @@ class TrendExecutor:
         *,
         decision_ts: int,
         now: dt.datetime,
+        decisions: list[TrendDecision],
     ) -> ExitDecision | None:
         """The exit rules judged against a partially filled, still-working entry.
 
@@ -1113,6 +1114,7 @@ class TrendExecutor:
             quote_price=quote_price,
             now=now,
         )
+        self._record_minute_watch_failure(signal.symbol, observed, decisions)
         return choose_exit(
             HeldPosition(
                 side=signal.side,  # type: ignore[arg-type]
@@ -1141,6 +1143,7 @@ class TrendExecutor:
         decision_ts: int,
         now: dt.datetime,
         events: list[TrendEvent],
+        decisions: list[TrendDecision],
     ) -> None:
         """Serialized management of a partially filled, still-working entry.
 
@@ -1171,6 +1174,7 @@ class TrendExecutor:
                     histories.get(signal.symbol, ()),
                     decision_ts=decision_ts,
                     now=now,
+                    decisions=decisions,
                 )
             except Exception as exc:
                 logger.exception("trend working-entry decision failed")
@@ -1550,6 +1554,21 @@ class TrendExecutor:
             quote=quote_price,
         )
 
+    @staticmethod
+    def _record_minute_watch_failure(
+        symbol: str,
+        observed: HardStopObservation,
+        decisions: list[TrendDecision],
+    ) -> None:
+        if observed.minutes_ok:
+            return
+        reason = (
+            "data_incomplete_minutes"
+            if observed.failure_class == TrendKlineGap.__name__
+            else "data_fetch_failed"
+        )
+        decisions.append(TrendDecision(symbol, reason, observed.failure_class))
+
     async def _manage_holding(
         self,
         signal: TrendSignalSnapshot,
@@ -1597,13 +1616,7 @@ class TrendExecutor:
             quote_price=quote_price,
             now=now,
         )
-        if not observed.minutes_ok:
-            reason = (
-                "data_incomplete_minutes"
-                if observed.failure_class == TrendKlineGap.__name__
-                else "data_fetch_failed"
-            )
-            decisions.append(TrendDecision(symbol, reason, observed.failure_class))
+        self._record_minute_watch_failure(symbol, observed, decisions)
         if signal.exit_reason == EXIT_HARD_STOP:
             # A recorded stop is a latch: the decision was already taken (and
             # counted by the daily kill switch), so a price recovery after it
@@ -1728,8 +1741,36 @@ class TrendExecutor:
                     events.append(
                         TrendEvent(symbol, "bars_unavailable", type(exc).__name__)
                     )
+            # Report 4h gaps independently of the 1m watch and entry mode.
+            # A minute continuity failure for a holding must not hide a
+            # simultaneous missing decision bucket.
+            failed_history_symbols = {
+                item.symbol for item in decisions if item.reason == "data_fetch_failed"
+            }
+            for symbol in LOCKED_LIMITS.universe:
+                if symbol in failed_history_symbols:
+                    continue
+                expected = required_close_times(
+                    decision_ts, self.strategy.lookback_days
+                )
+                present = {bar.close_ts for bar in histories.get(symbol, ())}
+                missing = tuple(
+                    close_ts for close_ts in expected if close_ts not in present
+                )
+                if missing:
+                    decisions.append(
+                        TrendDecision(
+                            symbol,
+                            "data_missing_bars",
+                            ",".join(str(close_ts) for close_ts in missing),
+                        )
+                    )
             await self._manage_working_entries(
-                histories, decision_ts=decision_ts, now=now, events=events
+                histories,
+                decision_ts=decision_ts,
+                now=now,
+                events=events,
+                decisions=decisions,
             )
             # Manage what is held first; exits never wait for entry capacity.
             for signal in await self.state.list_active_signals():
@@ -1792,38 +1833,26 @@ class TrendExecutor:
                     events=tuple(events),
                     decisions=tuple(decisions),
                 )
-            for symbol in LOCKED_LIMITS.universe:
-                if any(
-                    item.symbol == symbol and item.reason.startswith("data_")
-                    for item in decisions
-                ):
-                    continue
-                expected = required_close_times(
-                    decision_ts, self.strategy.lookback_days
-                )
-                present = {bar.close_ts for bar in histories.get(symbol, ())}
-                missing = tuple(
-                    close_ts for close_ts in expected if close_ts not in present
-                )
-                if missing:
-                    decisions.append(
-                        TrendDecision(
-                            symbol,
-                            "data_missing_bars",
-                            ",".join(str(close_ts) for close_ts in missing),
-                        )
-                    )
             occupied = {
                 signal.symbol for signal in await self.state.list_active_signals()
             }
-            for found in evaluate_all(
+            found_entries = evaluate_all(
                 self.strategy, histories, decision_ts=decision_ts
-            ):
-                if not any(
-                    item.symbol == found.symbol and item.reason.startswith("data_")
-                    for item in decisions
-                ):
-                    decisions.append(TrendDecision(found.symbol, "signal_entry"))
+            )
+            found_symbols = {found.symbol for found in found_entries}
+            data_symbols = {
+                item.symbol for item in decisions if item.reason.startswith("data_")
+            }
+            for symbol in LOCKED_LIMITS.universe:
+                if symbol in data_symbols:
+                    continue
+                decisions.append(
+                    TrendDecision(
+                        symbol,
+                        "signal_entry" if symbol in found_symbols else "signal_none",
+                    )
+                )
+            for found in found_entries:
                 if found.symbol in blocked or found.symbol in occupied:
                     continue
                 bars = histories[found.symbol]
@@ -1847,10 +1876,6 @@ class TrendExecutor:
                 events.append(TrendEvent(found.symbol, event))
                 if outcome == "uncertain":
                     break
-            for symbol in LOCKED_LIMITS.universe:
-                if any(item.symbol == symbol for item in decisions):
-                    continue
-                decisions.append(TrendDecision(symbol, "signal_none"))
         return TrendTickResult(
             decision_ts=decision_ts,
             events=tuple(events),

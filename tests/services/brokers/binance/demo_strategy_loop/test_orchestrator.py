@@ -279,6 +279,46 @@ async def test_run_tick_calls_strategy_when_all_symbols_share_latest_close_ts(
 
 
 @pytest.mark.asyncio
+async def test_sequential_reads_use_one_close_cutoff_across_a_4h_boundary(
+    monkeypatch,
+) -> None:
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    decision = Bar4h(28_800_000, 43_200_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+    next_close = Bar4h(43_200_000, 57_600_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        bars = (decision,) if symbols == ("XRPUSDT",) else (decision, next_close)
+        return {symbols[0]: bars}
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+    called_with = []
+
+    class _RecordingStrategy:
+        strategy_id = "recording"
+
+        def evaluate(self, bars_4h_multi_symbol, *, decision_ts):
+            called_with.append(decision_ts)
+            assert all(
+                bar.close_ts <= decision_ts
+                for bars in bars_4h_multi_symbol.values()
+                for bar in bars
+            )
+            return None
+
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None,
+            confirm=True,
+            strategy=_RecordingStrategy(),
+            now=_now_at(decision.close_ts),
+        )
+    )
+    assert called_with == [decision.close_ts]
+    assert outcome.blocked_reason == "no_signal"
+
+
+@pytest.mark.asyncio
 async def test_missing_bucket_reports_reason_and_does_not_reach_order(
     monkeypatch,
 ) -> None:
