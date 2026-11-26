@@ -8,12 +8,14 @@ All writes must go through MarketEventsRepository. No direct SQL writes.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     ForeignKey,
@@ -23,12 +25,20 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
 from app.models.base import Base
+
+PUBLICATION_CHECK = """
+(published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)
+OR (published_precision IS NOT NULL AND (
+    (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)
+    OR (published_precision IN ('second', 'minute', 'datetime') AND published_at IS NOT NULL AND published_date IS NULL)
+))
+"""
 
 
 class MarketEvent(Base):
@@ -54,6 +64,26 @@ class MarketEvent(Base):
             text("coalesce(fiscal_quarter, 0)"),
             unique=True,
             postgresql_where=text("source_event_id IS NULL"),
+        ),
+        CheckConstraint(
+            PUBLICATION_CHECK,
+            name="publication",
+        ),
+        CheckConstraint(
+            "instrument_type IN ('equity_kr', 'equity_us', 'crypto', 'index', 'fx')",
+            name="instrument_type",
+        ),
+        CheckConstraint(
+            "relevance IN ('direct', 'sector', 'market')",
+            name="relevance",
+        ),
+        CheckConstraint(
+            "relevance_state IN ('known', 'unknown')",
+            name="relevance_state",
+        ),
+        CheckConstraint(
+            "relevance_basis IN ('recorded', 'inferred')",
+            name="relevance_basis",
         ),
         Index("ix_market_events_event_date", "event_date"),
         Index("ix_market_events_symbol", "symbol"),
@@ -113,6 +143,21 @@ class MarketEvent(Base):
     provider_updated_raw: Mapped[str | None] = mapped_column(Text)
     first_received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    published_date: Mapped[date | None] = mapped_column(Date())
+    published_offset: Mapped[str | None] = mapped_column(Text())
+    published_precision: Mapped[str | None] = mapped_column(Text())
+    revised_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    effective_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    relevance: Mapped[str | None] = mapped_column(Text())
+    relevance_state: Mapped[str | None] = mapped_column(Text())
+    relevance_basis: Mapped[str | None] = mapped_column(Text())
+    instrument_type: Mapped[str | None] = mapped_column(Text())
+    group_key: Mapped[str | None] = mapped_column(Text())
+    redistributable: Mapped[bool | None] = mapped_column(Boolean())
+    symbols: Mapped[list[str] | None] = mapped_column(ARRAY(Text()))
+    backfilled: Mapped[bool | None] = mapped_column(Boolean())
+
     fetched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
@@ -123,6 +168,40 @@ class MarketEvent(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    @property
+    def event_ref(self) -> str:
+        return "evt-" + hashlib.sha256(self.event_uuid.bytes).hexdigest()[:20]
+
+
+class MarketEventSource(Base):
+    """An immutable observation of an original provider record."""
+
+    __tablename__ = "market_event_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "source_event_id", name="uq_market_event_sources_provider"
+        ),
+        CheckConstraint(
+            PUBLICATION_CHECK,
+            name="publication",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("market_events.id"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text())
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    published_date: Mapped[date | None] = mapped_column(Date())
+    published_offset: Mapped[str | None] = mapped_column(Text())
+    published_precision: Mapped[str | None] = mapped_column(Text())
+    first_received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    revised_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    raw_hash: Mapped[str | None] = mapped_column(Text())
 
 
 class MarketEventValue(Base):
@@ -227,6 +306,9 @@ class MarketEventRevision(Base):
     observed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
     )
+
+    changed_fields: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    source_revision_id: Mapped[str | None] = mapped_column(Text())
 
     raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
 

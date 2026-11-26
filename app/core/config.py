@@ -74,6 +74,21 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 10,
         "period": 1.0,
     },
+    # hk 6661 news shadow: headline reads, one call per pass (brknews) or per
+    # symbol (overseas/domestic news). Low rate keeps them far under the shared
+    # appkey quota used by the trading paths.
+    "FHKST01011801|/uapi/overseas-price/v1/quotations/brknews-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
+    "HHPSTH60100C1|/uapi/overseas-price/v1/quotations/news-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
+    "FHKST01011800|/uapi/domestic-stock/v1/quotations/news-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
     # ROB-951: mock-US buy preflight and the read-only probe use VTTS3007R.
     "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
         "rate": 10,

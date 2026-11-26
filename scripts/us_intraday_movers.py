@@ -37,9 +37,12 @@ from app.core.cli import setup_logging_and_sentry
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.toss.client import TossReadClient
 from app.services.invest_momentum_events import us_intraday
 from app.services.invest_momentum_events.us_sources import (
+    BENZINGA_API_KEY_ENV,
     AlpacaScreenerClient,
+    BenzingaMarketMoversClient,
     alpaca_data_credentials,
 )
 
@@ -50,6 +53,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
+
+
+def _build_toss_reader() -> TossReadClient | None:
+    try:
+        return TossReadClient.from_settings()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("toss reader unavailable error=%s", type(exc).__name__)
+        return None
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -72,12 +83,24 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - reported as source_unavailable
         logger.warning("kis reader unavailable error=%s", type(exc).__name__)
         kis = None
+    toss = _build_toss_reader()
+    benzinga: BenzingaMarketMoversClient | None = None
+    try:
+        import os
+
+        benzinga_key = os.environ.get(BENZINGA_API_KEY_ENV)
+        if benzinga_key:
+            benzinga = BenzingaMarketMoversClient(benzinga_key)
+    except ValueError as exc:
+        logger.warning("Benzinga reader unavailable: %s", exc)
     try:
         if commit:
             async with AsyncSessionLocal() as session:
                 report = await us_intraday.run_us_intraday_movers(
                     alpaca=alpaca,
                     kis=kis,
+                    toss=toss,
+                    benzinga=benzinga,
                     session=session,
                     now=datetime.now(UTC),
                     commit=True,
@@ -86,6 +109,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             report = await us_intraday.run_us_intraday_movers(
                 alpaca=alpaca,
                 kis=kis,
+                toss=toss,
+                benzinga=benzinga,
                 session=None,
                 now=datetime.now(UTC),
                 commit=False,
@@ -93,10 +118,20 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         if alpaca is not None:
             await alpaca.aclose()
+        if toss is not None:
+            await toss.aclose()
+        if benzinga is not None:
+            await benzinga.aclose()
     payload = report.as_dict()
     payload["sources"] = {
         "alpaca_screener": alpaca is not None,
         "kis_overseas_ranking": kis is not None,
+        "kis_overseas_price_fluct": kis is not None,
+        "kis_overseas_volume_surge": kis is not None,
+        "kis_overseas_new_highlow": kis is not None,
+        "kis_overseas_volume_power": kis is not None,
+        "toss_rankings": toss is not None,
+        "benzinga_market_movers": benzinga is not None,
     }
     payload["failed"] = report.failed
     if not args.dry_run and not gate_on:

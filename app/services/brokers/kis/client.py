@@ -246,6 +246,20 @@ class KISClient(BaseKISClient):
             from_date, to_date, symbol=symbol, high_gb=high_gb
         )
 
+    async def news_titles_overseas_brknews(self) -> list[dict[str, Any]]:
+        """해외속보(제목) FHKST01011801 market-wide, read-only (hk 6661)."""
+        return await self._market_data.news_titles_overseas_brknews()
+
+    async def news_titles_overseas(
+        self, symbol: str, *, nation_cd: str = "US"
+    ) -> list[dict[str, Any]]:
+        """해외뉴스종합(제목) HHPSTH60100C1 by symbol, read-only (hk 6661)."""
+        return await self._market_data.news_titles_overseas(symbol, nation_cd=nation_cd)
+
+    async def news_titles_domestic(self, symbol: str) -> list[dict[str, Any]]:
+        """종합 시황/공시(제목) FHKST01011800 by symbol, read-only (hk 6661)."""
+        return await self._market_data.news_titles_domestic(symbol)
+
     async def ksd_paidin_capin(
         self, from_date: str, to_date: str, *, symbol: str = "", gb1: str = "1"
     ) -> list[dict[str, Any]]:
@@ -514,6 +528,14 @@ class KISClient(BaseKISClient):
             nday=nday,
             vol_rang=vol_rang,
             keyb=keyb,
+        )
+
+    async def inquire_overseas_mover_ranking(
+        self, ranking_type: str, exchange_code: str, *, side: str
+    ) -> dict[str, Any]:
+        """해외주식 mover ranking 조회를 market-data facade로 위임한다."""
+        return await self._market_data.inquire_overseas_mover_ranking(
+            ranking_type, exchange_code, side=side
         )
 
     async def fetch_domestic_balance_snapshot(

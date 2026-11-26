@@ -439,6 +439,7 @@ tests/test_hk6145_session_minutes_migration_db.py
 tests/test_hk6148_futures_minutes_migration_db.py
 tests/test_hk6510_us_movers_migration.py
 tests/test_hk6579_benzinga_pro_migration.py
+tests/test_hk6663_us_mover_sources_migration.py
 tests/test_import_contracts.py
 tests/test_integration.py
 tests/test_intraday_order_review_tasks.py

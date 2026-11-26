@@ -134,6 +134,35 @@ OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 # examples_llm/overseas_stock/updown_rate/updown_rate.py (read 2026-11-25).
 OVERSEAS_UPDOWN_RATE_URL = "/uapi/overseas-stock/v1/ranking/updown-rate"
 OVERSEAS_UPDOWN_RATE_TR = "HHDFS76290000"
+OVERSEAS_MOVER_RANKINGS = {
+    "kis_overseas_price_fluct": (
+        "/uapi/overseas-stock/v1/ranking/price-fluct",
+        "HHDFS76260000",
+    ),
+    "kis_overseas_volume_surge": (
+        "/uapi/overseas-stock/v1/ranking/volume-surge",
+        "HHDFS76270000",
+    ),
+    "kis_overseas_new_highlow": (
+        "/uapi/overseas-stock/v1/ranking/new-highlow",
+        "HHDFS76300000",
+    ),
+    "kis_overseas_volume_power": (
+        "/uapi/overseas-stock/v1/ranking/volume-power",
+        "HHDFS76280000",
+    ),
+}
+
+# News headlines (hk 6661 news shadow, read-only). Official samples read
+# 2026-11-26: examples_llm/overseas_stock/brknews_title (FHKST01011801),
+# examples_llm/overseas_stock/news_title (HHPSTH60100C1),
+# examples_llm/domestic_stock/news_title (FHKST01011800).
+OVERSEAS_BRKNEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/brknews-title"
+OVERSEAS_BRKNEWS_TITLE_TR = "FHKST01011801"
+OVERSEAS_NEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/news-title"
+OVERSEAS_NEWS_TITLE_TR = "HHPSTH60100C1"
+DOMESTIC_NEWS_TITLE_URL = "/uapi/domestic-stock/v1/quotations/news-title"
+DOMESTIC_NEWS_TITLE_TR = "FHKST01011800"
 
 # Overseas Stock - Balance & Orders
 OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"

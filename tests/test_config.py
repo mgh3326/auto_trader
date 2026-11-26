@@ -41,6 +41,19 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 10,
         "period": 1.0,
     },
+    # hk 6661: KIS news-shadow headline reads.
+    "FHKST01011801|/uapi/overseas-price/v1/quotations/brknews-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
+    "HHPSTH60100C1|/uapi/overseas-price/v1/quotations/news-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
+    "FHKST01011800|/uapi/domestic-stock/v1/quotations/news-title": {
+        "rate": 2,
+        "period": 1.0,
+    },
     "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
         "rate": 10,
         "period": 1.0,

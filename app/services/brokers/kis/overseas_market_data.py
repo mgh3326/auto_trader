@@ -17,7 +17,11 @@ if TYPE_CHECKING:
 from app.core.symbol import to_kis_symbol
 
 from . import constants
-from ._base_market_data import MarketDataBase, _empty_minute_frame
+from ._base_market_data import (
+    MarketDataBase,
+    _empty_minute_frame,
+    news_title_rows,
+)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -490,3 +494,99 @@ class OverseasMarketDataMixin(MarketDataBase):
             api_name="inquire_overseas_updown_rate",
         )
         return js if isinstance(js, dict) else {}
+
+    async def inquire_overseas_mover_ranking(
+        self, source: str, exchange_code: str, *, side: str
+    ) -> dict[str, Any]:
+        """Read one of the official overseas mover rankings, no order path."""
+        configured = constants.OVERSEAS_MOVER_RANKINGS.get(source)
+        if configured is None:
+            raise ValueError("unsupported overseas mover ranking")
+        if side not in ("up", "down", "active"):
+            raise ValueError("unsupported ranking side")
+        path, tr_id = configured
+        params: dict[str, str] = {
+            "AUTH": "",
+            "EXCD": constants.OVERSEAS_EXCHANGE_MAP.get(
+                exchange_code, exchange_code[:3]
+            ),
+            "KEYB": "",
+        }
+        if source == "kis_overseas_price_fluct":
+            params.update(
+                {"GUBN": "1" if side == "up" else "0", "MINX": "0", "VOL_RANG": "0"}
+            )
+        elif source == "kis_overseas_volume_surge":
+            params.update({"MINX": "0", "VOL_RANG": "0"})
+        elif source == "kis_overseas_new_highlow":
+            params.update(
+                {
+                    "MINX": "0",
+                    "VOL_RANG": "0",
+                    "GUBN": "1" if side == "up" else "0",
+                    "GUBN2": "1",
+                }
+            )
+        else:
+            params.update({"NDAY": "0", "VOL_RANG": "0"})
+        js = await self._request_with_token_retry(
+            tr_id=tr_id,
+            url=self._kis_url(path),
+            params=params,
+            timeout=10,
+            api_name=source,
+        )
+        return js if isinstance(js, dict) else {}
+
+    # ── News headlines (hk 6661 news shadow, read-only) ──
+
+    async def news_titles_overseas_brknews(self) -> list[dict[str, Any]]:
+        """해외속보(제목) FHKST01011801, market-wide (``FID_INPUT_ISCD`` empty).
+
+        The official sample documents no continuation for this TR and caps a
+        response at 100 rows, so exactly one response is read. The caller
+        matches headlines to symbols through ``iscd1``..``iscd10``.
+        """
+        response = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_BRKNEWS_TITLE_TR,
+            url=self._kis_url(constants.OVERSEAS_BRKNEWS_TITLE_URL),
+            params={
+                "FID_NEWS_OFER_ENTP_CODE": "0",
+                "FID_COND_SCR_DIV_CODE": "11801",
+                "FID_COND_MRKT_CLS_CODE": "",
+                "FID_INPUT_ISCD": "",
+                "FID_TITL_CNTT": "",
+                "FID_INPUT_DATE_1": "",
+                "FID_INPUT_HOUR_1": "",
+                "FID_RANK_SORT_CLS_CODE": "",
+                "FID_INPUT_SRNO": "",
+            },
+            api_name="news_titles_overseas_brknews",
+        )
+        return news_title_rows(response, "output")
+
+    async def news_titles_overseas(
+        self, symbol: str, *, nation_cd: str = "US"
+    ) -> list[dict[str, Any]]:
+        """해외뉴스종합(제목) HHPSTH60100C1 filtered by ``SYMB`` (one response).
+
+        ``symbol`` is the DB form; it is converted with ``to_kis_symbol``.
+        ``EXCHANGE_CD`` is left empty (not verified against a live response).
+        Continuation paging (``tr_cont``/``CTS``) is not read: one page only.
+        """
+        response = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_NEWS_TITLE_TR,
+            url=self._kis_url(constants.OVERSEAS_NEWS_TITLE_URL),
+            params={
+                "INFO_GB": "",
+                "CLASS_CD": "",
+                "NATION_CD": nation_cd,
+                "EXCHANGE_CD": "",
+                "SYMB": to_kis_symbol(symbol),
+                "DATA_DT": "",
+                "DATA_TM": "",
+                "CTS": "",
+            },
+            api_name="news_titles_overseas",
+        )
+        return news_title_rows(response, "outblock1")

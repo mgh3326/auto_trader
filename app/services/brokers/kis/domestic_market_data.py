@@ -20,6 +20,7 @@ from ._base_market_data import (
     MarketDataBase,
     _aggregate_minute_candles_frame,
     _empty_minute_frame,
+    news_title_rows,
 )
 from .flow_signals import parse_member_summary, parse_vi_status_rows
 
@@ -95,6 +96,28 @@ class DomesticMarketDataMixin(MarketDataBase):
     """
 
     # ── Ranking ──
+
+    async def news_titles_domestic(self, symbol: str) -> list[dict[str, Any]]:
+        """종합 시황/공시(제목) FHKST01011800 filtered by ``FID_INPUT_ISCD``.
+
+        One response per call (no continuation). Read-only (hk 6661).
+        """
+        response = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_NEWS_TITLE_TR,
+            url=self._kis_url(constants.DOMESTIC_NEWS_TITLE_URL),
+            params={
+                "FID_NEWS_OFER_ENTP_CODE": "",
+                "FID_COND_MRKT_CLS_CODE": "",
+                "FID_INPUT_ISCD": symbol,
+                "FID_TITL_CNTT": "",
+                "FID_INPUT_DATE_1": "",
+                "FID_INPUT_HOUR_1": "",
+                "FID_RANK_SORT_CLS_CODE": "",
+                "FID_INPUT_SRNO": "",
+            },
+            api_name="news_titles_domestic",
+        )
+        return news_title_rows(response, "output")
 
     async def ksd_dividends(
         self, from_date: str, to_date: str, *, symbol: str = "", high_gb: str = ""
