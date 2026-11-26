@@ -14,9 +14,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.services.research_candles.session_segment import UNKNOWN, session_segment_of
-
 _KST = ZoneInfo("Asia/Seoul")
+UNKNOWN = "UNKNOWN"
 DISCLOSURE_HOST = "m.stock.naver.com"
 SESSIONS_HOST = "stock.naver.com"
 DISCLOSURE_URL = f"https://{DISCLOSURE_HOST}/api/stock/{{symbol}}/disclosure"
@@ -355,13 +354,19 @@ class NaverPublicClient:
         return parse_sessions(payload)
 
 
+def _session_segment(market: str, venue: str, at: datetime) -> str:
+    from app.services.research_candles.session_segment import session_segment_of
+
+    return session_segment_of(market, venue, at)
+
+
 def _ours_windows(day: date, exchange: str, market: str) -> list[SessionWindow]:
     venue = "KRX" if exchange.lower() == "krx" else "NTX"
     labels: list[tuple[str, datetime]] = []
     start = datetime.combine(day, datetime.min.time(), tzinfo=_KST)
     for minute in range(24 * 60):
         local = start + timedelta(minutes=minute)
-        segment = session_segment_of("kr", venue, local.astimezone(UTC))
+        segment = _session_segment("kr", venue, local.astimezone(UTC))
         if segment != UNKNOWN:
             labels.append((segment, local))
     result: list[SessionWindow] = []

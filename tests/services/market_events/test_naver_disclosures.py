@@ -194,7 +194,7 @@ def test_sessions_fixture_and_diagnostic_mismatch(
             return "KRX_REGULAR"
         return naver.UNKNOWN
 
-    monkeypatch.setattr(naver, "session_segment_of", fake_segment)
+    monkeypatch.setattr(naver, "_session_segment", fake_segment, raising=False)
     verdicts = naver.compare_session_windows(date(2026, 11, 13), windows)
     assert any(
         row["verdict"] == "mismatch" and row["exchange"] == "krx" for row in verdicts

@@ -20,17 +20,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.core.cli import setup_logging_and_sentry
-from app.core.config import settings
-from app.core.db import AsyncSessionLocal
 from app.models.market_events import MarketEvent
-from app.services.brokers.kis.client import KISClient
-from app.services.market_events import naver_disclosures as naver
-from app.services.market_events.repository import MarketEventsRepository
-from app.services.research_candles.session_minutes_collector import (
-    build_targets,
-    parse_symbol_list,
-)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -57,11 +47,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 async def run(
     args: argparse.Namespace,
     *,
-    client: naver.NaverPublicClient | None = None,
-    session_factory: Any = AsyncSessionLocal,
+    client: Any = None,
+    session_factory: Any = None,
 ) -> dict[str, object]:
+    from app.core.config import settings
+    from app.core.db import AsyncSessionLocal
+    from app.services.brokers.kis.client import KISClient
+    from app.services.market_events import naver_disclosures as naver
+    from app.services.market_events.repository import MarketEventsRepository
+    from app.services.research_candles.session_minutes_collector import (
+        build_targets,
+        parse_symbol_list,
+    )
+
     own_client = client is None
     client = client or naver.NaverPublicClient()
+    session_factory = session_factory or AsyncSessionLocal
     result: dict[str, object] = {
         "dry_run": not args.commit,
         "symbols": [],
@@ -149,6 +150,8 @@ async def run(
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    from app.core.cli import setup_logging_and_sentry
+
     setup_logging_and_sentry(service_name="collect-naver-disclosures")
     report = asyncio.run(run(args))
     print(json.dumps(report, sort_keys=True, default=str))
