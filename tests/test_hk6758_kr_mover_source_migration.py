@@ -19,7 +19,7 @@ def _load(name: str):
 def test_source_check_expands_then_validates_for_kis_rankings() -> None:
     expand = _load("20261126_hk6758_kr_mover_source")
     validate = _load("20261126_hk6758_kr_mover_source_val")
-    assert expand.down_revision == "20261126_hk6674"
+    assert expand.down_revision == "20261126_hk6750"
     assert len(expand.revision) <= 32
     assert validate.down_revision == expand.revision
     assert len(validate.revision) <= 32
