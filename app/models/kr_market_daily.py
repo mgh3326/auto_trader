@@ -6,12 +6,14 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import TIMESTAMP, Boolean, Date, Integer, Numeric, String
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.models.base import Base
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-class KRMarketBreadth(Base):
+class KRMarketDailyBase(DeclarativeBase):
+    """Keep migration-owned tables out of the application's create_all metadata."""
+
+
+class KRMarketBreadth(KRMarketDailyBase):
     __tablename__ = "kr_market_breadth"
 
     market: Mapped[str] = mapped_column(String(10), primary_key=True)
@@ -32,7 +34,7 @@ class KRMarketBreadth(Base):
     )
 
 
-class KRMarketInvestorNet(Base):
+class KRMarketInvestorNet(KRMarketDailyBase):
     __tablename__ = "kr_market_investor_net"
 
     market: Mapped[str] = mapped_column(String(10), primary_key=True)
@@ -52,7 +54,7 @@ class KRMarketInvestorNet(Base):
     )
 
 
-class KRMarketDepositCredit(Base):
+class KRMarketDepositCredit(KRMarketDailyBase):
     __tablename__ = "kr_market_deposit_credit"
 
     bizdate: Mapped[date] = mapped_column(Date, primary_key=True)
