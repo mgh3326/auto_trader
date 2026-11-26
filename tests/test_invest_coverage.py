@@ -225,6 +225,8 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
                 market="kr",
                 symbol="900201",
                 source="test",
+                relation_type="direct",
+                relation_evidence={"kind": "test_fixture", "source": "test"},
                 created_at=now_naive,
             ),
         ]
@@ -369,6 +371,8 @@ async def test_all_market_symbol_drilldown_resolves_per_symbol_market(db_session
                 market="kr",
                 symbol="900230",
                 source="test",
+                relation_type="direct",
+                relation_evidence={"kind": "test_fixture", "source": "test"},
                 created_at=now_naive,
             ),
             NewsArticleRelatedSymbol(
@@ -377,6 +381,8 @@ async def test_all_market_symbol_drilldown_resolves_per_symbol_market(db_session
                 market="us",
                 symbol="ROB203",
                 source="test",
+                relation_type="direct",
+                relation_evidence={"kind": "test_fixture", "source": "test"},
                 created_at=now_naive,
             ),
         ]

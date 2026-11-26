@@ -85,7 +85,7 @@ class ResearchReport(Base):
     published_date: Mapped[date | None] = mapped_column(Date)
     published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     first_received_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False
+        TIMESTAMP(timezone=True), nullable=False, default=func.now()
     )
     revised_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     summary_text: Mapped[str | None] = mapped_column(Text)

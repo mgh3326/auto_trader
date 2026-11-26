@@ -237,16 +237,30 @@ async def scratch_database() -> AsyncIterator[str]:
                 # hk 6674 publication fields are later than this reconstructed
                 # parent boundary; current metadata already contains them.
                 for column in (
+                    "published_offset",
                     "published_at_raw",
                     "published_at",
                     "published_precision",
                     "published_at_reason",
                     "first_received_at",
+                    "revised_at",
+                    "provider_article_id",
+                    "source_document_ids",
                 ):
                     await connection.execute(
                         text(
                             f"ALTER TABLE news_articles DROP COLUMN IF EXISTS {column}"
                         )
+                    )
+                for table, column in (
+                    ("news_article_related_symbols", "relation_type"),
+                    ("news_article_related_symbols", "relation_evidence"),
+                    ("research_reports", "first_received_at"),
+                    ("research_reports", "published_date"),
+                    ("research_reports", "revised_at"),
+                ):
+                    await connection.execute(
+                        text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}")
                     )
                 # hk 4178's detail column is after this parent boundary.
                 await connection.execute(

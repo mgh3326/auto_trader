@@ -80,6 +80,8 @@ async def _seed(session) -> dict[str, object]:
             market="kr",
             symbol=symbol,
             source="fixture",
+            relation_type="direct",
+            relation_evidence={"kind": "test_fixture", "source": "fixture"},
             created_at=NOW_NAIVE,
         )
     )
