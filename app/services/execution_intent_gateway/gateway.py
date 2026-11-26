@@ -276,12 +276,12 @@ class IntentGateway:
         child: ChildSnapshot,
         decision: Decision,
     ) -> GatewayOutcome:
+        venue = "upbit" if intent.account == UPBIT_LIVE_ACCOUNT else "kis"
+        market = "crypto" if venue == "upbit" else "kr"
+        account_kind = account_kind_for_mode(
+            intent.account, shadow=intent.execution_mode == "shadow"
+        )
         try:
-            venue = "upbit" if intent.account == UPBIT_LIVE_ACCOUNT else "kis"
-            market = "crypto" if venue == "upbit" else "kr"
-            account_kind = account_kind_for_mode(
-                intent.account, shadow=intent.execution_mode == "shadow"
-            )
             with execution_stage(
                 venue=venue,
                 market=market,
