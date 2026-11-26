@@ -808,6 +808,14 @@ class TestUsMomentumCandidates:
         )
 
         statuses = {item["source"]: item for item in result["source_statuses"]}
+        assert {
+            "kis_overseas_price_fluct",
+            "kis_overseas_volume_surge",
+            "kis_overseas_new_highlow",
+            "kis_overseas_volume_power",
+            "toss_rankings",
+            "benzinga_market_movers",
+        } <= statuses.keys()
         kis_pre_down = next(
             item
             for item in statuses["kis_overseas_ranking"]["surfaces"]
@@ -960,4 +968,10 @@ class TestUsMomentumCandidates:
             "kis_overseas_ranking": {"unsupported"},
             "alpaca_screener": {"not_collected"},
             "benzinga_pro": {"unsupported"},
+            "kis_overseas_price_fluct": {"unsupported"},
+            "kis_overseas_volume_surge": {"not_collected"},
+            "kis_overseas_new_highlow": {"unsupported"},
+            "kis_overseas_volume_power": {"not_collected"},
+            "toss_rankings": {"not_collected"},
+            "benzinga_market_movers": {"unsupported"},
         }

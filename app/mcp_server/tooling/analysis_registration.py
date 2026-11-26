@@ -118,7 +118,8 @@ def register_analysis_tools(
             "기존 점수로 반환하고, market='us'는 오늘 ET 거래일의 KIS 해외 순위, "
             "Alpaca 스크리너, 시험 출처 Benzinga Pro 상승·하락·활발 종목을 반환합니다. "
             "US 조회는 session, side, source, min_dollar_volume, limit으로 필터링할 수 "
-            "있으며 출처별 수집 상태도 포함합니다. 네이버·브로커 요청이나 주문 상태 변경은 없습니다."
+            "있으며 출처별 수집 상태도 포함합니다. KIS 해외 시세분석, Toss 순위, "
+            "시험 출처 Benzinga movers도 포함합니다. 네이버·브로커 요청이나 주문 상태 변경은 없습니다."
         ),
     )
     async def get_momentum_candidates(
@@ -127,7 +128,17 @@ def register_analysis_tools(
         limit: int = 20,
         session: Literal["us_pre", "us_regular", "us_post"] | None = None,
         side: Literal["up", "down", "active"] | None = None,
-        source: Literal["kis_overseas_ranking", "alpaca_screener", "benzinga_pro"]
+        source: Literal[
+            "kis_overseas_ranking",
+            "alpaca_screener",
+            "benzinga_pro",
+            "kis_overseas_price_fluct",
+            "kis_overseas_volume_surge",
+            "kis_overseas_new_highlow",
+            "kis_overseas_volume_power",
+            "toss_rankings",
+            "benzinga_market_movers",
+        ]
         | None = None,
         min_dollar_volume: float | None = None,
     ) -> dict[str, Any]:
