@@ -31,6 +31,7 @@
 - 미국 데이마켓 Toss 1분봉 — `TOSS_INTEGRATED` venue·달력 기반 `US_DAY` (hk 6322)
 - research 분봉 HTTP ingest·대상 읽기 (hk 6343)
 - 장중 급등·급락 관측 로그 (hk 6154)
+- KR 급등락 관측 장외 세션 (hk 6758)
 - 미국 장중 급등·급락 관측 로그 (hk 6510)
 - 선물 시세 읽기·분봉 수집 — KIS 실전 선물 시세 view + research 선물 분봉 (hk 6148)
 - FnGuide 컨센서스·추정치·투자지표 일별 스냅샷 (hk 6508)
@@ -1005,7 +1006,7 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 
 ### 장중 급등·급락 관측 로그 (hk 6154)
 
-잠들어 있던 ROB-222 순위 스냅샷(`invest_momentum_event_snapshots`)을 **삽입 전용 관측 로그**로 되살린다. 🔴 주문·승인·정책 경로와 무관하고, 스케줄러 등록은 없다(하드룰 6: DAG 는 `deploy/dagu/at-intraday-movers/` 사본, 등록은 설계 세션). 1단계 = KRX 단독. NXT(2단계)·테마 이벤트(`upsert_theme`)는 범위 밖이다. 미국(3단계)은 hk 6510 이 아래 절로 더했다. 런북 `docs/runbooks/intraday-movers.md`.
+잠들어 있던 ROB-222 순위 스냅샷(`invest_momentum_event_snapshots`)을 **삽입 전용 관측 로그**로 되살린다. 🔴 주문·승인·정책 경로와 무관하고, 스케줄러 등록은 없다(하드룰 6: DAG 는 `deploy/dagu/at-intraday-movers/` 사본, 등록은 설계 세션). 기본 KR 정규장 면과 기록 규칙은 이 절을 따른다. NXT/장후 면은 hk 6758 절을 따른다. 테마 이벤트(`upsert_theme`)는 범위 밖이다. 미국(3단계)은 hk 6510 이 아래 절로 더했다. 런북 `docs/runbooks/intraday-movers.md`.
 
 - **삽입 전용**: `InvestMomentumEventSnapshotsRepository.insert_momentum` 은 `ON CONFLICT DO NOTHING` 이다(전 이름 `upsert_momentum` 은 덮어썼다). 같은 `(surface, snapshot_at, trade_type, market_type, order_type, symbol)` 재삽입은 값·행 수를 바꾸지 않는다. 기존 읽기(`query_service`/`coverage_service`/`list_*`) 출력 형태는 그대로다(행이 덮이지 않을 뿐). 🔴 하락(`down`) 행은 `list_candidate_signals`(조기 포착 후보 점수)에서 제외한다(`NON_CANDIDATE_ORDER_TYPES`) — 최신 스냅샷 선택·이전 순위·점수 모두. 하락 종목이 후보로 오르거나 하락만 있는 최신 스냅샷이 이전 후보를 가리지 않게 한다.
 - **면**: `stock:KRX:ALL:{up,down,priceTop}` = 상승·하락·거래대금. 하락 순위는 네이버 `orderType=down` 이다(2026-11-24 공개 GET 확인: HTTP 200, 같은 응답 모양, 음수 `prevChangeRate`; `low`/`lowTop`/`downTop`/`fall` 은 HTTP 400). 픽스처 `tests/fixtures/naver_stock/`.
@@ -1016,6 +1017,18 @@ Go 시세 수집기는 DB 에 직접 쓰지 않는다. 닫힌 1분봉은 토큰 
 - **6145 연동**: 수집 대상 출처 `intraday_movers`(KR 최초 포착 종목 — US 는 hk 6510 절 참조)가 `TARGET_ORIGIN_ORDER` 끝(pick log 다음)에 있어 상한에서 가장 먼저 잘린다. 조회 실패는 다른 출처처럼 `error_details` 에 보고되고 실행은 계속된다. 🔴 KIS `inquire_minute_chart` 는 `n=200` 이어도 호출당 약 30봉만 주므로, 오늘 분봉 행이 없는 새 종목은 `end_time`(`FID_INPUT_HOUR_1`, `HHMMSS`) 커서로 한 페이지를 더 읽어 합친다(`backfill_symbols`/`backfill_pages`). `end_time` 은 `inquire_minute_chart` 의 추가 선택 인자(기본 동작 불변)다. 추가 페이지 실패는 첫 페이지를 지우지 않는다.
 - **금지**: 이 경로가 `review.screener_pick_log` 에 쓰는 것(하드룰 13), 주문·원장·승인·브로커 변경 모듈 import(정적 테스트), 스케줄러 등록, 상태 없는 빈 순위를 성공으로 기록하는 것.
 - **테스트**: `tests/services/invest_momentum_events/test_intraday.py`(순수), `test_intraday_db.py`(CI DB), `tests/services/research_candles/test_session_minutes_{targets,earlier_page}.py`, `tests/scripts/test_dagu_intraday_movers_dag.py`.
+
+### KR 급등락 관측 장외 세션 (hk 6758)
+
+기존 hk 6154 KR 정규장 관측 로그를 NXT 장전과 NXT/KRX 장후로 확장한다. 같은 `invest_momentum_event_snapshots` 삽입 전용 표, `invest_momentum_event_runs` 상태 표, `run_id`·surface별 최초 기록 규칙을 쓴다. 주문·승인·정책 경로는 없고, `INVEST_MOMENTUM_EVENTS_COMMIT_ENABLED` 게이트는 기존과 동일하며 기본값을 바꾸지 않는다.
+
+- **창(Asia/Seoul, 시작 포함·끝 배타, XKRX 거래일만)**: NXT 장전 `[08:00, 08:50)`, 기존 KRX 정규장 `[09:00, 15:30)`, NXT 장후 `[16:00, 20:00)`, KRX 애프터마켓 `[16:00, 20:00)`. 이 창 밖은 `outside_session`이며 fetch·DB 쓰기 모두 0이다. 08:50–09:00 및 15:30–16:00은 수집하지 않는다. 휴장·캘린더 판독 실패도 fail-closed다.
+- **면 이름**: 신규 면은 `stock:<source>:<venue>:<session>:ALL:<side>`다. 예: `stock:naver_stock:NXT:nxt_pre:ALL:up`, `stock:kis_domestic_ranking:NXT:nxt_post:ALL:down`, `stock:naver_stock:KRX:krx_after:ALL:up`. venue와 관측 session은 면 문자열에 남으며, `first_captures`는 신규 면의 저장된 문자열을 반환한다. 기존 정규장 `stock:KRX:ALL:<side>` 면과 그 읽기 출력은 바뀌지 않는다.
+- **소스 선택**: 기존 Naver `fetch_domestic_stock_default`의 venue 선택 인자(`trade_type=NXT|KRX`)를 장외면에도 사용한다. NXT 요청이 명시적 HTTP 4xx로 지원되지 않을 때만 KIS read-only domestic ranking의 `market="NX"`로 대체한다. KIS 등락 면은 `fluctuation_rank` up/down, 거래량 면은 `volume_rank`를 사용하고 source를 `kis_domestic_ranking`으로 보존한다. 그 밖의 Naver 오류를 빈 응답이나 다른 소스로 숨기지 않는다. 값은 Decimal 문자열 기반이고 잘못된 응답은 `error` 면이다.
+- **정규장 골든**: `[09:00,15:30)`의 기존 Naver 요청 인자, surface 문자열, 저장 필드, 면별 순서 및 status/commit 동작은 그대로 유지한다.
+- **마이그레이션**: `20261126_hk6758_kr_mover_source`는 관측 표 source CHECK에 `kis_domestic_ranking`을 `NOT VALID`로 추가하고 `_val` 후속 리비전이 검증한다. 다운그레이드는 해당 source 행 또는 source가 포함된 면 상태가 있으면 거부한다.
+- **DAG 사본**: `deploy/dagu/at-intraday-movers/at-intraday-movers.yaml`은 평일 NXT pre 08:00–08:45, 기존 정규장 09:00–15:25, 두 장후 면 16:00–19:55 KST의 5분 간격을 표현한다. 파일은 사본이고 등록하지 않는다.
+- **테스트**: `tests/services/invest_momentum_events/test_intraday.py`는 녹화형 Naver/KIS 응답, fake clock, 장외면/대체 소스 및 정규장 golden을 DB 없이 확인한다. DAG 복사본은 `tests/scripts/test_dagu_intraday_movers_dag.py`로 검사한다.
 
 ### 미국 장중 급등·급락 관측 로그 (hk 6510, hk 6663)
 

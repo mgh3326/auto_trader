@@ -7,6 +7,7 @@ import datetime as dt
 import json
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -138,6 +139,26 @@ def test_session_guard_follows_the_calendar() -> None:
     assert called == []
 
 
+@pytest.mark.parametrize(
+    ("hhmm", "second", "expected"),
+    [
+        ("07:59", 59, None),
+        ("08:00", 0, "nxt_pre"),
+        ("08:49", 59, "nxt_pre"),
+        ("08:50", 0, None),
+        ("09:00", 0, "regular"),
+        ("15:29", 59, "regular"),
+        ("15:30", 0, None),
+        ("15:59", 59, None),
+        ("16:00", 0, "after"),
+        ("19:59", 59, "after"),
+        ("20:00", 0, None),
+    ],
+)
+def test_observation_windows_have_exact_kst_boundaries(hhmm, second, expected) -> None:
+    assert intraday.observation_window(_kst(TUESDAY, hhmm, second)) == expected
+
+
 # ---------------------------------------------------------------- run (fakes) --
 
 
@@ -145,10 +166,12 @@ class FakeFetcher:
     def __init__(self, by_order: dict):
         self.by_order = by_order
         self.calls: list[str] = []
+        self.call_args: list[dict] = []
 
     async def fetch_domestic_stock_default(self, **kwargs):
         order = kwargs["order_type"]
         self.calls.append(order)
+        self.call_args.append(dict(kwargs))
         outcome = self.by_order[order]
         if isinstance(outcome, Exception):
             raise outcome
@@ -214,6 +237,20 @@ async def _run(fetcher, *, now=NOW, commit=True, session=None):
     )
 
 
+class FakeKisFetcher:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    async def fluctuation_rank(self, *, market, direction, limit):
+        self.calls.append(("fluctuation_rank", market, direction, limit))
+        return self.rows
+
+    async def volume_rank(self, *, market, limit):
+        self.calls.append(("volume_rank", market, limit))
+        return self.rows
+
+
 @pytest.mark.asyncio
 async def test_error_empty_and_ok_surfaces_each_get_the_right_status_row() -> None:
     fetcher = FakeFetcher(
@@ -238,6 +275,16 @@ async def test_error_empty_and_ok_surfaces_each_get_the_right_status_row() -> No
     assert sorted(order for (_, order, _) in MemoryRepo.rows) == [
         "priceTop",
         "priceTop",
+    ]
+    assert fetcher.call_args == [
+        {
+            "trade_type": "KRX",
+            "market_type": "ALL",
+            "order_type": order,
+            "start_idx": 0,
+            "page_size": 50,
+        }
+        for order in intraday.ORDER_TYPES
     ]
 
 
@@ -281,6 +328,119 @@ async def test_dry_run_fetches_but_never_touches_the_database() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nxt_pre_records_venue_and_session_in_each_surface() -> None:
+    fetcher = FakeFetcher({"up": [ROW], "down": []})
+    report = await _run(fetcher, now=_kst(TUESDAY, "08:00"), commit=True)
+    assert [item.surface for item in report.surfaces] == [
+        "stock:naver_stock:NXT:nxt_pre:ALL:up",
+        "stock:naver_stock:NXT:nxt_pre:ALL:down",
+    ]
+    assert all(call["trade_type"] == "NXT" for call in fetcher.call_args)
+    assert [row.trade_type for row in MemoryRepo.rows.values()] == ["NXT"]
+
+
+@pytest.mark.asyncio
+async def test_after_window_records_both_nxt_and_krx_surfaces() -> None:
+    fetcher = FakeFetcher({"up": [ROW], "down": [], "priceTop": [ROW]})
+    report = await _run(fetcher, now=_kst(TUESDAY, "16:00"), commit=True)
+    surfaces = {item.surface for item in report.surfaces}
+    assert surfaces == {
+        *(f"stock:naver_stock:NXT:nxt_post:ALL:{side}" for side in ("up", "down")),
+        *(
+            f"stock:naver_stock:KRX:krx_after:ALL:{side}"
+            for side in intraday.ORDER_TYPES
+        ),
+    }
+    assert [call["trade_type"] for call in fetcher.call_args] == [
+        "NXT",
+        "NXT",
+        "KRX",
+        "KRX",
+        "KRX",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nxt_unsupported_ranking_falls_back_to_kis_nx_fixture() -> None:
+    fixture = _fixture("../invest_momentum_events/kis_nx_fluctuation_rank.json")
+    naver = FakeFetcher({"up": _status_error(400)})
+    kis = FakeKisFetcher(fixture)
+    outcome = await intraday.fetch_extended_surface(
+        naver, kis, venue="NXT", order_type="up"
+    )
+    assert outcome.status == "ok" and outcome.source == intraday.KIS_SOURCE
+    assert outcome.rows[0].symbol == "005930"
+    assert outcome.rows[0].price == Decimal("171300")
+    assert outcome.rows[0].change_rate == Decimal("-0.12")
+    assert kis.calls == [("fluctuation_rank", "NX", "up", intraday.PAGE_SIZE)]
+
+
+@pytest.mark.asyncio
+async def test_outside_extended_windows_fetches_nothing() -> None:
+    fetcher = FakeFetcher({})
+    report = await intraday.run_intraday_movers(
+        fetcher=fetcher,
+        session=FakeSession(),
+        now=_kst(TUESDAY, "15:45"),
+        commit=True,
+        is_session_day=lambda day: True,
+    )
+    assert report.status == "outside_session"
+    assert fetcher.call_args == [] and MemoryRepo.statuses == {}
+
+
+@pytest.mark.asyncio
+async def test_first_capture_preserves_extended_surface_but_keeps_kr_golden() -> None:
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(
+                    symbol="005930",
+                    name="삼성전자",
+                    snapshot_at=_kst(TUESDAY, "08:00"),
+                    surface="stock:naver_stock:NXT:nxt_pre:ALL:up",
+                    trade_type="NXT",
+                    market_type="ALL",
+                    order_type="up",
+                    rank=1,
+                    change_rate=Decimal("1.2"),
+                    trade_value=Decimal("10"),
+                    market="kr",
+                ),
+                SimpleNamespace(
+                    symbol="000660",
+                    name="SK하이닉스",
+                    snapshot_at=_kst(TUESDAY, "10:00"),
+                    surface="domestic_market_stock_default",
+                    trade_type="KRX",
+                    market_type="ALL",
+                    order_type="up",
+                    rank=2,
+                    change_rate=Decimal("2.3"),
+                    trade_value=Decimal("20"),
+                    market="kr",
+                ),
+            ]
+
+    class FakeReadSession:
+        async def execute(self, statement):
+            return FakeResult()
+
+    captures = await intraday.first_captures(
+        FakeReadSession(),
+        dt.date(2026, 11, 24),
+        market="kr",  # type: ignore[arg-type]
+    )
+    assert [capture.surface for capture in captures] == [
+        "stock:naver_stock:NXT:nxt_pre:ALL:up",
+        "stock:KRX:ALL:up",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_write_failure_rolls_back_that_surface_and_the_rest_continue(
     monkeypatch,
 ) -> None:
@@ -315,7 +475,6 @@ _FORBIDDEN_IMPORTS = (
     "app.services.order_proposals",
     "app.services.execution_ledger",
     "app.services.kis_trading_service",
-    "app.services.brokers.kis.client",
     "app.services.brokers.kis.domestic_orders",
     "app.services.brokers.kis.overseas_orders",
     "app.services.brokers.upbit",
@@ -345,6 +504,14 @@ def test_new_modules_import_no_order_ledger_approval_or_broker_code() -> None:
         imports = _imports(REPO / relative)
         for module in imports:
             assert not module.startswith(_FORBIDDEN_IMPORTS), (relative, module)
+    # KISClient is allowed only in the CLI adapter for the explicitly read-only
+    # NX ranking fallback; the service remains broker-client-free.
+    assert "app.services.brokers.kis.client" not in _imports(
+        REPO / "app/services/invest_momentum_events/intraday.py"
+    )
+    script = (REPO / "scripts/intraday_movers.py").read_text(encoding="utf-8")
+    for token in ("order_korea_stock", "cancel_korea_order", "modify_korea_order"):
+        assert token not in script
 
 
 def test_nothing_new_writes_the_screener_pick_log_or_registers_a_schedule() -> None:
