@@ -234,6 +234,7 @@ tests/services/mandate/test_loss_guard_db.py
 tests/services/mandate/test_projection_db.py
 tests/services/mandate/test_store_db.py
 tests/services/market_events/test_coverage_gate.py
+tests/services/market_events/test_crypto_notices.py
 tests/services/market_events/test_kis_ksd_dividends.py
 tests/services/market_events/test_kis_ksd_events.py
 tests/services/market_events/test_official_event_format.py

@@ -1,0 +1,16 @@
+{
+  "data": {
+    "total_pages": 1,
+    "total_count": 1,
+    "notices": [
+      {
+        "id": 88001,
+        "uuid": "notice-88001",
+        "title": "스테이블(STABLE) 신규 거래지원 안내",
+        "category": "거래",
+        "listed_at": "2026-11-26T10:05:00+09:00",
+        "first_listed_at": "2026-11-26T10:00:00+09:00"
+      }
+    ]
+  }
+}

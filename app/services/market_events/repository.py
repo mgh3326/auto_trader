@@ -95,6 +95,20 @@ class MarketEventsRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def list_source_event_ids(
+        self, *, source: str, category: str, market: str
+    ) -> set[str]:
+        """Return stored provider IDs for a bounded collector's stop marker."""
+        result = await self.db.execute(
+            select(MarketEvent.source_event_id).where(
+                MarketEvent.source == source,
+                MarketEvent.category == category,
+                MarketEvent.market == market,
+                MarketEvent.source_event_id.is_not(None),
+            )
+        )
+        return {value for value in result.scalars() if value is not None}
+
     async def insert_provider_event(self, event_data: dict[str, Any]) -> bool:
         """Keep the first observation of a provider-keyed event."""
         if not event_data.get("source_event_id"):
