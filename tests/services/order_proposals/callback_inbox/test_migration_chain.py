@@ -245,6 +245,17 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # hk 6784 fee fields are post-parent columns materialized by
+                # current metadata; let the migration add them during replay.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.alpaca_paper_order_ledger "
+                        "DROP CONSTRAINT IF EXISTS alpaca_paper_ledger_fee_evidence_reason, "
+                        "DROP COLUMN IF EXISTS fee_evidence_reason, "
+                        "DROP COLUMN IF EXISTS net_received_qty, "
+                        "ALTER COLUMN fee_amount TYPE NUMERIC(20, 4)"
+                    )
+                )
                 # hk 6750 is newer than this reconstructed boundary; its table
                 # must be created by the Alembic chain, not current metadata.
                 await connection.execute(

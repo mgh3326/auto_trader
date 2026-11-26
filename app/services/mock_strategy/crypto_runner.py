@@ -559,11 +559,17 @@ async def close_due(
                     in_flight.append(leg)
             if planned_count > 1:
                 raise ValueError("multiple planned close legs require review")
+            rules, price = (
+                await broker.rules(entry.symbol),
+                await broker.price(entry.symbol),
+            )
             held = (
                 evidence.held_qty
                 if evidence.held_qty is not None
                 else evidence.filled_qty
             )
+            if venue == "alpaca_paper_crypto" and evidence.held_qty is None:
+                held = rules.floor(evidence.filled_qty * Decimal("0.9975"), price)
             remaining = held - sold
             if remaining < 0:
                 raise ValueError("close fills exceed attributed entry")
@@ -575,14 +581,24 @@ async def close_due(
                     }
                 )
                 continue
-            rules, price = (
-                await broker.rules(entry.symbol),
-                await broker.price(entry.symbol),
-            )
+            sellable_remaining = remaining
+            if venue == "alpaca_paper_crypto" and remaining:
+                available = await broker.available_qty(entry)
+                if available < remaining:
+                    results.append(
+                        {
+                            "client_order_id": entry.client_order_id,
+                            "status": "broker_qty_unavailable",
+                            "reason": "broker_qty_unavailable",
+                            "residual_qty": str(remaining),
+                        }
+                    )
+                    continue
+                sellable_remaining = min(remaining, available)
             qty = None
-            if remaining:
+            if sellable_remaining:
                 try:
-                    qty = rules.floor(remaining, price)
+                    qty = rules.floor(sellable_remaining, price)
                 except BelowVenueMinimum:
                     # Only an actual residual after at least one proven exit is dust.
                     if not sold:
@@ -611,8 +627,28 @@ async def close_due(
                     },
                 )
                 if dry_run:
-                    results.append(_output(pending or close))
+                    preview = _output(
+                        close if pending and pending.qty > qty else pending or close
+                    )
+                    if pending and pending.qty > qty:
+                        preview["status"] = "would_replace_oversized_plan"
+                    results.append(preview)
                     continue
+                if venue == "alpaca_paper_crypto" and pending and pending.qty > qty:
+                    retire = getattr(recorder, "retire_planned_exit", None)
+                    if retire is None or not await retire(
+                        pending.client_order_id,
+                        reason="planned_exit_exceeds_attributed_quantity",
+                    ):
+                        results.append(
+                            {
+                                "client_order_id": pending.client_order_id,
+                                "status": "exit_refused_quantity_exceeds_net_received",
+                                "reason": "planned_exit_not_safely_retired",
+                            }
+                        )
+                        continue
+                    pending = None
                 leg = pending or await recorder.record(close)
                 await broker.closeable(entry, leg.qty)
                 sent = await _send(recorder, broker, leg, confirm=confirm)

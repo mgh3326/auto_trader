@@ -73,6 +73,8 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
+**Alpaca paper crypto 청산 수량 (hk 6784; 2026-11-27 범위)**: 청산 크기는 proven `net_received_qty`가 있으면 사용하고, 없으면 `floor_to_increment(gross_filled_qty * (1 - 0.0025))`로 보수적으로 계산한다. `qty_available`은 주문 전송 상한이다. 가용량이 wanted 수량보다 작으면 그 실행에서는 주문을 보내지 않고 `broker_qty_unavailable`을 보고한다. episode 잔량은 계좌 가용량으로 덮어쓰지 않으며, proven sell fills만 잔량에서 차감한다. 같은 실행에서 생성되거나 재개한 leg도 기존 처리 규칙을 따른다. 수수료 귀속·ledger fee writes/backfill과 fee-derived net P&L은 hk 6890으로 이관됐다.
+
 **Alpaca paper 프리·애프터 모의 제출 — `extended_hours` (hk 6497)**: `alpaca_paper_preview_order`와
 `alpaca_paper_submit_order`는 선택 인자 `extended_hours: bool = False`를 받는다. 기본값은 기존 요청 본문·
 정규화 canonical·hash·`client_order_id`·echo를 바이트 단위로 바꾸지 않는다(테스트가 골든으로 고정).

@@ -1158,6 +1158,15 @@ class AlpacaPaperOrderLedger(Base):
             name="alpaca_paper_ledger_leg_role",
         ),
         CheckConstraint(
+            "fee_evidence_reason IS NULL OR fee_evidence_reason IN ("
+            "'fee_activity_missing','fee_activity_unreadable','fee_activity_order_mismatch',"
+            "'fee_activity_symbol_mismatch','fee_activity_type_unknown','fee_currency_ambiguous',"
+            "'fee_fill_set_incomplete','fee_activity_coverage_incomplete',"
+            "'broker_order_id_missing',"
+            "'fee_exceeds_filled_quantity')",
+            name="alpaca_paper_ledger_fee_evidence_reason",
+        ),
+        CheckConstraint(
             "settlement_status IN ('pending','settled','failed','n_a')",
             name="alpaca_paper_ledger_settlement_status",
         ),
@@ -1213,8 +1222,10 @@ class AlpacaPaperOrderLedger(Base):
     confirm_flag: Mapped[bool | None] = mapped_column(Boolean)
 
     # ROB-90: fee/settlement
-    fee_amount: Mapped[float | None] = mapped_column(Numeric(20, 4))
+    fee_amount: Mapped[float | None] = mapped_column(Numeric(38, 18))
     fee_currency: Mapped[str | None] = mapped_column(Text)
+    fee_evidence_reason: Mapped[str | None] = mapped_column(Text)
+    net_received_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     settlement_status: Mapped[str | None] = mapped_column(Text)
     settlement_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 

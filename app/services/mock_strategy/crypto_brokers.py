@@ -54,6 +54,7 @@ class CryptoBroker(Protocol):
     async def submit(self, order: Any, *, confirm: bool) -> FillEvidence: ...
     async def evidence(self, order: Any) -> FillEvidence: ...
     async def closeable(self, order: Any, qty: Decimal) -> None: ...
+    async def available_qty(self, order: Any) -> Decimal: ...
 
 
 def require_enabled(venue: str, *, confirm: bool) -> None:
@@ -414,15 +415,21 @@ class AlpacaCryptoPaper:
     async def price(self, symbol: str) -> Decimal:
         return await self.pricing.price(symbol)
 
-    async def closeable(self, order: Any, qty: Decimal) -> None:
+    async def available_qty(self, order: Any) -> Decimal:
         position = await self.client.get_position(
             order.symbol.removesuffix("USDT") + "USD"
         )
         if (
             position is None
             or position.qty_available is None
-            or position.qty_available < qty
+            or not position.qty_available.is_finite()
+            or position.qty_available < 0
         ):
+            raise ValueError("paper crypto quantity unavailable")
+        return position.qty_available
+
+    async def closeable(self, order: Any, qty: Decimal) -> None:
+        if await self.available_qty(order) < qty:
             raise ValueError("paper crypto quantity unavailable")
 
     def _evidence(self, response: Any, order: Any) -> FillEvidence:
