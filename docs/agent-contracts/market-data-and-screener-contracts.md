@@ -1100,6 +1100,17 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - **실행**: 기본은 드라이런(DB 접근 0, 후보·가상 행 출력), `--commit` 만 쓴다. `--catchup-bars`(기본 4, 최대 96), `--markets`. 시장 하나의 실패는 `errors` 에 남기고 계속하며 종료 코드 1. 실계좌·전략·게이트 변경 없음.
 - **테스트**: `tests/services/upbit_intraday_shadow/`(2026-11-25 BTC·XRP·SAHARA 녹화 봉 재생, 터치=진입 아님, 동결 해시), `tests/test_hk6036_upbit_shadow_migration_db.py`(DB 부분은 CI), `tests/scripts/test_dagu_upbit_intraday_shadow_dag.py`. 이미지에는 `research/upbit_intraday` 의 규칙·fetch·선택 파일과 `research/crypto_universe/public_http.py` 만 더 싣는다.
 
+### Upbit 원화 1분봉 저장소 수집기 (hk 6701)
+
+`app/services/minute_candles/upbit_collector.py`와 수동 CLI `scripts.collect_upbit_minute_candles`는 Upbit 공개 REST 분 캔들(`GET /v1/candles/minutes/1`)을 읽어 `MinuteCandlesRepository.insert_rows`로 `public.crypto_candles_1m`에 삽입한다. 대상은 보유 KRW 마켓 ∪ KRW-BTC/XRP/ETH ∪ 24시간 거래대금 상위 N개이며 N은 `UPBIT_MINUTE_CANDLE_TOP_N`(기본 20, 최대 100)이다. 대상 합집합과 N은 결과에 함께 보고한다.
+
+- **완결성과 페이지**: `candle_date_time_utc + 70초 <= request_time`인 봉만 저장한다. Upbit은 해당 분에 체결이 있을 때만 캔들을 반환하므로 결손 구간을 보간하지 않는다. 수집기 source 행이 없는 마켓의 현재 KST 날짜를 페이지당 최대 200봉, 최대 8페이지로 따라잡으며 한도를 채워 날짜 시작 전까지 닿지 못하면 해당 마켓은 오류로 보고한다. 이후에는 마지막 수집기 source 봉 이후만 조회한다.
+- **삽입과 시각**: 자연키 `(instrument_id, time)` 충돌은 `DO NOTHING`이다. 같은 source의 기존 행도 덮어쓰지 않는다. `source=upbit_rest_1m`, `source_event_at`은 해당 페이지를 처음 받은 시각, `ingested_at`은 DB 기록 시각이다. 결과는 마켓별 `rows`(가져온 마감 봉 수)·`new`(DB 신규 삽입 수, 드라이런에서는 null)·`error`를 낸다. 오류 시장은 `rows=null`로 보고되며 정상 시장 처리는 계속한다.
+- **공개 API·요청 속도**: 키 없이 조회 전용으로 `/v1/market/all`, `/v1/ticker`, `/v1/candles/minutes/1`만 허용하고 리다이렉트를 따르지 않는다. 요청 간격은 0.15초이며 429/5xx는 지수 대기 후 제한 횟수만 재시도한다. Upbit 공식 문서는 분 캔들 그룹 한도를 IP당 초당 10회, 한 응답 최대 200개로 규정한다([분 캔들 조회](https://docs.upbit.com/kr/reference/list-candles-minutes)).
+- **실행·스케줄**: CLI는 기본 드라이런이고 `--dry-run`은 DB 세션을 열지 않는다. `--commit`만 writer를 호출한다. `deploy/dagu/at-upbit-1m/`은 매분 24/7 실행을 기술한 미등록 사본이며 Dagu 등록은 없다. WebSocket 집계와 Binance는 범위 밖이다.
+- **retro/v1 참고**: `app/services/retro_v1/daily_bars.py::get_bars`는 저장된 `crypto_candles_1m` 행을 계속 읽는다. 이 수집기는 해당 reader의 쿼리·출력 계약을 변경하지 않는다.
+- **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, 완결 시각, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
+
 ## Benzinga Pro 캡처 수신 (hk 6579)
 
 - `POST /trading/api/research/benzinga-pro/ingest`는 `benzinga-pro-capture/v1` JSON을 받는다. `BENZINGA_PRO_INGEST_ENABLED` 기본값은 false이며 환경 변수 값이 정확히 `true`일 때만 열린다. DB 접근 전에 게이트 off는 404, 토큰 또는 헤더 이름 미설정은 403, 토큰 불일치는 401을 반환한다. 전용 토큰 `BENZINGA_PRO_INGEST_TOKEN`은 `BENZINGA_PRO_INGEST_TOKEN_HEADER`(기본 `X-Benzinga-Pro-Ingest-Token`)에서만 받는다.
