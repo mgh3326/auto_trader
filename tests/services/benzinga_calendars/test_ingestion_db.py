@@ -307,3 +307,59 @@ async def test_period_revision_replaces_the_superseded_values(db_session):
         ("revenue", "Q1-2027"),
     ]
     assert {row.actual for row in rows if row.metric_name == "eps"} == {Decimal("2.30")}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_period_revision_drops_omitted_metric_and_earnings_reader_serves_current_value(
+    db_session, monkeypatch
+):
+    """A current Benzinga revision is the only value state readers can see."""
+    from app.mcp_server.tooling.fundamentals import _financials
+
+    await _ingest(db_session, [EARNINGS_ROW])
+    revised = {
+        **EARNINGS_ROW,
+        "updated": 1766188000,
+        "period": "Q1",
+        "period_year": 2027,
+        "eps": "2.30",
+        "eps_est": "2.25",
+        "revenue": None,
+        "revenue_est": None,
+        "revenue_prior": None,
+    }
+    await _ingest(db_session, [revised])
+
+    rows = (
+        (
+            await db_session.execute(
+                select(MarketEventValue).order_by(MarketEventValue.metric_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [(row.metric_name, row.period) for row in rows] == [("eps", "Q1-2027")]
+    assert rows[0].actual == Decimal("2.30")
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, *_exc_info):
+            return False
+
+    monkeypatch.setattr(_financials, "AsyncSessionLocal", _SessionContext)
+    result = await _financials._fetch_earnings_calendar_market_events_us(
+        "AAPL", date(2026, 10, 1), date(2026, 10, 31)
+    )
+
+    assert result is not None
+    assert result["count"] == 1
+    earnings = result["earnings"][0]
+    assert (earnings["quarter"], earnings["year"]) == (1, 2027)
+    assert earnings["eps_actual"] == 2.30
+    assert earnings["eps_estimate"] == 2.25
+    assert earnings["revenue_actual"] is None
+    assert earnings["revenue_estimate"] is None
