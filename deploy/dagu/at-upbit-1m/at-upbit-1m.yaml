@@ -1,0 +1,20 @@
+# Upbit KRW 1분봉 수집기. 이 파일은 Dagu 사본이며 저장소가 등록하지 않는다.
+description: "Upbit KRW closed one-minute candles into crypto_candles_1m"
+schedule:
+  - "CRON_TZ=UTC * * * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_upbit_minute_candles --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-upbit-1m "dag=at-upbit-1m status=success"'
+  failure:
+    command: 'logger -t at-dagu-upbit-1m "dag=at-upbit-1m status=failure"'

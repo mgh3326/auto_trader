@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import text
@@ -21,12 +22,12 @@ from sqlalchemy.sql.elements import TextClause
 class MinuteCandleRow:
     instrument_id: int
     time_utc: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    base_volume: float
-    quote_volume: float | None = None
+    open: float | Decimal
+    high: float | Decimal
+    low: float | Decimal
+    close: float | Decimal
+    base_volume: float | Decimal
+    quote_volume: float | Decimal | None = None
     trade_count: int | None = None
     vwap: float | None = None
     taker_buy_base_volume: float | None = None
@@ -84,6 +85,60 @@ class MinuteCandlesRepository:
             cast(object, await self._session.execute(sql, payload)),
         )
         return max(int(result.rowcount or 0), 0)
+
+    async def insert_rows(self, *, rows: list[MinuteCandleRow]) -> int:
+        """Insert only new buckets and return the number of inserted rows.
+
+        This is for historical REST collectors where the first observation is
+        authoritative. Re-running a collector must not rewrite that evidence.
+        """
+        if not rows:
+            return 0
+        sql = self._build_insert_only()
+        payload = [
+            {
+                "instrument_id": r.instrument_id,
+                "time": r.time_utc,
+                "open": r.open,
+                "high": r.high,
+                "low": r.low,
+                "close": r.close,
+                "base_volume": r.base_volume,
+                "quote_volume": r.quote_volume,
+                "trade_count": r.trade_count,
+                "vwap": r.vwap,
+                "taker_buy_base_volume": r.taker_buy_base_volume,
+                "taker_buy_quote_volume": r.taker_buy_quote_volume,
+                "is_closed": r.is_closed,
+                "source": r.source,
+                "source_event_at": r.source_event_at,
+            }
+            for r in rows
+        ]
+        result = cast(
+            "_RowcountResult",
+            cast(object, await self._session.execute(sql, payload)),
+        )
+        return max(int(result.rowcount or 0), 0)
+
+    @staticmethod
+    def _build_insert_only() -> TextClause:
+        return text(
+            """
+            INSERT INTO public.crypto_candles_1m (
+                instrument_id, time, open, high, low, close,
+                base_volume, quote_volume, trade_count, vwap,
+                taker_buy_base_volume, taker_buy_quote_volume,
+                is_closed, source, source_event_at
+            ) VALUES (
+                :instrument_id, :time, :open, :high, :low, :close,
+                :base_volume, :quote_volume, :trade_count, :vwap,
+                :taker_buy_base_volume, :taker_buy_quote_volume,
+                :is_closed, :source, :source_event_at
+            )
+            ON CONFLICT (instrument_id, time) DO NOTHING
+            """
+        )
 
     @staticmethod
     def _build_upsert() -> TextClause:
