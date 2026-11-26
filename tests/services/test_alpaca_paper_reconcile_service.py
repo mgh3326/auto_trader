@@ -341,6 +341,28 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
 
 
 @pytest.mark.asyncio
+async def test_crypto_fee_reconcile_can_target_one_unresolved_order():
+    from app.services.alpaca_paper_crypto_fee_reconcile import (
+        AlpacaPaperCryptoFeeReconcileService,
+    )
+
+    class FeeLedger:
+        requested_order_id = None
+
+        async def list_crypto_fee_candidates(self, *, limit, client_order_id=None):
+            self.requested_order_id = client_order_id
+            return []
+
+    ledger = FeeLedger()
+    result = await AlpacaPaperCryptoFeeReconcileService(ledger, object()).reconcile(
+        client_order_id="blocked-old-order"
+    )
+
+    assert ledger.requested_order_id == "blocked-old-order"
+    assert result == {"dry_run": True, "count": 0, "items": []}
+
+
+@pytest.mark.asyncio
 async def test_reconcile_skips_final_reconciled_execution_row() -> None:
     from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
 
