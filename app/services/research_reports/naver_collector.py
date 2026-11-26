@@ -11,11 +11,15 @@ from uuid import uuid4
 
 from app.schemas.research_reports import ResearchReportIngestionRequest
 from app.services.research_reports.ingestion import ingest_research_reports_v1
-from app.services.research_reports.naver_client import CATEGORIES, NaverResearchClient, strip_html
+from app.services.research_reports.naver_client import (
+    CATEGORIES,
+    NaverResearchClient,
+    strip_html,
+)
 from app.services.research_reports.repository import ResearchReportsRepository
 
 PAGE_SIZE = 20
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 class KnownReportRepository(Protocol):
@@ -34,27 +38,36 @@ def _decimal_text(value: Any) -> tuple[str | None, str | None]:
         return None, "not_provided"
     if type(value) not in (str, int):
         raise ValueError("invalid_goal_price")
+    if len(str(value)) > 64:
+        raise ValueError("invalid_goal_price")
     try:
         number = Decimal(str(value))
     except InvalidOperation:
         raise ValueError("invalid_goal_price") from None
     if not number.is_finite() or number <= 0:
         raise ValueError("invalid_goal_price")
+    if number.adjusted() > 38 or number.as_tuple().exponent < -38:
+        raise ValueError("invalid_goal_price")
     return format(number, "f"), None
 
 
-def map_report(category: str, item: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
+def map_report(
+    category: str, item: dict[str, Any], detail: dict[str, Any]
+) -> dict[str, Any]:
     nid = item["nid"]
     date_text = item.get("writeDate")
-    if date_text is not None and (type(date_text) is not str or not _DATE_RE.fullmatch(date_text)):
+    if date_text is not None and (
+        type(date_text) is not str or not _DATE_RE.fullmatch(date_text)
+    ):
         raise ValueError("invalid_write_date")
     if date_text:
         # Validate the calendar date while preserving date-only precision.
         datetime.strptime(date_text, "%Y-%m-%d")
 
-    target_price, target_price_reason = _decimal_text(
-        detail.get("goalPrice", item.get("goalPrice"))
-    )
+    target_value = detail.get("goalPrice")
+    if target_value in (None, ""):
+        target_value = item.get("goalPrice")
+    target_price, target_price_reason = _decimal_text(target_value)
     content = item.get("content")
     if content is not None and type(content) is not str:
         raise ValueError("invalid_content")
@@ -62,13 +75,13 @@ def map_report(category: str, item: dict[str, Any], detail: dict[str, Any]) -> d
     excerpt = summary[:500]
     broker = item.get("brokerName")
     broker_code = item.get("brokerCode")
-    opinion = detail.get("opinionText", item.get("opinionText"))
-    opinion_type = detail.get("opinionType", item.get("opinionType"))
+    opinion = detail.get("opinionText") or item.get("opinionText")
+    opinion_type = detail.get("opinionType") or item.get("opinionType")
     item_code = item.get("itemCode")
     item_name = item.get("itemName")
     symbols: list[dict[str, Any]] = []
     if item_code:
-        if type(item_code) is not str or not re.fullmatch(r"\d{6}", item_code):
+        if type(item_code) is not str or not re.fullmatch(r"[0-9]{6}", item_code):
             raise ValueError("invalid_item_code")
         symbols.append(
             {
@@ -83,15 +96,19 @@ def map_report(category: str, item: dict[str, Any], detail: dict[str, Any]) -> d
                 "opinion_type": opinion_type,
             }
         )
-    note_parts = [f"opinion={opinion}" if opinion else None,
-                  f"opinion_type={opinion_type}" if opinion_type else None,
-                  f"goal_price={target_price}" if target_price is not None else None,
-                  f"goal_price_reason={target_price_reason}" if target_price_reason else None,
-                  f"item_name={item_name}" if item_name and not item_code else None]
+    note_parts = [
+        f"opinion={opinion}" if opinion else None,
+        f"opinion_type={opinion_type}" if opinion_type else None,
+        f"goal_price={target_price}" if target_price is not None else None,
+        f"goal_price_reason={target_price_reason}" if target_price_reason else None,
+        f"item_name={item_name}" if item_name and not item_code else None,
+    ]
     note = "; ".join(part for part in note_parts if part) or None
     pdf_url = detail.get("attachUrl")
     pdf_name = detail.get("attachName")
-    if pdf_url is not None and (type(pdf_url) is not str or not pdf_url.startswith("https://")):
+    if pdf_url is not None and (
+        type(pdf_url) is not str or not pdf_url.startswith("https://")
+    ):
         raise ValueError("invalid_pdf_reference")
     if pdf_name is not None and type(pdf_name) is not str:
         raise ValueError("invalid_pdf_name")
@@ -156,7 +173,9 @@ async def collect_naver_reports(
         except Exception as exc:
             errors[category] = str(exc)[:160] or type(exc).__name__
         counts[category] = count
-    return CollectionResult(reports=reports, category_errors=errors, category_counts=counts)
+    return CollectionResult(
+        reports=reports, category_errors=errors, category_counts=counts
+    )
 
 
 async def run_naver_research_ingestion(

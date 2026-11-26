@@ -20,11 +20,19 @@ class _EmptyRepository:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect Naver research metadata (preview by default)."
+        description="Collect Naver research metadata (choose --dry-run or --commit)."
     )
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--dry-run", action="store_true", help="Fetch and map without opening a database session.")
-    mode.add_argument("--commit", action="store_true", help="Write mapped metadata through research_reports ingestion service.")
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch and map without opening a database session.",
+    )
+    mode.add_argument(
+        "--commit",
+        action="store_true",
+        help="Write mapped metadata through research_reports ingestion service.",
+    )
     return parser.parse_args(argv)
 
 

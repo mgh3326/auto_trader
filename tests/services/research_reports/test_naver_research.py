@@ -30,15 +30,19 @@ def _captured_item(record: dict[str, Any]) -> dict[str, Any]:
 @pytest.mark.unit
 def test_each_category_capture_maps_to_copyright_safe_report_metadata():
     from app.schemas.research_reports import ResearchReportPayloadV1
-    from app.services.research_reports.naver_collector import map_report
     from app.services.research_reports.naver_client import CATEGORIES
+    from app.services.research_reports.naver_collector import map_report
 
     for category in CATEGORIES:
-        captured = json.loads((FIXTURES / f"{category}-0.json").read_text(encoding="utf-8"))
+        captured = json.loads(
+            (FIXTURES / f"{category}-0.json").read_text(encoding="utf-8")
+        )
         record = captured["at_records"][0]
         item = _captured_item(record)
         detail = {"nid": item["nid"], "attachUrl": None, "attachName": None}
-        report = ResearchReportPayloadV1.model_validate(map_report(category, item, detail))
+        report = ResearchReportPayloadV1.model_validate(
+            map_report(category, item, detail)
+        )
         assert report.source_report_id == item["nid"]
         assert report.category == category
         assert report.published_at_text == item["writeDate"]
@@ -62,7 +66,9 @@ def test_company_detail_capture_html_and_pdf_are_only_short_text_and_reference()
     from app.schemas.research_reports import ResearchReportPayloadV1
     from app.services.research_reports.naver_collector import map_report
 
-    saved = json.loads((FIXTURES / "detail-company-98500.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (FIXTURES / "detail-company-98500.json").read_text(encoding="utf-8")
+    )
     detail = saved["researchContent"]
     item = {
         "nid": detail["nid"],
@@ -112,6 +118,9 @@ class _FakeClient:
         self.list_calls: list[tuple[str, int]] = []
         self.detail_calls: list[tuple[str, str]] = []
 
+    async def aclose(self):
+        return None
+
     async def list_reports(self, category: str, *, size: int, index: int):
         self.list_calls.append((category, index))
         if category in self.fail:
@@ -121,14 +130,32 @@ class _FakeClient:
                 "hasNext": True,
                 "index": 0,
                 "items": [
-                    {"nid": "200", "title": "new", "content": "<p>짧은 요약</p>",
-                     "brokerName": "증권사", "brokerCode": "01", "writeDate": "2026-11-26",
-                     "itemCode": None, "itemName": None, "goalPrice": None,
-                     "opinionText": None, "opinionType": None},
-                    {"nid": "100", "title": "old", "content": "", "brokerName": "증권사",
-                     "brokerCode": "01", "writeDate": "2026-11-25", "itemCode": None,
-                     "itemName": None, "goalPrice": None, "opinionText": None,
-                     "opinionType": None},
+                    {
+                        "nid": "200",
+                        "title": "new",
+                        "content": "<p>짧은 요약</p>",
+                        "brokerName": "증권사",
+                        "brokerCode": "01",
+                        "writeDate": "2026-11-26",
+                        "itemCode": None,
+                        "itemName": None,
+                        "goalPrice": None,
+                        "opinionText": None,
+                        "opinionType": None,
+                    },
+                    {
+                        "nid": "100",
+                        "title": "old",
+                        "content": "",
+                        "brokerName": "증권사",
+                        "brokerCode": "01",
+                        "writeDate": "2026-11-25",
+                        "itemCode": None,
+                        "itemName": None,
+                        "goalPrice": None,
+                        "opinionText": None,
+                        "opinionType": None,
+                    },
                 ],
             }
         return {"hasNext": False, "index": index, "items": []}
@@ -168,7 +195,9 @@ async def test_collector_reports_failed_category_and_keeps_other_category_rows()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_partial_category_failure_still_sends_successful_rows_to_ingestion(monkeypatch):
+async def test_partial_category_failure_still_sends_successful_rows_to_ingestion(
+    monkeypatch,
+):
     import app.services.research_reports.naver_collector as collector
 
     observed: dict[str, Any] = {}
@@ -185,7 +214,10 @@ async def test_partial_category_failure_still_sends_successful_rows_to_ingestion
     monkeypatch.setattr(collector, "ResearchReportsRepository", Repository)
     monkeypatch.setattr(collector, "ingest_research_reports_v1", fake_ingest)
     result, response = await collector.run_naver_research_ingestion(
-        object(), _FakeClient(fail={"industry"}), categories=("industry", "company"), size=2
+        object(),
+        _FakeClient(fail={"industry"}),
+        categories=("industry", "company"),
+        size=2,
     )
     assert response is not None
     assert result.category_errors == {"industry": "fixture category failure"}
@@ -197,9 +229,9 @@ async def test_partial_category_failure_still_sends_successful_rows_to_ingestion
 @pytest.mark.asyncio
 async def test_http_client_sends_user_agent_refuses_redirects_and_paces_requests():
     from app.services.research_reports.naver_client import (
+        USER_AGENT,
         NaverResearchClient,
         NaverResearchError,
-        USER_AGENT,
     )
 
     now = [0.0]
@@ -215,14 +247,22 @@ async def test_http_client_sends_user_agent_refuses_redirects_and_paces_requests
         return httpx.Response(
             200,
             headers={"content-type": "application/json"},
-            json={"hasNext": False, "totalCount": "0", "items": [], "size": "20", "index": "0"},
+            json={
+                "hasNext": False,
+                "totalCount": "0",
+                "items": [],
+                "size": "20",
+                "index": "0",
+            },
         )
 
     async def sleep(seconds: float) -> None:
         sleeps.append(seconds)
         now[0] += seconds
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    )
     client = NaverResearchClient(http, sleep=sleep, monotonic=lambda: now[0])
     assert (await client.list_reports("company"))["items"] == []
     with pytest.raises(NaverResearchError, match="redirect_refused"):
@@ -230,6 +270,35 @@ async def test_http_client_sends_user_agent_refuses_redirects_and_paces_requests
     assert seen_headers == [USER_AGENT, USER_AGENT]
     assert sleeps == [0.5]
     await http.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cli_dry_run_collects_metadata_without_opening_database(
+    monkeypatch, capsys
+):
+    import app.services.research_reports.naver_collector as collector
+    import scripts.ingest_naver_research as cli
+
+    client = _FakeClient()
+
+    class Client:
+        def __new__(cls):
+            return client
+
+    async def no_database_collection(got_client, repository):
+        assert got_client is client
+        assert isinstance(repository, cli._EmptyRepository)
+        from app.services.research_reports.naver_collector import CollectionResult
+
+        return CollectionResult(
+            reports=[], category_errors={}, category_counts={"company": 0}
+        )
+
+    monkeypatch.setattr(cli, "NaverResearchClient", Client)
+    monkeypatch.setattr(collector, "collect_naver_reports", no_database_collection)
+    assert await cli.main_async(["--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["dry_run"] is True
 
 
 @pytest.mark.unit

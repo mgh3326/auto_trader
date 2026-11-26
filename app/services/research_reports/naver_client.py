@@ -44,7 +44,7 @@ def _text(value: Any, label: str, *, nullable: bool = True) -> str | None:
 def _nid(value: Any) -> str:
     if type(value) is int:
         value = str(value)
-    if type(value) is not str or not value.isdecimal():
+    if type(value) is not str or not re.fullmatch(r"[0-9]+", value):
         raise NaverResearchError("invalid_nid")
     return value
 
@@ -54,8 +54,16 @@ def _parse_item(raw: Any) -> dict[str, Any]:
     item = dict(row)
     item["nid"] = _nid(row.get("nid"))
     for key in (
-        "title", "content", "brokerName", "brokerCode", "writeDate",
-        "itemCode", "itemName", "goalPrice", "opinionText", "opinionType",
+        "title",
+        "content",
+        "brokerName",
+        "brokerCode",
+        "writeDate",
+        "itemCode",
+        "itemName",
+        "goalPrice",
+        "opinionText",
+        "opinionType",
     ):
         _text(row.get(key), key)
     return item
@@ -76,7 +84,7 @@ def parse_list_response(value: Any, *, requested_index: int) -> dict[str, Any]:
         if type(value) is int:
             if value < 0:
                 raise NaverResearchError("invalid_list_response")
-        elif type(value) is str and value.isdecimal():
+        elif type(value) is str and re.fullmatch(r"[0-9]+", value):
             continue
         else:
             raise NaverResearchError("invalid_list_response")
@@ -93,7 +101,9 @@ def parse_detail_response(value: Any, *, expected_nid: str) -> dict[str, Any]:
     return dict(body)
 
 
-def parse_by_items_response(value: Any, *, item_codes: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:
+def parse_by_items_response(
+    value: Any, *, item_codes: tuple[str, ...]
+) -> dict[str, list[dict[str, Any]]]:
     body = _mapping(value, "by_items_response")
     if set(body) - set(item_codes):
         raise NaverResearchError("unexpected_item_code")
@@ -147,6 +157,7 @@ class NaverResearchClient:
             response = await self._http.get(
                 f"{BASE_URL}/{path}",
                 params=params,
+                follow_redirects=False,
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             )
         except httpx.HTTPError as exc:
@@ -155,7 +166,9 @@ class NaverResearchClient:
             raise NaverResearchError("redirect_refused")
         if response.status_code != 200:
             raise NaverResearchError(f"http_{response.status_code}")
-        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        content_type = (
+            response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        )
         if content_type != "application/json":
             raise NaverResearchError("invalid_content_type")
         try:
@@ -163,23 +176,32 @@ class NaverResearchClient:
         except ValueError:
             raise NaverResearchError("invalid_json") from None
 
-    async def list_reports(self, category: str, *, size: int = 20, index: int = 0) -> dict[str, Any]:
+    async def list_reports(
+        self, category: str, *, size: int = 20, index: int = 0
+    ) -> dict[str, Any]:
         if category not in CATEGORIES:
             raise ValueError("unsupported_category")
-        if type(size) is not int or not 1 <= size <= 100 or type(index) is not int or index < 0:
+        if (
+            type(size) is not int
+            or not 1 <= size <= 100
+            or type(index) is not int
+            or index < 0
+        ):
             raise ValueError("invalid_pagination")
         body = await self._get_json(category, {"size": str(size), "index": str(index)})
         return parse_list_response(body, requested_index=index)
 
     async def detail(self, category: str, nid: str) -> dict[str, Any]:
-        if category not in CATEGORIES or not nid.isdecimal():
+        if category not in CATEGORIES or not re.fullmatch(r"[0-9]+", nid):
             raise ValueError("invalid_detail_reference")
         body = await self._get_json(f"{category}/{nid}")
         return parse_detail_response(body, expected_nid=nid)
 
-    async def by_items(self, item_codes: list[str], *, size: int = 20) -> dict[str, list[dict[str, Any]]]:
+    async def by_items(
+        self, item_codes: list[str], *, size: int = 20
+    ) -> dict[str, list[dict[str, Any]]]:
         codes = tuple(dict.fromkeys(item_codes))
-        if not codes or any(not re.fullmatch(r"\d{6}", code) for code in codes):
+        if not codes or any(not re.fullmatch(r"[0-9]{6}", code) for code in codes):
             raise ValueError("invalid_item_codes")
         if type(size) is not int or not 1 <= size <= 100:
             raise ValueError("invalid_size")
