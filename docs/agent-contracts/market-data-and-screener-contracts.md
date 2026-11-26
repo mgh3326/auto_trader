@@ -1236,3 +1236,17 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 기존 `at_app`에 객체별 조건부 `SELECT`·`INSERT`를 부여한다.
 `app/services/daily_plan`이 단일 writer이며 모든 역할에서 트리거가
 `UPDATE`·`DELETE`·`TRUNCATE`를 거부한다.
+
+쓰기 요청의 기준은 `session_date`와 `expected_prev_seq`이며, 동일 재시도는
+`idempotency_key`를 재사용한다. `asof`, `kind`, `strategy_id`,
+`strategy_rule_version`, `rows`를 함께 보낸다. 서버가 저장한 번들을 참조할
+때는 `input_bundle_id`와 `input_bundle_sha256`을 함께 지정한다. 조건은
+`kind`와 `value`로 구성하며 가격과 수량은 십진 문자열이다. 매수 계획은
+`would_be_quantity`와 `would_be_notional` 중 하나를 지정한다.
+`decision_table_validate`는 주문 결정표의 수치형 호가·구간 문법을 검증하므로
+계획 입력에는 KRX 호가 단위 계산만 재사용한다.
+
+채택 행 응답에는 결정적 `adoption_key`와 `forecast_id`가 있다. 세션은
+기존 예측을 먼저 조회하고, 새 예측이 필요한 경우에만 별도 `forecast_save`를
+호출한다. `daily_plan_confirm_links`는 기존 예측과 기각 판단을 대조하고
+연결 사실을 추가한다.

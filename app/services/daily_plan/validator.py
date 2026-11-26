@@ -7,8 +7,11 @@ from decimal import Decimal, localcontext
 from typing import Any
 
 from app.core.symbol import to_db_symbol
+from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.daily_plan.vocabulary import (
     ACCOUNT_MODES,
+    ACCOUNT_REF_KINDS,
+    ACCOUNT_SCOPES,
     ACTION_BASES,
     ACTIONS,
     DISPOSITIONS,
@@ -53,7 +56,7 @@ def validate_side(action: str, side: str | None) -> None:
 
 
 def validate_condition(kind: str, value: str) -> None:
-    if kind not in TRIGGER_KINDS:
+    if kind not in TRIGGER_KINDS or type(value) is not str:
         raise ValueError("invalid_condition")
     if kind == "event":
         if not value.strip() or len(value) > 500:
@@ -71,13 +74,18 @@ def input_reason(
 ) -> str | None:
     """Use value-level observation evidence and the server's freshness boundary."""
     reasons: set[str] = set()
-    for source in required:
-        facts = sources.get(source)
-        if facts is None:
-            reasons.add("input_missing")
-            continue
+    for source, facts in sources.items():
         event_at = facts.get("event_at")
         observed_at = facts.get("first_observed_at")
+        for value in (event_at, observed_at):
+            if (
+                value is not None
+                and value.utcoffset() is not None
+                and value > bundle_closed_at
+            ):
+                raise ValueError("input_after_bundle_cutoff")
+        if source not in required:
+            continue
         if (
             event_at is None
             or observed_at is None
@@ -85,11 +93,10 @@ def input_reason(
             or observed_at.utcoffset() is None
         ):
             reasons.add("observed_time_unproven")
-            continue
-        if max(event_at, observed_at) > bundle_closed_at:
-            raise ValueError("input_after_bundle_cutoff")
-        if event_at < oldest_accepted_at:
+        elif event_at < oldest_accepted_at:
             reasons.add("input_stale")
+    if required - sources.keys():
+        reasons.add("input_missing")
     return next(
         (
             reason
@@ -105,6 +112,13 @@ def parse_time(value: str) -> datetime:
     if parsed.utcoffset() is None:
         raise ValueError("observed_time_unproven")
     return parsed
+
+
+def _evidence_time(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.utcoffset() is not None else None
 
 
 def row_key(row: Mapping[str, Any]) -> tuple[str, str, str, str | None]:
@@ -170,7 +184,7 @@ def prepare_row(
     action = row["action"]
     if action not in ACTIONS or row["action_basis"] not in ACTION_BASES:
         raise ValueError("invalid_action")
-    if kind == "candidate" and action not in ("new", "watch", "hold"):
+    if kind == "candidate" and action not in ("new", "add", "watch", "hold"):
         raise ValueError("invalid_action")
     if kind == "holding" and action == "new":
         raise ValueError("invalid_action")
@@ -208,7 +222,9 @@ def prepare_row(
     if type(conditions) is not list or len(conditions) > 3:
         raise ValueError("invalid_conditions")
     trigger = row.get("trigger")
-    for condition in ([trigger] if trigger else []) + conditions:
+    for condition in ([trigger] if trigger is not None else []) + conditions:
+        if type(condition) is not dict or condition.keys() != {"kind", "value"}:
+            raise ValueError("invalid_condition")
         validate_condition(condition["kind"], condition["value"])
 
     for field in (
@@ -238,15 +254,15 @@ def prepare_row(
     sources = (evidence or {}).get("sources", {})
     source_times = {
         name: {
-            key: parse_time(value) if value is not None else None
+            key: _evidence_time(value)
             for key, value in source.items()
             if key in ("event_at", "first_observed_at")
         }
         for name, source in sources.items()
-        if "unavailable" not in source
+        if source.get("unavailable") not in ("input_missing", "price_missing")
     }
     required = frozenset({"price", "holdings"} if kind == "holding" else {"price"})
-    if action in ("add", "trim", "risk_sell"):
+    if kind == "holding" and action in ("add", "trim", "risk_sell"):
         required |= {"position", "open_orders", "protected_quantity"}
     reason = input_reason(
         source_times,
@@ -260,20 +276,27 @@ def prepare_row(
         }
         for source, times in source_times.items()
     }
-    row["not_executable_reason"] = reason
-    if kind == "holding" and evidence is None:
-        raise ValueError("invalid_account_attribution")
-    if reason:
-        row.update(action="watch", action_basis="scored", side=None, reason_code=reason)
-        if kind == "candidate":
-            row["disposition"] = "watch"
-    elif kind == "holding" and evidence:
+    if reason is None and any(
+        source.get("unavailable") == "price_stale"
+        for name, source in sources.items()
+        if name in required
+    ):
+        reason = "input_stale"
+    if kind == "holding" and evidence is not None:
+        for field, vocabulary in (
+            ("account_mode", ACCOUNT_MODES),
+            ("account_scope", ACCOUNT_SCOPES),
+            ("account_ref_kind", ACCOUNT_REF_KINDS),
+        ):
+            if evidence.get(field) not in vocabulary:
+                raise ValueError("invalid_account_attribution")
+            row[field] = evidence[field]
         if evidence["account_scope"] == "read_only" and action not in ("watch", "hold"):
-            raise ValueError("account_not_routable")
-        if action == "add":
+            reason = reason or "account_not_routable"
+        if action == "add" and reason is None:
             costs = evidence.get("average_costs", [])
-            if not costs:
-                row["not_executable_reason"] = "position_unknown"
+            if not costs or evidence.get("last_close") is None:
+                reason = "position_unknown"
             else:
                 close = parse_positive_decimal(evidence["last_close"])
                 with localcontext(prec=100):
@@ -285,12 +308,36 @@ def prepare_row(
                         row["not_executable_reason"] = (
                             "add_blocked_lot_at_or_below_floor"
                         )
+    if reason:
+        row.update(
+            action="watch",
+            action_basis="scored",
+            side=None,
+            reason_code=reason,
+            not_executable_reason=reason,
+        )
+        if kind == "candidate":
+            row["disposition"] = "watch"
+    row.setdefault("not_executable_reason", None)
     if (
         row.get("disposition") == "adopted"
         and would_be_ref is None
         and not row["not_executable_reason"]
     ):
         row["not_executable_reason"] = "account_attribution_unknown"
+    if row["action"] in ("new", "add"):
+        limit = parse_positive_decimal(row["would_be_limit_price"])
+        size = row.get("would_be_quantity")
+        limit_int = int(limit)
+        security_type = (evidence or {}).get("security_type")
+        if limit != limit_int or limit_int % get_tick_size_kr(limit_int, security_type):
+            raise ValueError("tick_grid_violation")
+        if size is not None:
+            quantity = parse_positive_decimal(size)
+            if quantity != int(quantity):
+                raise ValueError("invalid_kr_quantity")
+        if size is None and parse_positive_decimal(row["would_be_notional"]) < limit:
+            raise ValueError("below_min_order_amount")
     if row["action"] == "watch":
         if reason and trigger is None:
             max_buy = row.get("max_buy_price")

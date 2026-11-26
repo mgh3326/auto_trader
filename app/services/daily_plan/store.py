@@ -13,6 +13,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.daily_plan import bundles, heads, links, rows, versions
+from app.schemas.trading_policy import TradingPolicyDocument
 from app.services.daily_plan.bundle import (
     bundle_sha256,
     canonical_bundle,
@@ -74,6 +75,11 @@ async def store_input_bundle(
     if hashlib.sha256(canonical).hexdigest() != claimed_sha256:
         raise ValueError("bundle_hash_mismatch")
     normalized = json.loads(canonical)
+    if parse_time(normalized["bundle_closed_at"]).astimezone(_KST).date() != day:
+        raise ValueError("invalid_bundle_time")
+    keys = [row_key(row) for row in normalized["rows"]]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate_bundle_row_key")
     await _lock_head(db, day)
     head_id = await _head(db, day)
     existing = await db.scalar(
@@ -128,7 +134,7 @@ def _row_view(row: dict) -> dict:
     }
 
 
-async def _write_result(db: AsyncSession, version: dict) -> dict:
+async def _publication_rows(db: AsyncSession, version: dict) -> list[dict]:
     result = await _version_rows(db, version["id"])
     replay_ids = version["metadata"].get("adoption_replay_rows", [])
     if replay_ids:
@@ -136,7 +142,14 @@ async def _write_result(db: AsyncSession, version: dict) -> dict:
             select(rows).where(rows.c.id.in_([UUID(item) for item in replay_ids]))
         )
         result.extend(dict(row) for row in replay.mappings())
-    return {**version, "rows": [_row_view(row) for row in result]}
+    return result
+
+
+async def _write_result(db: AsyncSession, version: dict) -> dict:
+    return {
+        **version,
+        "rows": [_row_view(row) for row in await _publication_rows(db, version)],
+    }
 
 
 async def write_version(
@@ -145,7 +158,7 @@ async def write_version(
     day: date,
     request: dict[str, Any],
     now: datetime,
-    policy: Any,
+    policy: TradingPolicyDocument,
     policy_hash: str,
 ) -> dict:
     """Validate and insert one publication in the caller's transaction."""
@@ -262,7 +275,8 @@ async def write_version(
             )
             row["rule_verdict"] = verdict
             if (
-                row["not_executable_reason"] is None
+                row["not_executable_reason"]
+                in (None, "add_blocked_lot_at_or_below_floor")
                 and row_evidence.get("account_scope") == "routable"
             ):
                 if verdict["result"] == "cut":
@@ -351,9 +365,10 @@ async def write_version(
 def _session_close(
     day: date, venue: str, session: str, regular_close: datetime
 ) -> datetime:
-    if venue == "NXT" and session in ("premarket", "aftermarket"):
-        close = time(8, 50) if session == "premarket" else time(20)
-        return datetime.combine(day, close, _KST)
+    if venue == "NXT" and session == "premarket":
+        return datetime.combine(day, time(8, 50), _KST)
+    if session == "aftermarket":
+        return datetime.combine(day, time(20), _KST)
     return regular_close
 
 
@@ -362,7 +377,7 @@ async def _prepare_insert(db: AsyncSession, version: dict, row: dict) -> dict | 
     if row.get("disposition") == "adopted":
         if (
             row["row_kind"] != "candidate"
-            or row["action"] != "new"
+            or row["action"] not in ("new", "add")
             or version["input_bundle_sha256"] is None
         ):
             raise ValueError("invalid_adoption")
@@ -486,10 +501,15 @@ async def list_plans(
             else None
         )
         if plan:
+            current = await get_plan(
+                db, day=queue_for, seq=None, now=now, max_carries=max_carries
+            )
+            decided = {row_key(row) for row in current["rows"]} if current else set()
             queue = [
                 row
                 for row in plan["rows"]
                 if row.get("watch_state", {}).get("next_session") == queue_for
+                and row_key(row) not in decided
             ]
     return {"plans": plans, "premarket_reevaluation_queue": queue}
 
@@ -512,13 +532,7 @@ async def confirm_links(
     )
     if version is None:
         raise ValueError("version_not_found")
-    candidates = await _version_rows(db, version["id"])
-    replay_ids = version["metadata"].get("adoption_replay_rows", [])
-    if replay_ids:
-        found = await db.execute(
-            select(rows).where(rows.c.id.in_([UUID(item) for item in replay_ids]))
-        )
-        candidates.extend(dict(row) for row in found.mappings())
+    candidates = await _publication_rows(db, dict(version))
     results = []
     next_day = next_trading_session("kr", day)
     for row in candidates:

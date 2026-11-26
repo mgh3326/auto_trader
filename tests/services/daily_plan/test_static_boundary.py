@@ -36,9 +36,13 @@ def test_plan_service_cannot_reach_order_or_watch_writers():
         for name in _imports(module):
             # The evaluator uses the pure parking-symbol constants. Follow this
             # module too so a later import of a writer still fails the guard.
-            if name != "app.services.order_proposals.parking_allowlist":
+            pure_helpers = {
+                "app.services.order_proposals.parking_allowlist",
+                "app.mcp_server.tick_size",
+            }
+            if name not in pure_helpers:
                 assert not name.startswith(FORBIDDEN), (module.name, name)
-            if name.startswith("app.services."):
+            if name.startswith("app.services.") or name in pure_helpers:
                 candidate = ROOT / (name.replace(".", "/") + ".py")
                 if candidate.is_file():
                     pending.append(candidate)

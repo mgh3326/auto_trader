@@ -61,6 +61,9 @@ class Values:
     def one_or_none(self):
         return self.records[0] if self.records else None
 
+    def all(self):
+        return self.records
+
     def __iter__(self):
         return iter(self.records)
 
@@ -86,7 +89,8 @@ def fake_db(*, current: int):
 
 
 @pytest.mark.asyncio
-async def test_missing_input_publishes_watch_with_exact_price(monkeypatch):
+@pytest.mark.parametrize("row_kind", ["candidate", "holding"])
+async def test_missing_input_publishes_watch_with_exact_price(monkeypatch, row_kind):
     monkeypatch.setattr(
         store, "previous_trading_session", lambda *_: date(2026, 11, 25)
     )
@@ -98,10 +102,15 @@ async def test_missing_input_publishes_watch_with_exact_price(monkeypatch):
     policy = SimpleNamespace(
         version="v1", daily_plan=SimpleNamespace(no_add_floor_pct=-8)
     )
+    proposal = request()
+    if row_kind == "holding":
+        proposal["rows"][0].update(
+            row_kind="holding", account_ref="a" * 64, action="add"
+        )
     result = await store.write_version(
         fake_db(current=0),
         day=DAY,
-        request=request(),
+        request=proposal,
         now=NOW,
         policy=policy,
         policy_hash="hash",
@@ -136,3 +145,108 @@ def test_every_risk_skip_has_one_evidence_class():
     classes = (UNAVAILABLE_SKIPS, EVALUATED_SKIPS, NOT_APPLICABLE_SKIPS)
     assert set.union(*(set(group) for group in classes)) == SKIP_REASONS
     assert sum(len(group) for group in classes) == len(SKIP_REASONS)
+
+
+@pytest.mark.asyncio
+async def test_adoption_is_deterministic_and_conflict_is_rejected():
+    version = {
+        "head_id": uuid4(),
+        "id": uuid4(),
+        "input_bundle_sha256": "a" * 64,
+    }
+    row = {**request()["rows"][0], "disposition": "adopted"}
+    db = SimpleNamespace(execute=AsyncMock(return_value=Values([])))
+    first = await store._prepare_insert(db, version, row)
+    assert isinstance(first, dict)
+    second = await store._prepare_insert(db, {**version, "id": uuid4()}, row)
+    assert isinstance(second, dict)
+    assert first["adoption_key"] == second["adoption_key"]
+    assert first["forecast_id"] == second["forecast_id"]
+
+    db.execute.return_value = Values([first])
+    assert await store._prepare_insert(db, version, row) == first["id"]
+    with pytest.raises(ValueError, match="adoption_conflict"):
+        await store._prepare_insert(db, version, {**row, "thesis": "changed"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("forecast", "decisions", "rungs", "expected"),
+    [
+        (None, [], [], "pending"),
+        ("valid", [], [], "link_no_decision"),
+        ("valid", ["valid", "valid"], [], "link_ambiguous"),
+        ("invalid", ["valid"], ["valid"], "link_mismatch"),
+        ("valid", ["valid"], ["invalid"], "link_mismatch"),
+        ("valid", ["valid"], ["valid"], "confirmed"),
+    ],
+)
+async def test_link_confirmation_reads_only_matching_declined_evidence(
+    forecast,
+    decisions,
+    rungs,
+    expected,
+):
+    from decimal import Decimal
+
+    decision_id = uuid4()
+    row = {
+        "forecast_id": uuid4(),
+        "adoption_key": "adoption",
+        "symbol": "278470",
+        "body": {
+            "would_be_limit_price": PRICE,
+            "would_be_quantity": "1",
+            "would_be_account_mode": "kis_live",
+        },
+    }
+    forecast_rows = (
+        []
+        if forecast is None
+        else [
+            {
+                "decision_bucket": "deferred_no_action",
+                "market": "equity_kr",
+                "symbol": row["symbol"],
+                "correlation_id": row["adoption_key"]
+                if forecast == "valid"
+                else "other",
+            }
+        ]
+    )
+    decision_rows = [
+        {
+            "decision_id": decision_id,
+            "market": "equity_kr",
+            "symbol": row["symbol"],
+            "side": "buy",
+            "account_mode": "kis_live",
+        }
+        for _ in decisions
+    ]
+    rung_rows = [
+        {
+            "limit_price": Decimal(PRICE),
+            "planned_quantity": Decimal(1 if rung == "valid" else 2),
+            "planned_notional": None,
+            "side": "buy",
+        }
+        for rung in rungs
+    ]
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                Values(forecast_rows),
+                Values(decision_rows),
+                Values(rung_rows),
+            ]
+        )
+    )
+    assert await store._link_state(db, row) == (
+        expected,
+        decision_id if expected == "confirmed" else None,
+    )
+    assert all(
+        str(call.args[0]).lstrip().startswith("SELECT")
+        for call in db.execute.call_args_list
+    )

@@ -35,10 +35,12 @@ REASON_CODES = (
     "input_stale",
     "observed_time_unproven",
     "calendar_unknown",
+    "account_not_routable",
+    "position_unknown",
     "expired",
 )
 
 VENUE_SESSIONS = {
-    "KRX": frozenset({"regular"}),
+    "KRX": frozenset({"regular", "aftermarket"}),
     "NXT": frozenset({"premarket", "regular", "aftermarket"}),
 }
