@@ -79,11 +79,19 @@ def select_current_metric_value(
 
     def order_key(
         value: MarketEventValueResponse,
-    ) -> tuple[bool, str, tuple[str, ...]]:
+    ) -> tuple[bool, str, tuple[tuple[str, bool, str], ...]]:
         stable_values = tuple(
-            (item.isoformat() if hasattr(item, "isoformat") else str(item))
+            (
+                field,
+                item is not None,
+                item.isoformat()
+                if hasattr(item, "isoformat")
+                else str(item)
+                if item is not None
+                else "",
+            )
             for field in value_fields
-            if (item := getattr(value, field, None)) is not None
+            for item in (getattr(value, field, None),)
         )
         period = getattr(value, "period", None) or ""
         return (period == current_period, period, stable_values)

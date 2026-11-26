@@ -269,3 +269,21 @@ async def test_revised_event_reads_the_value_for_its_current_fiscal_period(monke
     assert financials._metric_value(event, "eps", "actual") == 2.30
     event.values.reverse()
     assert financials._metric_value(event, "eps", "actual") == 2.30
+
+    event.values = [
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=2.30,
+            forecast=None,
+        ),
+        SimpleNamespace(
+            metric_name="eps",
+            period="Q2-2027",
+            actual=None,
+            forecast=2.30,
+        ),
+    ]
+    selected = financials._metric_value(event, "eps", "actual")
+    event.values.reverse()
+    assert financials._metric_value(event, "eps", "actual") == selected
