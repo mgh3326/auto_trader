@@ -17,9 +17,9 @@ returning a JSON envelope ``{total, items: [article, ...]}`` (newest first;
 from __future__ import annotations
 
 import logging
-from html import unescape
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import Any
 
 import httpx

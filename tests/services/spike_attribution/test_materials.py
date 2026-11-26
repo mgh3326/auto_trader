@@ -11,8 +11,8 @@ from app.services.spike_attribution.contract import MaterialAvailability, SpikeM
 from app.services.spike_attribution.materials import (
     DAILY_TABLE_BY_MARKET,
     FEED_CLOCKS,
-    feed_clock,
     _news_feed_clock,
+    feed_clock,
 )
 from tests.services.spike_attribution.test_attribute import make_event
 

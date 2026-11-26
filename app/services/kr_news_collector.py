@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
-from html import unescape
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from html import unescape
 from typing import Any
 from zoneinfo import ZoneInfo
 
