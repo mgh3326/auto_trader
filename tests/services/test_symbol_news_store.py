@@ -71,6 +71,47 @@ async def test_get_news_store_keeps_naver_provider_url_as_article_key() -> None:
     assert inserted_urls == [provider_url]
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -> None:
+    existing_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=102"
+    article_inserts = 0
+    relevance_inserts: list[dict[str, object]] = []
+
+    class Result:
+        rowcount = 0
+
+        def all(self):
+            return [(88, existing_url)]
+
+    class Session:
+        async def execute(self, statement):
+            nonlocal article_inserts
+            if isinstance(statement, Insert):
+                if statement.table.name == "news_articles":
+                    article_inserts += 1
+                    return Result()
+                params = statement.compile(dialect=postgresql.dialect()).params
+                relevance_inserts.append(params)
+                return Result()
+            return Result()
+
+        async def commit(self):
+            return None
+
+    await symbol_news_store.upsert_kr_collector_articles(
+        Session(),
+        "005930",
+        [_item(incoming_url, "삼성전자 기사")],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    assert article_inserts == 0
+    assert len(relevance_inserts) == 1
+    assert 88 in relevance_inserts[0].values()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upsert_is_idempotent_set_difference(db_session) -> None:
