@@ -11,14 +11,18 @@ class Evidence:
     source: str | None
     as_of: str | None
     reason: str | None = None
+    coverage: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "value": self.value,
             "source": self.source,
             "as_of": self.as_of,
             "reason": self.reason,
         }
+        if self.coverage is not None:
+            result["coverage"] = self.coverage
+        return result
 
 
 @dataclass(frozen=True, slots=True)

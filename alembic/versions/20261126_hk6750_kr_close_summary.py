@@ -5,6 +5,8 @@ Revises: 20261126_hk6674
 Create Date: 2026-11-26
 """
 
+# expand-contract: contract-step 6750
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -36,6 +38,7 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    # expand-contract: contract-step 6750
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.kr_market_close_summaries_reject_mutation()
@@ -47,12 +50,14 @@ def upgrade() -> None:
         $$
         """
     )
+    # expand-contract: contract-step 6750
     op.execute(
         "CREATE TRIGGER trg_kr_market_close_summaries_append_only "
         "BEFORE UPDATE OR DELETE ON kr_market_close_summaries "
         "FOR EACH ROW EXECUTE FUNCTION "
         "public.kr_market_close_summaries_reject_mutation()"
     )
+    # expand-contract: contract-step 6750
     op.execute(
         "CREATE TRIGGER trg_kr_market_close_summaries_truncate "
         "BEFORE TRUNCATE ON kr_market_close_summaries "
@@ -60,6 +65,7 @@ def upgrade() -> None:
         "public.kr_market_close_summaries_reject_mutation()"
     )
     # Stage-4 role may not exist in dev/CI databases.
+    # expand-contract: contract-step 6750
     op.execute(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app') "
         "THEN GRANT SELECT, INSERT ON kr_market_close_summaries TO at_app; "

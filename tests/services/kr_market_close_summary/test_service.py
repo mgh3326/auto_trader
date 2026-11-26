@@ -7,7 +7,10 @@ import pytest
 
 from app.services.kr_market_close_summary.formatter import format_summary
 from app.services.kr_market_close_summary.service import SECTIONS, build_summary
-from app.services.kr_market_close_summary.sources import confirmed_flow_evidence
+from app.services.kr_market_close_summary.sources import (
+    _breadth,
+    confirmed_flow_evidence,
+)
 from app.services.kr_market_close_summary.types import Evidence
 from scripts.run_kr_market_close_summary import parse_args
 
@@ -60,6 +63,14 @@ class FixtureSource:
                 AS_OF,
             ).to_dict(),
             "macro": Evidence(None, None, None, "macro_fact_not_stored").to_dict(),
+            "_commit_readiness": {
+                "session_confirmed": True,
+                "session_is_past": True,
+                "data_settled": True,
+                "market_coverage_complete": True,
+                "flow_coverage_complete": True,
+                "disclosures_complete": True,
+            },
         }
 
 
@@ -127,6 +138,36 @@ async def test_commit_is_one_record_per_session_and_rerun_is_noop() -> None:
     assert store.rows[SESSION_DATE] == first.to_dict() == second.to_dict()
 
 
+@pytest.mark.asyncio
+async def test_commit_refuses_when_readiness_or_required_coverage_is_incomplete() -> (
+    None
+):
+    store = FakeStore()
+
+    class IncompleteSource(FixtureSource):
+        async def load(self, session_date: date) -> dict[str, Any]:
+            result = await super().load(session_date)
+            result["_commit_readiness"]["data_settled"] = False
+            result["market_breadth"] = Evidence(
+                None,
+                "fixture:krx_daily_bars",
+                AS_OF,
+                "session_bar_coverage_incomplete",
+                {"covered_symbols": 1, "universe_symbols": 100},
+            ).to_dict()
+            return result
+
+    with pytest.raises(ValueError, match="summary_not_ready_to_commit"):
+        await build_summary(
+            session_date=SESSION_DATE,
+            source=IncompleteSource(),
+            store=store,
+            commit=True,
+        )
+
+    assert store.rows == {}
+
+
 def test_provisional_kis_flow_is_never_used_as_confirmed() -> None:
     evidence = confirmed_flow_evidence(
         [
@@ -142,3 +183,50 @@ def test_provisional_kis_flow_is_never_used_as_confirmed() -> None:
 
     assert evidence["value"] is None
     assert evidence["reason"] == "confirmed_daily_flow_missing"
+
+
+def test_confirmed_flows_count_symbol_directions_without_adding_share_units() -> None:
+    evidence = confirmed_flow_evidence(
+        [
+            {
+                "source": "naver_finance",
+                "foreign_net": 100,
+                "institution_net": -20,
+                "individual_net": -80,
+                "collected_at": datetime(2026, 11, 25, 9, tzinfo=UTC),
+            },
+            {
+                "source": "naver_finance",
+                "foreign_net": -500,
+                "institution_net": 700,
+                "individual_net": -200,
+                "collected_at": datetime(2026, 11, 25, 10, tzinfo=UTC),
+            },
+        ],
+        universe_count=2,
+    )
+
+    assert evidence["value"]["foreign_net_buy_symbols"] == 1
+    assert evidence["value"]["foreign_net_sell_symbols"] == 1
+    assert evidence["value"]["quantity_unit"].startswith("shares per symbol")
+    assert evidence["reason"] is None
+    assert evidence["coverage"]["covered_symbols"] == 2
+
+
+def test_breadth_is_null_with_coverage_counts_below_threshold() -> None:
+    evidence = _breadth(
+        [{"change_pct": 1}],
+        SESSION_DATE,
+        {
+            "covered_symbols": 1,
+            "universe_symbols": 100,
+            "ratio": "0.01",
+            "minimum_ratio": "0.95",
+            "complete": False,
+        },
+    )
+
+    assert evidence["value"] is None
+    assert evidence["reason"] == "session_bar_coverage_incomplete"
+    assert evidence["coverage"]["covered_symbols"] == 1
+    assert evidence["coverage"]["universe_symbols"] == 100

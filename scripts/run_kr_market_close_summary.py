@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from datetime import date
 
 from app.core.db import AsyncSessionLocal
@@ -33,12 +34,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def _run(args: argparse.Namespace) -> int:
     session_date = args.session_date or today_kst()
     async with AsyncSessionLocal() as session:
-        summary, stored = await build_summary(
-            session_date=session_date,
-            source=SqlAlchemySummarySource(session),
-            store=SqlAlchemySummaryStore(session),
-            commit=args.commit,
-        )
+        try:
+            summary, stored = await build_summary(
+                session_date=session_date,
+                source=SqlAlchemySummarySource(session),
+                store=SqlAlchemySummaryStore(session),
+                commit=args.commit,
+            )
+        except ValueError as exc:
+            await session.rollback()
+            print(str(exc), file=sys.stderr)
+            return 2
         if args.commit and stored:
             await session.commit()
         else:

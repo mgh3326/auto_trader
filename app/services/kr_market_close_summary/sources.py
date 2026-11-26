@@ -13,11 +13,21 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
-from app.models.market_events import MarketEvent
+from app.models.market_events import MarketEvent, MarketEventIngestionPartition
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol
+from app.models.symbol_news_relevance import SymbolNewsRelevance
 from app.services.kr_market_close_summary.types import Evidence
+from app.services.market_events.session_calendar import (
+    next_trading_session,
+    previous_trading_session,
+    trading_session_status,
+)
 
 KST = ZoneInfo("Asia/Seoul")
+MIN_MARKET_COVERAGE = Decimal("0.95")
+MIN_FLOW_COVERAGE = Decimal("0.95")
+DAILY_BARS_SETTLED_AT = time(7, 10)
+DART_POST_CLOSE_COMPLETE_AT = time(18, 30)
 
 
 def _iso(value: Any) -> str | None:
@@ -30,48 +40,93 @@ def _decimal(value: Any) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
 
-def confirmed_flow_evidence(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Aggregate only the persisted confirmed Naver daily series."""
+def confirmed_flow_evidence(
+    rows: Sequence[Mapping[str, Any]], universe_count: int | None = None
+) -> dict[str, Any]:
+    """Summarize confirmed Naver share quantities without adding across symbols."""
     confirmed = [row for row in rows if row.get("source") == "naver_finance"]
     if not confirmed:
-        return Evidence(None, None, None, "confirmed_daily_flow_missing").to_dict()
+        return Evidence(
+            None,
+            None,
+            None,
+            "confirmed_daily_flow_missing",
+            _coverage(0, universe_count, MIN_FLOW_COVERAGE),
+        ).to_dict()
     fields = ("foreign_net", "institution_net", "individual_net")
-    totals = {
-        f"{field}_sampled_symbol_sum": (
-            str(sum((int(row[field]) for row in confirmed), 0))
-            if all(row.get(field) is not None for row in confirmed)
-            else None
-        )
-        for field in fields
-    }
-    totals["symbol_snapshot_count"] = len(confirmed)
-    totals["coverage_basis"] = (
-        "available stored symbol snapshots; not a market-wide total"
+    complete = all(row.get(field) is not None for row in confirmed for field in fields)
+    coverage = _coverage(len(confirmed), universe_count, MIN_FLOW_COVERAGE)
+    value = (
+        {
+            **{
+                key: count
+                for field in fields
+                for flow in (field.removesuffix("_net"),)
+                for key, count in (
+                    (
+                        f"{flow}_net_buy_symbols",
+                        sum(int(row[field]) > 0 for row in confirmed),
+                    ),
+                    (
+                        f"{flow}_net_sell_symbols",
+                        sum(int(row[field]) < 0 for row in confirmed),
+                    ),
+                )
+            },
+            "quantity_unit": "shares per symbol; counts are not market-wide flow",
+            "symbol_snapshot_count": len(confirmed),
+        }
+        if complete
+        else None
     )
-    missing = [field for field, value in totals.items() if value is None]
     as_of = max(
         (row.get("collected_at") for row in confirmed if row.get("collected_at")),
         default=None,
     )
     return Evidence(
-        totals,
+        value,
         "investor_flow_snapshots:naver_finance_confirmed_daily",
         _iso(as_of),
-        "partial_confirmed_flow_fields" if missing else None,
+        "confirmed_flow_fields_missing"
+        if not complete
+        else "confirmed_flow_coverage_incomplete"
+        if not coverage["complete"]
+        else None,
+        coverage,
     ).to_dict()
 
 
 async def load_facts(session: AsyncSession, session_date: date) -> dict[str, Any]:
-    flows = await _load_confirmed_flows(session, session_date)
-    bars = await _load_session_bars(session, session_date)
+    now = datetime.now(KST)
+    previous_session = previous_trading_session("kr", session_date)
+    universe_count = await _load_active_symbol_count(session)
+    flows = await _load_confirmed_flows(session, session_date, universe_count)
+    bars = (
+        await _load_session_bars(session, session_date, previous_session)
+        if previous_session is not None
+        else []
+    )
+    coverage = _coverage(
+        sum(row["change_pct"] is not None for row in bars), universe_count
+    )
     symbols = _top_mover_symbols(bars)
+    disclosures, disclosures_complete = await _load_disclosures(
+        session, session_date, symbols
+    )
+    next_session = next_trading_session("kr", session_date)
+    bar_asof = (
+        datetime.combine(next_session, DAILY_BARS_SETTLED_AT, KST)
+        if next_session is not None
+        else None
+    )
+    trading_status = trading_session_status("kr", session_date)
     return {
         "indices": await _load_indices(session, session_date),
         "investor_flows": flows,
-        "market_breadth": _breadth(bars, session_date),
-        "sectors": _sectors(bars, session_date),
-        "top_movers": _top_movers(bars, session_date),
-        "disclosures": await _load_disclosures(session, session_date, symbols),
+        "market_breadth": _breadth(bars, session_date, coverage),
+        "sectors": _sectors(bars, session_date, coverage),
+        "top_movers": _top_movers(bars, session_date, coverage),
+        "disclosures": disclosures,
         "news": await _load_news(session, session_date, symbols),
         "macro": Evidence(
             None,
@@ -79,7 +134,40 @@ async def load_facts(session: AsyncSession, session_date: date) -> dict[str, Any
             None,
             "no_confirmed_bok_rate_observation_stored",
         ).to_dict(),
+        "_commit_readiness": {
+            "session_confirmed": trading_status == "open",
+            "session_is_past": session_date < now.date(),
+            "data_settled": bar_asof is not None and now >= bar_asof,
+            "market_coverage_complete": coverage["complete"],
+            "flow_coverage_complete": flows["coverage"]["complete"],
+            "disclosures_complete": disclosures_complete,
+        },
     }
+
+
+def _coverage(
+    covered: int,
+    universe: int | None,
+    minimum_ratio: Decimal = MIN_MARKET_COVERAGE,
+) -> dict[str, Any]:
+    ratio = Decimal(covered) / Decimal(universe) if universe else Decimal(0)
+    return {
+        "covered_symbols": covered,
+        "universe_symbols": universe,
+        "ratio": str(ratio),
+        "minimum_ratio": str(minimum_ratio),
+        "complete": universe is not None and ratio >= minimum_ratio,
+    }
+
+
+async def _load_active_symbol_count(session: AsyncSession) -> int | None:
+    result = await session.execute(
+        text(
+            "SELECT count(*) FROM public.kr_symbol_universe "
+            "WHERE is_active IS TRUE AND is_common_share IS TRUE"
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def _load_indices(session: AsyncSession, day: date) -> dict[str, Any]:
@@ -149,7 +237,9 @@ async def _load_indices(session: AsyncSession, day: date) -> dict[str, Any]:
     return indices
 
 
-async def _load_confirmed_flows(session: AsyncSession, day: date) -> dict[str, Any]:
+async def _load_confirmed_flows(
+    session: AsyncSession, day: date, universe_count: int | None
+) -> dict[str, Any]:
     # investor_flow_snapshots from the Naver daily trend collector are the
     # confirmed daily series. KIS intraday estimates and all other sources are
     # excluded by this predicate.
@@ -172,11 +262,14 @@ async def _load_confirmed_flows(session: AsyncSession, day: date) -> dict[str, A
                 "collected_at": row.collected_at,
             }
             for row in rows
-        ]
+        ],
+        universe_count,
     )
 
 
-async def _load_session_bars(session: AsyncSession, day: date) -> list[dict[str, Any]]:
+async def _load_session_bars(
+    session: AsyncSession, day: date, prior_session: date
+) -> list[dict[str, Any]]:
     start = day - timedelta(days=10)
     rows = (
         (
@@ -196,8 +289,8 @@ async def _load_session_bars(session: AsyncSession, day: date) -> list[dict[str,
                 ), prior AS (
                     SELECT DISTINCT ON (symbol) symbol, close, bar_date
                     FROM bars
-                    WHERE bar_date < :session_date AND venue_rank = 1
-                    ORDER BY symbol, bar_date DESC
+                    WHERE bar_date = :prior_session_date AND venue_rank = 1
+                    ORDER BY symbol
                 ), current_day AS (
                     SELECT * FROM bars
                     WHERE bar_date = :session_date AND venue_rank = 1
@@ -217,6 +310,7 @@ async def _load_session_bars(session: AsyncSession, day: date) -> list[dict[str,
                     "start_date": start,
                     "end_date": day + timedelta(days=1),
                     "session_date": day,
+                    "prior_session_date": prior_session,
                 },
             )
         )
@@ -247,10 +341,22 @@ async def _load_session_bars(session: AsyncSession, day: date) -> list[dict[str,
     return result
 
 
-def _breadth(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
+def _breadth(
+    bars: list[dict[str, Any]], day: date, coverage: dict[str, Any]
+) -> dict[str, Any]:
     comparable = [row for row in bars if row["change_pct"] is not None]
+    if not coverage["complete"]:
+        return Evidence(
+            None,
+            "kr_candles_1d:KRX+kr_symbol_universe",
+            day.isoformat(),
+            "session_bar_coverage_incomplete",
+            coverage,
+        ).to_dict()
     if not comparable:
-        return Evidence(None, None, None, "session_breadth_bars_missing").to_dict()
+        return Evidence(
+            None, None, None, "session_breadth_bars_missing", coverage
+        ).to_dict()
     counts = {
         "advancers": sum(row["change_pct"] > 0 for row in comparable),
         "decliners": sum(row["change_pct"] < 0 for row in comparable),
@@ -258,17 +364,30 @@ def _breadth(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
         "universe": "active common shares with comparable KRX daily bars",
     }
     return Evidence(
-        counts, "kr_candles_1d:KRX+kr_symbol_universe", day.isoformat()
+        counts,
+        "kr_candles_1d:KRX+kr_symbol_universe",
+        day.isoformat(),
+        coverage=coverage,
     ).to_dict()
 
 
-def _sectors(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
+def _sectors(
+    bars: list[dict[str, Any]], day: date, coverage: dict[str, Any]
+) -> dict[str, Any]:
     by_sector: dict[str, list[Decimal]] = defaultdict(list)
     for row in bars:
         if row["sector_name"] and row["change_pct"] is not None:
             by_sector[row["sector_name"]].append(row["change_pct"])
+    if not coverage["complete"]:
+        return Evidence(
+            None,
+            "kr_candles_1d:KRX+symbol_sectors",
+            day.isoformat(),
+            "session_bar_coverage_incomplete",
+            coverage,
+        ).to_dict()
     if not by_sector:
-        return Evidence(None, None, None, "sector_bars_missing").to_dict()
+        return Evidence(None, None, None, "sector_bars_missing", coverage).to_dict()
     values = [
         {
             "sector": name,
@@ -278,11 +397,16 @@ def _sectors(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
         for name, changes in sorted(by_sector.items())
     ]
     return Evidence(
-        values, "kr_candles_1d:KRX+symbol_sectors", day.isoformat()
+        values,
+        "kr_candles_1d:KRX+symbol_sectors",
+        day.isoformat(),
+        coverage=coverage,
     ).to_dict()
 
 
-def _top_movers(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
+def _top_movers(
+    bars: list[dict[str, Any]], day: date, coverage: dict[str, Any]
+) -> dict[str, Any]:
     movers = _ordered_movers(bars)
     value = [
         {
@@ -295,10 +419,21 @@ def _top_movers(bars: list[dict[str, Any]], day: date) -> dict[str, Any]:
         }
         for row in movers[:10]
     ]
+    if not coverage["complete"]:
+        return Evidence(
+            None,
+            "kr_candles_1d:KRX+kr_symbol_universe",
+            day.isoformat(),
+            "session_bar_coverage_incomplete",
+            coverage,
+        ).to_dict()
     if not value:
-        return Evidence(None, None, None, "session_movers_missing").to_dict()
+        return Evidence(None, None, None, "session_movers_missing", coverage).to_dict()
     return Evidence(
-        value, "kr_candles_1d:KRX+kr_symbol_universe", day.isoformat()
+        value,
+        "kr_candles_1d:KRX+kr_symbol_universe",
+        day.isoformat(),
+        coverage=coverage,
     ).to_dict()
 
 
@@ -314,15 +449,46 @@ def _top_mover_symbols(bars: list[dict[str, Any]]) -> list[str]:
 
 async def _load_disclosures(
     session: AsyncSession, day: date, symbols: list[str]
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
+    partition = await session.scalar(
+        select(MarketEventIngestionPartition).where(
+            MarketEventIngestionPartition.source == "dart",
+            MarketEventIngestionPartition.category == "disclosure",
+            MarketEventIngestionPartition.market == "kr",
+            MarketEventIngestionPartition.partition_date == day,
+        )
+    )
+    complete_after = datetime.combine(day, DART_POST_CLOSE_COMPLETE_AT, KST)
+    disclosures_complete = bool(
+        partition is not None
+        and partition.status == "succeeded"
+        and partition.finished_at is not None
+        and partition.finished_at >= complete_after
+    )
+    if not disclosures_complete:
+        reason = (
+            "disclosure_ingestion_failed"
+            if partition is not None and partition.status == "failed"
+            else "disclosure_ingestion_pending"
+        )
+        return (
+            Evidence(
+                None,
+                "market_event_ingestion_partitions:dart:disclosure:kr",
+                _iso(partition.finished_at) if partition is not None else None,
+                reason,
+            ).to_dict(),
+            False,
+        )
     if not symbols:
-        return Evidence(None, None, None, "no_session_movers_to_link").to_dict()
+        return Evidence(None, None, None, "no_session_movers_to_link").to_dict(), True
     rows = (
         await session.scalars(
             select(MarketEvent)
             .where(
                 MarketEvent.market == "kr",
-                MarketEvent.category == "disclosure",
+                MarketEvent.source == "dart",
+                MarketEvent.category.in_(("disclosure", "earnings")),
                 MarketEvent.event_date == day,
                 MarketEvent.symbol.in_(symbols),
             )
@@ -344,7 +510,7 @@ async def _load_disclosures(
         "market_events:disclosure",
         day.isoformat(),
         None if values else "no_linked_disclosures_for_top_movers",
-    ).to_dict()
+    ).to_dict(), True
 
 
 async def _load_news(
@@ -354,17 +520,33 @@ async def _load_news(
         return Evidence(None, None, None, "no_session_movers_to_link").to_dict()
     start = datetime.combine(day, time.min, tzinfo=KST).astimezone(ZoneInfo("UTC"))
     end = start + timedelta(days=1)
+    links = (
+        select(
+            NewsArticleRelatedSymbol.article_id.label("article_id"),
+            NewsArticleRelatedSymbol.symbol.label("symbol"),
+        )
+        .where(
+            NewsArticleRelatedSymbol.market == "kr",
+            NewsArticleRelatedSymbol.symbol.in_(symbols),
+        )
+        .union_all(
+            select(
+                SymbolNewsRelevance.article_id.label("article_id"),
+                SymbolNewsRelevance.symbol.label("symbol"),
+            ).where(
+                SymbolNewsRelevance.market == "kr",
+                SymbolNewsRelevance.status != "excluded",
+                SymbolNewsRelevance.symbol.in_(symbols),
+            )
+        )
+    ).subquery()
+    unique_links = select(links.c.article_id, links.c.symbol).distinct().subquery()
     rows = (
         await session.execute(
-            select(NewsArticle, NewsArticleRelatedSymbol.symbol)
-            .join(
-                NewsArticleRelatedSymbol,
-                NewsArticleRelatedSymbol.article_id == NewsArticle.id,
-            )
+            select(NewsArticle, unique_links.c.symbol)
+            .join(unique_links, unique_links.c.article_id == NewsArticle.id)
             .where(
                 NewsArticle.market == "kr",
-                NewsArticleRelatedSymbol.market == "kr",
-                NewsArticleRelatedSymbol.symbol.in_(symbols),
                 NewsArticle.published_at >= start,
                 NewsArticle.published_at < end,
             )

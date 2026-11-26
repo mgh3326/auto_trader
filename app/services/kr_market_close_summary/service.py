@@ -21,6 +21,12 @@ SECTIONS = (
     "news",
     "macro",
 )
+COMMIT_REQUIRED_SECTIONS = (
+    "investor_flows",
+    "market_breadth",
+    "sectors",
+    "top_movers",
+)
 
 
 class SummarySource(Protocol):
@@ -69,6 +75,7 @@ async def build_summary(
     if commit and store is None:
         raise ValueError("store is required when commit=True")
     raw_facts = await source.load(session_date)
+    readiness = raw_facts.get("_commit_readiness")
     facts = {
         section: raw_facts.get(section)
         or Evidence(None, None, None, "source_not_available").to_dict()
@@ -83,5 +90,28 @@ async def build_summary(
             "reason": "operator_interpretation_not_generated",
         },
     )
+    if commit:
+        failures = _commit_readiness_failures(facts, readiness)
+        if failures:
+            raise ValueError("summary_not_ready_to_commit: " + ", ".join(failures))
     stored = await store.insert_once(summary) if commit and store is not None else None
     return summary, stored
+
+
+def _commit_readiness_failures(facts: Mapping[str, Any], readiness: Any) -> list[str]:
+    required_readiness = (
+        "session_confirmed",
+        "session_is_past",
+        "data_settled",
+        "market_coverage_complete",
+        "flow_coverage_complete",
+        "disclosures_complete",
+    )
+    if not isinstance(readiness, Mapping):
+        return ["readiness_unavailable"]
+    failures = [key for key in required_readiness if readiness.get(key) is not True]
+    for section in COMMIT_REQUIRED_SECTIONS:
+        evidence = facts[section]
+        if evidence["value"] is None or evidence["reason"] is not None:
+            failures.append(f"{section}_incomplete")
+    return failures
