@@ -42,6 +42,12 @@ DOMESTIC_DAILY_CHART_TR = "FHKST03010100"  # 일봉·주식·실전/모의 공�
 DOMESTIC_SHORT_SELLING_URL = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
 DOMESTIC_SHORT_SELLING_TR = "FHPST04830000"
 
+# Read-only KR flow/event surfaces from the official KIS domestic stock samples.
+DOMESTIC_VI_STATUS_URL = "/uapi/domestic-stock/v1/quotations/inquire-vi-status"
+DOMESTIC_VI_STATUS_TR = "FHPST01390000"
+DOMESTIC_MEMBER_URL = "/uapi/domestic-stock/v1/quotations/inquire-member"
+DOMESTIC_MEMBER_TR = "FHKST01010600"
+
 DOMESTIC_MINUTE_CHART_URL = (
     "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 )
@@ -128,6 +134,17 @@ OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 # examples_llm/overseas_stock/updown_rate/updown_rate.py (read 2026-11-25).
 OVERSEAS_UPDOWN_RATE_URL = "/uapi/overseas-stock/v1/ranking/updown-rate"
 OVERSEAS_UPDOWN_RATE_TR = "HHDFS76290000"
+
+# News headlines (hk 6661 news shadow, read-only). Official samples read
+# 2026-11-26: examples_llm/overseas_stock/brknews_title (FHKST01011801),
+# examples_llm/overseas_stock/news_title (HHPSTH60100C1),
+# examples_llm/domestic_stock/news_title (FHKST01011800).
+OVERSEAS_BRKNEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/brknews-title"
+OVERSEAS_BRKNEWS_TITLE_TR = "FHKST01011801"
+OVERSEAS_NEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/news-title"
+OVERSEAS_NEWS_TITLE_TR = "HHPSTH60100C1"
+DOMESTIC_NEWS_TITLE_URL = "/uapi/domestic-stock/v1/quotations/news-title"
+DOMESTIC_NEWS_TITLE_TR = "FHKST01011800"
 
 # Overseas Stock - Balance & Orders
 OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"

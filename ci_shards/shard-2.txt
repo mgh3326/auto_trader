@@ -27,6 +27,7 @@ tests/mcp_server/test_get_quote_kr_premarket.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_kis_live_tool_descriptions.py
 tests/mcp_server/test_kis_mock_terminal_registration.py
+tests/mcp_server/test_kr_flow_signals.py
 tests/mcp_server/test_live_prompt_profile_contract.py
 tests/mcp_server/test_market_normalization.py
 tests/mcp_server/test_mirror_counterfactual_tool.py
@@ -111,6 +112,7 @@ tests/scripts/b0x/test_portability_contract.py
 tests/scripts/b0x/test_table_gate.py
 tests/scripts/b0x/us/test_guards.py
 tests/scripts/test_benzinga_news_shadow.py
+tests/scripts/test_benzinga_news_shadow_kis.py
 tests/scripts/test_benzinga_pro_capture.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
@@ -192,6 +194,7 @@ tests/services/brokers/binance/spot_demo_streams/test_parsing.py
 tests/services/brokers/binance/spot_demo_streams/test_static_guard.py
 tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/binance/test_ws_reconnect.py
+tests/services/brokers/kis/test_flow_signals.py
 tests/services/brokers/kis/test_market_data_throttle_retry.py
 tests/services/brokers/kiwoom/test_mock_reconcile_confirmation_rows.py
 tests/services/brokers/nhplug/test_auth.py
@@ -202,6 +205,7 @@ tests/services/brokers/test_edge_client.py
 tests/services/brokers/test_token_issuance_cache_only.py
 tests/services/brokers/test_token_keys.py
 tests/services/brokers/toss/test_health.py
+tests/services/brokers/toss/test_kr_flow_dto.py
 tests/services/brokers/toss/test_market_data.py
 tests/services/brokers/toss/test_secret_redaction.py
 tests/services/brokers/toss/test_smoke_script.py
@@ -339,6 +343,7 @@ tests/services/test_journal_exit_correction_db.py
 tests/services/test_kis_mock_holdings_reconciler.py
 tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py
+tests/services/test_kis_news_shadow.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krx_after_market_health.py
 tests/services/test_loss_cut_policy_and_settings.py
