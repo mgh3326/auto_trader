@@ -1,0 +1,11 @@
+{
+  "content": [
+    {
+      "bizdate": "20261124",
+      "customerDeposit": "62,500.25",
+      "creditLoan": "21,008.5",
+      "creditLoanDiff": "-130.25",
+      "beneficiaryCertificate": "110.00"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# KR 시장 폭·투자자별 순매수·예수금/신용잔고의 Dagu 복사본이며 저장소가 등록하지 않는다.
+description: "Naver KR market-wide daily context (manual collection implementation)"
+schedule:
+  - "CRON_TZ=Asia/Seoul 40 15 * * 1-5"
+  - "CRON_TZ=Asia/Seoul 30 18 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_kr_market_daily --date "$(TZ=Asia/Seoul date +%F)" --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-kr-market-daily "dag=at-kr-market-daily status=success"'
+  failure:
+    command: 'logger -t at-dagu-kr-market-daily "dag=at-kr-market-daily status=failure"'
