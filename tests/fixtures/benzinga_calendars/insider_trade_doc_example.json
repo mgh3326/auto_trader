@@ -1,0 +1,50 @@
+{
+  "data": [
+    {
+      "accession_number": "0000905729-26-000009",
+      "company_cik": "0000803164",
+      "company_name": "CHOICEONE FINANCIAL SERVICES INC",
+      "company_symbol": "COFS",
+      "filing_date": "2026-01-05T19:54:05Z",
+      "footnotes": null,
+      "form_type": "4",
+      "html_url": "https://www.sec.gov/Archives/edgar/data/0000803164/000090572926000009//Archives/edgar/data/803164/000090572926000009/0000905729-26-000009-index.htm",
+      "id": "695c171b1bd4be0001967659",
+      "is_10b5": false,
+      "owner": {
+        "insider_cik": "0001788991",
+        "insider_name": "Gregory McConnell",
+        "insider_title": "",
+        "is_director": true,
+        "is_officer": false,
+        "is_ten_percent_owner": false,
+        "raw_signature": "/s/ Sarah A. Harper, by Power of Attorney"
+      },
+      "remaining_shares": "34400",
+      "traded_percentage": "0.68%",
+      "transactions": [
+        {
+          "acquired_or_disposed": "A",
+          "conversion_exercise_price_derivative": "",
+          "date_deemed_execution": null,
+          "date_exercisable": null,
+          "date_expiration": null,
+          "date_transaction": "2026-01-01T00:00:00Z",
+          "is_derivative": false,
+          "ownership": "d",
+          "post_transaction_quantity": "34400",
+          "price_per_share": "29.52",
+          "remaining_underlying_shares": "",
+          "security_title": "Common Stock",
+          "shares": "233",
+          "transaction_code": "a",
+          "transaction_id": "0000803164_0000905729-26-000009_nd_t_0",
+          "underlying_security_title": "",
+          "underlying_shares": "",
+          "voluntarily_reported": false
+        }
+      ],
+      "updated": 1767642907
+    }
+  ]
+}

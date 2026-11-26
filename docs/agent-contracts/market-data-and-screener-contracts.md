@@ -131,10 +131,40 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   | conference | `GET /api/v2.1/calendar/conference-calls` → `conference[]` | https://docs.benzinga.com/api-reference/calendar-api/get-conference-calls |
   | short_interest | `GET /api/v1/shortinterest` → `shortInterestData{}` | https://docs.benzinga.com/api-reference/market-data/get-short-interest-data |
   | wiim | `GET /api/v2/news?channels=WIIM` → 배열 | https://docs.benzinga.com/api-reference/news-api/wiims/get-wiims |
+  | split | `GET /api/v2.1/calendar/splits` → `splits[]` | https://docs.benzinga.com/api-reference/calendar-api/get-splits |
+  | merger_acquisition | `GET /api/v2.1/calendar/ma` → `ma[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ma |
+  | offering | `GET /api/v2.1/calendar/offerings` → `offerings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-offerings |
+  | fda | `GET /api/v2.1/calendar/fda` → `fda[]` | https://docs.benzinga.com/api-reference/calendar-api/get-fda |
+  | ipo | `GET /api/v2.1/calendar/ipos` → `ipos[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ipos |
+  | option_activity | `GET /api/v1/signal/option_activity` → `option_activity[]` | https://docs.benzinga.com/api-reference/calendar-api/get-optionactivity |
+  | insider_trade | `GET /api/v1/sec/insider_transactions/filings` → `data[]` | https://docs.benzinga.com/api-reference/calendar-api/insider-transaction/get-insider-transaction-filing |
+  | congress_trade | `GET /api/v1/gov/usa/congress/trades` → `data[]` | https://docs.benzinga.com/api-reference/calendar-api/government-trades/get-government-trades |
+  | analyst_insight | `GET /api/v1/analyst/insights` → `analyst-insights[]` | https://docs.benzinga.com/api-reference/calendar-api/analyst-insights/get-analyst-insights |
 
   캘린더 계열은 `page`/`pagesize` + `parameters[date_from]`/`parameters[date_to]`(선택 `parameters[tickers]`),
   short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
   `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
+  추가 캘린더(`split`, `merger_acquisition`, `offering`, `fda`, `ipo`)도 같은 page/pagesize/date 필터를 쓴다.
+  FDA 심볼 필터 이름은 `parameters[securities]`다(그 밖의 해당 캘린더는 `parameters[tickers]`).
+  옵션 이상거래는 `page`/`pageSize`와 `parameters[date_from]`/`parameters[date_to]`를 쓴다. SEC 내부자 filing은
+  `page`/`pagesize`/`date_from`/`date_to`를 쓰며, 선택 `--symbols`는 `search_keys_type=symbol`과 `search_keys`로
+  보낸다. 의회 거래는 `page`/`pagesize`와 `updated_since`를 쓴다(`updated_since`는 요청 창 시작의 UTC Unix 초).
+  ingestion은 disclosure를 놓치지 않도록 category 조회/파티션 창을 30일 뒤로 확장하며 `report_date`를 event_date로 쓴다;
+  선택 `--symbols`는 `search_keys_type=ticker`와 `search_keys`로 보낸다. analyst insights는 `page`/`pageSize`와
+  `date_from`/`date_to`(선택 `symbols`)를 쓴다.
+  새 category의 날짜·값 정규화는 문서 필드에 한정한다: split=`date_announced`(ratio 분자/분모, shares),
+  merger_acquisition=`date`(deal_size, 통화), offering=`date`(주식 수와 금액은 각각 shares/통화), fda=`date`,
+  ipo=`date`(`pricing_date`는 date가 유효하지 않을 때만 대체; 둘 다 날짜 정밀도가 없으면 해당 row를 건너뜀),
+  option_activity=`date`(가격·계약 수·비용 basis는 USD/contract·contracts·USD), insider_trade=`filing_date`
+  (중첩 transaction shares와 price_per_share는 shares·USD/share), congress_trade=`report_date`
+  (amount 구간의 최소/최대는 USD, 값 period에는 `transaction_date`), analyst_insight=`date`(pt는 USD/share).
+  IPO status는 `deal_status`를 따라 Priced→released, Withdrawn→cancelled, Postponed→tentative, 기타→scheduled다.
+  `date`가 연도뿐이고 유효한 `pricing_date`도 없으면 정밀도를 꾸며내지 않고 행을 건너뛴다. `ipo_doc_example.json`은
+  이 비정밀 실제 응답을 그대로 보존하고, 유효한 정규화 예제는 docs의 schema field examples를 표시한
+  `ipo_schema_doc_example.json`을 사용한다.
+  비수치 FDA 본문은 raw evidence에만 둔다.
+  Insider filing의 provider id는 filing `id`, 각 나머지는 row `id`다. 이 아홉 예시 응답은
+  `tests/fixtures/benzinga_calendars/*_doc_example.json`에 문서 예시 그대로 보존하고 출처를 README에 기록한다.
   `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 읽기 종료는
   `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
   캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한
@@ -148,8 +178,9 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   `[unverified]` 이며 클라이언트는 둘 다 받는다 — DAG 등록 전에 설계 세션이 실호출 1회로 확인한다.
 - **게이트 범위**: `BENZINGA_CALENDARS_ENABLED` 는 **모든 모드**(수집·`--compare-earnings` 포함)에 걸린다.
   꺼져 있으면 어떤 모드도 네트워크·DB 세션·키 읽기 없이 exit 2 다(비교 모드도 예외가 아니다).
-- **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`,
-  `SOURCES` 에 `benzinga`. 컨퍼런스콜은 기존 `conference`, 경제지표는 기존 `economic`(미국 행만)을 쓴다.
+- **taxonomy 확장(추가형)**: `CATEGORIES` 에 `analyst_rating`·`guidance`·`dividend`·`short_interest`·`wiim`·
+  `split`·`merger_acquisition`·`offering`·`fda`·`ipo`·`option_activity`·`insider_trade`·`congress_trade`·
+  `analyst_insight`, `SOURCES` 에 `benzinga`. 컨퍼런스콜은 기존 `conference`, 경제지표는 기존 `economic`(미국 행만)을 쓴다.
   기존 값은 그대로이고 `market_events` 에 category/source CHECK 는 없다(코드가 정본).
 - **시각 계약**: `first_received_at` 은 **우리 시계의 최초 관측**이며 재수집이 덮어쓰지 않는다(리포지토리
   갱신 열에서 제외). 제공자 시각은 `provider_created_at`/`provider_updated_at`(aware UTC)과
@@ -1033,26 +1064,61 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - 속보는 `market_events`에 `source=benzinga_pro`, `category=breaking_news`로 기록한다. 제공자 ID 단위로 최초 행을 유지하며 `first_received_at`은 캡처 시각이다. 이 캡처의 DB 행이 있으면 마이그레이션 다운그레이드가 중단된다.
 - `SESSION_MINUTES_BENZINGA_PRO_MOVERS_ENABLED`(기본 false)는 US 분봉 수집 대상 승격에만 적용된다. 켜면 제외 행을 뺀 Benzinga Pro movers가 기존 점수 규칙에 들어간다.
 
-### KIS KSD 배당 일정 (hk 6583)
+### KIS KSD 기업 일정 (hk 6583, hk 6662)
 
-`KISClient.ksd_dividends` 는 국내주식 읽기 전용 실계좌 메서드다. 경로는
-`/uapi/domestic-stock/v1/ksdinfo/dividend`, TR 은 `HHKDB669102C0`이며 기존
-KIS 토큰 인증 클라이언트만 사용한다. 공식 query 필드 `CTS`, `GB1`, `F_DT`,
-`T_DT`, `SHT_CD`, `HIGH_GB` 를 보내고, 모의 클라이언트는 요청 전에 거부한다.
-응답의 `tr_cont` 페이지 연결은 사용하지 않는다.
+국내 KSD 일정은 KIS output1 행을 읽어 market_events에 적재한다. 이 경로는
+읽기 전용이며 실계좌 클라이언트만 허용한다. 배당은 KISClient.ksd_dividends
+(/uapi/domestic-stock/v1/ksdinfo/dividend, HHKDB669102C0)이고, 추가 11종은
+표의 KISClient 메서드다. 메서드 이름, URL, TR ID, 공식 샘플과 이벤트 기준
+날짜를 표에 고정한다.
 
-`fetch_ksd_dividend_window` 는 100행 이상인 응답의 날짜 구간을 반으로 나눠
-재조회한다. 하루 구간도 100행이면 받은 행을 유지하고 해당 구간을 가능한
-절단으로 반환하므로 호출자가 경고해야 한다. `normalize_ksd_dividend_row` 는
-`record_date` 를 이벤트 날짜로, `divi_pay_dt` 를 보존된 지급일로,
-`per_sto_divi_amt` 를 float 변환 없는 정확한 Decimal `dps` 로 저장한다.
-이벤트는 `category=dividend`, `market=kr`, `source=kis_ksd` 이며
-`first_received_at` 을 보존한다. 모든 DB 쓰기는 `MarketEventsRepository` 를
-통한다.
+모든 종류는 CTS="", F_DT, T_DT, SHT_CD를 보낸다. 유상증자는 공식 샘플의
+GB1(1 기본값)을, 액면교체는 MARKET_GB(0 기본값)를 추가한다. 모의 클라이언트는
+네트워크 요청 전에 거부하며 응답의 tr_cont 페이지 연결은 사용하지 않는다.
+샘플의 실제 호출과 request parameter shape는 연결한 chk_*.py에도 있다.
 
-수동 실행은 `python -m scripts.ingest_kis_ksd_dividends --from-date YYYY-MM-DD
---to-date YYYY-MM-DD [--dry-run]` 이다. 드라이런은 조회·정규화만 하고 DB 에
-접근하지 않는다. `deploy/dagu/at-kis-ksd-dividends/` 는 미등록 복사본이며 이
-작업은 스케줄러 등록을 추가하지 않는다. US 배당과 주문·계좌 API 는 범위 밖이다.
-공식 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
+| kind | TR ID / URL suffix | event_date 기준 필드 | 종류별 추가 날짜 필드 | 정확한 Decimal 값 필드 | 공식 KIS 샘플 |
+|---|---|---|---|---|---|
+| paidin_capin | HHKDB669100C0 /paidin-capin | record_date | right_dt, sub_term_ft, sub_term, list_date | tot_issue_stk_qty, issue_stk_qty, fix_rate, disc_rate, fix_price | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_paidin_capin/ksdinfo_paidin_capin.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_paidin_capin/chk_ksdinfo_paidin_capin.py) |
+| bonus_issue | HHKDB669101C0 /bonus-issue | record_date | right_dt, odd_pay_dt, list_date | fix_rate, odd_rec_price, tot_issue_stk_qty, issue_stk_qty | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_bonus_issue/ksdinfo_bonus_issue.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_bonus_issue/chk_ksdinfo_bonus_issue.py) |
+| purreq | HHKDB669103C0 /purreq | record_date | opp_opi_rcpt_term, buy_req_rcpt_term | buy_req_price | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_purreq/ksdinfo_purreq.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_purreq/chk_ksdinfo_purreq.py) |
+| merger_split | HHKDB669104C0 /merger-split | record_date | td_stop_dt, list_dt, odd_amt_pay_dt | merge_rate, tot_issue_stk_qty, issue_stk_qty | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_merger_split/ksdinfo_merger_split.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_merger_split/chk_ksdinfo_merger_split.py) |
+| rev_split | HHKDB669105C0 /rev-split | record_date | td_stop_dt, list_dt | inter_bf_face_amt, inter_af_face_amt | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_rev_split/ksdinfo_rev_split.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_rev_split/chk_ksdinfo_rev_split.py) |
+| cap_dcrs | HHKDB669106C0 /cap-dcrs | record_date | td_stop_dt, list_dt | reduce_cap_rate | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_cap_dcrs/ksdinfo_cap_dcrs.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_cap_dcrs/chk_ksdinfo_cap_dcrs.py) |
+| list_info | HHKDB669107C0 /list-info | list_dt | — | issue_stk_qty, tot_issue_stk_qty, issue_price | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_list_info/ksdinfo_list_info.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_list_info/chk_ksdinfo_list_info.py) |
+| pub_offer | HHKDB669108C0 /pub-offer | record_date | subscr_dt, pay_dt, refund_dt, list_dt | fix_subscr_pri, face_value, pub_bf_cap, pub_af_cap, assign_stk_qty | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_pub_offer/ksdinfo_pub_offer.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_pub_offer/chk_ksdinfo_pub_offer.py) |
+| forfeit | HHKDB669109C0 /forfeit | record_date | subscr_dt, refund_dt, list_dt | subscr_price, subscr_stk_qty | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_forfeit/ksdinfo_forfeit.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_forfeit/chk_ksdinfo_forfeit.py) |
+| mand_deposit | HHKDB669110C0 /mand-deposit | depo_date | — | stk_qty, tot_issue_qty_per_rate | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_mand_deposit/ksdinfo_mand_deposit.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_mand_deposit/chk_ksdinfo_mand_deposit.py) |
+| sharehld_meet | HHKDB669111C0 /sharehld-meet | gen_meet_dt | record_date | vote_tot_qty | [함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_sharehld_meet/ksdinfo_sharehld_meet.py), [호출 예](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/ksdinfo_sharehld_meet/chk_ksdinfo_sharehld_meet.py) |
+
+배당은 record_date를 이벤트 날짜로, divi_pay_dt/stk_div_pay_dt/odd_pay_dt를
+추가 날짜 값으로 보존하고 per_sto_divi_amt를 float 변환 없는 Decimal dps로
+저장한다. 11종은 각 표의 날짜 필드를 이벤트 날짜로 쓴다. 타입별 추가 날짜 및
+날짜 구간은 market_event_values.value_details에 원 필드와 ISO 날짜 또는 원
+구간 문자열로 보존한다. 금액·비율·수량 값은 Python Decimal로 파싱해 actual에
+넣으며 float 변환을 하지 않는다. 이벤트는 category=corporate_event(배당은
+dividend), market=kr, source=kis_ksd이고 종목은 app/core/symbol.py의
+to_db_symbol 규칙을 거친다. first_received_at은 최초 관측 시각이며 모든 DB
+쓰기는 MarketEventsRepository 경유다.
+
+fetch_ksd_event_window는 배당 및 11종 공용이다. 100행 이상을 받은 날짜 구간을
+반으로 나누어 재조회하고, 하루 구간도 100행이면 행을 보존하며 해당 창을
+truncated_windows로 반환한다. 호출자는 각 절단 창을 경고한다.
+
+수동 실행은 python -m scripts.ingest_kis_ksd_dividends --kinds <kind...>
+--from-date YYYY-MM-DD --to-date YYYY-MM-DD --dry-run|--commit 이다. --kinds를
+생략하면 배당과 11종 전체를 조회한다. 기본 실행은 dry-run이며 DB 세션을 만들지
+않고, 쓰기에는 명시적 --commit이 필요하다. deploy/dagu/at-kis-ksd-dividends/
+에는 매일 실행하도록 작성한 미등록 DAG 복사본만 있다. 스케줄러 등록은 추가하지
+않는다. US 기업 일정과 주문·계좌 API는 범위 밖이다.
+
+배당 선행 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
 [KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+### KR 수급·이벤트 신호 조회 (hk 6664)
+
+`TossReadClient`는 `STOCK_TRADING_TREND` 그룹(10 TPS)의 공매도·대차·신용·프로그램매매 endpoint와 `RANKING` 그룹(5 TPS)의 투자자 랭킹 endpoint를 strict DTO로 읽는다. 문자열 decimal은 `Decimal`, `date`는 `date`, `updatedAt`/`rankedAt`은 timezone-aware datetime으로 바꾸며 malformed row는 `TossResponseContractError`다. 신용 endpoint의 null `marginLoan`/`stockLoan`은 null로 유지한다. 프로그램매매는 KRX 거래량만 포함하고 거래대금이나 NXT 거래를 덧붙이지 않는다. `investor_trading_rankings`는 외국인·기관·개인 모두의 net-buy/net-sell 행을 받아 호출자가 요청한 investor/side로 투영한다. 공식 명세·예시: [Toss Open API v1.2.28](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json).
+
+`KISClient.inquire_vi_status`는 국내 VI TR `FHPST01390000`과 요청 종목·당일 KST 날짜를 사용한다. 응답 종목 키 `mksc_shrn_iscd`, 영업일 `bsop_date`, 체결 시각 `cntg_vi_hour`/취소 시각 `vi_cncl_hour`, 가격·괴리 필드(`vi_prc`, `vi_stnd_prc`, `vi_dprt`, `vi_dmc_stnd_prc`, `vi_dmc_dprt`)와 건수 `vi_count`를 보존하며 수치는 float 없이 Decimal로, 날짜는 date로 엄격 정규화한다. `inquire_member`는 TR `FHKST01010600`에서 회원사 코드·이름과 `total_shnu_qty{n}`/`total_seln_qty{n}`를 상위 매수/매도 수량으로 정규화한다. malformed 행과 요청 심볼 불일치는 `KISFlowResponseContractError`다. 두 호출은 기존 KIS 토큰 인증 transport만 이용하며 주문·계좌 표면에 닿지 않는다. 공식 샘플: [국내주식 함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py) 및 [국내주식 호출 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `days` 1..100을 받고 `risk`와 `reference`로 나눈다. `risk`는 VI 이벤트와 hk 6503의 `kr_symbol_trading_flags` 저장소 조회를 포함하며, 저장 행 부재는 `state="unknown"`이지 `none`이 아니다. `reference`는 네 Toss 종목 수급 endpoint, Toss 투자자 랭킹, KIS 회원사 창을 소스별 블록으로 반환한다. 각 소스에 독립 `status`·제공자 `as_of`·로컬 `fetched_at`이 있고 제공자 시각이 없을 때는 `as_of=null`이다. `get_kr_investor_rankings`도 선택한 투자자/side 결과를 `reference.toss_investor_rankings`로 반환한다. 소스 실패는 해당 블록의 `error_class`에 한정되며 빈 결과는 `empty`이지 0값 행이 아니다. 저장소 조회 외 수집·저장·정책·주문 경로는 추가하지 않는다.

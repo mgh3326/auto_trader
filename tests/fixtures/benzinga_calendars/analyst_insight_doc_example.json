@@ -1,0 +1,44 @@
+{
+  "analyst-insights": [
+    {
+      "action": "Upgrades",
+      "analyst_id": "669ea49c3f2d7e0001303664",
+      "analyst_insights": "BWS Financial upgraded Innodata's stock to Top Pick with a price target of $110.00.  \n\n **Strong Financial Performance and Growth Prospects**: Innodata has demonstrated significant financial growth and potential, particularly highlighted by the announcement of $68 million in pretraining deals on its last earnings call. This reflects the company's ability to secure large contracts and its strong positioning within the rapidly evolving AI landscape, which is likely to drive further revenue growth and investor confidence.\n\n**Strategic Government Contract Win**: The acquisition of a government contract entering the fourth quarter of 2025 positions Innodata for substantial expansion into new business areas by 2026. This move is expected to contribute significantly to the company's revenue towards the end of the year, showcasing its strategic growth initiatives and enhancing its market value.",
+      "date": "2026-01-05",
+      "firm": "BWS Financial",
+      "firm_id": "57f832d56b87f600016fa43f",
+      "id": "695bdd0f7bad4dcabd14a073",
+      "pt": "110.00",
+      "rating": "Top Pick",
+      "rating_id": "695bd5818f047b0001feddd2",
+      "security": {
+        "cik": "903651",
+        "exchange": "NASDAQ",
+        "isin": "US4576422053",
+        "name": "Innodata",
+        "symbol": "INOD"
+      },
+      "updated": 1767628056
+    },
+    {
+      "action": "Maintains",
+      "analyst_id": "669ea49c3f2d7e0001303664",
+      "analyst_insights": "BWS Financial maintained their Buy rating on Innodata's stock with a price target of $110.00.  \n\n **Strong Revenue Growth Potential**: Innodata has demonstrated a robust financial trajectory by securing $68 million in pretraining deals, indicating a substantial demand for its AI data preparation and engineering services. This growth is a clear indicator of the company's ability to attract significant contracts, thereby bolstering investor confidence in its revenue prospects and operational strength.\n\n**Strategic Government Contract**: The company's entrance into the fourth quarter of 2025 with a government contract positions it for expanded business opportunities in 2026. This strategic move not only diversifies Innodata's revenue streams but also sets the stage for greater financial benefits towards the end of the year, showcasing the company's potential for increased market share and profitability.",
+      "date": "2026-01-05",
+      "firm": "BWS Financial",
+      "firm_id": "57f832d56b87f600016fa43f",
+      "id": "695bd5cf7bad4dcabd14a070",
+      "pt": "110.00",
+      "rating": "Buy",
+      "rating_id": "695bd5818f047b0001feddd2",
+      "security": {
+        "cik": "903651",
+        "exchange": "NASDAQ",
+        "isin": "US4576422053",
+        "name": "Innodata",
+        "symbol": "INOD"
+      },
+      "updated": 1767626200
+    }
+  ]
+}
