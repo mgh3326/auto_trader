@@ -146,6 +146,56 @@ def test_a_non_event_object_is_ignored():
     assert control.tick_failures((SimpleNamespace(event=object()),)) == ()
 
 
+def test_data_quality_alert_requires_two_consecutive_ticks_per_symbol():
+    episodes = control.DataFailureEpisodes()
+    missing = event("data_missing_bars", "1730000000000")
+    assert episodes.update((event("signal_none"),)) == ()
+    assert (
+        episodes.update(
+            (
+                SimpleNamespace(
+                    symbol="BTCUSDT", reason="data_missing_bars", detail="1730000000000"
+                ),
+            )
+        )
+        == ()
+    )
+    first_alert = episodes.update((event("data_fetch_failed", "TimeoutError"),))
+    assert first_alert == (
+        TickFailure("BTCUSDT: data_fetch_failed: TimeoutError", "data_quality:BTCUSDT"),
+    )
+    assert episodes.update((missing,)) == (
+        TickFailure(
+            "BTCUSDT: data_missing_bars: 1730000000000", "data_quality:BTCUSDT"
+        ),
+    )
+    assert episodes.update(()) == ()
+    assert episodes.update((missing,)) == ()
+    assert episodes.update((missing,)) == (
+        TickFailure(
+            "BTCUSDT: data_missing_bars: 1730000000000", "data_quality:BTCUSDT"
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_quality_alert_identifies_the_affected_symbol():
+    channel = Channel()
+    episodes = control.DataFailureEpisodes()
+    missing = SimpleNamespace(
+        symbol="BTCUSDT", reason="data_missing_bars", detail="1730000000000"
+    )
+    episodes.update((missing,))
+    failures = episodes.update((missing,))
+    monitor = TrendRunMonitor(alerter(channel))
+    await monitor.tick_done(
+        tuple((failure.signature, failure.bucket) for failure in failures)
+    )
+    await monitor.drain()
+    assert len(channel.sent) == 1
+    assert channel.sent[0].signature.startswith("BTCUSDT: data_missing_bars")
+
+
 def test_stop_signature_uses_the_class_only():
     assert (
         control.stop_signature(TimeoutError("secret url")) == "exception:TimeoutError"

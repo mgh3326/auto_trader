@@ -70,6 +70,8 @@ SOURCES: frozenset[str] = frozenset(
         "benzinga",
         "benzinga_pro",
         "kis_ksd",
+        "upbit_notice",
+        "bithumb_notice",
     }
 )
 

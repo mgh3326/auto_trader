@@ -59,11 +59,20 @@ _CID_PREFIX = "rob-993-"
 
 
 @dataclass(frozen=True)
+class SymbolDecision:
+    symbol: str
+    reason: str
+    missing_buckets: tuple[int, ...] = ()
+    error_class: str | None = None
+
+
+@dataclass(frozen=True)
 class TickOutcome:
     decision_ts: int | None
     signal: Signal | None
     round_trip: RoundTripResult | None
     blocked_reason: str | None = None
+    symbol_decisions: tuple[SymbolDecision, ...] = ()
     forecast_saved: bool = False
     forecast_error: str | None = None
 
@@ -211,8 +220,18 @@ async def run_tick(
     if signal_override is not None:
         decision_ts = signal_override.decision_ts
         signal = signal_override
+        symbol_decisions = [SymbolDecision(signal.symbol, "signal_entry")]
     else:
-        bars_by_symbol = await collect_4h_bars(market_client, symbols)
+        bars_by_symbol: dict[str, tuple[bars_mod.Bar4h, ...]] = {}
+        fetch_errors: dict[str, str] = {}
+        for symbol in symbols:
+            try:
+                bars_by_symbol[symbol] = (
+                    await collect_4h_bars(market_client, (symbol,))
+                )[symbol]
+            except Exception as exc:
+                bars_by_symbol[symbol] = ()
+                fetch_errors[symbol] = type(exc).__name__
         # ROB-993 adversarial review (verify-993-2256.md, Finding 5): the
         # strategy must only be invoked when EVERY symbol in the universe
         # has a complete 4h bar ending at the exact same close_ts. Picking
@@ -220,23 +239,52 @@ async def run_tick(
         # hand the plugin a snapshot where a lagging symbol's bar is stale
         # or absent — the opposite of H1's synchronized-plane semantics
         # (``compute_common_features`` requires the same intersection).
+        decision_ts = (
+            int(now.timestamp() * 1000) // bars_mod.FOUR_HOUR_MS
+        ) * bars_mod.FOUR_HOUR_MS
+        # Reads are sequential. A symbol fetched after a 4h boundary can
+        # include the next close while an earlier symbol's latest close is
+        # still the decision bucket. Apply one tick-wide cutoff before
+        # checking completeness or synchronizing the history snapshot.
+        bars_by_symbol = {
+            symbol: tuple(bar for bar in bars if bar.close_ts <= decision_ts)
+            for symbol, bars in bars_by_symbol.items()
+        }
         latest_close_ts_per_symbol = {
             symbol: bars[-1].close_ts for symbol, bars in bars_by_symbol.items() if bars
         }
-        if len(latest_close_ts_per_symbol) < len(symbols):
+        symbol_decisions: list[SymbolDecision] = []
+        for symbol in symbols:
+            if symbol in fetch_errors:
+                symbol_decisions.append(
+                    SymbolDecision(
+                        symbol, "data_fetch_failed", error_class=fetch_errors[symbol]
+                    )
+                )
+            elif decision_ts not in {bar.close_ts for bar in bars_by_symbol[symbol]}:
+                symbol_decisions.append(
+                    SymbolDecision(symbol, "data_missing_bars", (decision_ts,))
+                )
+        if symbol_decisions:
             return TickOutcome(
-                decision_ts=max(latest_close_ts_per_symbol.values(), default=None),
+                decision_ts=decision_ts,
                 signal=None,
                 round_trip=None,
-                blocked_reason="no_complete_4h_bar",
+                blocked_reason="data_unavailable",
+                symbol_decisions=tuple(symbol_decisions),
             )
         synchronized_close_ts = set(latest_close_ts_per_symbol.values())
         if len(synchronized_close_ts) != 1:
             return TickOutcome(
-                decision_ts=max(synchronized_close_ts),
+                decision_ts=decision_ts,
                 signal=None,
                 round_trip=None,
                 blocked_reason="missing_complete_4h_bar",
+                symbol_decisions=tuple(
+                    SymbolDecision(symbol, "data_missing_bars", (decision_ts,))
+                    for symbol in symbols
+                    if latest_close_ts_per_symbol[symbol] != decision_ts
+                ),
             )
         decision_ts = synchronized_close_ts.pop()
         if decision_ts == already_processed_decision_ts:
@@ -247,6 +295,13 @@ async def run_tick(
                 blocked_reason="already_processed",
             )
         signal = strategy.evaluate(bars_by_symbol, decision_ts=decision_ts)
+        symbol_decisions = [
+            SymbolDecision(
+                symbol,
+                "signal_entry" if signal and symbol == signal.symbol else "signal_none",
+            )
+            for symbol in symbols
+        ]
 
     if signal is None:
         return TickOutcome(
@@ -254,6 +309,7 @@ async def run_tick(
             signal=None,
             round_trip=None,
             blocked_reason="no_signal",
+            symbol_decisions=tuple(symbol_decisions),
         )
 
     symbol = signal.symbol.upper()
@@ -265,6 +321,7 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason=f"symbol_rejected:{exc}",
+            symbol_decisions=tuple(symbol_decisions),
         )
 
     kill_switch_snapshot = await build_kill_switch_snapshot(
@@ -279,6 +336,7 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason=f"kill_switch:{','.join(decision.reason_codes)}",
+            symbol_decisions=tuple(symbol_decisions),
         )
 
     filters = await fetch_symbol_filters(market_client, symbol)
@@ -297,6 +355,7 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason=f"sizing_blocked:{sizing.reason}",
+            symbol_decisions=tuple(symbol_decisions),
         )
     # ROB-993 R2 adversarial review (verify-993-r2-2329.md, Finding 1):
     # assert_leg_notional_cap_locked only validated the INPUT cap_usdt.
@@ -316,6 +375,7 @@ async def run_tick(
                 "sizing_blocked:realized_notional_outside_locked_range:"
                 f"{sizing.notional_usdt}"
             ),
+            symbol_decisions=tuple(symbol_decisions),
         )
     qty = quantize_qty(
         sizing.qty,
@@ -329,6 +389,7 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason="dry_run",
+            symbol_decisions=tuple(symbol_decisions),
         )
 
     instrument_id = await ledger.resolve_or_create_instrument(
@@ -369,6 +430,7 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason=f"kill_switch:exposure_slot_taken:{exc.reason}",
+            symbol_decisions=tuple(symbol_decisions),
         )
 
     forecast_saved, forecast_error = await _save_forecast(
@@ -378,6 +440,7 @@ async def run_tick(
         decision_ts=decision_ts,
         signal=signal,
         round_trip=round_trip,
+        symbol_decisions=tuple(symbol_decisions),
         forecast_saved=forecast_saved,
         forecast_error=forecast_error,
     )

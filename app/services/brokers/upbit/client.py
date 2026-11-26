@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import random
 import time
 import uuid
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 PreSendHook = Callable[[], Awaitable[None]]
 
 UPBIT_REST = "https://api.upbit.com/v1"
+UPBIT_ORDER_TEST_URL = f"{UPBIT_REST}/orders/test"
 UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
 _UPBIT_TICKER_BATCH_SIZE = 50
 _INTERVAL_TO_ENDPOINT = {
@@ -222,6 +224,50 @@ async def _request_json(
 
 async def fetch_my_coins() -> list[dict[str, Any]]:
     return await _request_with_auth("GET", f"{UPBIT_REST}/accounts")
+
+
+async def order_chance(market: str) -> dict[str, Any]:
+    """Read Upbit order fees, minimums, and account balances for a market."""
+    result = await _request_with_auth(
+        "GET", f"{UPBIT_REST}/orders/chance", query_params={"market": market}
+    )
+    if not isinstance(result, dict):
+        raise ValueError("Upbit order chance response must be an object")
+    return result
+
+
+async def order_test(
+    market: str,
+    side: str,
+    ord_type: str,
+    price: str,
+    volume: str,
+) -> dict[str, Any]:
+    """Validate an order with Upbit without creating it."""
+    from urllib.parse import urlparse
+
+    if os.environ.get("UPBIT_ORDER_TEST_ENABLED") != "true":
+        raise PermissionError("Upbit order test is disabled")
+    url = UPBIT_ORDER_TEST_URL
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.upbit.com":
+        raise ValueError("Upbit order test host must be api.upbit.com")
+    if parsed.path != "/v1/orders/test":
+        raise ValueError("Upbit order test path must be /v1/orders/test")
+    result = await _request_with_auth(
+        "POST",
+        url,
+        body_params={
+            "market": market,
+            "side": side,
+            "ord_type": ord_type,
+            "price": price,
+            "volume": volume,
+        },
+    )
+    if not isinstance(result, dict):
+        raise ValueError("Upbit order test response must be an object")
+    return result
 
 
 def parse_upbit_account_row(account: dict[str, Any]) -> dict[str, float | bool]:
@@ -870,29 +916,27 @@ async def _request_with_auth(
     rate, period = _get_upbit_rate_limit(api_key)
     limiter = await get_limiter("upbit", api_key, rate=rate, period=period)
 
-    payload: dict[str, Any] = {
-        "access_key": settings.upbit_access_key,
-        "nonce": str(uuid.uuid4()),
-    }
-
-    if method.upper() in ["GET", "DELETE"] and query_params:
-        query_string = unquote(urlencode(query_params, doseq=True))
-        payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
-        payload["query_hash_alg"] = "SHA512"
-    elif method.upper() == "POST" and body_params:
-        query_string = unquote(urlencode(body_params, doseq=True))
-        payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
-        payload["query_hash_alg"] = "SHA512"
-
-    jwt_token = jwt.encode(payload, settings.upbit_secret_key)
-    authorize_token = f"Bearer {jwt_token}"
-    headers: dict[str, str] = {"Authorization": authorize_token}
-
-    if method.upper() == "POST":
-        headers["Content-Type"] = "application/json"
-
     async def send() -> httpx.Response:
-        async with httpx.AsyncClient(timeout=10) as cli:
+        payload: dict[str, Any] = {
+            "access_key": settings.upbit_access_key,
+            "nonce": str(uuid.uuid4()),
+        }
+
+        if method.upper() in ["GET", "DELETE"] and query_params:
+            query_string = unquote(urlencode(query_params, doseq=True))
+            payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
+            payload["query_hash_alg"] = "SHA512"
+        elif method.upper() == "POST" and body_params:
+            query_string = unquote(urlencode(body_params, doseq=True))
+            payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
+            payload["query_hash_alg"] = "SHA512"
+
+        jwt_token = jwt.encode(payload, settings.upbit_secret_key)
+        headers: dict[str, str] = {"Authorization": f"Bearer {jwt_token}"}
+        if method.upper() == "POST":
+            headers["Content-Type"] = "application/json"
+
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as cli:
             if method.upper() == "GET":
                 return await cli.get(url, headers=headers, params=query_params)
             elif method.upper() == "POST":
@@ -913,7 +957,8 @@ async def _request_with_auth(
     # another endpoint with either suffix, revisit this predicate.
     normalized_path = api_path.rstrip("/")
     is_order_mutation = (
-        method.upper() == "POST" and normalized_path.endswith("/orders")
+        method.upper() == "POST"
+        and normalized_path in {"/v1/orders", "/v1/orders/test"}
     ) or (method.upper() == "DELETE" and normalized_path.endswith("/order"))
     return await _retry_with_backoff(
         limiter,
