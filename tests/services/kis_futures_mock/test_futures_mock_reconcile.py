@@ -13,10 +13,11 @@ from scripts import kis_futures_mock_order as cli
 DAY = "20261126"
 
 
-def order(ledger_id, side, effect):
+def order(ledger_id, side, effect, *, broker_order_id=None):
     return SimpleNamespace(
         id=ledger_id,
-        broker_order_id=f"{ledger_id:010d}",
+        broker_order_id=broker_order_id or f"{ledger_id:010d}",
+        trading_day=DAY,
         broker_symbol="A05612",
         side=side,
         position_effect=effect,
@@ -135,6 +136,64 @@ def test_preview_commit_and_rerun(
     assert [vars(row) for row in orders] == before
 
 
+def test_real_vtto5201r_rows_match_zero_padded_ledger_ids_and_book_round_trip(
+    run_reconcile,
+):
+    opening = order(1, "buy", "open", broker_order_id="0000015155")
+    closing = order(2, "sell", "close", broker_order_id="0000015165")
+    history = [
+        {
+            "ord_dt": DAY,
+            "odno": "     15155",
+            "orgn_odno": "0000000000",
+            "sll_buy_dvsn_cd": "02",
+            "trad_dvsn_name": "매매",
+            "pdno": "A05612",
+            "ord_qty": "1",
+            "qty": "0",
+            "ord_tmd": "150728",
+            "tot_ccld_qty": "1",
+            "avg_idx": "729.28",
+            "tot_ccld_amt": "36464000",
+            "rjct_qty": "0",
+        },
+        {
+            "ord_dt": DAY,
+            "odno": "     15165",
+            "orgn_odno": "0000000000",
+            "sll_buy_dvsn_cd": "01",
+            "trad_dvsn_name": "매매",
+            "pdno": "A05612",
+            "ord_qty": "1",
+            "qty": "0",
+            "ord_tmd": "150828",
+            "tot_ccld_qty": "1",
+            "avg_idx": "729.04",
+            "tot_ccld_amt": "36452000",
+            "rjct_qty": "0",
+        },
+    ]
+
+    run_reconcile([opening, closing], history, "--commit")
+
+    assert opening.status == closing.status == "filled"
+    assert opening.avg_fill_price == Decimal("729.28")
+    assert closing.avg_fill_price == Decimal("729.04")
+    assert opening.realized_pnl_krw == 0
+    assert closing.realized_pnl_krw == Decimal("-12000")
+
+
+def test_non_digit_order_number_is_unreadable_and_never_matched(run_reconcile):
+    opening = order(1, "buy", "open", broker_order_id="0000015155")
+    row = fill(1, "02", "150700", "729.28") | {"odno": "0000015155x"}
+
+    session = run_reconcile([opening], [row], "--commit")
+
+    assert session.commits == 0
+    assert opening.status == "accepted"
+    assert opening.avg_fill_price is None
+
+
 @pytest.mark.parametrize(
     "history",
     [
@@ -209,7 +268,7 @@ def test_proven_zero_fill_cancel_does_not_block_round_trip(run_reconcile):
     }
     cancel = original | {
         "odno": "0000000002",
-        "orgn_odno": cancelled.broker_order_id,
+        "orgn_odno": f"     {cancelled.broker_order_id.lstrip('0')}",
     }
     history = [
         original,

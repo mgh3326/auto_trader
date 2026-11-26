@@ -53,6 +53,7 @@ from app.services.brokers.kis.live_order_expiry import (
     KR_PREMARKET_OPEN_KST,
     KR_REGULAR_OPEN_KST,
 )
+from app.services.market_events.session_calendar import is_trading_session
 from app.services.research_candles.session_segment import (
     TOSS_US_VENUE,
     session_segment_of,
@@ -378,6 +379,18 @@ def calendar_overlaps(
 # --------------------------------------------------------------------- writer
 
 
+def _auction_window(observed_before: datetime) -> tuple[time, time] | None:
+    local = observed_before.astimezone(_KST)
+    clock = local.time()
+    if time(9, 5) <= clock < time(9, 30):
+        window = (time(8, 59), time(9))
+    elif time(15, 35) <= clock < time(16):
+        window = (time(15, 19), time(15, 30))
+    else:
+        return None
+    return window if is_trading_session("kr", local.date()) else None
+
+
 class MinuteWriter(Protocol):
     async def insert(
         self,
@@ -385,6 +398,7 @@ class MinuteWriter(Protocol):
         *,
         batch_id: str,
         retrieved_at: datetime,
+        auction_observed_before: datetime | None = None,
     ) -> tuple[int, int]:
         """Return ``(inserted, already_present)``."""
         ...
@@ -414,11 +428,24 @@ _US_INSERT = text(
 )
 
 
+_KR_AUCTION_REVISION = text("""
+    INSERT INTO research.kr_auction_minute_revisions
+        (time_utc, symbol, venue, open, high, low, close, volume, value, revised_at)
+    SELECT time_utc, symbol, venue, :open, :high, :low, :close, :volume, :value, :revised_at
+    FROM research.kr_candles_1m
+    WHERE (time_utc, symbol, venue) = (:time_utc, :symbol, :venue)
+      AND retrieved_at < :observed_before
+      AND batch_id NOT ILIKE '%backfill%' AND batch_id NOT ILIKE 'promote-%'
+    ON CONFLICT (time_utc, symbol, venue) DO NOTHING
+""")
+
+
 class SqlMinuteWriter:
-    """Insert-only writer; commits once per call (one symbol x venue)."""
+    """Append first receipts and eligible revisions in one symbol/venue transaction."""
 
     def __init__(self, session: AsyncSession, market: Market) -> None:
         self._session = session
+        self._market = market
         self._statement = _KR_INSERT if market == "kr" else _US_INSERT
 
     async def insert_one(
@@ -461,7 +488,13 @@ class SqlMinuteWriter:
         *,
         batch_id: str,
         retrieved_at: datetime,
+        auction_observed_before: datetime | None = None,
     ) -> tuple[int, int]:
+        window = (
+            _auction_window(auction_observed_before)
+            if self._market == "kr" and auction_observed_before is not None
+            else None
+        )
         inserted = 0
         try:
             for bar in bars:
@@ -469,6 +502,33 @@ class SqlMinuteWriter:
                     bar, batch_id=batch_id, retrieved_at=retrieved_at
                 )
                 inserted += 1 if created else 0
+                if (
+                    not created
+                    and window is not None
+                    and auction_observed_before is not None
+                    and bar.venue == "KRX"
+                    and bar.source == SOURCE
+                    and bar.volume > 0
+                    and bar.session_date
+                    == auction_observed_before.astimezone(_KST).date()
+                    and window[0] <= bar.time_utc.astimezone(_KST).time() <= window[1]
+                ):
+                    await self._session.execute(
+                        _KR_AUCTION_REVISION,
+                        {
+                            "time_utc": bar.time_utc,
+                            "symbol": bar.symbol,
+                            "venue": bar.venue,
+                            "open": bar.open,
+                            "high": bar.high,
+                            "low": bar.low,
+                            "close": bar.close,
+                            "volume": bar.volume,
+                            "value": bar.value,
+                            "observed_before": auction_observed_before,
+                            "revised_at": retrieved_at,
+                        },
+                    )
             await self._session.commit()
         except Exception:
             await self._session.rollback()
@@ -1398,8 +1458,13 @@ async def collect(
                 would_write += len(parsed.bars)
             elif parsed.bars:
                 assert writer is not None
+                auction = (
+                    {"auction_observed_before": observed_before}
+                    if venue == "KRX"
+                    else {}
+                )
                 new, present = await writer.insert(
-                    parsed.bars, batch_id=batch, retrieved_at=clock()
+                    parsed.bars, batch_id=batch, retrieved_at=clock(), **auction
                 )
                 inserted += new
                 already_present += present

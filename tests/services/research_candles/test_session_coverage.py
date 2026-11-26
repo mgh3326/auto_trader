@@ -271,7 +271,12 @@ def test_value_null_count_and_ratio_per_segment() -> None:
 
 def test_diagnostic_selects_the_value_null_flag() -> None:
     literals = " ".join(_string_literals(ast.parse(SCRIPT.read_text())))
-    assert literals.count("(value IS NULL) AS value_is_null") == 2
+    assert "(value IS NULL) AS value_is_null" in literals
+    assert (
+        "(CASE WHEN r.revised_at IS NULL THEN b.value ELSE r.value END IS NULL)"
+        in literals
+    )
+    assert "LEFT JOIN research.kr_auction_minute_revisions" in literals
 
 
 # ---------------------------------------- zero-row reasons and run reports (hk 6299)
@@ -430,3 +435,26 @@ def test_dry_run_reports_give_no_zero_row_evidence() -> None:
         run_evidence=[dry],
     )
     assert report["requested_zero_row"] == {"005930": "not_selected"}
+
+
+def test_coverage_reports_the_two_receipts_for_an_auction_revision() -> None:
+    at = _utc_kst(15, 30)
+    first = at + timedelta(minutes=13, seconds=23)
+    revised = at + timedelta(minutes=15)
+    row = cov.StoredMinute("005930", "KRX", "UNKNOWN", at, first, True, revised)
+    report = cov.coverage_report(
+        iter([row]), market="kr", session_date=KR_DATE, as_of=revised
+    )
+
+    assert report["auction_revisions"] == [
+        {
+            "symbol": "005930",
+            "venue": "KRX",
+            "time_utc": at.isoformat(),
+            "first_received_at": first.isoformat(),
+            "revised_at": revised.isoformat(),
+        }
+    ]
+    segment = next(e for e in report["entries"] if e["session_segment"] == "UNKNOWN")
+    assert segment["value_null"] == 1
+    assert segment["latency_p50_s"] == 743.0
