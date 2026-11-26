@@ -1106,12 +1106,13 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 
 `app/services/minute_candles/upbit_collector.py`와 수동 CLI `scripts.collect_upbit_minute_candles`는 Upbit 공개 REST 분 캔들(`GET /v1/candles/minutes/1`)을 읽어 `MinuteCandlesRepository.insert_rows`로 `public.crypto_candles_1m`에 삽입한다. 대상은 보유 KRW 마켓 ∪ KRW-BTC/XRP/ETH ∪ 24시간 거래대금 상위 N개이며 N은 `UPBIT_MINUTE_CANDLE_TOP_N`(기본 20, 최대 100)이다. 대상 합집합과 N은 결과에 함께 보고한다.
 
-- **완결성과 페이지**: `candle_date_time_utc + 67초 <= request_time`인 봉만 저장한다(분 마감 60초 + 7초 여유). Upbit은 해당 분에 체결이 있을 때만 캔들을 반환하므로 결손 구간을 보간하지 않는다. 수집기 source 행이 없는 마켓의 현재 KST 날짜를 페이지당 최대 200봉, 최대 8페이지로 따라잡으며 한도를 채워 날짜 시작 전까지 닿지 못하면 해당 마켓은 오류로 보고한다. 이후에는 마지막 수집기 source 봉 이후만 조회하며, 마지막 source 봉이 현재 저장 가능한 최신 분 이상이면 그 마켓의 candle 요청을 건너뛴다.
+- **완결성과 페이지**: `candle_date_time_utc + 62초 <= request_time`인 봉만 저장한다(분 마감 60초 + 2초 여유). 매분 `:02` 실행에서 직전 분 봉을 저장하면서 현재 형성 중인 봉은 제외한다. Upbit은 해당 분에 체결이 있을 때만 캔들을 반환하므로 결손 구간을 보간하지 않는다. 수집기 source 행이 없는 마켓의 현재 KST 날짜를 페이지당 최대 200봉, 최대 8페이지로 따라잡으며 한도를 채워 날짜 시작 전까지 닿지 못하면 해당 마켓은 오류로 보고한다. 이후에는 마지막 수집기 source 봉 이후만 조회하며, 마지막 source 봉이 현재 저장 가능한 최신 분 이상이면 그 마켓의 candle 요청을 건너뛴다.
 - **삽입과 시각**: 자연키 `(instrument_id, time)` 충돌은 `DO NOTHING`이다. 같은 source의 기존 행도 덮어쓰지 않는다. `time`은 응답의 `candle_date_time_utc`에서 온 거래소 UTC 봉 시작 시각, `source_event_at`은 그 페이지를 처음 받은 로컬 시각, `ingested_at`은 DB 기록 시각이다. 응답의 `timestamp`는 마지막 체결 시각이며 별도 컬럼에 저장하지 않는다. 세 시각을 서로 바꿔 쓰지 않는다. 결과는 마켓별 `rows`(가져온 마감 봉 수)·`new`(DB 신규 삽입 수, 드라이런에서는 null)·`error`를 낸다. 오류 시장은 `rows=null`로 보고되며 정상 시장 처리는 계속한다.
 - **공개 API·요청 속도**: 키 없이 조회 전용으로 `/v1/market/all`, `/v1/ticker`, `/v1/candles/minutes/1`만 허용하고 리다이렉트를 따르지 않는다. 요청 시작은 전체 작업에서 0.15초 간격을 유지하고(마켓 수집은 최대 4개 동시 대기), 429/5xx는 지수 대기 후 제한 횟수만 재시도한다. Upbit 공식 문서는 분 캔들 그룹 한도를 IP당 초당 10회, 한 응답 최대 200개로 규정한다([분 캔들 조회](https://docs.upbit.com/kr/reference/list-candles-minutes)).
 - **실행·스케줄**: CLI는 기본 드라이런이고 `--dry-run`은 DB 세션을 열지 않는다. `--commit`만 writer를 호출한다. `deploy/dagu/at-upbit-1m/`은 매분 24/7 실행을 기술한 미등록 사본이며 Dagu 등록은 없다. WebSocket 집계와 Binance는 범위 밖이다.
 - **retro/v1 참고**: `app/services/retro_v1/daily_bars.py::get_bars`는 저장된 `crypto_candles_1m` 행을 계속 읽는다. 이 수집기는 해당 reader의 쿼리·출력 계약을 변경하지 않는다.
-- **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, 완결 시각, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
+- **마켓별 저장**: fetch 작업은 최대 4개까지 겹치지만, 각 마켓은 fetch가 끝나는 즉시 별도 insert/commit을 한다. 한 마켓의 느린 fetch가 다른 마켓의 이미 닫힌 봉 저장을 막지 않는다.
+- **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, `:02` 완결 시각, 형성 중 봉 제외, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
 
 ## Benzinga Pro 캡처 수신 (hk 6579)
 

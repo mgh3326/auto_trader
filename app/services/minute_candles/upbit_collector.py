@@ -25,7 +25,7 @@ SOURCE = "upbit_rest_1m"
 FIXED_MARKETS = frozenset({"KRW-BTC", "KRW-XRP", "KRW-ETH"})
 MAX_TOP_N = 100
 MAX_PAGES_PER_MARKET = 8
-CANDLE_FINALIZATION_DELAY = timedelta(seconds=67)
+CANDLE_FINALIZATION_DELAY = timedelta(seconds=62)
 MAX_CONCURRENT_MARKETS = 4
 
 
@@ -237,7 +237,6 @@ async def collect_upbit_minute_candles(
     targets, held_sorted, top_selected = select_targets(
         held, top_markets, effective_top_n
     )
-    results: list[MarketResult] = []
     repo = None
     if not dry_run:
         if session is None:
@@ -317,28 +316,32 @@ async def collect_upbit_minute_candles(
             )
 
     fetchable = [market for market in targets if market not in market_errors]
-    fetched = await asyncio.gather(
-        *(fetch_market(market) for market in fetchable), return_exceptions=True
-    )
-    walks: dict[str, _PageWalk] = {}
-    for market, outcome in zip(fetchable, fetched, strict=True):
-        if isinstance(outcome, BaseException):
-            market_errors[market] = (
+
+    async def fetch_market_result(market: str) -> tuple[str, _PageWalk | Exception]:
+        try:
+            return market, await fetch_market(market)
+        except Exception as exc:
+            return market, exc
+
+    market_tasks = [
+        asyncio.create_task(fetch_market_result(market)) for market in fetchable
+    ]
+    results_by_market: dict[str, MarketResult] = {
+        market: MarketResult(market, "error", None, None, error)
+        for market, error in market_errors.items()
+    }
+    for completed in asyncio.as_completed(market_tasks):
+        market, outcome = await completed
+        if isinstance(outcome, Exception):
+            error = (
                 f"HTTP_{outcome.status_code}"
                 if hasattr(outcome, "status_code") and outcome.status_code is not None
                 else type(outcome).__name__
             )
-        else:
-            walks[market] = outcome
-
-    for market in targets:
-        if market in market_errors:
-            results.append(
-                MarketResult(market, "error", None, None, market_errors[market])
-            )
+            results_by_market[market] = MarketResult(market, "error", None, None, error)
             continue
         try:
-            walk = walks[market]
+            walk = outcome
             rows = walk.rows
             new_rows = 0 if repo is not None else None
             if repo is not None and rows and not walk.incomplete:
@@ -361,19 +364,15 @@ async def collect_upbit_minute_candles(
                     ]
                 )
                 await session.commit()
-            results.append(
-                MarketResult(
-                    market,
-                    "error" if walk.incomplete else "ok",
-                    len(rows),
-                    new_rows,
-                    f"page_limit_{MAX_PAGES_PER_MARKET}_gap"
-                    if walk.incomplete
-                    else None,
-                    pages=walk.pages,
-                    reached_boundary=walk.reached_boundary,
-                    pending_gap=walk.pending_gap,
-                )
+            results_by_market[market] = MarketResult(
+                market,
+                "error" if walk.incomplete else "ok",
+                len(rows),
+                new_rows,
+                f"page_limit_{MAX_PAGES_PER_MARKET}_gap" if walk.incomplete else None,
+                pages=walk.pages,
+                reached_boundary=walk.reached_boundary,
+                pending_gap=walk.pending_gap,
             )
         except Exception as exc:
             if session is not None and not dry_run:
@@ -383,7 +382,9 @@ async def collect_upbit_minute_candles(
                 if hasattr(exc, "status_code") and exc.status_code is not None
                 else type(exc).__name__
             )
-            results.append(MarketResult(market, "error", None, None, error))
+            results_by_market[market] = MarketResult(market, "error", None, None, error)
+
+    results = [results_by_market[market] for market in targets]
 
     return CollectionResult(
         targets=targets,
