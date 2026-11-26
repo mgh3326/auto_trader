@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "20261126_hk6784_alpaca_crypto_fees"
+revision: str = "hk6784_crypto_fee"
 down_revision: str | Sequence[str] | None = "6f28395ebfc2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -42,6 +42,7 @@ def upgrade() -> None:
         "fee_evidence_reason IS NULL OR fee_evidence_reason IN ("
         "'fee_activity_missing','fee_activity_unreadable','fee_activity_order_mismatch',"
         "'fee_activity_symbol_mismatch','fee_activity_type_unknown','fee_currency_ambiguous',"
+        "'fee_fill_set_incomplete','fee_activity_coverage_incomplete',"
         "'fee_exceeds_filled_quantity','broker_order_id_missing')",
         schema="review",
     )

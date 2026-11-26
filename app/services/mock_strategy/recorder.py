@@ -195,6 +195,36 @@ class MockStrategyRecorder:
             )
             return result.scalar_one_or_none() is not None
 
+    async def retire_planned_exit(self, client_order_id: str, *, reason: str) -> bool:
+        """Retire an oversized exit only while its no-send state is provable."""
+        async with self._sessions() as session, session.begin():
+            row = (
+                await session.scalars(
+                    select(MockStrategyOrder)
+                    .where(
+                        MockStrategyOrder.client_order_id == client_order_id,
+                        MockStrategyOrder.side.in_(("sell", "cover")),
+                    )
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if (
+                row is None
+                or row.status != "planned"
+                or row.broker_order_id is not None
+                or row.opened_at is not None
+                or Decimal(row.meta.get("filled_qty", "0")) != 0
+            ):
+                return False
+            row.status = "rejected"
+            row.meta = {
+                **row.meta,
+                "no_order_sent": True,
+                "retired_reason": reason,
+            }
+            await session.flush()
+            return True
+
     async def record_settings_event(self, client_order_id: str, event: dict) -> None:
         async with self._sessions() as session, session.begin():
             row = (

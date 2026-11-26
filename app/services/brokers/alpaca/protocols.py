@@ -43,6 +43,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
     async def list_fills(
         self,
         *,
+        order_id: str | None = None,
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -50,6 +51,8 @@ class AlpacaPaperBrokerProtocol(Protocol):
         page_size: int | None = None,
         direction: str | None = None,
     ) -> list[Fill]: ...
+
+    async def list_order_fills(self, *, order_id: str) -> list[Fill]: ...
 
     async def list_crypto_fee_activities(
         self, *, order_id: str

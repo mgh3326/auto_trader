@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -279,18 +280,25 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
         execution_symbol = "BTC/USD"
         side = "buy"
         filled_qty = Decimal("0.0007")
+        order_status = "filled"
 
     class FeeLedger:
         written = []
 
-        async def list_crypto_fee_candidates(self, *, limit):
+        async def list_crypto_fee_candidates(self, *, limit, client_order_id=None):
             assert limit == 100
+            assert client_order_id is None
             return [FeeRow()]
 
         async def record_crypto_fee_evidence(self, client_order_id, **values):
             self.written.append((client_order_id, values))
+            return True
 
     class FeeBroker:
+        async def list_order_fills(self, *, order_id):
+            assert order_id == "alpaca-buy-1"
+            return [SimpleNamespace(order_id=order_id, qty=Decimal("0.0007"))]
+
         async def list_crypto_fee_activities(self, *, order_id):
             assert order_id == "alpaca-buy-1"
             return [
@@ -321,6 +329,8 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
         (
             "crypto-buy",
             {
+                "expected_broker_order_id": "alpaca-buy-1",
+                "expected_filled_qty": Decimal("0.0007"),
                 "fee_amount": Decimal("0.00000175"),
                 "fee_currency": "BTC",
                 "net_received_qty": Decimal("0.00069825"),
@@ -908,3 +918,60 @@ async def test_bulk_limit_applies_after_eligibility_filters() -> None:
     assert result["count"] == 1
     assert result["reconciled"][0]["ledger_id"] == 201
     assert eligible.lifecycle_state == "filled"
+
+
+@pytest.mark.asyncio
+async def test_fee_evidence_write_rejects_a_fill_snapshot_that_lost_its_cas():
+    from sqlalchemy.sql.dml import Update
+
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = SimpleNamespace(
+        id=1,
+        account_mode="alpaca_paper_crypto",
+        record_kind="execution",
+        side="buy",
+        execution_symbol="BTC/USD",
+        filled_qty=Decimal("0.0007"),
+        broker_order_id="alpaca-buy-1",
+        order_status="filled",
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return row
+
+    class Session:
+        update_statement = None
+        committed = False
+
+        async def execute(self, statement):
+            if isinstance(statement, Update):
+                self.update_statement = statement
+                return SimpleNamespace(rowcount=0)
+            return Result()
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, _row):
+            raise AssertionError("stale fee evidence must not refresh a row")
+
+    session = Session()
+    written = await AlpacaPaperLedgerService(
+        session, account_mode="alpaca_paper_crypto"
+    ).record_crypto_fee_evidence(
+        "client-buy",
+        expected_broker_order_id="alpaca-buy-1",
+        expected_filled_qty=Decimal("0.0007"),
+        fee_amount=Decimal("0.00000175"),
+        fee_currency="BTC",
+        net_received_qty=Decimal("0.00069825"),
+        reason=None,
+    )
+
+    assert written is False
+    assert session.committed is False
+    predicates = " ".join(map(str, session.update_statement._where_criteria))
+    assert "broker_order_id" in predicates
+    assert "filled_qty" in predicates

@@ -319,6 +319,10 @@ class AlpacaPaperReconcileService:
         # even when the order payload already carries qty/average fields.
         needs_fills = (
             broker_status == "filled"
+            or (
+                getattr(row, "account_mode", None) == "alpaca_paper_crypto"
+                and broker_status in KNOWN_TERMINAL_BROKER_STATUSES
+            )
             or cumulative is None
             or (cumulative > 0 and broker_avg is None)
         )
@@ -438,7 +442,22 @@ class AlpacaPaperReconcileService:
             and broker_qty > 0
         ):
             order_id = getattr(order, "id", None)
-            if not order_id:
+            observed_fill_qty = sum(
+                (
+                    _decimal(getattr(fill, "qty", None)) or Decimal("0")
+                    for fill in fills
+                ),
+                Decimal("0"),
+            )
+            fill_set_complete = (
+                transition.broker_status in KNOWN_TERMINAL_BROKER_STATUSES
+                and bool(fills)
+                and observed_fill_qty == broker_qty
+                and all(getattr(fill, "order_id", None) == order_id for fill in fills)
+            )
+            if not fill_set_complete:
+                fee_reason = "fee_fill_set_incomplete"
+            elif not order_id:
                 fee_reason = "broker_order_id_missing"
             else:
                 try:
@@ -451,6 +470,9 @@ class AlpacaPaperReconcileService:
                         side=row.side,
                         filled_qty=broker_qty,
                         activities=activities,
+                        fill_count=len(fills),
+                        order_id_filter_applied=True,
+                        terminal=True,
                     )
                     fee_reason = fee_evidence.reason
                 except Exception:
@@ -531,9 +553,13 @@ class AlpacaPaperReconcileService:
         if (
             getattr(row, "account_mode", None) == "alpaca_paper_crypto"
             and broker_qty > 0
+            and transition.broker_status in KNOWN_TERMINAL_BROKER_STATUSES
+            and getattr(order, "id", None)
         ):
-            await self._ledger.record_crypto_fee_evidence(
+            fee_write_applied = await self._ledger.record_crypto_fee_evidence(
                 row.client_order_id,
+                expected_broker_order_id=str(order.id),
+                expected_filled_qty=broker_qty,
                 fee_amount=fee_evidence.amount if fee_evidence else None,
                 fee_currency=fee_evidence.currency if fee_evidence else None,
                 net_received_qty=(
@@ -541,6 +567,8 @@ class AlpacaPaperReconcileService:
                 ),
                 reason=fee_reason,
             )
+            if not fee_write_applied:
+                result["fee_evidence_write_stale"] = True
 
         persisted_label = _LIFECYCLE_ACTION_LABELS.get(
             persisted, persisted or transition.label

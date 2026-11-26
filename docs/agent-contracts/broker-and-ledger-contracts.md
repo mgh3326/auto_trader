@@ -74,15 +74,15 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
 **Alpaca paper crypto 수수료·순수령 수량 (hk 6784)**: `alpaca_paper_crypto` 체결은 주문 ID로 연결한
-Account Activities `CFEE`(수취 암호자산 수수료)와 `FEE`(USD 수수료)만 수수료 증거로 쓴다.
+Account Activities order filter로 해당 주문에 연결된 `CFEE`(수취 자산 수수료)와 `FEE`(USD 수수료)만 수수료 증거로 쓴다. 비거래 수수료 payload에는 `order_id`가 없을 수 있으므로 응답 필드 대신 공식 `order_id` 조회 필터의 연결을 사용한다.
 `fee_amount`는 최대 18자리 소수 정밀도를 보존하고, `fee_currency`와 닫힌
 `fee_evidence_reason`을 `AlpacaPaperLedgerService`가 기록한다. 매수의
 `net_received_qty`는 base-asset `CFEE`를 `filled_qty`에서 뺀 값이며, USD `FEE`만 있으면
 확인된 총 체결 수량이다. 수수료 행 부재·읽기 실패·귀속/통화/심볼 불일치는 NULL과 사유로 남기며
-0 수수료나 총 체결량으로 대체하지 않는다. 수수료 활동은 당일 뒤늦게 올라올 수 있다.
+0 수수료나 총 체결량으로 대체하지 않는다. terminal 주문의 전체 FILL 수량과 수수료 활동 개수가 일치할 때만 수령량을 인정하며, 일부 fee만 게시된 경우 NULL과 coverage 사유로 남긴다. 수수료는 당일 종료 후 게시될 수 있다.
 
 수동 복구 CLI `python -m scripts.reconcile_alpaca_paper_crypto_fees`는 기본 미리보기이고,
-`--commit`만 서비스 레이어에 기록한다. 이 단계는 읽기 전용 Alpaca paper client로 계좌 활동을
+`--commit`만 서비스 레이어에 기록한다. `--client-order-id`는 오래된 미해결 행을 건너뛰어 특정 행을 조회한다. 이 단계는 읽기 전용 Alpaca paper client로 계좌 활동을
 가져오며 주문을 제출하지 않는다. 기존 mock 전략의 Alpaca crypto 청산은 entry의 검증된
 순수령 수량과 현재 broker 가용 포지션 중 작은 수량만 청산한다. 순수령 수량을 모르면 청산을
 거부한다. 기존 gross P&L은 유지하고, 매수·매도 수수료가 모두 확인되면 fill price로 통화 변환한

@@ -280,6 +280,7 @@ class AlpacaPaperBrokerService:
     async def list_fills(
         self,
         *,
+        order_id: str | None = None,
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -288,6 +289,8 @@ class AlpacaPaperBrokerService:
         direction: str | None = None,
     ) -> list[Fill]:
         params: dict[str, str | int] = {}
+        if order_id is not None:
+            params["order_id"] = order_id
         if after is not None:
             params["after"] = after.isoformat()
         if until is not None:
@@ -303,6 +306,29 @@ class AlpacaPaperBrokerService:
         if not data:
             return []
         return [Fill.model_validate(item) for item in data]
+
+    async def list_order_fills(self, *, order_id: str) -> list[Fill]:
+        """Read every fill returned by Alpaca's order-filtered activity endpoint."""
+        collected: dict[str, Fill] = {}
+        page_token: str | None = None
+        for _ in range(20):
+            page = await self.list_fills(
+                order_id=order_id,
+                page_token=page_token,
+                page_size=100,
+                direction="asc",
+            )
+            if any(fill.order_id != order_id for fill in page):
+                raise ValueError("alpaca_order_fill_identity_mismatch")
+            for fill in page:
+                collected.setdefault(fill.id, fill)
+            if len(page) < 100:
+                return list(collected.values())
+            next_token = page[-1].id
+            if not next_token or next_token == page_token:
+                raise ValueError("alpaca_order_fill_pagination_invalid")
+            page_token = next_token
+        raise ValueError("alpaca_order_fill_pagination_limit_exceeded")
 
     async def list_crypto_fee_activities(
         self, *, order_id: str

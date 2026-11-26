@@ -1161,6 +1161,7 @@ class AlpacaPaperOrderLedger(Base):
             "fee_evidence_reason IS NULL OR fee_evidence_reason IN ("
             "'fee_activity_missing','fee_activity_unreadable','fee_activity_order_mismatch',"
             "'fee_activity_symbol_mismatch','fee_activity_type_unknown','fee_currency_ambiguous',"
+            "'fee_fill_set_incomplete','fee_activity_coverage_incomplete',"
             "'broker_order_id_missing',"
             "'fee_exceeds_filled_quantity')",
             name="alpaca_paper_ledger_fee_evidence_reason",

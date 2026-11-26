@@ -288,6 +288,8 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         side="buy",
         filled_qty=Decimal("0.0007"),
         activities=FEE_ACTIVITY_FIXTURE["buy_base_fee"],
+        fill_count=1,
+        order_id_filter_applied=True,
     )
     assert buy.amount == Decimal("0.00000175")
     assert buy.currency == "BTC"
@@ -299,6 +301,8 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         side="sell",
         filled_qty=Decimal("0.00069825"),
         activities=FEE_ACTIVITY_FIXTURE["sell_usd_fee"],
+        fill_count=1,
+        order_id_filter_applied=True,
     )
     assert sell.amount == Decimal("0.08")
     assert sell.currency == "USD"
@@ -317,6 +321,36 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         None,
     )
     assert missing.reason == "fee_activity_missing"
+
+
+def test_crypto_fee_evidence_requires_linkage_and_complete_fill_coverage():
+    from app.services.alpaca_paper_crypto_fee_evidence import (
+        resolve_crypto_fee_evidence,
+    )
+
+    activity = FEE_ACTIVITY_FIXTURE["buy_base_fee"]
+    unlinked = resolve_crypto_fee_evidence(
+        order_id="alpaca-buy-1",
+        symbol="BTC/USD",
+        side="buy",
+        filled_qty=Decimal("0.0007"),
+        activities=activity,
+        fill_count=1,
+    )
+    assert unlinked.amount is None
+    assert unlinked.reason == "fee_activity_order_mismatch"
+
+    partial = resolve_crypto_fee_evidence(
+        order_id="alpaca-buy-1",
+        symbol="BTC/USD",
+        side="buy",
+        filled_qty=Decimal("0.0007"),
+        activities=activity,
+        fill_count=2,
+        order_id_filter_applied=True,
+    )
+    assert partial.net_received_qty is None
+    assert partial.reason == "fee_activity_coverage_incomplete"
 
 
 @pytest.mark.asyncio

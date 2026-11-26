@@ -534,20 +534,24 @@ class AlpacaPaperLedgerService:
         return list(result.scalars().all())
 
     async def list_crypto_fee_candidates(
-        self, limit: int = 100
+        self, limit: int = 100, client_order_id: str | None = None
     ) -> list[AlpacaPaperOrderLedger]:
+        conditions = [
+            AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.side.in_(("buy", "sell")),
+            AlpacaPaperOrderLedger.order_status.in_(KNOWN_TERMINAL_BROKER_STATUSES),
+            AlpacaPaperOrderLedger.filled_qty > 0,
+            or_(
+                AlpacaPaperOrderLedger.fee_amount.is_(None),
+                AlpacaPaperOrderLedger.fee_evidence_reason.is_not(None),
+            ),
+        ]
+        if client_order_id is not None:
+            conditions.append(AlpacaPaperOrderLedger.client_order_id == client_order_id)
         stmt = (
             select(AlpacaPaperOrderLedger)
-            .where(
-                AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
-                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
-                AlpacaPaperOrderLedger.side.in_(("buy", "sell")),
-                AlpacaPaperOrderLedger.filled_qty > 0,
-                or_(
-                    AlpacaPaperOrderLedger.fee_amount.is_(None),
-                    AlpacaPaperOrderLedger.fee_evidence_reason.is_not(None),
-                ),
-            )
+            .where(*conditions)
             .order_by(AlpacaPaperOrderLedger.created_at.asc())
             .limit(limit)
         )
@@ -558,11 +562,13 @@ class AlpacaPaperLedgerService:
         self,
         client_order_id: str,
         *,
+        expected_broker_order_id: str | None,
+        expected_filled_qty: Decimal,
         fee_amount: Decimal | None,
         fee_currency: str | None,
         net_received_qty: Decimal | None,
         reason: str | None,
-    ) -> AlpacaPaperOrderLedger:
+    ) -> bool:
         """Persist paper crypto fee evidence without changing execution state."""
         row = await self.get_execution_by_client_order_id(client_order_id)
         if (
@@ -573,6 +579,12 @@ class AlpacaPaperLedgerService:
             or Decimal(str(row.filled_qty)) <= 0
         ):
             raise LedgerNotFoundError("eligible Alpaca crypto fill not found")
+        if (
+            row.broker_order_id != expected_broker_order_id
+            or Decimal(str(row.filled_qty)) != expected_filled_qty
+            or row.order_status not in KNOWN_TERMINAL_BROKER_STATUSES
+        ):
+            return False
         allowed_reasons = {
             "fee_activity_missing",
             "fee_activity_unreadable",
@@ -580,6 +592,8 @@ class AlpacaPaperLedgerService:
             "fee_activity_symbol_mismatch",
             "fee_activity_type_unknown",
             "fee_currency_ambiguous",
+            "fee_fill_set_incomplete",
+            "fee_activity_coverage_incomplete",
             "fee_exceeds_filled_quantity",
             "broker_order_id_missing",
         }
@@ -607,13 +621,15 @@ class AlpacaPaperLedgerService:
                     raise ValueError("invalid net received quantity")
             elif net_received_qty is not None:
                 raise ValueError("sell fee evidence cannot set net received quantity")
-        await self._db.execute(
+        update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.id == row.id,
                 AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
                 AlpacaPaperOrderLedger.side == row.side,
-                AlpacaPaperOrderLedger.filled_qty == row.filled_qty,
+                AlpacaPaperOrderLedger.broker_order_id == expected_broker_order_id,
+                AlpacaPaperOrderLedger.filled_qty == expected_filled_qty,
+                AlpacaPaperOrderLedger.order_status.in_(KNOWN_TERMINAL_BROKER_STATUSES),
             )
             .values(
                 fee_amount=fee_amount,
@@ -622,9 +638,12 @@ class AlpacaPaperLedgerService:
                 net_received_qty=net_received_qty,
             )
         )
+        rowcount = getattr(update_result, "rowcount", None)
+        if rowcount == 0:
+            return False
         await self._db.commit()
         await self._db.refresh(row)
-        return row
+        return True
 
     async def list_by_correlation_id(
         self,
@@ -1739,6 +1758,23 @@ class AlpacaPaperLedgerService:
         )
         rowcount = getattr(update_result, "rowcount", None)
         write_applied = rowcount is None or rowcount > 0
+
+        if write_applied and filled_qty is not None:
+            await self._db.execute(
+                update(AlpacaPaperOrderLedger)
+                .where(
+                    AlpacaPaperOrderLedger.id == target_row.id,
+                    AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
+                    AlpacaPaperOrderLedger.side.in_(("buy", "sell")),
+                    AlpacaPaperOrderLedger.filled_qty == filled_qty,
+                )
+                .values(
+                    fee_amount=None,
+                    fee_currency=None,
+                    fee_evidence_reason=None,
+                    net_received_qty=None,
+                )
+            )
 
         if raw_response is not None and write_applied:
             await self._accumulate_raw_response(

@@ -3,7 +3,6 @@
     {
       "id": "fee-buy-activity-1",
       "activity_type": "CFEE",
-      "order_id": "alpaca-buy-1",
       "symbol": "BTCUSD",
       "qty": "-0.00000175",
       "price": "60630.38",
@@ -14,8 +13,6 @@
     {
       "id": "fee-sell-activity-1",
       "activity_type": "FEE",
-      "order_id": "alpaca-sell-1",
-      "symbol": "BTCUSD",
       "net_amount": "-0.08",
       "currency": "USD",
       "status": "executed"

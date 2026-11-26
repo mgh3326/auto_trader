@@ -360,6 +360,41 @@ async def test_list_fills_uses_activities_executions_endpoint():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_order_filtered_fill_and_fee_activities_preserve_link_context():
+    fee_activity = {
+        "id": "fee-001",
+        "activity_type": "CFEE",
+        "symbol": "BTCUSD",
+        "qty": "-0.00000175",
+        "price": "60630.38",
+        "status": "executed",
+    }
+    transport = AsyncMock()
+    transport.request = AsyncMock(
+        side_effect=[
+            _make_response(FILL_DATA),
+            _make_response([fee_activity]),
+            _make_response([]),
+        ]
+    )
+    svc = _make_service(transport)
+
+    fills = await svc.list_order_fills(order_id="order-001")
+    fees = await svc.list_crypto_fee_activities(order_id="order-001")
+
+    assert len(fills) == 1 and fills[0].order_id == "order-001"
+    assert len(fees) == 1 and fees[0].order_id is None
+    calls = transport.request.call_args_list
+    assert [call.kwargs["params"]["order_id"] for call in calls] == [
+        "order-001",
+        "order-001",
+        "order-001",
+    ]
+    assert calls[1].args[1] == "/v2/account/activities/CFEE"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_request_error_wraps_http_error():
     transport = AsyncMock()
     transport.request = AsyncMock(

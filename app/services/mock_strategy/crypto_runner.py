@@ -531,6 +531,7 @@ async def close_due(
                 if r.episode_id == entry.episode_id and r.side in {"sell", "cover"}
             ]
             sold, proceeds, pending = Decimal("0"), Decimal("0"), None
+            exit_fee_evidence = []
             in_flight = []
             planned_count = 0
             for leg in legs:
@@ -563,6 +564,7 @@ async def close_due(
                 sold += proof.filled_qty
                 if proof.filled_qty:
                     proceeds += proof.filled_qty * positive(proof.price)
+                    exit_fee_evidence.append(proof)
                 if not proof.terminal:
                     in_flight.append(leg)
             if planned_count > 1:
@@ -593,21 +595,27 @@ async def close_due(
                     }
                 )
                 continue
+            sellable_remaining = remaining
+            position_limited = False
+            dust_remaining = False
             if venue == "alpaca_paper_crypto" and remaining:
                 # The entry's net receive is an upper bound; the shared paper
                 # account may have less available after unrelated activity.
-                remaining = min(remaining, await broker.available_qty(entry))
+                available = await broker.available_qty(entry)
+                sellable_remaining = min(remaining, available)
+                position_limited = sellable_remaining < remaining
             rules, price = (
                 await broker.rules(entry.symbol),
                 await broker.price(entry.symbol),
             )
             qty = None
-            if remaining:
+            if sellable_remaining:
                 try:
-                    qty = rules.floor(remaining, price)
+                    qty = rules.floor(sellable_remaining, price)
                 except BelowVenueMinimum:
-                    # Only an actual residual after at least one proven exit is dust.
-                    if not sold:
+                    if position_limited:
+                        qty = None
+                    elif not sold:
                         raise
             if qty is not None:
                 await broker.closeable(entry, qty)
@@ -633,18 +641,29 @@ async def close_due(
                     },
                 )
                 if dry_run:
-                    results.append(_output(pending or close))
-                    continue
-                leg = pending or await recorder.record(close)
-                if venue == "alpaca_paper_crypto" and leg.qty > qty:
-                    results.append(
-                        {
-                            "client_order_id": leg.client_order_id,
-                            "status": "exit_refused_quantity_exceeds_net_received",
-                            "reason": "planned_exit_exceeds_attributed_quantity",
-                        }
+                    preview = _output(
+                        close if pending and pending.qty > qty else pending or close
                     )
+                    if pending and pending.qty > qty:
+                        preview["status"] = "would_replace_oversized_plan"
+                    results.append(preview)
                     continue
+                if venue == "alpaca_paper_crypto" and pending and pending.qty > qty:
+                    retire = getattr(recorder, "retire_planned_exit", None)
+                    if retire is None or not await retire(
+                        pending.client_order_id,
+                        reason="planned_exit_exceeds_attributed_quantity",
+                    ):
+                        results.append(
+                            {
+                                "client_order_id": pending.client_order_id,
+                                "status": "exit_refused_quantity_exceeds_net_received",
+                                "reason": "planned_exit_not_safely_retired",
+                            }
+                        )
+                        continue
+                    pending = None
+                leg = pending or await recorder.record(close)
                 await broker.closeable(entry, leg.qty)
                 sent = await _send(recorder, broker, leg, confirm=confirm)
                 if (
@@ -666,12 +685,13 @@ async def close_due(
                 sold += proof.filled_qty
                 if proof.filled_qty:
                     proceeds += proof.filled_qty * positive(proof.price)
+                    exit_fee_evidence.append(proof)
                 remaining = held - sold
                 try:
                     if remaining:
                         rules.floor(remaining, price)
                 except BelowVenueMinimum:
-                    pass  # unsellable, step/min-notional residual is reported below
+                    dust_remaining = True
                 else:
                     if remaining:
                         results.append(
@@ -681,6 +701,13 @@ async def close_due(
                             }
                         )
                         continue
+            fee_values = [evidence, *exit_fee_evidence]
+            fee_evidence_pending = venue == "alpaca_paper_crypto" and not all(
+                item.fee_amount is not None
+                and item.fee_currency is not None
+                and item.fee_evidence_reason is None
+                for item in fee_values
+            )
             if not dry_run and sold:
                 pnl = proceeds - positive(evidence.price) * sold
                 if entry.side == "short":
@@ -691,15 +718,7 @@ async def close_due(
                     "residual_qty": str(remaining),
                 }
                 if venue == "alpaca_paper_crypto":
-                    fee_values = [evidence]
-                    for fee_leg in legs:
-                        if (
-                            fee_leg.side in {"sell", "cover"}
-                            and fee_leg.status != "planned"
-                            and Decimal(fee_leg.meta.get("filled_qty", "0")) > 0
-                        ):
-                            fee_values.append(await broker.evidence(fee_leg))
-                    if all(item.fee_amount is not None for item in fee_values):
+                    if not fee_evidence_pending:
                         fees_usd = Decimal("0")
                         known = True
                         for item in fee_values:
@@ -719,10 +738,19 @@ async def close_due(
                         if known:
                             pnl_meta["net_pnl"] = str(pnl - fees_usd)
                             pnl_meta["fee_total_usd"] = str(fees_usd)
+                        else:
+                            pnl_meta["net_pnl_reason"] = "fee_currency_unconvertible"
+                    else:
+                        pnl_meta["net_pnl_reason"] = "fee_evidence_missing"
+                        pnl_meta["fee_evidence_pending"] = True
                 await recorder.update(
                     entry.client_order_id,
-                    status="filled" if remaining else "closed",
-                    closed_at=None if remaining else datetime.now(UTC),
+                    status=(
+                        "filled" if remaining or fee_evidence_pending else "closed"
+                    ),
+                    closed_at=(
+                        None if remaining or fee_evidence_pending else datetime.now(UTC)
+                    ),
                     exit_price=proceeds / sold,
                     realized_pnl=pnl,
                     meta=pnl_meta,
@@ -731,8 +759,14 @@ async def close_due(
                 {
                     "client_order_id": entry.client_order_id,
                     "status": ("would_close" if dry_run else "closed")
-                    if not remaining
-                    else "dust_remaining",
+                    if not remaining and not fee_evidence_pending
+                    else "awaiting_fee_evidence"
+                    if not remaining and fee_evidence_pending
+                    else "waiting_for_position_availability"
+                    if position_limited and qty is None
+                    else "dust_remaining"
+                    if dust_remaining
+                    else "close_partial",
                     "residual_qty": str(remaining),
                 }
             )

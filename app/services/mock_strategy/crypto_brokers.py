@@ -466,7 +466,25 @@ class AlpacaCryptoPaper:
         evidence = self._evidence(response, order)
         if evidence.filled_qty <= 0:
             return evidence
+        if evidence.status.lower() not in {
+            "filled",
+            "canceled",
+            "expired",
+            "rejected",
+        }:
+            return FillEvidence(
+                **{
+                    **evidence.__dict__,
+                    "fee_evidence_reason": "fee_fill_set_incomplete",
+                }
+            )
         try:
+            fills = await self.client.list_order_fills(
+                order_id=evidence.broker_order_id
+            )
+            total_fill_qty = sum((fill.qty for fill in fills), Decimal("0"))
+            if not fills or total_fill_qty != evidence.filled_qty:
+                raise ValueError("incomplete order fill activity set")
             activities = await self.client.list_crypto_fee_activities(
                 order_id=evidence.broker_order_id
             )
@@ -474,7 +492,7 @@ class AlpacaCryptoPaper:
             return FillEvidence(
                 **{
                     **evidence.__dict__,
-                    "fee_evidence_reason": "fee_activity_unreadable",
+                    "fee_evidence_reason": "fee_fill_set_incomplete",
                 }
             )
         fee_evidence = resolve_crypto_fee_evidence(
@@ -483,6 +501,9 @@ class AlpacaCryptoPaper:
             side=order.side,
             filled_qty=evidence.filled_qty,
             activities=activities,
+            fill_count=len(fills),
+            order_id_filter_applied=True,
+            terminal=True,
         )
         return FillEvidence(
             **{

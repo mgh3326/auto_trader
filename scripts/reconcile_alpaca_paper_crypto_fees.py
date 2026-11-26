@@ -11,10 +11,11 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--commit", action="store_true", help="persist fee evidence")
     result.add_argument("--limit", type=int, default=100)
+    result.add_argument("--client-order-id")
     return result
 
 
-async def run(*, commit: bool, limit: int) -> dict:
+async def run(*, commit: bool, limit: int, client_order_id: str | None = None) -> dict:
     from app.core.db import AsyncSessionLocal
     from app.services.alpaca_paper_account_modes import (
         ALPACA_PAPER_CRYPTO_ACCOUNT_MODE,
@@ -48,7 +49,7 @@ async def run(*, commit: bool, limit: int) -> dict:
                 db, account_mode=ALPACA_PAPER_CRYPTO_ACCOUNT_MODE
             )
             return await AlpacaPaperCryptoFeeReconcileService(ledger, broker).reconcile(
-                commit=commit, limit=limit
+                commit=commit, limit=limit, client_order_id=client_order_id
             )
     finally:
         await broker.aclose()
@@ -58,7 +59,14 @@ def main() -> None:
     args = parser().parse_args()
     print(
         json.dumps(
-            asyncio.run(run(commit=args.commit, limit=args.limit)), sort_keys=True
+            asyncio.run(
+                run(
+                    commit=args.commit,
+                    limit=args.limit,
+                    client_order_id=args.client_order_id,
+                )
+            ),
+            sort_keys=True,
         )
     )
 
