@@ -133,4 +133,5 @@ async def test_auto_veto_reconcile_never_runs_proposal_sweep():
     result, processed = await _run(deadline=None, project=False)
 
     assert result["success"] is True
+    assert result["proposal_rung_sweep"] == {"ran": False}
     assert processed == [1, 2, 3]

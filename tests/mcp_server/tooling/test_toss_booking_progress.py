@@ -75,11 +75,14 @@ async def _run(
     session.__aenter__ = AsyncMock(return_value=object())
     session.__aexit__ = AsyncMock(side_effect=lambda *args: events.append("exit"))
     steps = {name: AsyncMock() for name in _BOOKING_STEPS}
+    steps["upsert_toss_execution_fill"].return_value = ("inserted", 42)
     with ExitStack() as stack:
         for name, mock in steps.items():
             stack.enter_context(patch.object(mod, name, new=mock))
         for item in (
             patch.object(mod, "_converge_toss_proposal_rung", new=projection),
+            patch.object(mod, "follow_committed_fills", new=AsyncMock()),
+            patch.object(mod, "_notify_toss_fill", new=AsyncMock(return_value=False)),
             patch.object(mod, "_order_session_factory", return_value=lambda: session),
             patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
             patch.object(
@@ -95,15 +98,22 @@ async def _run(
             ),
             project_proposal_rungs=project,
         )
-    for step in steps.values():
-        step.assert_not_awaited()
+    if out["action"] == "booked":
+        steps["_save_order_fill"].assert_awaited_once()
+        steps["upsert_toss_execution_fill"].assert_awaited_once()
+    else:
+        for step in steps.values():
+            step.assert_not_awaited()
     if project:
-        expected = (
-            ["commit", "exit", "project"]
-            if out["action"] == "noop_already_booked"
-            else ["exit"]
-        )
-        assert events == expected
+        if out["action"] in {"booked", "noop_already_booked"}:
+            projection.assert_awaited_once_with(
+                _row(scanned),
+                ledger_status="cancelled",
+                filled_qty=Decimal(broker),
+            )
+            assert events == ["commit", "exit", "project"]
+        else:
+            assert events == ["exit"]
     return out, service
 
 
@@ -339,6 +349,7 @@ async def test_trade_conflict_in_the_callers_booking_still_returns_none():
         (_row("2"), "1", "noop_stale_evidence"),
         (_row("2", status="cancelled"), "2", "noop_terminal"),
         (_row("2"), "2", "noop_already_booked"),
+        (_row("2"), "3", "booked"),
     ],
 )
 async def test_cancelled_fill_projects_only_after_booking_accepts_evidence(
