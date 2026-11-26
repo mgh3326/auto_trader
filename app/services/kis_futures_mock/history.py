@@ -41,7 +41,7 @@ class TerminalEvidence:
 
 def _number(value: object) -> Decimal | None:
     if isinstance(value, str) and re.fullmatch(
-        r"[0-9]{1,12}(?:\.[0-9]{1,4})?", value.strip()
+        r"[0-9]{1,12}(?:\.[0-9]{1,8})?", value.strip()
     ):
         return Decimal(value.strip())
     return None

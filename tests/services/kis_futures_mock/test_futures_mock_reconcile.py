@@ -8,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.core import db
 from app.services.kis_futures_mock import reconcile
+from app.services.kis_futures_mock.history import _number
 from scripts import kis_futures_mock_order as cli
 
 DAY = "20261126"
@@ -147,30 +148,30 @@ def test_real_vtto5201r_rows_match_zero_padded_ledger_ids_and_book_round_trip(
             "odno": "     15155",
             "orgn_odno": "0000000000",
             "sll_buy_dvsn_cd": "02",
-            "trad_dvsn_name": "매매",
+            "trad_dvsn_name": "매수",
             "pdno": "A05612",
             "ord_qty": "1",
             "qty": "0",
             "ord_tmd": "150728",
             "tot_ccld_qty": "1",
-            "avg_idx": "729.28",
-            "tot_ccld_amt": "36464000",
+            "avg_idx": "729.28000000",
             "rjct_qty": "0",
+            "fee": None,
         },
         {
             "ord_dt": DAY,
             "odno": "     15165",
             "orgn_odno": "0000000000",
             "sll_buy_dvsn_cd": "01",
-            "trad_dvsn_name": "매매",
+            "trad_dvsn_name": "매도",
             "pdno": "A05612",
             "ord_qty": "1",
             "qty": "0",
             "ord_tmd": "150828",
             "tot_ccld_qty": "1",
-            "avg_idx": "729.04",
-            "tot_ccld_amt": "36452000",
+            "avg_idx": "729.04000000",
             "rjct_qty": "0",
+            "fee": None,
         },
     ]
 
@@ -192,6 +193,11 @@ def test_non_digit_order_number_is_unreadable_and_never_matched(run_reconcile):
     assert session.commits == 0
     assert opening.status == "accepted"
     assert opening.avg_fill_price is None
+
+
+@pytest.mark.parametrize("value", ["N/A", "-729.28", "+729.28", "7.2928e2"])
+def test_number_rejects_non_numeric_signed_and_exponent_strings(value):
+    assert _number(value) is None
 
 
 @pytest.mark.parametrize(
