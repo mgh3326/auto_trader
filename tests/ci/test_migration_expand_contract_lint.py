@@ -5,11 +5,79 @@ from __future__ import annotations
 import ast
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts.ci import migration_expand_contract_lint as lint
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_pr_merge_lint_uses_first_parent_and_reports_own_migrations(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "ci@example.invalid")
+    _git(repo, "config", "user.name", "CI")
+    (repo / "alembic/versions").mkdir(parents=True)
+    (repo / "README.md").write_text("base\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "pr-no-migration")
+    (repo / "README.md").write_text("PR change\n")
+    _git(repo, "commit", "-am", "PR without migration")
+    _git(repo, "switch", "main")
+    main_migration = repo / "alembic/versions/20261126_main_only.py"
+    main_migration.write_text("op.execute('DROP TABLE main_only')\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "main migration after PR base")
+    _git(repo, "merge", "--no-ff", "pr-no-migration", "-m", "merge PR")
+
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts/ci/migration_expand_contract_lint.py"),
+        "--base-ref",
+        base_sha,
+        "--head-ref",
+        "HEAD",
+        "--task-id",
+        "6772",
+        "--root",
+        str(repo),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "passed (0 changed migration(s))" in result.stdout
+
+    _git(repo, "switch", "-c", "pr-with-migration")
+    own_base_sha = _git(repo, "rev-parse", "HEAD")
+    own_migration = repo / "alembic/versions/20261127_pr_owned.py"
+    own_migration.write_text("op.execute('DROP TABLE pr_owned')\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "PR migration without marker")
+    _git(repo, "switch", "main")
+    _git(repo, "merge", "--no-ff", "pr-with-migration", "-m", "merge PR migration")
+    own_command = [
+        *command[:3],
+        own_base_sha,
+        *command[5:],
+    ]
+    result = subprocess.run(own_command, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "20261127_pr_owned.py" in result.stdout
+    assert "raw SQL execution requires a contract marker" in result.stdout
 
 
 def _violations(source: str, task_id: str = "4200") -> list[str]:
