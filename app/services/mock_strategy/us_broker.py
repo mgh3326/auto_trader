@@ -10,7 +10,10 @@ from decimal import Decimal
 from app.core.symbol import to_db_symbol
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
 from app.services.brokers.alpaca.endpoints import PAPER_TRADING_BASE_URL
-from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
+from app.services.brokers.alpaca.exceptions import (
+    AlpacaPaperOrderNotFound,
+    AlpacaPaperRequestError,
+)
 from app.services.brokers.alpaca.schemas import Asset, Fill, Order, OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.mock_strategy.us_signals import session_times
@@ -22,6 +25,10 @@ class PreDispatchRefusal(ValueError):
 
 class DispatchUncertain(RuntimeError):
     """The order POST boundary was entered; never grants resubmission."""
+
+
+_FILL_PAGE_LIMIT = 100
+_MAX_FILL_PAGES = 20
 
 
 def require_enabled() -> None:
@@ -129,19 +136,41 @@ class UsPaperBroker:
         """Resolve by journal client ID, then read the broker order resource."""
         if not self._read_only or self.account_ref is None:
             raise PreDispatchRefusal("read-only account binding required")
-        located = await self._service.get_order_by_client_order_id(
-            client_order_id, report_not_found=True
-        )
+        try:
+            located = await self._service.get_order_by_client_order_id(
+                client_order_id, report_not_found=True
+            )
+        except AlpacaPaperOrderNotFound:
+            return None
         if located is None:
             return None
         return await self._service.get_order(located.id)
 
     async def fills_for_order(self, order: Order) -> list[Fill]:
         """Read FILL activities for the order and keep only its broker order ID."""
-        fills = await self._service.list_fills(
-            after=order.submitted_at, page_size=100, direction="asc"
-        )
-        return [fill for fill in fills if fill.order_id == order.id]
+        collected: dict[str, Fill] = {}
+        page_token: str | None = None
+        for _ in range(_MAX_FILL_PAGES):
+            page = list(
+                await self._service.list_fills(
+                    after=order.submitted_at,
+                    page_token=page_token,
+                    page_size=_FILL_PAGE_LIMIT,
+                    direction="desc",
+                )
+                or []
+            )
+            for fill in page:
+                collected.setdefault(fill.id, fill)
+            if len(page) < _FILL_PAGE_LIMIT:
+                break
+            next_token = page[-1].id
+            if not next_token or next_token == page_token:
+                raise AlpacaPaperRequestError("fill_pagination_token_missing")
+            page_token = next_token
+        else:
+            raise AlpacaPaperRequestError("fill_pagination_limit_exceeded")
+        return [fill for fill in collected.values() if fill.order_id == order.id]
 
     async def eligible(self, symbol: str, side: str, qty: Decimal | None) -> None:
         require_enabled()

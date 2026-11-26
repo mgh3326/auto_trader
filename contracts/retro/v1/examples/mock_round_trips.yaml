@@ -27,6 +27,8 @@ response:
     reason: null
     opened_at: '2026-01-02T14:30:00Z'
     closed_at: '2026-01-05T14:30:00Z'
+    fill_time: '2026-01-05T14:30:00Z'
+    fill_time_basis: broker_filled_at
     entry_price: '100.00'
     exit_price: '103.00'
     realized_pnl_amount: '3.00'
@@ -37,12 +39,14 @@ response:
     - leg_ref: ref_synthetic_leg_1
       role: entry
       side: buy
+      broker_side: buy
       status: closed
       broker_order_bound: true
       quantity: '1'
     - leg_ref: ref_synthetic_leg_2
       role: exit
       side: sell
+      broker_side: sell
       status: closed
       broker_order_bound: true
       quantity: '1'
@@ -55,6 +59,8 @@ response:
     reason: uncertain_leg
     opened_at: '2026-01-03T14:30:00Z'
     closed_at: null
+    fill_time: null
+    fill_time_basis: null
     entry_price: null
     exit_price: null
     realized_pnl_amount: null
@@ -65,6 +71,7 @@ response:
     - leg_ref: ref_synthetic_leg_3
       role: entry
       side: short
+      broker_side: sell
       status: uncertain
       broker_order_bound: false
       notional: '500'

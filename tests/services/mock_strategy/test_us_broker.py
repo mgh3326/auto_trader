@@ -17,7 +17,7 @@ from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperOrderNotFound,
     AlpacaPaperRequestError,
 )
-from app.services.brokers.alpaca.schemas import Fill, OrderRequest
+from app.services.brokers.alpaca.schemas import Fill, Order, OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.mock_strategy import recorder as recorder_module
 from app.services.mock_strategy import us, us_broker
@@ -593,6 +593,11 @@ async def test_refresh_reachable_broker_calls_are_get_only():
         "update",
         "_observation",
         "_observation_changes",
+        "_finalize_refreshed_entry",
+        "add",
+        "fromisoformat",
+        "get",
+        "list_orders",
     }
     reachable = (
         (us, "UsPaperStrategy", "refresh"),
@@ -637,6 +642,42 @@ async def test_refresh_reachable_broker_calls_are_get_only():
             isinstance(node, ast.Constant) and node.value in {"POST", "DELETE"}
             for node in ast.walk(method)
         ), (class_name, method_name)
+        service_calls = {
+            node.func.attr
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Attribute)
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "self"
+            and node.func.value.attr == "_service"
+        }
+        assert service_calls <= {
+            "get_account",
+            "get_order",
+            "get_order_by_client_order_id",
+            "list_fills",
+        }, (class_name, method_name, service_calls)
+    mutated = ast.parse(
+        "async def fills_for_order(self, order):\n"
+        "    return await self._service.submit_order(order)\n"
+    ).body[0]
+    mutated_calls = {
+        node.func.attr
+        for node in ast.walk(mutated)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "self"
+        and node.func.value.attr == "_service"
+    }
+    assert not mutated_calls <= {
+        "get_account",
+        "get_order",
+        "get_order_by_client_order_id",
+        "list_fills",
+    }
 
 
 async def test_refresh_reads_order_and_fill_activity_fixtures_by_client_id():
@@ -696,3 +737,71 @@ async def test_refresh_reads_order_and_fill_activity_fixtures_by_client_id():
         ("GET", "/v2/orders/paper-order-123"),
         ("GET", "/v2/account/activities/FILL"),
     ]
+
+
+async def test_refresh_lookup_404_is_absence_and_fill_activities_are_paginated():
+    target = {
+        "id": "target-fill",
+        "activity_type": "FILL",
+        "symbol": "AAPL",
+        "qty": "1",
+        "price": "100",
+        "side": "buy",
+        "transaction_time": "2026-11-02T14:40:00Z",
+        "order_id": "target-order",
+    }
+    first_page = [
+        {
+            "id": f"other-{i}",
+            "activity_type": "FILL",
+            "symbol": "AAPL",
+            "qty": "1",
+            "price": "100",
+            "side": "buy",
+            "transaction_time": "2026-11-02T14:35:00Z",
+            "order_id": "other-order",
+        }
+        for i in range(100)
+    ]
+
+    class PaginatedTransport(Transport):
+        async def request(self, method, path, **kwargs):
+            if path == "/v2/orders:by_client_order_id":
+                self.calls.append((method, path, kwargs))
+                return httpx.Response(404, json={})
+            if path == "/v2/account/activities/FILL":
+                self.calls.append((method, path, kwargs))
+                return httpx.Response(
+                    200,
+                    json=first_page
+                    if kwargs["params"].get("page_token") is None
+                    else [target],
+                )
+            return await super().request(method, path, **kwargs)
+
+    transport = PaginatedTransport()
+    broker = UsPaperBroker(settings=config(), transport=transport, read_only=True)
+    await broker.refresh_account_ref()
+    assert await broker.lookup_for_refresh("absent") is None
+    assert await broker.lookup_for_refresh("target") is None
+    # Exercise the bounded paginator with a fixed broker order snapshot.
+    order = Order(
+        id="target-order",
+        client_order_id="target",
+        symbol="AAPL",
+        qty=Decimal("1"),
+        filled_qty=Decimal("1"),
+        side="buy",
+        type="market",
+        time_in_force="day",
+        status="filled",
+        submitted_at=NOW,
+    )
+    fills = await broker.fills_for_order(order)
+    assert [fill.id for fill in fills] == ["target-fill"]
+    pages = [
+        call[2]["params"]
+        for call in transport.calls
+        if call[1] == "/v2/account/activities/FILL"
+    ]
+    assert [page.get("page_token") for page in pages] == [None, "other-99"]

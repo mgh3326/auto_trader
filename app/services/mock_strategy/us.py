@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.core.symbol import to_db_symbol
 from app.models.mock_strategy import MockStrategyOrder
@@ -318,7 +318,7 @@ class UsPaperStrategy:
             "broker_filled_at" if fill_time is not None else "observed_snapshot"
         )
         if fill_time is None and matching_fills:
-            fill_time = max(
+            activity_time = max(
                 (
                     fill.transaction_time
                     for fill in matching_fills
@@ -326,9 +326,21 @@ class UsPaperStrategy:
                 ),
                 default=None,
             )
-            fill_time_basis = "broker_activity_time"
+            if activity_time is not None:
+                fill_time = activity_time
+                fill_time_basis = "broker_activity_time"
+        previous_qty = Decimal(row.meta.get("filled_qty", "0"))
+        if qty > 0 and fill_time is None and qty == previous_qty:
+            prior_time = row.meta.get("filled_at")
+            if prior_time:
+                fill_time = datetime.fromisoformat(prior_time)
+                fill_time_basis = row.meta.get("fill_time_basis") or "observed_snapshot"
         observed = datetime.now(UTC)
         effective_fill_time = fill_time or observed
+        if price is not None:
+            price = price.quantize(
+                Decimal("0.000000000000000001"), rounding=ROUND_HALF_UP
+            )
         return {
             "status": status,
             "broker_order_id": order.id,
@@ -387,6 +399,7 @@ class UsPaperStrategy:
         async with self.recorder.account_lock(venue=VENUE, account_ref=account):
             rows = await self.recorder.list_open(venue=VENUE, account_ref=account)
             results = []
+            changed_episode_ids: set[str] = set()
             for row in rows:
                 if row.status not in {"accepted", "partially_filled", "filled"}:
                     continue
@@ -413,6 +426,7 @@ class UsPaperStrategy:
                         exit_price=update["exit_price"],
                         meta=update["meta"],
                     )
+                    changed_episode_ids.add(row.episode_id)
                 results.append(
                     {
                         **projection(row),
@@ -435,7 +449,111 @@ class UsPaperStrategy:
                         ),
                     }
                 )
+            if not dry_run:
+                all_rows = await self.recorder.list_orders(
+                    venue=VENUE, account_ref=account
+                )
+                for episode_id in changed_episode_ids:
+                    episode_rows = [
+                        item for item in all_rows if item.episode_id == episode_id
+                    ]
+                    entry = next(
+                        (
+                            item
+                            for item in episode_rows
+                            if item.side in {"buy", "short"}
+                        ),
+                        None,
+                    )
+                    exits = [
+                        item for item in episode_rows if item.side in {"sell", "cover"}
+                    ]
+                    if (
+                        entry is None
+                        or entry.status != "filled"
+                        or not exits
+                        or not all(
+                            item.status
+                            in {
+                                "filled",
+                                "partially_filled",
+                                "closed",
+                                "canceled",
+                                "rejected",
+                            }
+                            for item in exits
+                        )
+                    ):
+                        continue
+                    try:
+                        quantity = Decimal(entry.meta.get("filled_qty", "0"))
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                    if quantity > 0 and entry.entry_price is not None:
+                        await self._finalize_refreshed_entry(
+                            entry, episode_rows, quantity
+                        )
+                for result in results:
+                    current = await self.recorder.get(result["client_order_id"])
+                    if current is not None:
+                        result.update(projection(current))
             return {"venue": VENUE, "dry_run": dry_run, "orders": results}
+
+    async def _finalize_refreshed_entry(
+        self,
+        entry: MockStrategyOrder,
+        episode_rows: list[MockStrategyOrder],
+        qty: Decimal,
+    ) -> bool:
+        """Close only a fully evidenced existing exit chain; never dispatch here."""
+        side = "sell" if entry.side == "buy" else "cover"
+        exits = [row for row in episode_rows if row.side in {"sell", "cover"}]
+        if any(
+            type(row.meta.get("exit_leg", 0)) is not int
+            or row.meta.get("exit_leg", 0) < 0
+            for row in exits
+        ):
+            return False
+        exits.sort(key=lambda row: row.meta.get("exit_leg", 0))
+        if not exits or [row.meta.get("exit_leg", 0) for row in exits] != list(
+            range(len(exits))
+        ):
+            return False
+        filled = Decimal(0)
+        proceeds = Decimal(0)
+        for index, leg in enumerate(exits):
+            if (
+                leg.side != side
+                or leg.client_order_id != self._exit_id(entry, side, index)
+                or leg.meta.get(
+                    "entry_client_order_id",
+                    entry.client_order_id if index == 0 else None,
+                )
+                != entry.client_order_id
+            ):
+                return False
+            evidence = self._exit_fill(leg)
+            if evidence is None or evidence[0] != qty - filled:
+                return False
+            filled += evidence[0]
+            proceeds += evidence[1]
+        if filled != qty or entry.entry_price is None:
+            return False
+        now = datetime.now(UTC)
+        for leg in exits:
+            if leg.status in {"filled", "partially_filled"}:
+                await self.recorder.update(
+                    leg.client_order_id, status="closed", closed_at=now
+                )
+        pnl = (proceeds - entry.entry_price * qty) * (1 if entry.side == "buy" else -1)
+        await self.recorder.update(
+            entry.client_order_id,
+            status="closed",
+            closed_at=now,
+            exit_price=proceeds / qty,
+            realized_pnl=pnl,
+        )
+        return True
 
     async def _execute(
         self, row: MockStrategyOrder, asof: date, change: dict | None = None

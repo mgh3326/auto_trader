@@ -129,9 +129,10 @@ def round_trip_row(key: tuple[str, str, str], entry: Any, exits: list[Any]) -> R
         if closed
         else None
     )
-    fill_leg = fill_leg or (
-        entry if entry is not None and entry.meta.get("filled_at") else None
-    )
+    if not closed:
+        fill_leg = fill_leg or (
+            entry if entry is not None and entry.meta.get("filled_at") else None
+        )
     legs = []
     if entry is not None:
         legs.append(_leg(entry, "entry"))

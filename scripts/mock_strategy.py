@@ -77,14 +77,16 @@ async def execute(args: argparse.Namespace) -> dict:
 
     if args.top_n < 1 or not args.notional.is_finite() or args.notional <= 0:
         raise ValueError("positive top-n and finite positive notional required")
-    if args.command != "refresh" and args.asof is None:
-        raise ValueError("--asof required for run, close-due, and status")
     changes = parse_symbol_changes(getattr(args, "symbol_change", None))
     if changes and args.command == "run":
         raise ValueError("--symbol-change applies to close-due and status only")
     if args.asset_fixture and (not args.dry_run or args.command != "run"):
         raise ValueError("asset fixture is run --dry-run only")
+    if args.command != "refresh" and getattr(args, "asof", None) is None:
+        raise ValueError("--asof required for run, close-due, and status")
     if args.command == "refresh":
+        if not args.dry_run and args.confirm is not True:
+            raise ValueError("--confirm required for paper mutations")
         from app.services.mock_strategy.us_broker import UsPaperBroker
 
         recorder = MockStrategyRecorder()

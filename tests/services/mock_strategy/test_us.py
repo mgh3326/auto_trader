@@ -447,6 +447,84 @@ async def test_refresh_dry_run_reports_change_without_journal_write():
     assert recorder.update_calls == 0
 
 
+async def test_refresh_keeps_timestamp_and_normalizes_repeating_fill_price():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    intent = plan_orders(
+        selection(), broker.asset_map, account_ref=broker.account_ref
+    ).orders[0]
+    row = await recorder.record(intent)
+    row.status = "accepted"
+    order = Order(
+        id="timeless-order",
+        client_order_id=row.client_order_id,
+        symbol="AAPL",
+        notional=Decimal("10000"),
+        filled_qty=Decimal("3"),
+        side="buy",
+        type="market",
+        time_in_force="day",
+        status="partially_filled",
+        filled_avg_price=Decimal("0.666666666666666667"),
+    )
+    broker.orders[row.client_order_id] = order
+    broker.fills[order.id] = [
+        Fill(
+            id="f1",
+            activity_type="FILL",
+            symbol="AAPL",
+            qty=Decimal("1"),
+            price=Decimal("1"),
+            side="buy",
+            order_id=order.id,
+        ),
+        Fill(
+            id="f2",
+            activity_type="FILL",
+            symbol="AAPL",
+            qty=Decimal("2"),
+            price=Decimal("0.5"),
+            side="buy",
+            order_id=order.id,
+        ),
+    ]
+    strategy = UsPaperStrategy(recorder, broker)
+    await strategy.refresh()
+    first_time = row.meta["filled_at"]
+    assert row.meta["fill_time_basis"] == "observed_snapshot"
+    assert row.entry_price == Decimal("0.666666666666666667")
+    second = await strategy.refresh()
+    assert second["orders"][0]["changed"] is False
+    assert row.meta["filled_at"] == first_time
+
+
+async def test_refresh_finalizes_existing_filled_exit():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    entry.exit_due_at = datetime(2026, 11, 2, tzinfo=UTC)
+    broker.accept_only = True
+    await strategy.close_due(asof=DAY, confirm=True)
+    exit_row = next(row for row in recorder.rows.values() if row.side == "sell")
+    exit_order = broker.orders[exit_row.client_order_id]
+    broker.orders[exit_row.client_order_id] = exit_order.model_copy(
+        update={
+            "status": "filled",
+            "filled_qty": Decimal("100"),
+            "filled_avg_price": Decimal("110"),
+            "filled_at": datetime(2026, 11, 2, 15, tzinfo=UTC),
+        }
+    )
+    refreshed = await strategy.refresh()
+    assert entry.status == "closed"
+    assert exit_row.status == "closed"
+    assert {
+        row["status"]
+        for row in refreshed["orders"]
+        if row["client_order_id"] in {entry.client_order_id, exit_row.client_order_id}
+    } == {"closed"}
+
+
 @pytest.mark.parametrize(
     "state",
     [

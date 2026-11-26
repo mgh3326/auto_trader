@@ -99,11 +99,13 @@ US 수동 CLI `python -m scripts.mock_strategy run|close-due|status|refresh --ve
 `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED`는 기본 false, 쓰기는 호출별 `--confirm` 필수다.
 정확한 paper URL·예상 계좌 suffix 2개·활성 계좌·fresh clock 정규장 검증을 유지한다.
 short는 shortable AND easy-to-borrow AND 계좌 shorting 허가 뒤 정수 수량만 보낸다.
-`refresh`는 계좌 결속 후 accepted/partially_filled/filled leg의 `client_order_id`로 주문 GET과
-FILL activity GET만 수행하고, 기록 변경은 recorder 경유다. `--dry-run`은 예상 상태를 출력하고
-journal을 쓰지 않는다. `sending`/`uncertain`은 이 경로에서도 재전송하지 않는다. entry의
-`opened_at`과 leg의 `meta.filled_at`은 broker fill time이며 `meta.evidence_observed_at`은 관측
-시각이다. retro `fill_time`은 종료 exit leg의 broker 시각과 `fill_time_basis`를 내고
+`refresh` 조회 예시는 `python -m scripts.mock_strategy refresh --venue alpaca_paper --dry-run`이며,
+commit에는 `--confirm`이 필요하다. 계좌 결속 후 accepted/partially_filled/filled leg의
+`client_order_id`로 주문 GET과 모든 페이지의 FILL activity GET만 수행하고, 기록 변경은
+recorder 경유다. `--dry-run`은 예상 상태를 출력하고 journal을 쓰지 않는다.
+`sending`/`uncertain`은 이 경로에서도 재전송하지 않는다. entry의 `opened_at`과 leg의
+`meta.filled_at`은 broker fill time 우선, 시간 증거가 없으면 안정된 관측 시각이며
+`meta.evidence_observed_at`은 가장 최근 관측 시각이다. retro `fill_time`은 종료 exit leg의 broker 시각과 `fill_time_basis`를 내고
 `closed_at`은 journal 종료 증거 시각으로 유지한다. journal `cover`의 Alpaca `broker_side`는 `buy`다.
 직전 완결 세션으로 신호를 만들고 h번째 후속 XNYS 세션 개장에 만기가 온다.
 만기 청산은 terminal entry의 양성 fill 증거 수량만, 청산 fill 전에는 closed/P&L 없음.
