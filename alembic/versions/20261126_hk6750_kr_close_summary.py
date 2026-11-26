@@ -1,7 +1,7 @@
 """Create append-only KR market close summaries.
 
 Revision ID: 20261126_hk6750
-Revises: 20261126_hk6674
+Revises: 20261126_hk6757_auction
 Create Date: 2026-11-26
 """
 
@@ -17,7 +17,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261126_hk6750"
-down_revision: str | None = "20261126_hk6674"
+down_revision: str | None = "20261126_hk6757_auction"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
