@@ -443,7 +443,11 @@ def test_dart_migration_is_single_head_and_guards_existing_values():
     rev = script.get_revision("20261125_hk6582_dart_capital")
     assert rev is not None
     assert rev.down_revision == "20261125_hk6579_benzinga_pro"
-    assert script.get_current_head() == rev.revision
+    head = script.get_current_head()
+    assert head is not None
+    assert rev.revision in {
+        migration.revision for migration in script.iterate_revisions(head, "base")
+    }
     output = StringIO()
     ctx = MigrationContext.configure(
         dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}

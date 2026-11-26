@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "Shape from the official KIS sample column mapping (examples_llm, read 2026-11-26). Values are synthetic, not captured responses; the TR's real output keys and timezone are unverified until a live smoke.",
+  "rt_cd": "0",
+  "output": [
+    {
+      "cntt_usiq_srno": "2025112500101",
+      "news_ofer_entp_code": "2",
+      "data_dt": "20251125",
+      "data_tm": "090500",
+      "hts_pbnt_titl_cntt": "삼성전자 공급계약 공시",
+      "news_lrdv_code": "",
+      "dorg": "DART",
+      "iscd1": "005930",
+      "iscd2": ""
+    }
+  ]
+}

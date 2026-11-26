@@ -201,6 +201,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "fnguide_snapshots",
     # hk 6513 provider revision log is later than this boundary (no FKs).
     "market_event_revisions",
+    # hk 6406 provenance is later than this boundary.
+    "market_event_sources",
 )
 
 
@@ -340,15 +342,28 @@ async def scratch_database() -> AsyncIterator[str]:
                         "DROP COLUMN expired_at"
                     )
                 )
-                # hk 6513 market_events provider-evidence columns are later
-                # than this boundary; current metadata already contains them,
-                # so drop them and let the migration add them back.
+                # Drop the hk 6513 provider evidence and hk 6406 event format
+                # columns (and their CHECKs) before stamping the older boundary.
                 for column in (
                     "provider_created_at",
                     "provider_created_raw",
                     "provider_updated_at",
                     "provider_updated_raw",
                     "first_received_at",
+                    "published_at",
+                    "published_date",
+                    "published_offset",
+                    "published_precision",
+                    "revised_at",
+                    "effective_at",
+                    "relevance",
+                    "relevance_state",
+                    "relevance_basis",
+                    "instrument_type",
+                    "group_key",
+                    "redistributable",
+                    "symbols",
+                    "backfilled",
                 ):
                     await connection.execute(
                         text(

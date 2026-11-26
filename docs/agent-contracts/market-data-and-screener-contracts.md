@@ -245,6 +245,42 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   `tests/mcp_server/test_benzinga_earnings_union.py`(union·게이트 off golden), `tests/test_benzinga_calendars_cli.py`,
   DB 왕복 `tests/services/benzinga_calendars/test_ingestion_db.py`(CI).
 
+### 공식 이벤트 공통 형식 v2 (hk 6406, 설계 §2)
+
+| §2 필드 | 저장 위치 | 조치 |
+|---|---|---|
+| `event_ref` | `market_events.event_uuid` | UUID 바이트의 SHA-256 앞 20자에 `evt-`를 붙여 파생 |
+| `source`, `source_event_id`, `source_url`, `market`, `status` | `market_events` 동명 열 | 기존 값과 어휘 사용 |
+| `event_type` | `market_events.category` | 원천별 기존 카테고리 사용 |
+| `symbols[]` | `market_events.symbols`, 레거시 `symbol` | 복수 심볼은 새 배열, 빈 배열은 시장 전체, NULL은 미기록 |
+| `instrument_type` | `market_events.instrument_type` | `equity_kr/equity_us/crypto/index/fx` |
+| `relevance`, `relevance_state`, `relevance_basis` | `market_events` 동명 열 | 각각 `direct/sector/market`, `known/unknown`, `recorded/inferred`. 판단할 수 없으면 `unknown` |
+| `published_at`, `published_offset`, `published_precision` | `market_events` 동명 열 및 `published_date` | 발표 순간은 UTC, 오프셋은 원천 표기. 날짜만 있으면 `published_date`와 `date`를 저장한다. `datetime`, `minute`, `second`는 시간대가 있는 순간을 저장한다. `datetime`은 원천 시각의 분·초 정밀도가 미기록인 경우다 |
+| 기존 릴리스/공급자 증거 | `release_time_utc/local`, `source_timezone`, `provider_created_at`, `provider_updated_at`, `provider_created_raw`, `provider_updated_raw` | 레거시 일정 시각·공급자 추적에 사용. 실제 발표가 확인된 경우에만 새 발표 열을 채운다 |
+| `first_received_at` | hk 6513의 `market_events.first_received_at` | 최초 삽입 시 서버가 관측한 시각. `fetched_at`은 최신 수집 시각 |
+| `revised_at`, `effective_at` | `market_events` 동명 열 | 원천이 알린 수정 시각·효력 시작 시각. 공급자의 레코드 갱신 시각은 `provider_updated_at`에 보존 |
+| `group_key`, `redistributable`, `backfilled` | `market_events` 동명 열 | 호출자가 증거를 바탕으로 명시. `backfilled`와 실제 최초 관측 시각은 최초 삽입에서 기록 |
+| provenance | `market_event_sources` | `event_id`, 원천 ID/링크, 발표 시각 튜플, 최초 관측·수정 시각, `raw_hash` |
+| 개정 `event_id`, `seq`, `known_at` | `market_event_revisions`의 기존 원천·카테고리·시장·원천 ID 조인 키, `revision_seq`, `observed_at` | repository에서 기존 판본 순번과 관측 시각 재사용 |
+| 개정 `changed_fields`, `source_revision_id` | `market_event_revisions` 동명 새 열 | 호출자가 파생 필드와 원천 개정 ID를 주고 append한다. 파생 필드와 원문 스냅숏을 동시에 받지 않는다 |
+| 수집 결과 | 기존 분할 `status`, `event_count`, `last_error` | `succeeded`는 건수에 따라 `stored` 또는 `no_notice`, `pending/running/partial`은 `incomplete`, `failed`는 `failed`. 저장을 거치지 않는 라이브 읽기는 후속 reader의 `read_ok_not_stored` 응답 상태 |
+
+발표 시각은 정밀도가 같거나 높을 때 튜플 전체를 갱신한다. 기존 행의 메타데이터는 소급 채우지 않는다.
+`append_source`는 원천 ID별로 최초 관측만 삽입하며 `UPDATE/DELETE/TRUNCATE`는 DB에서 거부한다.
+원천에서 ID를 제공하지 않으면 채택할 수집기가 canonical URL 해시 규칙을 적용한다.
+개정 호출자는 수정 증거와 최신 판본 여부를 판단하고 `append_revision`이 성공한 뒤 같은 트랜잭션에서 현재 행을 갱신한다.
+동시 개정은 기존 순번 충돌 처리 규칙을 따른다.
+v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transport/bad_response/unparseable/quota` 중 하나를 전달한다. 기존 수집기의 오류 필드는 그대로 읽힌다.
+
+현재 행의 `(source, category, market, source_event_id)` 키와 repository의 `ON CONFLICT` 대상은 유지한다.
+`UNIQUE(source, source_event_id)`는 새 provenance 테이블에 적용한다.
+현재 행의 키 전환은 원천별 전환 티켓으로 미룬다. DART hk 6408부터 다음 사항을 확인한다.
+
+- 원천별 ID 범위와 재분류 시 동작, 기존 중복을 확인한다. 충돌이 남으면 중단하고 행을 자동으로 삭제하거나 병합하지 않는다.
+- 해당 원천의 수집기·재시도·백필을 새 키에 맞춰 전환하고 구버전 쓰기 종료 시점을 조율한다.
+- 기존 값과 개정 이력·provenance 연결을 보존하고, 원천 ID가 없는 자연키 경로 및 기존 reader 응답을 검증한다.
+- 원천별 전환 전에 보관 정리 정책을 점검한다. provenance가 참조하는 현재 행은 FK가 삭제를 거부한다.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.
@@ -1119,3 +1155,11 @@ truncated_windows로 반환한다. 호출자는 각 절단 창을 경고한다.
 
 배당 선행 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
 [KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+### KR 수급·이벤트 신호 조회 (hk 6664)
+
+`TossReadClient`는 `STOCK_TRADING_TREND` 그룹(10 TPS)의 공매도·대차·신용·프로그램매매 endpoint와 `RANKING` 그룹(5 TPS)의 투자자 랭킹 endpoint를 strict DTO로 읽는다. 문자열 decimal은 `Decimal`, `date`는 `date`, `updatedAt`/`rankedAt`은 timezone-aware datetime으로 바꾸며 malformed row는 `TossResponseContractError`다. 신용 endpoint의 null `marginLoan`/`stockLoan`은 null로 유지한다. 프로그램매매는 KRX 거래량만 포함하고 거래대금이나 NXT 거래를 덧붙이지 않는다. `investor_trading_rankings`는 외국인·기관·개인 모두의 net-buy/net-sell 행을 받아 호출자가 요청한 investor/side로 투영한다. 공식 명세·예시: [Toss Open API v1.2.28](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json).
+
+`KISClient.inquire_vi_status`는 국내 VI TR `FHPST01390000`과 요청 종목·당일 KST 날짜를 사용한다. 응답 종목 키 `mksc_shrn_iscd`, 영업일 `bsop_date`, 체결 시각 `cntg_vi_hour`/취소 시각 `vi_cncl_hour`, 가격·괴리 필드(`vi_prc`, `vi_stnd_prc`, `vi_dprt`, `vi_dmc_stnd_prc`, `vi_dmc_dprt`)와 건수 `vi_count`를 보존하며 수치는 float 없이 Decimal로, 날짜는 date로 엄격 정규화한다. `inquire_member`는 TR `FHKST01010600`에서 회원사 코드·이름과 `total_shnu_qty{n}`/`total_seln_qty{n}`를 상위 매수/매도 수량으로 정규화한다. malformed 행과 요청 심볼 불일치는 `KISFlowResponseContractError`다. 두 호출은 기존 KIS 토큰 인증 transport만 이용하며 주문·계좌 표면에 닿지 않는다. 공식 샘플: [국내주식 함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py) 및 [국내주식 호출 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `days` 1..100을 받고 `risk`와 `reference`로 나눈다. `risk`는 VI 이벤트와 hk 6503의 `kr_symbol_trading_flags` 저장소 조회를 포함하며, 저장 행 부재는 `state="unknown"`이지 `none`이 아니다. `reference`는 네 Toss 종목 수급 endpoint, Toss 투자자 랭킹, KIS 회원사 창을 소스별 블록으로 반환한다. 각 소스에 독립 `status`·제공자 `as_of`·로컬 `fetched_at`이 있고 제공자 시각이 없을 때는 `as_of=null`이다. `get_kr_investor_rankings`도 선택한 투자자/side 결과를 `reference.toss_investor_rankings`로 반환한다. 소스 실패는 해당 블록의 `error_class`에 한정되며 빈 결과는 `empty`이지 0값 행이 아니다. 저장소 조회 외 수집·저장·정책·주문 경로는 추가하지 않는다.
