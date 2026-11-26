@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -102,6 +104,20 @@ def test_dart_receipt_requires_symbol_date_and_normalized_title_match() -> None:
     assert naver.match_dart_receipt(disclosure, [dart]) == "rcept-1"
     assert (
         naver.match_dart_receipt(
+            naver.parse_disclosure(
+                "005930",
+                {
+                    "disclosureId": "n2",
+                    "title": "ABC",
+                    "datetime": "2026-11-13T09:00:00",
+                },
+            ),
+            [SimpleNamespace(**{**dart.__dict__, "title": "abc"})],
+        )
+        is None
+    )
+    assert (
+        naver.match_dart_receipt(
             disclosure,
             [dart, SimpleNamespace(**{**dart.__dict__, "source_event_id": "rcept-2"})],
         )
@@ -189,29 +205,28 @@ async def test_client_refuses_non_allowlisted_host_before_request() -> None:
 def test_sessions_fixture_and_diagnostic_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = {
-        "serverTime": "2026-11-13T15:00:00+09:00",
-        "exchanges": [
-            {
-                "exchange": "krx",
-                "markets": [
-                    {
-                        "market": "KOSPI",
-                        "sessions": [
-                            {
-                                "label": "정규장",
-                                "openAt": "2026-11-13T09:00:00+09:00",
-                                "closeAt": "2026-11-13T15:31:00+09:00",
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "naver_sessions"
+        / "2026-11-26.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    response = naver.parse_sessions(fixture)
+    assert response.server_time is None
+    assert response.trade_dates == {
+        ("krx", "KOSPI"): date(2026, 11, 26),
+        ("krx", "KOSDAQ"): date(2026, 11, 26),
+        ("nxt", "KOSPI"): date(2026, 11, 26),
+        ("nxt", "KOSDAQ"): date(2026, 11, 26),
     }
-    server_time, windows = naver.parse_sessions(fixture)
-    assert server_time == datetime(2026, 11, 13, 6, tzinfo=UTC)
-    assert windows[0].open_at.isoformat() == "2026-11-13T00:00:00+00:00"
+    assert len(response.windows) == 10
+    assert all(window.trade_date == date(2026, 11, 26) for window in response.windows)
+    assert all(window.label for window in response.windows)
+    assert all(
+        window.open_at.astimezone(naver._KST).date() == window.trade_date
+        for window in response.windows
+    )
 
     def fake_segment(_market: str, venue: str, at: datetime) -> str:
         local = at.astimezone(naver._KST)
@@ -220,7 +235,7 @@ def test_sessions_fixture_and_diagnostic_mismatch(
         return naver.UNKNOWN
 
     monkeypatch.setattr(naver, "_session_segment", fake_segment, raising=False)
-    verdicts = naver.compare_session_windows(date(2026, 11, 13), windows)
+    verdicts = naver.compare_session_windows(date(2026, 11, 26), response)
     assert any(
         row["verdict"] == "mismatch" and row["exchange"] == "krx" for row in verdicts
     )
@@ -231,6 +246,42 @@ def test_sessions_fixture_and_diagnostic_mismatch(
         "ours_only",
         "unavailable",
     }
+
+
+@pytest.mark.asyncio
+async def test_sessions_diagnostic_preserves_provider_date_and_counts_one_sided_as_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "naver_sessions"
+        / "2026-11-26.json"
+    )
+    snapshot = naver.parse_sessions(json.loads(fixture_path.read_text()))
+
+    class Client:
+        async def sessions(self) -> naver.SessionResponse:
+            return snapshot
+
+    monkeypatch.setattr(naver, "_session_segment", lambda *_args: naver.UNKNOWN)
+    report, code = await diagnose_kr_sessions.run(
+        date(2026, 11, 26), client=Client()
+    )
+    assert code == 1
+    assert any(row["verdict"] == "naver_only" for row in report["comparisons"])
+    assert report["server_time"] is None
+    assert all(
+        "tradeBaseAt=2026-11-26;" in row["naver"]
+        for row in report["comparisons"]
+        if row["verdict"] == "naver_only"
+    )
+
+    report, code = await diagnose_kr_sessions.run(
+        date(2026, 11, 22), client=Client()
+    )
+    assert code == 0
+    assert {row["verdict"] for row in report["comparisons"]} == {"unavailable"}
 
 
 @pytest.mark.asyncio
@@ -293,6 +344,153 @@ async def test_collector_reports_one_symbol_failure_and_continues() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collector_dart_match_survives_rollback_from_another_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.market_events import MarketEvent
+    from app.services.market_events import repository as repository_module
+
+    class Result:
+        def __init__(self, rows: list[Any] | None = None, scalars: list[Any] | None = None):
+            self._rows = rows or []
+            self._scalars = scalars or []
+
+        def all(self) -> list[Any]:
+            return self._rows
+
+        def scalars(self) -> Result:
+            return Result(rows=self._scalars)
+
+        def scalar_one_or_none(self) -> int:
+            return 1
+
+    class ExpiringDartRow:
+        def __init__(self, session: Any) -> None:
+            self._session = session
+
+        def __getattr__(self, name: str) -> Any:
+            if self._session.rollback_count:
+                raise RuntimeError("expired ORM attribute accessed after rollback")
+            return {
+                "source": "dart",
+                "symbol": "000660",
+                "event_date": date(2026, 11, 26),
+                "title": "실적 공시",
+                "source_event_id": "dart-rcept-2",
+            }[name]
+
+    class Session:
+        def __init__(self) -> None:
+            self.rollback_count = 0
+            self.commit_count = 0
+            self.events: list[dict[str, Any]] = []
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def execute(self, statement: Any) -> Result:
+            columns = statement.column_descriptions
+            if len(columns) == 2:
+                return Result(rows=[])
+            if len(columns) == 1 and columns[0]["entity"] is MarketEvent:
+                return Result(scalars=[ExpiringDartRow(self)])
+            if len(columns) == 5:
+                return Result(
+                    rows=[("dart", "000660", date(2026, 11, 26), "실적 공시", "dart-rcept-2")]
+                )
+            raise AssertionError(f"unexpected query shape: {columns!r}")
+
+        async def rollback(self) -> None:
+            self.rollback_count += 1
+
+        async def commit(self) -> None:
+            self.commit_count += 1
+
+    session = Session()
+
+    class Repo:
+        def __init__(self, db: Session) -> None:
+            self.db = db
+
+        async def insert_provider_event(self, event: dict[str, Any]) -> bool:
+            self.db.events.append(event)
+            return True
+
+    monkeypatch.setattr(repository_module, "MarketEventsRepository", Repo)
+
+    class Client:
+        async def disclosures(self, symbol: str, *, page: int) -> list[dict[str, Any]]:
+            if symbol == "005930":
+                raise naver.NaverDisclosureHttpError("fixture failure")
+            if page == 1:
+                return [
+                    {
+                        "disclosureId": "n2",
+                        "title": "실적 공시",
+                        "datetime": "2026-11-26T09:00:00",
+                    }
+                ]
+            return []
+
+    report = await collect_naver_disclosures.run(
+        collect_naver_disclosures._parse_args(
+            ["--symbols", "005930", "000660", "--commit"]
+        ),
+        client=Client(),  # type: ignore[arg-type]
+        session_factory=lambda: session,
+    )
+    assert report["errors"] == [
+        {"symbol": "005930", "error_class": "NaverDisclosureHttpError"}
+    ]
+    assert report["results"] == [
+        {"symbol": "000660", "pages": 2, "observed": 1, "inserted": 1}
+    ]
+    assert session.rollback_count == 1
+    assert session.commit_count == 1
+    assert session.events[0]["raw_payload_json"]["dart_rcept_no"] == "dart-rcept-2"
+
+
+@pytest.mark.asyncio
+async def test_collector_returns_target_errors_for_empty_target_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.brokers.kis import client as kis_client_module
+    from app.services.research_candles import session_minutes_collector
+
+    class Result:
+        def all(self) -> list[Any]:
+            return []
+
+    class Session:
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    async def failed_targets(**_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            symbols=[],
+            errors=[{"origin": "fixed_symbols", "error_class": "ValueError"}],
+        )
+
+    monkeypatch.setattr(session_minutes_collector, "build_targets", failed_targets)
+    monkeypatch.setattr(kis_client_module, "KISClient", lambda: object())
+    report = await collect_naver_disclosures.run(
+        collect_naver_disclosures._parse_args([]),
+        client=SimpleNamespace(aclose=lambda: asyncio.sleep(0)),
+        session_factory=Session,
+    )
+    assert report["symbols"] == []
+    assert report["errors"] == [
+        {"origin": "fixed_symbols", "error_class": "ValueError"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_client_serializes_requests_at_two_per_second() -> None:
     now = [0.0]
     request_times: list[float] = []
@@ -338,16 +536,21 @@ async def test_client_rejects_redirect_without_following_it() -> None:
 @pytest.mark.asyncio
 async def test_sessions_diagnostic_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     class Client:
-        async def sessions(self) -> tuple[datetime, list[naver.SessionWindow]]:
-            return datetime(2026, 11, 13, 6, tzinfo=UTC), [
-                naver.SessionWindow(
-                    "krx",
-                    "KOSPI",
-                    "정규장",
-                    datetime(2026, 11, 13, 0, tzinfo=UTC),
-                    datetime(2026, 11, 13, 6, 31, tzinfo=UTC),
-                )
-            ]
+        async def sessions(self) -> naver.SessionResponse:
+            return naver.SessionResponse(
+                datetime(2026, 11, 13, 6, tzinfo=UTC),
+                {("krx", "KOSPI"): date(2026, 11, 13)},
+                [
+                    naver.SessionWindow(
+                        "krx",
+                        "KOSPI",
+                        "정규장",
+                        datetime(2026, 11, 13, 0, tzinfo=UTC),
+                        datetime(2026, 11, 13, 6, 31, tzinfo=UTC),
+                        date(2026, 11, 13),
+                    )
+                ],
+            )
 
     monkeypatch.setattr(
         naver,
@@ -361,7 +564,7 @@ async def test_sessions_diagnostic_exit_codes(monkeypatch: pytest.MonkeyPatch) -
     assert any(row["verdict"] == "mismatch" for row in report["comparisons"])
 
     class Unavailable:
-        async def sessions(self) -> tuple[datetime, list[naver.SessionWindow]]:
+        async def sessions(self) -> naver.SessionResponse:
             raise naver.NaverDisclosureHttpError("fixture unavailable")
 
     report, code = await diagnose_kr_sessions.run(

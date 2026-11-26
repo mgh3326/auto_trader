@@ -30,14 +30,17 @@ async def run(
     own_client = client is None
     client = client or naver.NaverPublicClient()
     try:
-        server_time, sessions = await client.sessions()
-        comparisons = naver.compare_session_windows(day, sessions)
+        response = await client.sessions()
+        comparisons = naver.compare_session_windows(day, response)
         report = {
             "date": day.isoformat(),
-            "server_time": server_time.isoformat(),
+            "server_time": response.server_time.isoformat()
+            if response.server_time
+            else None,
             "comparisons": comparisons,
         }
-        return report, int(any(row["verdict"] == "mismatch" for row in comparisons))
+        failed_verdicts = {"mismatch", "naver_only", "ours_only"}
+        return report, int(any(row["verdict"] in failed_verdicts for row in comparisons))
     except naver.NaverDisclosureError as exc:
         report = {
             "date": day.isoformat(),

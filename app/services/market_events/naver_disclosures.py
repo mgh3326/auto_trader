@@ -58,6 +58,23 @@ class SessionWindow:
     label: str
     open_at: datetime
     close_at: datetime
+    trade_date: date | None = None
+
+
+@dataclass(frozen=True)
+class SessionResponse:
+    server_time: datetime | None
+    trade_dates: dict[tuple[str, str], date]
+    windows: list[SessionWindow]
+
+
+@dataclass(frozen=True)
+class DartDisclosureMatch:
+    source: str
+    symbol: str | None
+    event_date: date | None
+    title: str | None
+    source_event_id: str | None
 
 
 def parse_disclosure_datetime(value: str) -> datetime:
@@ -99,7 +116,7 @@ def normalize_title(value: str | None) -> str:
     """Normalize only Unicode compatibility and whitespace for exact title links."""
     if not value:
         return ""
-    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+    return " ".join(unicodedata.normalize("NFKC", value).split())
 
 
 def match_dart_receipt(disclosure: Disclosure, dart_rows: Sequence[Any]) -> str | None:
@@ -203,69 +220,75 @@ def _datetime(value: Any) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def parse_sessions(payload: Any) -> tuple[datetime, list[SessionWindow]]:
-    """Parse Naver's exchange/market session envelope into bounded windows."""
-    if type(payload) is not dict or not isinstance(payload.get("serverTime"), str):
-        raise NaverDisclosureResponseError("sessions response missing serverTime")
-    try:
-        server_time = _datetime(payload["serverTime"])
-    except ValueError as exc:
-        raise NaverDisclosureResponseError("serverTime is invalid") from exc
-    windows: list[SessionWindow] = []
+def parse_sessions(payload: Any) -> SessionResponse:
+    """Parse Naver's exchange/market response without rebasing its trade dates."""
+    if type(payload) is not dict:
+        raise NaverDisclosureResponseError("sessions response must be an object")
+    server_time: datetime | None = None
+    if "serverTime" in payload:
+        try:
+            server_time = _datetime(payload["serverTime"])
+        except ValueError as exc:
+            raise NaverDisclosureResponseError("serverTime is invalid") from exc
     exchanges = payload.get("exchanges")
     if type(exchanges) is not list:
         raise NaverDisclosureResponseError("sessions response missing exchanges")
-
-    def visit(
-        node: Any, exchange: str | None = None, market: str | None = None
-    ) -> None:
-        if isinstance(node, list):
-            for child in node:
-                visit(child, exchange, market)
-            return
-        if type(node) is not dict:
-            return
-        current_exchange = node.get("exchange", node.get("exchangeCode", exchange))
-        current_market = node.get("market", node.get("marketCode", market))
-        if not isinstance(current_exchange, str):
-            current_exchange = exchange
-        if not isinstance(current_market, str):
-            current_market = market
-        start = node.get("openAt")
-        end = node.get("closeAt")
-        label = node.get("label") or node.get("name") or node.get("sessionName")
-        if all(
-            isinstance(item, str) and item
-            for item in (current_exchange, current_market, label, start, end)
-        ):
+    trade_dates: dict[tuple[str, str], date] = {}
+    windows: list[SessionWindow] = []
+    for exchange_item in exchanges:
+        if type(exchange_item) is not dict:
+            raise NaverDisclosureResponseError("sessions exchange is invalid")
+        exchange = exchange_item.get("exchange")
+        markets = exchange_item.get("markets")
+        if exchange not in ("krx", "nxt") or type(markets) is not list:
+            raise NaverDisclosureResponseError("sessions exchange is invalid")
+        for market_item in markets:
+            if type(market_item) is not dict:
+                raise NaverDisclosureResponseError("sessions market is invalid")
+            market = market_item.get("marketType")
+            stock_type = market_item.get("stockType")
+            if stock_type != "stock" or market not in ("KOSPI", "KOSDAQ"):
+                continue
+            trade_base_at = market_item.get("tradeBaseAt")
             try:
-                windows.append(
-                    SessionWindow(
-                        current_exchange,
-                        current_market,
-                        label,
-                        _datetime(start),
-                        _datetime(end),
-                    )
-                )
+                if not isinstance(trade_base_at, str):
+                    raise ValueError("tradeBaseAt must be a date")
+                trade_date = date.fromisoformat(trade_base_at)
             except ValueError as exc:
                 raise NaverDisclosureResponseError(
-                    "sessions boundary is invalid"
+                    "sessions tradeBaseAt is invalid"
                 ) from exc
-        for child in node.values():
-            if isinstance(child, (dict, list)):
-                visit(child, current_exchange, current_market)
-
-    for exchange_item in exchanges:
-        visit(exchange_item)
-    if not windows and any(type(item) is not dict for item in exchanges):
-        raise NaverDisclosureResponseError("sessions entry is invalid")
-    windows = list(
-        {
-            (w.exchange, w.market, w.label, w.open_at, w.close_at): w for w in windows
-        }.values()
-    )
-    return server_time, windows
+            key = (exchange, market)
+            trade_dates[key] = trade_date
+            sessions = market_item.get("sessions")
+            if type(sessions) is not list:
+                raise NaverDisclosureResponseError("sessions market is invalid")
+            for session in sessions:
+                if type(session) is not dict:
+                    raise NaverDisclosureResponseError("sessions entry is invalid")
+                if session.get("marketStatusDetailType") != "open":
+                    continue
+                label = session.get("displayLabel")
+                start = session.get("openAt")
+                end = session.get("closeAt")
+                if not all(isinstance(item, str) and item for item in (label, start, end)):
+                    raise NaverDisclosureResponseError("sessions entry is invalid")
+                try:
+                    windows.append(
+                        SessionWindow(
+                            exchange,
+                            market,
+                            label,
+                            _datetime(start),
+                            _datetime(end),
+                            trade_date,
+                        )
+                    )
+                except ValueError as exc:
+                    raise NaverDisclosureResponseError(
+                        "sessions boundary is invalid"
+                    ) from exc
+    return SessionResponse(server_time, trade_dates, windows)
 
 
 class NaverPublicClient:
@@ -346,7 +369,7 @@ class NaverPublicClient:
             )
         return payload
 
-    async def sessions(self) -> tuple[datetime, list[SessionWindow]]:
+    async def sessions(self) -> SessionResponse:
         payload = await self._get_json(
             SESSIONS_URL,
             params=[("exchanges", "krx"), ("exchanges", "nxt")],
@@ -381,7 +404,7 @@ def _ours_windows(day: date, exchange: str, market: str) -> list[SessionWindow]:
 
 
 def compare_session_windows(
-    day: date, naver_windows: list[SessionWindow]
+    day: date, response: SessionResponse
 ) -> list[dict[str, str]]:
     """Compare each venue/market's Naver intervals to session_segment_of output."""
     output: list[dict[str, str]] = []
@@ -391,16 +414,25 @@ def compare_session_windows(
         for market in ("KOSPI", "KOSDAQ")
     ]
     for exchange, market in pairs:
-        theirs = [
-            SessionWindow(
-                w.exchange,
-                w.market,
-                w.label,
-                datetime.combine(day, w.open_at.astimezone(_KST).time(), tzinfo=_KST),
-                datetime.combine(day, w.close_at.astimezone(_KST).time(), tzinfo=_KST),
+        provider_date = response.trade_dates.get((exchange, market))
+        if provider_date != day:
+            output.append(
+                {
+                    "exchange": exchange,
+                    "market": market,
+                    "window": "unavailable",
+                    "naver": "absent"
+                    if provider_date is None
+                    else f"tradeBaseAt={provider_date.isoformat()}",
+                    "ours": "unavailable",
+                    "verdict": "unavailable",
+                }
             )
-            for w in naver_windows
-            if w.exchange.lower() == exchange and w.market.upper() == market
+            continue
+        theirs = [
+            w
+            for w in response.windows
+            if w.exchange == exchange and w.market == market
         ]
         ours = _ours_windows(day, exchange, market)
         if not theirs and not ours:
@@ -429,7 +461,10 @@ def compare_session_windows(
                     "exchange": exchange,
                     "market": market,
                     "window": window.label,
-                    "naver": f"{window.open_at.isoformat()}..{window.close_at.isoformat()}",
+                    "naver": (
+                        f"tradeBaseAt={window.trade_date.isoformat()}; "
+                        f"{window.open_at.isoformat()}..{window.close_at.isoformat()}"
+                    ),
                     "ours": "none"
                     if exact is None and not ours
                     else (
@@ -463,11 +498,13 @@ def compare_session_windows(
 __all__ = [
     "ALLOWED_HOSTS",
     "Disclosure",
+    "DartDisclosureMatch",
     "NaverDisclosureError",
     "NaverDisclosureHttpError",
     "NaverDisclosureResponseError",
     "NaverPublicClient",
     "SessionWindow",
+    "SessionResponse",
     "collect_symbol_disclosures",
     "compare_session_windows",
     "disclosure_event",

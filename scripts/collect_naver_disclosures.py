@@ -100,6 +100,7 @@ async def run(
 
             result["symbols"] = symbols
             if not symbols:
+                result["errors"] = errors
                 return result
 
             newest_result = await session.execute(
@@ -114,17 +115,31 @@ async def run(
             )
             newest_by_symbol = dict(newest_result.all())
             dart_result = await session.execute(
-                select(MarketEvent).where(
+                select(
+                    MarketEvent.source,
+                    MarketEvent.symbol,
+                    MarketEvent.event_date,
+                    MarketEvent.title,
+                    MarketEvent.source_event_id,
+                ).where(
                     MarketEvent.source == "dart",
                     MarketEvent.category == "disclosure",
                     MarketEvent.market == "kr",
                     MarketEvent.symbol.in_(symbols),
                 )
             )
-            dart_by_symbol: dict[str, list[MarketEvent]] = {}
-            for row in dart_result.scalars().all():
-                if row.symbol:
-                    dart_by_symbol.setdefault(row.symbol, []).append(row)
+            dart_by_symbol: dict[str, list[naver.DartDisclosureMatch]] = {}
+            for source, symbol, event_date, title, source_event_id in dart_result.all():
+                if symbol:
+                    dart_by_symbol.setdefault(symbol, []).append(
+                        naver.DartDisclosureMatch(
+                            source=source,
+                            symbol=symbol,
+                            event_date=event_date,
+                            title=title,
+                            source_event_id=source_event_id,
+                        )
+                    )
 
             repository = MarketEventsRepository(session)
             symbol_results: list[dict[str, object]] = []
