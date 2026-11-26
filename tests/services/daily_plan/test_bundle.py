@@ -3,12 +3,21 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.daily_plan.bundle import SCHEMA_VERSION, bundle_sha256, canonical_bundle
+from app.services.daily_plan.bundle import (
+    SCHEMA_VERSION,
+    bundle_sha256,
+    canonical_bundle,
+)
 
 
 def test_canonical_bundle_has_stable_bytes():
     def row(symbol):
-        return {"market": "kr", "symbol": symbol, "row_kind": "candidate", "account_ref": None}
+        return {
+            "market": "kr",
+            "symbol": symbol,
+            "row_kind": "candidate",
+            "account_ref": None,
+        }
 
     body = {
         "schema_version": SCHEMA_VERSION,
@@ -23,14 +32,19 @@ def test_canonical_bundle_has_stable_bytes():
         b'{"account_ref":null,"market":"kr","row_kind":"candidate","symbol":"278470"}],'
         b'"schema_version":"daily-plan-bundle/v1"}'
     )
-    assert bundle_sha256(body) == bundle_sha256({**body, "rows": list(reversed(body["rows"]))})
+    assert bundle_sha256(body) == bundle_sha256(
+        {**body, "rows": list(reversed(body["rows"]))}
+    )
 
 
 def test_unknown_quantity_and_known_zero_have_different_hashes():
     assert bundle_sha256(
         {"schema_version": SCHEMA_VERSION, "quantity": {"known": Decimal("-0.00")}}
     ) != bundle_sha256(
-        {"schema_version": SCHEMA_VERSION, "quantity": {"unavailable": "open_sell_unknown"}}
+        {
+            "schema_version": SCHEMA_VERSION,
+            "quantity": {"unavailable": "open_sell_unknown"},
+        }
     )
 
 

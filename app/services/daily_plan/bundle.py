@@ -25,7 +25,11 @@ def _normalize(value: Any) -> Any:
     if isinstance(value, datetime):
         if value.utcoffset() is None:
             raise ValueError("unknown_time")
-        return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        return (
+            value.astimezone(UTC)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
     if isinstance(value, dict):
         if any(type(key) is not str for key in value):
             raise TypeError("bundle keys must be strings")
@@ -44,7 +48,12 @@ def canonical_bundle(body: dict[str, Any]) -> bytes:
     if "rows" in normalized:
         normalized["rows"] = sorted(
             normalized["rows"],
-            key=lambda row: (row["row_kind"], row["market"], row["symbol"], row["account_ref"] or ""),
+            key=lambda row: (
+                row["row_kind"],
+                row["market"],
+                row["symbol"],
+                row["account_ref"] or "",
+            ),
         )
     return json.dumps(
         normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
