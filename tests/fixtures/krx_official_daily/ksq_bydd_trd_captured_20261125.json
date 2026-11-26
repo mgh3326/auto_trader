@@ -1,0 +1,8 @@
+{
+  "_provenance": "CAPTURED 2026-11-27 by the operator's approved key; trimmed to 3 of 1837 rows. Source: handoffkeep reference/2026-11-27/krx-openapi-real-fixture.",
+  "OutBlock_1": [
+    {"BAS_DD": "20261125", "ISU_CD": "060310", "ISU_NM": "3S", "MKT_NM": "KOSDAQ", "SECT_TP_NM": "벤처기업부", "TDD_CLSPRC": "1075", "CMPPREVDD_PRC": "-70", "FLUC_RT": "-6.11", "TDD_OPNPRC": "1145", "TDD_HGPRC": "1145", "TDD_LWPRC": "1071", "ACC_TRDVOL": "65986", "ACC_TRDVAL": "71927389", "MKTCAP": "57038468000", "LIST_SHRS": "53059040"},
+    {"BAS_DD": "20261125", "ISU_CD": "245620", "ISU_NM": "EDGC", "MKT_NM": "KOSDAQ", "SECT_TP_NM": "관리종목(소속부없음)", "TDD_CLSPRC": "741", "CMPPREVDD_PRC": "0", "FLUC_RT": "0.00", "TDD_OPNPRC": "0", "TDD_HGPRC": "0", "TDD_LWPRC": "0", "ACC_TRDVOL": "0", "ACC_TRDVAL": "0", "MKTCAP": "167118555474", "LIST_SHRS": "225531114"},
+    {"BAS_DD": "20261125", "ISU_CD": "044180", "ISU_NM": "KD", "MKT_NM": "KOSDAQ", "SECT_TP_NM": "관리종목(소속부없음)", "TDD_CLSPRC": "205", "CMPPREVDD_PRC": "0", "FLUC_RT": "0.00", "TDD_OPNPRC": "0", "TDD_HGPRC": "0", "TDD_LWPRC": "0", "ACC_TRDVOL": "0", "ACC_TRDVAL": "0", "MKTCAP": "5477148795", "LIST_SHRS": "26717799"}
+  ]
+}

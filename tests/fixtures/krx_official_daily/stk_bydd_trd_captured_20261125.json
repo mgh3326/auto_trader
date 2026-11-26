@@ -1,0 +1,8 @@
+{
+  "_provenance": "CAPTURED 2026-11-27 by the operator's approved key; trimmed to 3 of 935 rows. Source: handoffkeep reference/2026-11-27/krx-openapi-real-fixture.",
+  "OutBlock_1": [
+    {"BAS_DD": "20261125", "ISU_CD": "005930", "ISU_NM": "삼성전자", "MKT_NM": "KOSPI", "SECT_TP_NM": "", "TDD_CLSPRC": "170700", "CMPPREVDD_PRC": "-18700", "FLUC_RT": "-9.87", "TDD_OPNPRC": "178500", "TDD_HGPRC": "179900", "TDD_LWPRC": "170000", "ACC_TRDVOL": "22046619", "ACC_TRDVAL": "3810252743750", "MKTCAP": "997959758385600", "LIST_SHRS": "5846278608"},
+    {"BAS_DD": "20261125", "ISU_CD": "000300", "ISU_NM": "DH오토넥스", "MKT_NM": "KOSPI", "SECT_TP_NM": "", "TDD_CLSPRC": "4200", "CMPPREVDD_PRC": "0", "FLUC_RT": "0.00", "TDD_OPNPRC": "0", "TDD_HGPRC": "0", "TDD_LWPRC": "0", "ACC_TRDVOL": "0", "ACC_TRDVAL": "0", "MKTCAP": "174035631000", "LIST_SHRS": "41437055"},
+    {"BAS_DD": "20261125", "ISU_CD": "009440", "ISU_NM": "KC그린홀딩스", "MKT_NM": "KOSPI", "SECT_TP_NM": "", "TDD_CLSPRC": "756", "CMPPREVDD_PRC": "0", "FLUC_RT": "0.00", "TDD_OPNPRC": "0", "TDD_HGPRC": "0", "TDD_LWPRC": "0", "ACC_TRDVOL": "0", "ACC_TRDVAL": "0", "MKTCAP": "17568790596", "LIST_SHRS": "23239141"}
+  ]
+}

@@ -86,6 +86,7 @@ from .kr_stock_warnings import KRStockWarning
 from .kr_symbol_universe import KRSymbolUniverse
 from .kr_trading_flags import KRSymbolTradingFlag
 from .krx_after_market_eligibility import KrxAfterMarketEligibility
+from .krx_official_daily import KRXOfficialDaily as KRXOfficialDaily
 from .mandate import (
     MandateActivationProfile,
     MandateApproval,
