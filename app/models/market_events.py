@@ -36,7 +36,7 @@ PUBLICATION_CHECK = """
 (published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)
 OR (published_precision IS NOT NULL AND (
     (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)
-    OR (published_precision IN ('second', 'minute') AND published_at IS NOT NULL AND published_date IS NULL)
+    OR (published_precision IN ('second', 'minute', 'datetime') AND published_at IS NOT NULL AND published_date IS NULL)
 ))
 """
 

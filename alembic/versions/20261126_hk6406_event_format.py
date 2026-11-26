@@ -99,7 +99,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_market_events_publication"),
         "market_events",
-        "(published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)\nOR (published_precision IS NOT NULL AND (\n    (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)\n    OR (published_precision IN ('second', 'minute') AND published_at IS NOT NULL AND published_date IS NULL)\n))",
+        "(published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)\nOR (published_precision IS NOT NULL AND (\n    (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)\n    OR (published_precision IN ('second', 'minute', 'datetime') AND published_at IS NOT NULL AND published_date IS NULL)\n))",
         postgresql_not_valid=True,
     )
     # expand-contract: contract-step 6406
@@ -149,7 +149,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_market_event_sources_publication"),
         "market_event_sources",
-        "(published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)\nOR (published_precision IS NOT NULL AND (\n    (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)\n    OR (published_precision IN ('second', 'minute') AND published_at IS NOT NULL AND published_date IS NULL)\n))",
+        "(published_precision IS NULL AND published_at IS NULL AND published_date IS NULL AND published_offset IS NULL)\nOR (published_precision IS NOT NULL AND (\n    (published_precision = 'date' AND published_at IS NULL AND published_date IS NOT NULL)\n    OR (published_precision IN ('second', 'minute', 'datetime') AND published_at IS NOT NULL AND published_date IS NULL)\n))",
         postgresql_not_valid=True,
     )
     # expand-contract: contract-step 6406

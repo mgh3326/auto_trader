@@ -57,7 +57,10 @@ async def test_date_publication_is_written_as_a_date():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_less_precise_natural_key_observation_preserves_publication_and_first_received():
+@pytest.mark.parametrize("later_precision", ["date", "datetime"])
+async def test_less_precise_natural_key_observation_preserves_publication_and_first_received(
+    later_precision,
+):
     db = AsyncMock()
     event = MarketEvent(
         id=1,
@@ -65,6 +68,7 @@ async def test_less_precise_natural_key_observation_preserves_publication_and_fi
         published_offset="+09:00",
         published_precision="second",
         first_received_at=OBSERVED,
+        backfilled=False,
     )
     result = MagicMock()
     result.scalar_one_or_none.return_value = event
@@ -74,9 +78,11 @@ async def test_less_precise_natural_key_observation_preserves_publication_and_fi
     returned = await repo.upsert_event_with_values(
         {
             **EVENT,
-            "published_date": DAY,
-            "published_precision": "date",
+            "published_date": DAY if later_precision == "date" else None,
+            "published_at": OBSERVED if later_precision == "datetime" else None,
+            "published_precision": later_precision,
             "first_received_at": OBSERVED + timedelta(hours=1),
+            "backfilled": True,
             "group_key": "operator:42",
         },
         [],
@@ -86,6 +92,7 @@ async def test_less_precise_natural_key_observation_preserves_publication_and_fi
     assert returned.published_precision == "second"
     assert returned.published_date is None
     assert returned.first_received_at == OBSERVED
+    assert returned.backfilled is False
     assert returned.group_key == "operator:42"
 
 
@@ -101,8 +108,9 @@ async def test_provider_upsert_compares_precision_atomically_and_keeps_first_rec
             "source_event_id": "receipt",
             "published_at": OBSERVED.astimezone(timezone(timedelta(hours=9))),
             "published_offset": "+09:00",
-            "published_precision": "second",
+            "published_precision": "datetime",
             "first_received_at": OBSERVED,
+            "backfilled": True,
         },
         [],
     )
@@ -113,6 +121,9 @@ async def test_provider_upsert_compares_precision_atomically_and_keeps_first_rec
     assert "ON CONFLICT (source, category, market, source_event_id)" in sql
     updates = sql.split("DO UPDATE SET ", 1)[1]
     assert "first_received_at =" not in updates
+    assert "backfilled =" not in updates
+    assert compiled.params["backfilled"] is True
+    assert compiled.params["published_precision"] == "datetime"
     for field in (
         "published_at",
         "published_date",

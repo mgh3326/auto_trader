@@ -33,7 +33,8 @@ PUBLICATION_FIELDS = (
     "published_offset",
     "published_precision",
 )
-PUBLICATION_RANK = {"date": 1, "minute": 2, "second": 3}
+# "datetime" records a known instant whose source resolution is unspecified.
+PUBLICATION_RANK = {"date": 1, "datetime": 2, "minute": 3, "second": 4}
 EVENT_FORMAT_FIELDS = (
     "revised_at",
     "effective_at",
@@ -44,7 +45,6 @@ EVENT_FORMAT_FIELDS = (
     "group_key",
     "redistributable",
     "symbols",
-    "backfilled",
 )
 
 
@@ -68,7 +68,7 @@ def _normalize_publication(payload: dict[str, Any]) -> None:
     if precision == "date":
         if type(day) is not date or timestamp is not None:
             raise ValueError("date precision requires published_date only")
-    elif precision in ("minute", "second"):
+    elif isinstance(precision, str) and precision in PUBLICATION_RANK:
         if (
             day is not None
             or not isinstance(timestamp, datetime)
@@ -77,7 +77,7 @@ def _normalize_publication(payload: dict[str, Any]) -> None:
             raise ValueError("timed publication requires an aware published_at")
         payload["published_at"] = timestamp.astimezone(UTC)
     else:
-        raise ValueError("published_precision must be date, minute or second")
+        raise ValueError("published_precision must be date, datetime, minute or second")
     for key in PUBLICATION_FIELDS:
         payload.setdefault(key, None)
 
@@ -157,9 +157,8 @@ class MarketEventsRepository:
             )
             if k in payload
         }
-        # ``first_received_at`` is our first observation of this record and is
-        # deliberately absent from the update set (hk 6513): a later ingest of
-        # the same row must not rewrite it.
+        # First-observation evidence stays insert-only across re-ingest.
+        # This includes first_received_at (hk 6513) and backfilled (hk 6406).
         update_columns["updated_at"] = func.now()
 
         if payload.get("source_event_id"):

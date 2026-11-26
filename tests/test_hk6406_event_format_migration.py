@@ -37,6 +37,7 @@ def test_official_event_format_is_additive_and_downgrade_guards_new_data(monkeyp
     assert "UNIQUE (source, source_event_id)" in upgrade
     assert "ADD COLUMN IF NOT EXISTS published_at TIMESTAMP WITH TIME ZONE" in upgrade
     assert "ADD COLUMN IF NOT EXISTS published_date DATE" in upgrade
+    assert upgrade.count("published_precision IN ('second', 'minute', 'datetime')") == 2
     assert "NOT VALID;" in upgrade
     assert "VALIDATE CONSTRAINT ck_market_events_publication;" in upgrade
     assert "ck_market_events_ck_market_events_publication" not in upgrade
@@ -62,3 +63,9 @@ def test_official_event_format_is_additive_and_downgrade_guards_new_data(monkeyp
         in downgrade
     )
     assert downgrade.index("RAISE EXCEPTION") < downgrade.index("DROP TABLE")
+    # Dropping the table removes its trigger. Drop the separate function after
+    # its dependent trigger so the same names are available on re-upgrade.
+    assert "CREATE TRIGGER trg_market_event_sources_append_only" in upgrade
+    assert downgrade.index("DROP TABLE market_event_sources") < downgrade.index(
+        "DROP FUNCTION reject_market_event_source_mutation()"
+    )
