@@ -54,7 +54,7 @@ async def test_get_news_store_keeps_naver_provider_url_as_article_key() -> None:
                         value for key, value in params.items() if key.startswith("url")
                     )
                     inserted_urls.append(url)
-                    return Result([(123,)])
+                    return Result([(123, True)])
                 return Result()
             return Result([(123, provider_url)])
 
@@ -84,7 +84,21 @@ async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -
         rowcount = 0
 
         def all(self):
-            return [(88, existing_url, None, None, None)]
+            return [
+                (
+                    88,
+                    existing_url,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            ]
 
     class Session:
         async def execute(self, statement):
@@ -141,8 +155,24 @@ async def test_collector_enriches_legacy_provider_url_row_publication_fields() -
                 if statement.table.name == "news_articles":
                     article_inserts += 1
                 return Result()
-            if len(statement.selected_columns) == 5:
-                return Result([(88, existing_url, None, None, None)])
+            if len(statement.selected_columns) == 11:
+                return Result(
+                    [
+                        (
+                            88,
+                            existing_url,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    ]
+                )
             return Result([(88, existing_url)])
 
         async def commit(self):
