@@ -66,7 +66,9 @@ async def _run(
         reason="test",
     )
     service = MagicMock()
-    service.lock_row_for_booking = AsyncMock(return_value=locked)
+    service.lock_row_for_booking = AsyncMock(
+        side_effect=lambda *args: events.append("lock") or locked
+    )
     service.update_reconcile_outcome = AsyncMock(
         side_effect=lambda **kwargs: events.append("commit")
     )
@@ -105,15 +107,12 @@ async def _run(
         for step in steps.values():
             step.assert_not_awaited()
     if project:
-        if out["action"] in {"booked", "noop_already_booked"}:
-            projection.assert_awaited_once_with(
-                _row(scanned),
-                ledger_status="cancelled",
-                filled_qty=Decimal(broker),
-            )
-            assert events == ["commit", "exit", "project"]
-        else:
-            assert events == ["exit"]
+        projection.assert_awaited_once_with(
+            _row(scanned),
+            ledger_status="cancelled",
+            filled_qty=Decimal(broker),
+        )
+        assert events == ["project", "lock", "commit", "exit"]
     return out, service
 
 
@@ -184,7 +183,7 @@ def _database_error(sqlstate: str | None, *, invalidated: bool = False):
     return OperationalError("stmt", {}, original, connection_invalidated=invalidated)
 
 
-async def _booking_failure(error: Exception) -> Exception:
+async def _booking_failure(error: Exception, *, project: bool = False) -> Exception:
     """The exception a booking pass raises when a write fails with ``error``."""
     service = MagicMock()
     service.lock_row_for_booking = AsyncMock(return_value=_row("0"))
@@ -193,9 +192,9 @@ async def _booking_failure(error: Exception) -> Exception:
     session.__aenter__ = AsyncMock(return_value=object())
     session.__aexit__ = AsyncMock(return_value=False)
     evidence = TossFillEvidence(
-        verdict="partial",
-        local_status="partial",
-        broker_status="PARTIAL_FILLED",
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
         filled_qty=Decimal("1"),
         avg_price=Decimal("190"),
         commission=None,
@@ -205,7 +204,9 @@ async def _booking_failure(error: Exception) -> Exception:
         raw_order={},
         reason="test",
     )
+    projection = AsyncMock()
     with (
+        patch.object(mod, "_converge_toss_proposal_rung", new=projection),
         patch.object(mod, "_save_order_fill", new=AsyncMock(side_effect=error)),
         patch.object(mod, "_order_session_factory", return_value=lambda: session),
         patch.object(mod, "TossLiveOrderLedgerService", return_value=service),
@@ -220,9 +221,13 @@ async def _booking_failure(error: Exception) -> Exception:
                 evidence_source=SimpleNamespace(
                     evidence_for=AsyncMock(return_value=evidence)
                 ),
-                project_proposal_rungs=False,
+                project_proposal_rungs=project,
             )
     service.update_reconcile_outcome.assert_not_awaited()
+    if project:
+        projection.assert_awaited_once_with(
+            _row("0"), ledger_status="filled", filled_qty=Decimal("1")
+        )
     return raised.value
 
 
@@ -342,21 +347,15 @@ async def test_trade_conflict_in_the_callers_booking_still_returns_none():
     db.commit.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("locked", "broker", "action"),
-    [
-        (None, "1", "skipped_row_locked"),
-        (_row("2"), "1", "noop_stale_evidence"),
-        (_row("2", status="cancelled"), "2", "noop_terminal"),
-        (_row("2"), "2", "noop_already_booked"),
-        (_row("2"), "3", "booked"),
-    ],
-)
-async def test_cancelled_fill_projects_only_after_booking_accepts_evidence(
-    locked, broker, action
-):
+async def test_cancelled_fill_projects_before_terminal_booking_commit():
     out, _ = await _run(
-        scanned="2", locked=locked, broker=broker, cancelled=True, project=True
+        scanned="2", locked=_row("2"), broker="3", cancelled=True, project=True
     )
 
-    assert out["action"] == action
+    assert out["action"] == "booked"
+
+
+async def test_confirmed_fill_projects_when_booking_fails():
+    error = RuntimeError("booking unavailable")
+
+    assert await _booking_failure(error, project=True) is error

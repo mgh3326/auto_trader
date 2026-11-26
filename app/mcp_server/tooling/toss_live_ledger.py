@@ -293,7 +293,7 @@ async def _converge_toss_proposal_rung(
     ledger_status: str,
     filled_qty: Decimal | None,
 ) -> dict[str, Any] | None:
-    """Project committed Toss evidence in an independent committed session."""
+    """Project confirmed Toss evidence in an independent committed session."""
     from app.services.order_proposals import OrderProposalsService
 
     if ledger_status not in {
@@ -611,10 +611,10 @@ async def _reconcile_one_toss_row(
         base["action"] = "would_book"
         return base
 
-    base = await _book_toss_fill(row, evidence, base)
-    # The booking transaction has ended. Project only evidence it accepted,
-    # without holding the ledger lock while entering the proposal service.
-    if project_proposal_rungs and base["action"] in {"booked", "noop_already_booked"}:
+    # The broker confirmed the fill independently of local booking. Record it
+    # before acquiring the ledger row lock or publishing a terminal ledger
+    # state that another proposal writer could act on.
+    if project_proposal_rungs:
         projection_status = (
             evidence.local_status
             if evidence.local_status in {"cancelled", "expired"}
@@ -628,7 +628,7 @@ async def _reconcile_one_toss_row(
         if converged is not None:
             base["proposal_rung"] = converged
 
-    return base
+    return await _book_toss_fill(row, evidence, base)
 
 
 async def _book_toss_fill(
