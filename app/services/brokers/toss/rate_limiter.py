@@ -88,9 +88,9 @@ _BASE_LIMITS: dict[TossApiGroup, int] = {
     TossApiGroup.STOCK: 5,
     TossApiGroup.MARKET_INFO: 3,
     TossApiGroup.MARKET_DATA: 10,
-    # Official cap is 20/s (overview.md read 2026-11-26); reserve headroom for
-    # other chart callers sharing the client.
-    TossApiGroup.MARKET_DATA_CHART: 15,
+    # Official cap is 20/s (overview.md read 2026-11-26); keep this local
+    # budget at 5/s until the shared Redis budget lands (hk 6655/6669).
+    TossApiGroup.MARKET_DATA_CHART: 5,
     TossApiGroup.STOCK_TRADING_TREND: 10,
     TossApiGroup.MARKET_INDICATOR: 10,
     TossApiGroup.RANKING: 5,

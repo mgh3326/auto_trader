@@ -417,12 +417,12 @@ def test_us_daily_lane_rate_budgets_match_provider_limits() -> None:
     assert DEFAULT_KIS_API_RATE_LIMITS[
         "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice"
     ] == {"rate": 10, "period": 1.0}
-    assert _BASE_LIMITS[TossApiGroup.MARKET_DATA_CHART] == 15
+    assert _BASE_LIMITS[TossApiGroup.MARKET_DATA_CHART] == 5
     service = _service(_Repo(), None)
     service._toss_us = AsyncMock()
     assert [(lane.name, lane.rate_per_second) for lane in service._us_lanes()] == [
         ("kis", 10),
-        ("toss", 15),
+        ("toss", 5),
     ]
 
 

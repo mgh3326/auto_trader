@@ -378,7 +378,7 @@ class DailyCandleSyncService:
                     source="toss_fallback",
                     fetcher=lambda target, n: self._toss_us(symbol=target.symbol, n=n),
                     max_concurrency=15,
-                    rate_per_second=15,
+                    rate_per_second=5,
                 )
             )
         self._us_daily_lanes = lanes
