@@ -343,8 +343,8 @@ tests/services/test_journal_exit_correction_db.py
 tests/services/test_kis_mock_holdings_reconciler.py
 tests/services/test_kis_mock_inference_expiry_db.py
 tests/services/test_kis_mock_terminal_expiry.py
-tests/services/test_kr_news_collector.py
 tests/services/test_kis_news_shadow.py
+tests/services/test_kr_news_collector.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krx_after_market_health.py
 tests/services/test_loss_cut_policy_and_settings.py
