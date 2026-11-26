@@ -1,0 +1,22 @@
+# Naver 공시 수집: 평일 07:30–20:00 KST 5분 간격. 저장소는 이 Dagu 사본을 등록하지 않는다.
+description: "Naver per-stock disclosures into market_events"
+schedule:
+  - "CRON_TZ=Asia/Seoul 30,35,40,45,50,55 7 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */5 8-19 * * 1-5"
+  - "CRON_TZ=Asia/Seoul 0 20 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_naver_disclosures --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 240
+handler_on:
+  success:
+    command: 'logger -t at-dagu-naver-disclosures "dag=at-naver-disclosures status=success"'
+  failure:
+    command: 'logger -t at-dagu-naver-disclosures "dag=at-naver-disclosures status=failure"'

@@ -59,6 +59,7 @@ SOURCES: frozenset[str] = frozenset(
     {
         "finnhub",
         "dart",
+        "naver_disclosure",
         "upbit",
         "bithumb",
         "binance",
