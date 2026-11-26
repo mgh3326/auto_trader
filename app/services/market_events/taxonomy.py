@@ -27,6 +27,16 @@ CATEGORIES: frozenset[str] = frozenset(
         "dividend",
         "short_interest",
         "wiim",
+        # hk 6659: additional Benzinga calendar and signal evidence.
+        "split",
+        "merger_acquisition",
+        "offering",
+        "fda",
+        "ipo",
+        "option_activity",
+        "insider_trade",
+        "congress_trade",
+        "analyst_insight",
         "breaking_news",
     }
 )

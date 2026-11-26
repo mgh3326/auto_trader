@@ -56,7 +56,28 @@ def build_params(
 ) -> dict[str, Any]:
     """Query parameters for one page of one endpoint (pure)."""
     params: dict[str, Any] = {"page": page}
-    if endpoint.requires_symbols:
+    if endpoint.paging_style == "calendar_page_size":
+        params["pageSize"] = endpoint.page_size
+        params["parameters[date_from]"] = from_date.isoformat()
+        params["parameters[date_to]"] = to_date.isoformat()
+        tickers = _csv(symbols)
+        if tickers:
+            params["parameters[tickers]"] = tickers
+    elif endpoint.paging_style == "v1_calendar":
+        params["pagesize"] = endpoint.page_size
+        params["date_from"] = from_date.isoformat()
+        params["date_to"] = to_date.isoformat()
+        tickers = _csv(symbols)
+        if tickers and endpoint.category == "insider_trade":
+            params["symbols"] = tickers
+    elif endpoint.paging_style == "analyst":
+        params["pageSize"] = endpoint.page_size
+        params["date_from"] = from_date.isoformat()
+        params["date_to"] = to_date.isoformat()
+        tickers = _csv(symbols)
+        if tickers:
+            params["symbols"] = tickers
+    elif endpoint.requires_symbols:
         params["symbols"] = _csv(symbols) or ""
         params["from"] = from_date.isoformat()
         params["to"] = to_date.isoformat()

@@ -99,8 +99,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--symbols",
         default=None,
-        help="Comma-separated tickers (required for short_interest, optional "
-        "as a filter elsewhere).",
+        help="Comma-separated tickers (required for short_interest and "
+        "insider_trade, optional as a filter elsewhere).",
     )
     parser.add_argument(
         "--commit",
@@ -151,8 +151,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     unknown = [c for c in ns.categories if c not in CATEGORIES]
     if unknown:
         parser.error(f"unknown --category {unknown}; supported: {list(CATEGORIES)}")
-    if "short_interest" in ns.categories and not ns.symbols:
-        parser.error("--symbols is required for the short_interest category")
+    missing_symbols = {"short_interest", "insider_trade"}.intersection(ns.categories)
+    if missing_symbols and not ns.symbols:
+        parser.error(
+            f"--symbols is required for categories: {', '.join(sorted(missing_symbols))}"
+        )
     return ns
 
 

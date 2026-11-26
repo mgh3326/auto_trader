@@ -131,10 +131,31 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   | conference | `GET /api/v2.1/calendar/conference-calls` → `conference[]` | https://docs.benzinga.com/api-reference/calendar-api/get-conference-calls |
   | short_interest | `GET /api/v1/shortinterest` → `shortInterestData{}` | https://docs.benzinga.com/api-reference/market-data/get-short-interest-data |
   | wiim | `GET /api/v2/news?channels=WIIM` → 배열 | https://docs.benzinga.com/api-reference/news-api/wiims/get-wiims |
+  | split | `GET /api/v2.1/calendar/splits` → `splits[]` | https://docs.benzinga.com/api-reference/calendar-api/get-splits |
+  | merger_acquisition | `GET /api/v2.1/calendar/ma` → `ma[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ma |
+  | offering | `GET /api/v2.1/calendar/offerings` → `offerings[]` | https://docs.benzinga.com/api-reference/calendar-api/get-offerings |
+  | fda | `GET /api/v2.1/calendar/fda` → `fda[]` | https://docs.benzinga.com/api-reference/calendar-api/get-fda |
+  | ipo | `GET /api/v2.1/calendar/ipos` → `ipos[]` | https://docs.benzinga.com/api-reference/calendar-api/get-ipos |
+  | option_activity | `GET /api/v1/signal/option_activity` → `option_activity[]` | https://docs.benzinga.com/api-reference/calendar-api/get-optionactivity |
+  | insider_trade | `GET /api/v1/sec/insider_transactions/filings` → `data[]` | https://docs.benzinga.com/api-reference/calendar-api/insider-transaction/get-insider-transaction-filing |
+  | congress_trade | `GET /api/v1/gov/usa/congress/trades` → `data[]` | https://docs.benzinga.com/api-reference/calendar-api/government-trades/get-government-trades |
+  | analyst_insight | `GET /api/v1/analyst/insights` → `analyst-insights[]` | https://docs.benzinga.com/api-reference/calendar-api/analyst-insights/get-analyst-insights |
 
   캘린더 계열은 `page`/`pagesize` + `parameters[date_from]`/`parameters[date_to]`(선택 `parameters[tickers]`),
   short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
   `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
+  추가 캘린더(`split`, `merger_acquisition`, `offering`, `fda`, `ipo`)도 같은 page/pagesize/date 필터를 쓴다.
+  옵션 이상거래는 `page`/`pageSize`와 `parameters[date_from]`/`parameters[date_to]`를 쓴다. SEC 내부자 filing은
+  `--symbols`가 필수이며 `page`/`pagesize`/`date_from`/`date_to`/`symbols`를, 의회 거래는 `page`/`pagesize`와
+  `date_from`/`date_to`를, analyst insights는 `page`/`pageSize`와 `date_from`/`date_to`(선택 `symbols`)를 쓴다.
+  새 category의 날짜·값 정규화는 문서 필드에 한정한다: split=`date_announced`(ratio 분자/분모, shares),
+  merger_acquisition=`date`(deal_size, 통화), offering=`date`(주식 수와 금액은 각각 shares/통화), fda=`date`,
+  ipo=`date`(연도만 주어지면 그해 1월 1일로 버킷; `pricing_date`는 date가 없을 때만 대체),
+  option_activity=`date`(가격·계약 수·비용 basis는 USD/contract·contracts·USD), insider_trade=`filing_date`
+  (중첩 transaction shares와 price_per_share는 shares·USD/share), congress_trade=`transaction_date`
+  (amount 구간의 최소/최대는 USD), analyst_insight=`date`(pt는 USD/share). 비수치 FDA 본문은 raw evidence에만 둔다.
+  Insider filing의 provider id는 filing `id`, 각 나머지는 row `id`다. 이 아홉 예시 응답은
+  `tests/fixtures/benzinga_calendars/*_doc_example.json`에 문서 예시 그대로 보존하고 출처를 README에 기록한다.
   `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 읽기 종료는
   `len(rows) < pagesize` 가 아니라 **빈 페이지**로만 판정한다 — 제공자가 요청한 `pagesize` 를 조용히 낮게
   캡해도 페이지 0,1,2… 를 끝까지 읽으므로 잘린 첫 페이지를 완전한 읽기로 오인하지 않는다. 페이지 상한

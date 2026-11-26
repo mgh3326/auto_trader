@@ -1,0 +1,54 @@
+{
+  "data": [
+    {
+      "amendment_number": 0,
+      "amount": "$1,001 - $15,000",
+      "chamber": "House",
+      "description": "Professionally Managed Account.",
+      "disclosure_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20034496.pdf",
+      "filer_info": {
+        "chamber": "House",
+        "committees": {
+          "Committee on Foreign Affairs": [
+            "East Asia and Pacific",
+            "Western Hemisphere"
+          ],
+          "Committee on Homeland Security": [
+            "Border Security and Enforcement",
+            "Transportation and Maritime Security"
+          ],
+          "Committee on Science, Space, and Technology": [
+            "Energy",
+            "Research and Technology"
+          ]
+        },
+        "display_name": "Sheri Biggs",
+        "district": "3",
+        "headshot": "https://clerk.house.gov/content/assets/img/members/B001325.jpg",
+        "id": "67782294211dee338b2b86f2",
+        "leadership_positions": [],
+        "member_id": "B001325",
+        "member_name": "Sheri Biggs",
+        "party": "R",
+        "state": "SC",
+        "status": "Member",
+        "updated": 1781096558,
+        "website": ""
+      },
+      "id": "6a296077f07735f389b33f69",
+      "notification_date": "2026-06-08",
+      "ownership": "SP",
+      "report_date": "2026-06-09",
+      "report_id": "20034496",
+      "security": {
+        "name": "Alphakeys Blackstone Life",
+        "ticker": "",
+        "type": ""
+      },
+      "transaction_date": "2026-04-28",
+      "transaction_id": "e3b297fc9ab6ec13d9c099e4edede8ff70de242f",
+      "transaction_type": "P",
+      "updated": 1781096567
+    }
+  ]
+}

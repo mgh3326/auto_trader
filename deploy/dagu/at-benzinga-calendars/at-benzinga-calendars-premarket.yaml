@@ -16,7 +16,7 @@
 # short_interest 는 symbols 파라미터가 필수라 이 DAG 에 넣지 않는다(수동 CLI 로 symbol 목록을 넘긴다).
 # 게이트: BENZINGA_CALENDARS_ENABLED=true 는 이 일회성 컨테이너의 env 로만 준다(공유 env 파일 편집 금지).
 # 키 BENZINGA_API_KEY 는 /root/at-secrets/.env.api 에서 온다.
-description: "Benzinga calendars premarket (earnings/ratings/guidance/dividends/economic/conference)"
+description: "Benzinga calendars premarket (earnings/ratings/guidance/dividends/economic/conference/splits/M&A/offerings/FDA/IPO/options/congress/analyst insights)"
 schedule: "CRON_TZ=America/New_York 30 7 * * 1-5"
 max_active_runs: 1
 hist_retention_days: 60
@@ -24,7 +24,7 @@ worker_selector:
   host: pi
 steps:
   - name: premarket
-    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_CALENDARS_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_benzinga_calendars --category earnings,analyst_rating,guidance,dividend,economic,conference --from-date $(TZ=America/New_York date +%F) --to-date $(TZ=America/New_York date -d '7 days' +%F) --force --commit
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_CALENDARS_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_benzinga_calendars --category earnings,analyst_rating,guidance,dividend,economic,conference,split,merger_acquisition,offering,fda,ipo,option_activity,congress_trade,analyst_insight --from-date $(TZ=America/New_York date +%F) --to-date $(TZ=America/New_York date -d '7 days' +%F) --force --commit
     timeout_sec: 900
     retry_policy:
       limit: 1

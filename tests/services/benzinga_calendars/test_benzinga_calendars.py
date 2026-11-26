@@ -28,6 +28,15 @@ ROWS_BY_CATEGORY = {
     "conference": load("conference_calls.json")["conference"],
     "short_interest": load("short_interest.json")["shortInterestData"]["AAPL"]["data"],
     "wiim": load("wiim.json"),
+    "split": load("split_doc_example.json")["splits"],
+    "merger_acquisition": load("merger_acquisition_doc_example.json")["ma"],
+    "offering": load("offering_doc_example.json")["offerings"],
+    "fda": load("fda_doc_example.json")["fda"],
+    "ipo": load("ipo_doc_example.json")["ipos"],
+    "option_activity": load("option_activity_doc_example.json")["option_activity"],
+    "insider_trade": load("insider_trade_doc_example.json")["data"],
+    "congress_trade": load("congress_trade_doc_example.json")["data"],
+    "analyst_insight": load("analyst_insight_doc_example.json")["analyst-insights"],
 }
 
 
@@ -56,6 +65,41 @@ def test_every_fixture_normalizes_to_a_benzinga_market_event(category):
         assert event["source_event_id"].startswith(f"benzinga:{category}:")
         assert event["event_date"] is not None
         assert event["raw_payload_json"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "category,expected_symbol,expected_date,expected_id,decimal_metric",
+    [
+        ("split", "TCBP", date(2025, 12, 30), "677675329a903000017cb6f1", "split_ratio_numerator"),
+        ("merger_acquisition", "DXPE", date(2026, 1, 5), "695bc1b183cac20001bec44e", None),
+        ("offering", "SBC", date(2025, 12, 29), "69531bc06ab0a40001b39686", "dollar_shares"),
+        ("fda", "DRTS", date(2026, 1, 5), "695bc49183cac20001bec514", None),
+        ("ipo", "SEPGU", date(2026, 1, 1), "604b6d8a36622a000186b793", "offering_shares"),
+        ("option_activity", "FCX", date(2025, 12, 29), "6952ef7b6ab0a40001b39586", "option_price"),
+        ("insider_trade", "COFS", date(2026, 1, 5), "695c171b1bd4be0001967659", "transaction_1_shares"),
+        ("congress_trade", None, date(2026, 4, 28), "6a296077f07735f389b33f69", "trade_amount_min"),
+        ("analyst_insight", "INOD", date(2026, 1, 5), "695bdd0f7bad4dcabd14a073", "price_target"),
+    ],
+)
+def test_documented_category_examples_normalize_exact_values(
+    category, expected_symbol, expected_date, expected_id, decimal_metric
+):
+    from app.services.benzinga_calendars.normalizers import normalize_row
+
+    row = ROWS_BY_CATEGORY[category][0]
+    normalized = normalize_row(
+        category, row, first_received_at=OBSERVED, fetched_at=OBSERVED
+    )
+    assert normalized is not None
+    assert normalized.event["symbol"] == expected_symbol
+    assert normalized.event["event_date"] == expected_date
+    assert normalized.event["source_event_id"] == f"benzinga:{category}:{expected_id}"
+    assert normalized.event["first_received_at"] == OBSERVED
+    if decimal_metric:
+        value = next(v for v in normalized.values if v["metric_name"] == decimal_metric)
+        assert isinstance(value["actual"], Decimal)
+        assert value["unit"]
 
 
 @pytest.mark.unit
@@ -265,6 +309,54 @@ async def test_client_uses_endpoint_specific_pagination_names():
     assert params["channels"] == "WIIM"
     assert params["pageSize"] == 100
     assert params["dateFrom"] == "2024-01-01"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "category,row_key,symbols,page_size_key,date_from_key,date_to_key,extra",
+    [
+        ("split", "splits", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
+        ("merger_acquisition", "ma", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
+        ("offering", "offerings", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
+        ("fda", "fda", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
+        ("ipo", "ipos", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
+        ("option_activity", "option_activity", "FCX", "pageSize", "parameters[date_from]", "parameters[date_to]", {"parameters[tickers]": "FCX"}),
+        ("insider_trade", "data", "COFS", "pagesize", "date_from", "date_to", {"symbols": "COFS"}),
+        ("congress_trade", "data", None, "pagesize", "date_from", "date_to", {}),
+        ("analyst_insight", "analyst-insights", "INOD", "pageSize", "date_from", "date_to", {"symbols": "INOD"}),
+    ],
+)
+async def test_new_endpoint_requests_use_documented_paging_parameters(
+    category, row_key, symbols, page_size_key, date_from_key, date_to_key, extra
+):
+    client, http = _client([_FakeResponse(load(f"{category}_doc_example.json")), _FakeResponse({row_key: []})])
+    await client.fetch(
+        category,
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 7),
+        symbols=symbols,
+    )
+    params = http.requests[0]["params"]
+    assert params["page"] == 0
+    assert params[page_size_key] == (100 if category == "analyst_insight" else 1000)
+    assert params[date_from_key] == "2026-01-01"
+    assert params[date_to_key] == "2026-01-07"
+    for key, expected in extra.items():
+        assert params[key] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_insider_trade_requires_symbols_before_any_request():
+    from app.services.benzinga_http import BenzingaContractError
+
+    client, http = _client([])
+    with pytest.raises(BenzingaContractError):
+        await client.fetch(
+            "insider_trade", from_date=date(2026, 1, 1), to_date=date(2026, 1, 7)
+        )
+    assert http.requests == []
 
 
 @pytest.mark.unit
@@ -506,6 +598,38 @@ async def test_reingest_of_the_same_payload_adds_nothing():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "category",
+    [
+        "split", "merger_acquisition", "offering", "fda", "ipo",
+        "option_activity", "insider_trade", "congress_trade", "analyst_insight",
+    ],
+)
+async def test_new_category_reingest_keeps_first_received_at(category):
+    from app.services.benzinga_calendars.ingestion import ingest_benzinga_category_for_range
+    from app.services.benzinga_calendars.normalizers import normalize_row
+
+    row = ROWS_BY_CATEGORY[category][0]
+    normalized = normalize_row(
+        category, row, first_received_at=OBSERVED, fetched_at=OBSERVED
+    )
+    assert normalized is not None
+    event_date = normalized.event["event_date"]
+    later = datetime(2026, 11, 26, 14, 0, tzinfo=UTC)
+    repo = FakeRepo()
+    client = FakeClient({category: [row]})
+    for fetched_at in (OBSERVED, later):
+        result = await ingest_benzinga_category_for_range(
+            None, category, event_date, event_date,
+            client=client, repo=repo, fetched_at=fetched_at, skip_succeeded=False,
+        )
+        assert [item.status for item in result] == ["succeeded"]
+    assert len(repo.revisions[(category, normalized.event["source_event_id"])]) == 1
+    assert len(repo.events) == 1
+    assert repo.events[0]["event"]["first_received_at"] == OBSERVED
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_revised_rating_is_a_revision_not_an_overwrite():
     from app.services.benzinga_calendars.ingestion import (
         ingest_benzinga_category_for_range,
@@ -677,6 +801,15 @@ def test_endpoint_registry_matches_the_taxonomy():
         "conference",
         "short_interest",
         "wiim",
+        "split",
+        "merger_acquisition",
+        "offering",
+        "fda",
+        "ipo",
+        "option_activity",
+        "insider_trade",
+        "congress_trade",
+        "analyst_insight",
     }
     assert set(spec.CALENDAR_ENDPOINTS) <= taxonomy.CATEGORIES
     assert "benzinga" in taxonomy.SOURCES
