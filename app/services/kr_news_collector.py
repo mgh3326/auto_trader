@@ -7,6 +7,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from html import unescape
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,6 @@ from app.mcp_server.tooling.shared import is_korean_equity_code
 from app.models.account_value import AccountValueSnapshot
 from app.models.investment_reports import InvestmentWatchAlert
 from app.models.manual_holdings import ManualHolding, MarketType
-from app.models.news import NewsArticle
 from app.models.trade_journal import TradeJournal
 from app.models.trading import Instrument, InstrumentType, UserWatchItem
 from app.services import symbol_news_store
@@ -27,21 +27,11 @@ from app.services.news_entity_matcher import match_kr_universe_symbols
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
-AGGREGATE_FEED_SOURCE = "http_naver_stock_aggregate"
-AGGREGATE_URL = "https://stock.naver.com/api/domestic/news/aggregate/home"
+MAINNEWS_FEED_SOURCE = "http_naver_mstock_mainnews"
+MAINNEWS_URL = "https://m.stock.naver.com/api/news/list"
+# Naver answers HTTP 400 above 50 (verified 2026-11-26 from the pi: 20/50 → 200, 100 → 400).
+MAINNEWS_PAGE_SIZE = 50
 DEFAULT_SYMBOL_CAP = 30
-AGGREGATE_SECTIONS = {
-    "flashNews": "flashNews",
-    "mainNews": "mainNews",
-    "rankingNews": "rankingNews",
-    "newsFocus": "newsFocus",
-}
-AGGREGATE_SIZE_PARAMS = (
-    "flashNewsSize",
-    "mainNewsSize",
-    "rankingNewsSize",
-    "focusSize",
-)
 
 
 @dataclass(frozen=True)
@@ -117,94 +107,71 @@ def _first_value(row: dict[str, Any], *keys: str) -> object:
     return None
 
 
-def normalize_aggregate_item(row: object) -> dict[str, Any] | None:
+def normalize_mainnews_item(row: object) -> dict[str, Any] | None:
     if not isinstance(row, dict):
         return None
-    url = _first_value(
-        row, "url", "articleUrl", "link", "mobileNewsUrl", "urlToArticle"
-    )
-    title = _first_value(row, "title", "titleFull", "newsTitle")
-    if not isinstance(url, str) or not isinstance(title, str) or not title.strip():
+    office_id = _first_value(row, "oid")
+    article_id = _first_value(row, "aid")
+    title = _first_value(row, "tit")
+    if (
+        office_id is None
+        or article_id is None
+        or not str(office_id).isdigit()
+        or not str(article_id).isdigit()
+        or not isinstance(title, str)
+        or not title.strip()
+    ):
         return None
+    url = f"https://n.news.naver.com/mnews/article/{office_id}/{article_id}"
     try:
         dedupe_url = canonicalize_url(url)
     except ValueError:
         return None
-    published_raw = _first_value(
-        row,
-        "time",
-        "datetime",
-        "publishedAt",
-        "publishDate",
-        "date",
-        "officeDate",
-        "writeDate",
-    )
+    published_raw = _first_value(row, "dt")
     published = parse_publish_time(published_raw)
-    source = _first_value(
-        row, "press", "officeHname", "officeName", "source", "pressName", "publisher"
-    )
-    summary = _first_value(
-        row, "leadtext", "subcontent", "summary", "body", "description"
-    )
+    source = _first_value(row, "ohnm")
+    summary = _first_value(row, "subcontent")
     return {
-        # Keep the provider URL as the stored identity. The canonical form is
-        # only used to collapse equivalent URLs within this fetched batch.
-        "url": url.strip(),
+        "url": url,
         "dedupe_url": dedupe_url,
-        "title": title.strip(),
+        "title": unescape(title).strip(),
         "source": str(source).strip() if source is not None else None,
         "summary": str(summary).strip() if summary is not None else None,
         "published": published,
+        "provider_article_id": f"{office_id}:{article_id}",
+        "provider_raw_ids": {"oid": str(office_id), "aid": str(article_id)},
     }
 
 
-async def fetch_aggregate_news(
-    *, get_json: Callable[[str, dict[str, int]], Awaitable[Any]] | None = None
+async def fetch_mainnews(
+    *, get_json: Callable[[str, dict[str, str | int]], Awaitable[Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Fetch the four legacy aggregate sections. Provider failures propagate."""
+    """Fetch Naver's market-wide main news list. Provider failures propagate."""
     if get_json is None:
 
-        async def get_json(url: str, params: dict[str, int]) -> Any:
+        async def get_json(url: str, params: dict[str, str | int]) -> Any:
             async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                    raise ValueError("mainnews_non_json_response")
                 return response.json()
 
-    params = dict.fromkeys(AGGREGATE_SIZE_PARAMS, 100)
-    payload = await get_json(AGGREGATE_URL, params)
-    if not isinstance(payload, dict):
-        raise ValueError("aggregate_payload_shape")
+    payload = await get_json(
+        MAINNEWS_URL,
+        {"category": "mainnews", "page": 1, "pageSize": MAINNEWS_PAGE_SIZE},
+    )
+    if not isinstance(payload, list):
+        raise ValueError("mainnews_payload_shape")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for section, response_key in AGGREGATE_SECTIONS.items():
-        section_items = payload.get(response_key)
-        if section == "newsFocus":
-            if not isinstance(section_items, list):
-                raise ValueError("aggregate_section_missing:newsFocus")
-            focus_items = []
-            for focus in section_items:
-                if not isinstance(focus, dict) or not isinstance(
-                    focus.get("news"), list
-                ):
-                    raise ValueError("aggregate_focus_shape")
-                for raw in focus["news"]:
-                    if isinstance(raw, dict):
-                        focus_items.append(
-                            {**raw, "focus_category": focus.get("category")}
-                        )
-            section_items = focus_items
-        if not isinstance(section_items, list):
-            raise ValueError(f"aggregate_section_missing:{response_key}")
-        for raw in section_items:
-            item = normalize_aggregate_item(raw)
-            if item is None or item["dedupe_url"] in seen:
-                continue
-            seen.add(item["dedupe_url"])
-            item["section"] = section
-            if raw.get("focus_category"):
-                item["focus_category"] = str(raw["focus_category"])
-            items.append(item)
+    for raw in payload:
+        item = normalize_mainnews_item(raw)
+        if item is None or item["dedupe_url"] in seen:
+            continue
+        seen.add(item["dedupe_url"])
+        items.append(item)
     return items
 
 
@@ -342,9 +309,10 @@ async def _store_items(
     feed_source: str,
     items: list[dict[str, Any]],
     symbols: Sequence[str],
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, int]]:
     new_articles = 0
     new_links = 0
+    article_ids_by_canonical_url: dict[str, int] = {}
     for symbol in symbols:
         inputs = [
             symbol_news_store.FeedArticleInput(
@@ -356,24 +324,31 @@ async def _store_items(
                 published_at_raw=item["published"].raw,
                 published_precision=item["published"].precision,
                 published_at_reason=item["published"].reason,
+                provider_article_id=item.get("provider_article_id"),
             )
             for item in items
         ]
-        inserted, links = await symbol_news_store.upsert_kr_collector_articles(
-            db, symbol, inputs, feed_source=feed_source, commit=False
+        result = await symbol_news_store.upsert_kr_collector_articles_with_ids(
+            db,
+            symbol,
+            inputs,
+            feed_source=feed_source,
+            promote_feed_source_on_precision_upgrade=(
+                feed_source == MAINNEWS_FEED_SOURCE
+            ),
+            commit=False,
         )
-        new_articles += inserted
-        new_links += links
-    return new_articles, new_links
+        new_articles += result.new_articles
+        new_links += result.new_links
+        article_ids_by_canonical_url.update(result.article_ids_by_canonical_url)
+    return new_articles, new_links, article_ids_by_canonical_url
 
 
 async def collect_kr_news(
     *,
     db: AsyncSession | None,
     now: datetime,
-    aggregate_fetcher: Callable[
-        [], Awaitable[list[dict[str, Any]]]
-    ] = fetch_aggregate_news,
+    mainnews_fetcher: Callable[[], Awaitable[list[dict[str, Any]]]] = fetch_mainnews,
     item_fetcher: Callable[[str, int], Awaitable[Any]] | None = None,
     explicit_symbols: Sequence[str] | None = None,
     symbol_cap: int = DEFAULT_SYMBOL_CAP,
@@ -400,32 +375,32 @@ async def collect_kr_news(
 
         item_fetcher = fetch_stock_news
 
-    aggregate_report = SourceReport(source=AGGREGATE_FEED_SOURCE)
-    report.sources.append(aggregate_report)
+    mainnews_report = SourceReport(source=MAINNEWS_FEED_SOURCE)
+    report.sources.append(mainnews_report)
     try:
-        aggregate_items = await aggregate_fetcher()
-        aggregate_report.fetched = len(aggregate_items)
-        if db is not None and aggregate_items:
+        mainnews_items = await mainnews_fetcher()
+        mainnews_report.fetched = len(mainnews_items)
+        if db is not None and mainnews_items:
             from app.services.kr_symbol_universe_service import (
                 list_active_kr_symbol_names,
             )
 
             universe = await list_active_kr_symbol_names(db)
-            urls: list[str] = []
-            for item in aggregate_items:
-                # Aggregate articles remain linked to every full-name symbol mention.
+            for item in mainnews_items:
+                # Market-wide articles link to every full-name symbol mention.
                 matches = match_kr_universe_symbols(
                     f"{item['title']}\n{item.get('summary') or ''}", universe
                 )
                 inserted = 0
+                article_ids_by_canonical_url: dict[str, int] = {}
                 if matches:
-                    inserted, _links = await _store_items(
+                    inserted, _links, article_ids_by_canonical_url = await _store_items(
                         db,
-                        feed_source=AGGREGATE_FEED_SOURCE,
+                        feed_source=MAINNEWS_FEED_SOURCE,
                         items=[item],
                         symbols=[match.symbol for match in matches],
                     )
-                    aggregate_report.new += inserted
+                    mainnews_report.new += inserted
                 else:
                     inputs = [
                         symbol_news_store.FeedArticleInput(
@@ -437,21 +412,24 @@ async def collect_kr_news(
                             published_at_raw=item["published"].raw,
                             published_precision=item["published"].precision,
                             published_at_reason=item["published"].reason,
+                            provider_article_id=item.get("provider_article_id"),
                         )
                     ]
-                    inserted, _ = await symbol_news_store.upsert_kr_collector_articles(
-                        db,
-                        None,
-                        inputs,
-                        feed_source=AGGREGATE_FEED_SOURCE,
-                        commit=False,
+                    stored = (
+                        await symbol_news_store.upsert_kr_collector_articles_with_ids(
+                            db,
+                            None,
+                            inputs,
+                            feed_source=MAINNEWS_FEED_SOURCE,
+                            promote_feed_source_on_precision_upgrade=True,
+                            commit=False,
+                        )
                     )
-                    aggregate_report.new += inserted
-                urls.append(item["url"])
+                    inserted = stored.new_articles
+                    article_ids_by_canonical_url = stored.article_ids_by_canonical_url
+                    mainnews_report.new += inserted
                 if matches:
-                    article_id = await db.scalar(
-                        select(NewsArticle.id).where(NewsArticle.url == item["url"])
-                    )
+                    article_id = article_ids_by_canonical_url.get(item["dedupe_url"])
                     if article_id is not None:
                         await symbol_news_store.upsert_related_symbols(
                             db,
@@ -479,8 +457,8 @@ async def collect_kr_news(
                             ],
                             commit=False,
                         )
-            aggregate_report.duplicate = max(
-                0, aggregate_report.fetched - aggregate_report.new
+            mainnews_report.duplicate = max(
+                0, mainnews_report.fetched - mainnews_report.new
             )
             await db.commit()
     except (
@@ -488,9 +466,9 @@ async def collect_kr_news(
     ) as exc:  # source failure must remain distinguishable from an empty feed
         if db is not None:
             await db.rollback()
-        aggregate_report.status = "error"
-        aggregate_report.errors.append(type(exc).__name__)
-        logger.warning("KR aggregate news collection failed: %s", type(exc).__name__)
+        mainnews_report.status = "error"
+        mainnews_report.errors.append(type(exc).__name__)
+        logger.warning("KR main news collection failed: %s", type(exc).__name__)
 
     for symbol in symbols:
         source = SourceReport(source=f"naver_item_news:{symbol}")
@@ -518,6 +496,7 @@ async def collect_kr_news(
                     "source": row.get("source"),
                     "summary": None,
                     "published": published,
+                    "provider_article_id": row.get("provider_article_id"),
                 }
                 normalized.append(item)
             unique: dict[str, dict[str, Any]] = {}
@@ -525,7 +504,7 @@ async def collect_kr_news(
                 unique.setdefault(item["dedupe_url"], item)
             source.fetched = len(normalized)
             if db is not None and unique:
-                inserted, _links = await _store_items(
+                inserted, _links, _article_ids = await _store_items(
                     db,
                     feed_source="naver_item_news",
                     items=list(unique.values()),

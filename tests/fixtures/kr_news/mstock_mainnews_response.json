@@ -1,0 +1,22 @@
+[
+  {
+    "type": "mainnews",
+    "subcontent": "삼성전자가 신제품을 발표했다.",
+    "thumbUrl": "https://imgnews.pstatic.net/image/001/20261126/x.jpg",
+    "oid": "001",
+    "ohnm": "연합뉴스",
+    "aid": "0001234",
+    "tit": "삼성전자 &amp; 반도체",
+    "dt": "20261126213310"
+  },
+  {
+    "type": "mainnews",
+    "subcontent": "국내 시장 소식",
+    "thumbUrl": "",
+    "oid": "009",
+    "ohnm": "한국경제",
+    "aid": "0005678",
+    "tit": "시장 동향",
+    "dt": "20261126214105"
+  }
+]
