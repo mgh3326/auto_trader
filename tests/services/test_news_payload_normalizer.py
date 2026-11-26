@@ -502,7 +502,6 @@ class TestArticleValuesFromIngestorPayload:
             stock_name=None,
             published_at=datetime(2026, 11, 26, 10),
             published_at_raw="2026-11-26T10:00:00-05:00",
-            published_offset="-05:00",
             published_precision="second",
             provider_article_id=None,
             raw={},

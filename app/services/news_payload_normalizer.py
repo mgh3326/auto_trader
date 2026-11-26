@@ -87,21 +87,21 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
             source_time = raw["published_at"]
     published_raw = getattr(article_data, "published_at_raw", None) or source_time
     published_offset = getattr(article_data, "published_offset", None)
-    if published_offset is None and published is not None:
-        raw_offset = published.strftime("%z")
-        if raw_offset:
-            published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
-    if published_offset is None and source_time:
+    if published_offset is None and isinstance(published_raw, str) and published_raw:
         try:
-            raw_datetime = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+            raw_datetime = datetime.fromisoformat(published_raw.replace("Z", "+00:00"))
         except ValueError:
             pass
         else:
             raw_offset = raw_datetime.strftime("%z")
             if raw_offset:
                 published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
+    if published_offset is None and published is not None:
+        raw_offset = published.strftime("%z")
+        if raw_offset:
+            published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
     raw_precision = getattr(article_data, "published_precision", None)
-    if raw_precision is None and published_raw:
+    if raw_precision is None and isinstance(published_raw, str) and published_raw:
         raw_precision = "date" if len(published_raw.strip()) == 10 else "second"
     if published is not None and published.utcoffset() is None:
         if (
