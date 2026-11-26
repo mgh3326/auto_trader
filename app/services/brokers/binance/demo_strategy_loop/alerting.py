@@ -109,6 +109,7 @@ class DataQualityMonitor:
         self._clock = clock
         self._attempted_at: dict[str, dt.datetime] = {}
         self._delivered_at: dict[str, dt.datetime] = {}
+        self._episode_tokens: dict[str, object] = {}
         self._pending: set[asyncio.Task[bool]] = set()
 
     async def tick_done(self, failures: tuple[TickFailure, ...]) -> None:
@@ -119,8 +120,12 @@ class DataQualityMonitor:
             for bucket in self._attempted_at.keys() - current:
                 del self._attempted_at[bucket]
                 self._delivered_at.pop(bucket, None)
+                self._episode_tokens.pop(bucket, None)
             now = self._clock()
             for failure in failures:
+                episode_token = self._episode_tokens.setdefault(
+                    failure.bucket, object()
+                )
                 delivered_at = self._delivered_at.get(failure.bucket)
                 if delivered_at is not None and now - delivered_at < REPEAT_AFTER:
                     continue
@@ -133,7 +138,11 @@ class DataQualityMonitor:
                     continue
                 self._attempted_at[failure.bucket] = now
                 task = asyncio.get_running_loop().create_task(
-                    self._deliver(failure, attempted_at=now)
+                    self._deliver(
+                        failure,
+                        attempted_at=now,
+                        episode_token=episode_token,
+                    )
                 )
                 self._pending.add(task)
                 task.add_done_callback(self._forget)
@@ -141,7 +150,11 @@ class DataQualityMonitor:
             logger.exception("strategy loop data alert hook failed")
 
     async def _deliver(
-        self, failure: TickFailure, *, attempted_at: dt.datetime
+        self,
+        failure: TickFailure,
+        *,
+        attempted_at: dt.datetime,
+        episode_token: object,
     ) -> bool:
         try:
             delivered = bool(
@@ -149,7 +162,7 @@ class DataQualityMonitor:
                     self._send(failure), timeout=SEND_TIMEOUT_SECONDS + 1
                 )
             )
-            if delivered:
+            if delivered and self._episode_tokens.get(failure.bucket) is episode_token:
                 self._delivered_at[failure.bucket] = attempted_at
             return delivered
         except Exception as exc:

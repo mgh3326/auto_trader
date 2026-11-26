@@ -222,3 +222,36 @@ async def test_failed_data_alert_retries_after_five_minutes():
     await monitor.tick_done((failure,))
     await monitor.drain()
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_late_delivery_from_cleared_episode_does_not_suppress_new_episode():
+    from app.services.brokers.binance.demo_strategy_loop.alerting import (
+        DataQualityMonitor,
+        TickFailure,
+    )
+
+    started = asyncio.Event()
+    release_first = asyncio.Event()
+    sent = []
+
+    async def send(failure):
+        sent.append(failure)
+        if len(sent) == 1:
+            started.set()
+            await release_first.wait()
+        return True
+
+    failure = TickFailure("BTCUSDT: data_missing_bars", "data_quality:BTCUSDT")
+    monitor = DataQualityMonitor(enabled=True, send=send)
+    await monitor.tick_done((failure,))
+    await started.wait()
+
+    await monitor.tick_done(())
+    release_first.set()
+    await monitor.drain()
+
+    await monitor.tick_done((failure,))
+    await monitor.drain()
+
+    assert sent == [failure, failure]
