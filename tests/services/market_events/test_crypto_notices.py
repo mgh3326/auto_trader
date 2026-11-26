@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.services.market_events.crypto_notices import (
     BITHUMB_SOURCE,
@@ -23,6 +24,7 @@ from app.services.market_events.crypto_notices import (
     normalize_bithumb_notice,
     normalize_upbit_notice,
 )
+from app.services.market_events.repository import MarketEventsRepository
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "crypto_notices"
 RECEIVED = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
@@ -284,6 +286,32 @@ async def test_older_observation_cannot_replace_a_newer_revision():
     assert repo.events[(BITHUMB_SOURCE, "23001")]["provider_updated_raw"] == (
         "2026-11-26 10:10:00"
     )
+
+
+@pytest.mark.asyncio
+async def test_revision_identity_lock_is_transaction_scoped_and_keyed_by_provider_id():
+    class StatementCapture:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(
+                statement.compile(dialect=postgresql.dialect()).string
+            )
+
+    session = StatementCapture()
+    repository = MarketEventsRepository(session)
+    key = {
+        "source": BITHUMB_SOURCE,
+        "category": "crypto_exchange_notice",
+        "market": "crypto",
+        "source_event_id": "23001",
+    }
+    await repository.lock_revision_identity(**key)
+    await repository.lock_revision_identity(**key)
+
+    assert len(session.statements) == 2
+    assert all("pg_advisory_xact_lock" in statement for statement in session.statements)
 
 
 @pytest.mark.asyncio
