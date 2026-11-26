@@ -29,8 +29,8 @@ from typing import Any
 from app.core.cli import setup_logging_and_sentry
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.services.invest_momentum_events import intraday
 from app.services.brokers.kis.client import KISClient
+from app.services.invest_momentum_events import intraday
 from app.services.naver_stock.client import NaverStockClient
 
 
