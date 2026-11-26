@@ -94,11 +94,12 @@ def parse_list_response(value: Any, *, requested_index: int) -> dict[str, Any]:
 
 def parse_detail_response(value: Any, *, expected_nid: str) -> dict[str, Any]:
     body = _mapping(value, "detail_response")
-    if _nid(body.get("nid")) != expected_nid:
+    content = _mapping(body.get("researchContent"), "detail_response")
+    if _nid(content.get("nid")) != expected_nid:
         raise NaverResearchError("detail_nid_mismatch")
     for key in ("attachUrl", "attachName", "goalPrice", "opinionText", "opinionType"):
-        _text(body.get(key), key)
-    return dict(body)
+        _text(content.get(key), key)
+    return dict(content)
 
 
 def parse_by_items_response(

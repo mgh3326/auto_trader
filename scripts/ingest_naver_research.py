@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class _EmptyRepository:
-    async def known_source_ids(self, *, source: str) -> set[str]:
+    async def known_source_ids(self, *, source: str, category: str) -> set[str]:
         return set()
 
 
@@ -52,10 +52,15 @@ async def main_async(argv: list[str] | None = None) -> int:
                 "report_count": len(result.reports),
                 "category_counts": result.category_counts,
                 "category_errors": result.category_errors,
+                "category_truncated": result.category_truncated,
                 "dedup_keys": [row["dedup_key"] for row in result.reports],
             }
             print(json.dumps(output, ensure_ascii=False))
-            return 1 if result.category_errors else 0
+            return (
+                1
+                if result.category_errors or any(result.category_truncated.values())
+                else 0
+            )
 
         from app.core.db import AsyncSessionLocal
 
@@ -72,10 +77,15 @@ async def main_async(argv: list[str] | None = None) -> int:
             "report_count": len(result.reports),
             "category_counts": result.category_counts,
             "category_errors": result.category_errors,
+            "category_truncated": result.category_truncated,
             "ingestion": response.model_dump() if response else None,
         }
         print(json.dumps(output, ensure_ascii=False))
-        return 1 if result.category_errors else 0
+        return (
+            1
+            if result.category_errors or any(result.category_truncated.values())
+            else 0
+        )
     finally:
         await client.aclose()
 

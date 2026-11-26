@@ -94,6 +94,18 @@ def test_company_detail_capture_html_and_pdf_are_only_short_text_and_reference()
 
 
 @pytest.mark.unit
+def test_detail_parser_unwraps_the_saved_company_response():
+    from app.services.research_reports.naver_client import parse_detail_response
+
+    captured = json.loads(
+        (FIXTURES / "detail-company-98500.json").read_text(encoding="utf-8")
+    )
+    parsed = parse_detail_response(captured, expected_nid="98500")
+    assert parsed["nid"] == "98500"
+    assert parsed["attachUrl"] == captured["researchContent"]["attachUrl"]
+
+
+@pytest.mark.unit
 def test_naver_client_reads_saved_by_items_capture_with_strict_shape():
     from app.services.research_reports.naver_client import parse_by_items_response
 
@@ -104,17 +116,31 @@ def test_naver_client_reads_saved_by_items_capture_with_strict_shape():
 
 
 class _FakeRepository:
-    def __init__(self, known: set[str] | None = None):
+    def __init__(
+        self,
+        known: set[str] | None = None,
+        *,
+        known_by_category: dict[str, set[str]] | None = None,
+    ):
         self.known = known or set()
+        self.known_by_category = known_by_category
 
-    async def known_source_ids(self, *, source: str) -> set[str]:
+    async def known_source_ids(self, *, source: str, category: str) -> set[str]:
         assert source == "naver_research"
+        if self.known_by_category is not None:
+            return set(self.known_by_category.get(category, set()))
         return set(self.known)
 
 
 class _FakeClient:
-    def __init__(self, fail: set[str] | None = None):
+    def __init__(
+        self,
+        fail: set[str] | None = None,
+        *,
+        fail_detail: set[tuple[str, str]] | None = None,
+    ):
         self.fail = fail or set()
+        self.fail_detail = fail_detail or set()
         self.list_calls: list[tuple[str, int]] = []
         self.detail_calls: list[tuple[str, str]] = []
 
@@ -162,6 +188,8 @@ class _FakeClient:
 
     async def detail(self, category: str, nid: str):
         self.detail_calls.append((category, nid))
+        if (category, nid) in self.fail_detail:
+            raise RuntimeError("fixture detail failure")
         return {"nid": nid, "attachUrl": None, "attachName": None}
 
 
@@ -177,6 +205,127 @@ async def test_collector_stops_at_known_nid_without_fetching_or_returning_it():
     assert [row["source_report_id"] for row in result.reports] == ["200"]
     assert client.list_calls == [("company", 0)]
     assert client.detail_calls == [("company", "200")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_scopes_known_ids_and_deduplication_to_category():
+    from app.services.research_reports.naver_collector import collect_naver_reports
+
+    client = _FakeClient()
+    repository = _FakeRepository(
+        known_by_category={"industry": {"200"}, "company": set()}
+    )
+    result = await collect_naver_reports(
+        client, repository, categories=("industry", "company"), size=2
+    )
+    assert [row["category"] for row in result.reports] == ["company", "company"]
+    assert [row["source_report_id"] for row in result.reports] == ["200", "100"]
+    assert result.reports[0]["dedup_key"] == "naver_research:company:200"
+    assert result.reports[1]["dedup_key"] == "naver_research:company:100"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_skips_nid_repeated_by_offset_page_shift():
+    from app.services.research_reports.naver_collector import collect_naver_reports
+
+    class ShiftingClient(_FakeClient):
+        async def list_reports(self, category: str, *, size: int, index: int):
+            self.list_calls.append((category, index))
+            rows = {
+                0: ["200", "100"],
+                2: ["100", "90"],
+            }[index]
+            return {
+                "hasNext": index == 0,
+                "index": index,
+                "items": [
+                    {
+                        "nid": nid,
+                        "title": nid,
+                        "content": "",
+                        "brokerName": None,
+                        "brokerCode": None,
+                        "writeDate": None,
+                        "itemCode": None,
+                        "itemName": None,
+                        "goalPrice": None,
+                        "opinionText": None,
+                        "opinionType": None,
+                    }
+                    for nid in rows
+                ],
+            }
+
+    client = ShiftingClient()
+    result = await collect_naver_reports(
+        client, _FakeRepository(), categories=("company",), size=2
+    )
+    assert [row["source_report_id"] for row in result.reports] == [
+        "200",
+        "100",
+        "90",
+    ]
+    assert client.detail_calls == [
+        ("company", "200"),
+        ("company", "100"),
+        ("company", "90"),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_reports_page_cap_as_truncated_and_logs_warning(
+    monkeypatch, caplog
+):
+    import app.services.research_reports.naver_collector as collector
+
+    class ContinuingClient(_FakeClient):
+        async def list_reports(self, category: str, *, size: int, index: int):
+            self.list_calls.append((category, index))
+            if index:
+                return {"hasNext": False, "index": index, "items": []}
+            return {
+                "hasNext": True,
+                "index": index,
+                "items": [
+                    {
+                        "nid": str(200 - index),
+                        "title": "report",
+                        "content": "",
+                        "brokerName": None,
+                        "brokerCode": None,
+                        "writeDate": None,
+                        "itemCode": None,
+                        "itemName": None,
+                        "goalPrice": None,
+                        "opinionText": None,
+                        "opinionType": None,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(collector, "MAX_PAGES_PER_CATEGORY", 1)
+    result = await collector.collect_naver_reports(
+        ContinuingClient(), _FakeRepository(), categories=("company",), size=1
+    )
+    assert result.category_truncated == {"company": True}
+    assert "reason=page_cap" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_discards_partial_category_when_later_detail_fails():
+    from app.services.research_reports.naver_collector import collect_naver_reports
+
+    client = _FakeClient(fail_detail={("company", "100")})
+    result = await collect_naver_reports(
+        client, _FakeRepository(), categories=("company",), size=2
+    )
+    assert result.category_errors == {"company": "fixture detail failure"}
+    assert result.reports == []
+    assert result.category_counts == {"company": 0}
 
 
 @pytest.mark.unit

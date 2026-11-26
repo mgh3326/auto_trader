@@ -39,11 +39,12 @@ class ResearchReportsRepository:
         await self.db.flush()
         return True
 
-    async def known_source_ids(self, *, source: str) -> set[str]:
-        """Return provider IDs already stored for one source."""
+    async def known_source_ids(self, *, source: str, category: str) -> set[str]:
+        """Return provider IDs already stored for one source category."""
         result = await self.db.execute(
             select(ResearchReport.source_report_id).where(
                 ResearchReport.source == source,
+                ResearchReport.category == category,
                 ResearchReport.source_report_id.is_not(None),
             )
         )

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -19,11 +20,13 @@ from app.services.research_reports.naver_client import (
 from app.services.research_reports.repository import ResearchReportsRepository
 
 PAGE_SIZE = 20
+MAX_PAGES_PER_CATEGORY = 5
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+logger = logging.getLogger(__name__)
 
 
 class KnownReportRepository(Protocol):
-    async def known_source_ids(self, *, source: str) -> set[str]: ...
+    async def known_source_ids(self, *, source: str, category: str) -> set[str]: ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ class CollectionResult:
     reports: list[dict[str, Any]]
     category_errors: dict[str, str]
     category_counts: dict[str, int]
+    category_truncated: dict[str, bool] = field(default_factory=dict)
 
 
 def _decimal_text(value: Any) -> tuple[str | None, str | None]:
@@ -113,7 +117,7 @@ def map_report(
     if pdf_name is not None and type(pdf_name) is not str:
         raise ValueError("invalid_pdf_name")
     return {
-        "dedup_key": f"naver_research:{nid}",
+        "dedup_key": f"naver_research:{category}:{nid}",
         "report_type": "equity_research",
         "source": "naver_research",
         "source_report_id": nid,
@@ -143,16 +147,24 @@ async def collect_naver_reports(
     categories: tuple[str, ...] = CATEGORIES,
     size: int = PAGE_SIZE,
 ) -> CollectionResult:
-    known = await repository.known_source_ids(source="naver_research")
     reports: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
     counts: dict[str, int] = {}
+    truncated: dict[str, bool] = {}
     for category in categories:
+        known = await repository.known_source_ids(
+            source="naver_research", category=category
+        )
         count = 0
         index = 0
+        pages = 0
+        category_reports: list[dict[str, Any]] = []
+        seen_this_run: set[str] = set()
+        truncated[category] = False
         try:
             while True:
                 page = await client.list_reports(category, size=size, index=index)
+                pages += 1
                 items = page["items"]
                 if not items:
                     if page["hasNext"]:
@@ -163,18 +175,35 @@ async def collect_naver_reports(
                     if item["nid"] in known:
                         reached_known = True
                         break
+                    if item["nid"] in seen_this_run:
+                        continue
                     detail = await client.detail(category, item["nid"])
-                    reports.append(map_report(category, item, detail))
-                    known.add(item["nid"])
+                    category_reports.append(map_report(category, item, detail))
+                    seen_this_run.add(item["nid"])
                     count += 1
                 if reached_known or not page["hasNext"]:
+                    break
+                if pages >= MAX_PAGES_PER_CATEGORY:
+                    truncated[category] = True
+                    logger.warning(
+                        "Naver research category truncated at page cap: "
+                        "category=%s reason=page_cap pages=%s",
+                        category,
+                        pages,
+                    )
                     break
                 index += len(items)
         except Exception as exc:
             errors[category] = str(exc)[:160] or type(exc).__name__
+            count = 0
+            category_reports.clear()
+        reports.extend(category_reports)
         counts[category] = count
     return CollectionResult(
-        reports=reports, category_errors=errors, category_counts=counts
+        reports=reports,
+        category_errors=errors,
+        category_counts=counts,
+        category_truncated=truncated,
     )
 
 
@@ -198,7 +227,10 @@ async def run_naver_research_ingestion(
                 "started_at": started_at,
                 "report_count": len(result.reports),
                 "errors": result.category_errors or None,
-                "flags": {"category_counts": result.category_counts},
+                "flags": {
+                    "category_counts": result.category_counts,
+                    "category_truncated": result.category_truncated,
+                },
                 "copyright_notice": "Naver research metadata only; no full text or PDF body",
             },
             "reports": result.reports,
