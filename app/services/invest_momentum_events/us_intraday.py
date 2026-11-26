@@ -361,7 +361,6 @@ async def _fetch_kis_ranking(
 ) -> tuple[SurfaceOutcome, dt.datetime]:
     if kis is None:
         return SurfaceOutcome(STATUS_ERROR, REASON_SOURCE_UNAVAILABLE), clock()
-    received = clock()
     try:
         outcomes = []
         for exchange in KIS_EXCHANGES:
@@ -371,6 +370,7 @@ async def _fetch_kis_ranking(
             outcomes.append(
                 classify_kis_mover_ranking(payload, exchange, source=source, side=side)
             )
+        received = clock()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "us movers kis ranking failed source=%s side=%s error=%s",

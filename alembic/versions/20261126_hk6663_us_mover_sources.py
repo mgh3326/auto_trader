@@ -5,7 +5,7 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "20261126_hk6663_us_mover_sources"
+revision = "20261126_hk6663_movers"
 down_revision = "20261125_hk6582_dart_capital"
 branch_labels = None
 depends_on = None

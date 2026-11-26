@@ -19,6 +19,9 @@ def test_source_check_is_added_not_validated_then_validated():
     expand = _load("20261126_hk6663_us_mover_sources")
     validate = _load("20261126_hk6663_us_mover_sources_val")
     assert expand.down_revision == "20261125_hk6582_dart_capital"
+    assert len(expand.revision) <= 32
+    assert validate.down_revision == expand.revision
+    assert len(validate.revision) <= 32
     assert all(
         source in expand.NEW_SOURCES
         for source in (

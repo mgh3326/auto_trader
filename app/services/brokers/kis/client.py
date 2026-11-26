@@ -516,6 +516,14 @@ class KISClient(BaseKISClient):
             keyb=keyb,
         )
 
+    async def inquire_overseas_mover_ranking(
+        self, ranking_type: str, exchange_code: str, *, side: str
+    ) -> dict[str, Any]:
+        """해외주식 mover ranking 조회를 market-data facade로 위임한다."""
+        return await self._market_data.inquire_overseas_mover_ranking(
+            ranking_type, exchange_code, side=side
+        )
+
     async def fetch_domestic_balance_snapshot(
         self,
         *,

@@ -701,11 +701,12 @@ def classify_toss_rankings(
                 _toss_value(item, "price", "last_price")
                 or _toss_value(item, "price", "lastPrice")
             )
-            change_rate = _decimal(
+            change_rate_ratio = _decimal(
                 _toss_value(item, "price", "change_rate")
                 if _toss_value(item, "price", "change_rate") is not None
                 else _toss_value(item, "price", "changeRate")
             )
+            change_rate = change_rate_ratio * 100 if change_rate_ratio is not None else None
             amount_value = _toss_value(item, "trading_amount")
             if amount_value is None:
                 amount_value = _toss_value(item, "tradingAmount")
@@ -717,6 +718,8 @@ def classify_toss_rankings(
             amount = _decimal(amount_value)
             volume = _int(volume_value)
             reasons = {}
+            reasons["change_amount"] = REASON_NOT_IN_PAYLOAD
+            reasons["name"] = REASON_NOT_IN_PAYLOAD
             for key, val in (
                 ("price", price),
                 ("change_rate", change_rate),
@@ -733,8 +736,8 @@ def classify_toss_rankings(
                     "symbol": symbol,
                     "price": {
                         "lastPrice": str(price) if price is not None else None,
-                        "changeRate": str(change_rate)
-                        if change_rate is not None
+                        "changeRate": str(change_rate_ratio)
+                        if change_rate_ratio is not None
                         else None,
                     },
                     "tradingVolume": str(volume) if volume is not None else None,
@@ -813,6 +816,8 @@ def classify_benzinga_movers(payload: object, side: str) -> SurfaceOutcome:
                     else REASON_NOT_IN_PAYLOAD
                 )
         name = _first(item, "name", "companyName")
+        if not name:
+            reasons["name"] = REASON_NOT_IN_PAYLOAD
         return UsRow(
             source=SOURCE_BENZINGA,
             symbol=symbol,

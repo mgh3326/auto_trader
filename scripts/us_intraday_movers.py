@@ -55,6 +55,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _build_toss_reader() -> TossReadClient | None:
+    try:
+        return TossReadClient.from_settings()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("toss reader unavailable error=%s", type(exc).__name__)
+        return None
+
+
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     gate_on = bool(settings.invest_momentum_events_commit_enabled)
     commit = not args.dry_run and gate_on
@@ -75,14 +83,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - reported as source_unavailable
         logger.warning("kis reader unavailable error=%s", type(exc).__name__)
         kis = None
-    toss: TossReadClient | None = None
-    try:
-        if getattr(settings, "toss_api_client_id", None) and getattr(
-            settings, "toss_api_client_secret", None
-        ):
-            toss = TossReadClient.from_settings()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("toss reader unavailable error=%s", type(exc).__name__)
+    toss = _build_toss_reader()
     benzinga: BenzingaMarketMoversClient | None = None
     try:
         import os
