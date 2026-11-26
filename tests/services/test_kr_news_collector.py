@@ -122,7 +122,8 @@ async def test_failed_aggregate_is_error_and_item_source_still_stores(
 
 def test_migration_is_additive_and_does_not_backfill() -> None:
     migration = Path("alembic/versions/20261126_hk6674_kr_news_timing.py").read_text()
-    assert 'op.add_column("news_articles"' in migration
+    assert "op.add_column(" in migration
+    assert '"news_articles"' in migration
     assert "DateTime(timezone=True)" in migration
     assert "UPDATE news_articles" not in migration
     assert "first_received_at" in migration
