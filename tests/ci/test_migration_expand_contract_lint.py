@@ -79,7 +79,9 @@ def test_pr_merge_lint_uses_first_parent_and_reports_own_migrations(
     _git_output(repo, "add", ".")
     _git_output(repo, "commit", "-m", "PR migration without marker")
     _git_output(repo, "switch", "main")
-    _git_output(repo, "merge", "--no-ff", "pr-with-migration", "-m", "merge PR migration")
+    _git_output(
+        repo, "merge", "--no-ff", "pr-with-migration", "-m", "merge PR migration"
+    )
     own_command = [
         *command[:3],
         own_base_sha,
