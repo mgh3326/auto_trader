@@ -225,7 +225,7 @@ async def test_collector_metadata_enrichment_keeps_publication_tuple_and_revisio
                     "2026-11-25 10:00:00",
                     datetime(2026, 11, 25, 1, 0, tzinfo=UTC),
                     "second",
-                    "+09:00",
+                    None,
                     None,
                     None,
                     "unchanged title",
