@@ -62,6 +62,26 @@ async def collect_official_daily(
                 "inserted": None,
             }
 
+    all_rejected = [m for m in markets if _is_all_rejected(parsed[m])]
+    if all_rejected:
+        # Rows arrived but none passed a check (hk 6925): the exchange payload changed
+        # shape or meaning. Failing loudly keeps the daily DAG red instead of green-empty.
+        return {
+            "session_date": session_date.isoformat(),
+            "status": "failed",
+            "error_code": "all_rows_rejected",
+            "exit_code": 1,
+            "markets": {
+                market: {
+                    "status": "failed" if market in all_rejected else "ok",
+                    "rows": len(parsed[market].rows),
+                    "rejected": dict(parsed[market].rejected),
+                }
+                for market in markets
+            },
+            "inserted": None,
+        }
+
     unpublished = [m for m in markets if _is_unpublished(parsed[m])]
     if unpublished:
         return {
@@ -110,6 +130,11 @@ async def collect_official_daily(
 def _is_unpublished(parsed: ParsedDaily) -> bool:
     """An OutBlock_1 with no entries at all; rejected rows are not this case."""
     return not parsed.rows and not parsed.rejected
+
+
+def _is_all_rejected(parsed: ParsedDaily) -> bool:
+    """Rows were present but every one failed a check; nothing accepted."""
+    return not parsed.rows and bool(parsed.rejected)
 
 
 def _json_row(row: dict[str, Any]) -> dict[str, Any]:

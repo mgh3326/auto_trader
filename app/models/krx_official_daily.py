@@ -16,7 +16,7 @@ from app.models.base import Base
 class KRXOfficialDaily(Base):
     __tablename__ = "krx_official_daily"
     __table_args__ = (
-        CheckConstraint("symbol ~ '^[0-9]{6}$'", name="symbol_short_code"),
+        CheckConstraint("symbol ~ '^[0-9A-Z]{6}$'", name="symbol_short_code"),
         CheckConstraint("market IN ('kospi','kosdaq')", name="market"),
         CheckConstraint("volume IS NULL OR volume >= 0", name="volume_nonnegative"),
         CheckConstraint(
@@ -25,7 +25,8 @@ class KRXOfficialDaily(Base):
         ),
         CheckConstraint(
             "(volume IS NULL AND full_day_zero_volume IS NULL) "
-            "OR (volume IS NOT NULL AND full_day_zero_volume = (volume = 0))",
+            "OR (volume IS NOT NULL AND full_day_zero_volume IS NOT NULL "
+            "AND full_day_zero_volume = (volume = 0))",
             name="zero_volume_matches_volume",
         ),
     )

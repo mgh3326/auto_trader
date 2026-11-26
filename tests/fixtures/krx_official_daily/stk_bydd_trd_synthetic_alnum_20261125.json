@@ -1,0 +1,22 @@
+{
+  "_provenance": "SYNTHETIC (hk 6959). Not an exchange capture. One row uses an alphanumeric KRX short code (0256C0) to exercise the 6-character rule; values are invented and carry no market meaning.",
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20261125",
+      "ISU_CD": "0256C0",
+      "ISU_NM": "합성 영문코드 종목",
+      "MKT_NM": "KOSPI",
+      "SECT_TP_NM": "",
+      "TDD_CLSPRC": "10000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "TDD_OPNPRC": "9900",
+      "TDD_HGPRC": "10100",
+      "TDD_LWPRC": "9800",
+      "ACC_TRDVOL": "1234",
+      "ACC_TRDVAL": "12340000",
+      "MKTCAP": "100000000000",
+      "LIST_SHRS": "10000000"
+    }
+  ]
+}

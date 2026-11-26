@@ -123,9 +123,12 @@ async def test_check_constraints_refuse_bad_symbol_market_and_zero_volume_mismat
     session_date = _unique_session()
     base = _rows(session_date, "903001", "903002")[0]
     bad_cases = (
-        {**base, "symbol": "ABC001"},
+        {**base, "symbol": "abc001"},  # lower-case letters are not a KRX short code
+        {**base, "symbol": "ABC01"},  # five characters
         {**base, "symbol": "903003", "market": "KOSPI"},
         {**base, "symbol": "903004", "full_day_zero_volume": True, "volume": 5},
+        # NULL flag with a present volume: the old CHECK evaluated to NULL and passed.
+        {**base, "symbol": "903005", "volume": 0, "full_day_zero_volume": None},
     )
     for bad in bad_cases:
         with pytest.raises(IntegrityError):
@@ -136,6 +139,35 @@ async def test_check_constraints_refuse_bad_symbol_market_and_zero_volume_mismat
                     first_received_at=datetime(2091, 1, 2, tzinfo=UTC),
                 )
         await db_session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_alphanumeric_short_code_is_stored_and_read_back(db_session) -> None:
+    # Synthetic row (fixtures/krx_official_daily/stk_bydd_trd_synthetic_alnum_20261125.json).
+    session_date = _unique_session()
+    payload = json.loads(
+        (FIXTURE.parent / "stk_bydd_trd_synthetic_alnum_20261125.json").read_text()
+    )
+    stamped = json.loads(
+        json.dumps(payload).replace("20261125", session_date.strftime("%Y%m%d"))
+    )
+    rows = parse_daily_payload(stamped, market="kospi", session_date=session_date).rows
+    assert [row["symbol"] for row in rows] == ["0256C0"]
+
+    inserted = await insert_official_daily(
+        db_session,
+        rows=rows,
+        first_received_at=datetime(2091, 1, 2, 8, 30, tzinfo=UTC),
+    )
+    await db_session.commit()
+    assert inserted == 1
+
+    fact = await read_zero_volume_fact(
+        db_session, symbol="0256C0", session_date=session_date
+    )
+    assert fact["state"] == "traded"
+    assert fact["source"] == "krx_openapi"
 
 
 @pytest.mark.integration
