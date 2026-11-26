@@ -108,9 +108,18 @@ def _kst_day_start(now: datetime) -> datetime:
     return datetime.combine(local.date(), time.min, tzinfo=KST).astimezone(UTC)
 
 
-def _rows_for_current_day(data: UpbitMinutePublicData, market: str, now: datetime):
+def _rows_for_current_day(
+    data: UpbitMinutePublicData,
+    market: str,
+    now: datetime,
+    *,
+    after: datetime | None = None,
+):
     start = _kst_day_start(now)
     cursor = now.astimezone(UTC)
+    checkpoint = after.astimezone(UTC) if after is not None else None
+    if checkpoint is not None and checkpoint < start:
+        checkpoint = None
     by_time = {}
     for _ in range(MAX_PAGES_PER_MARKET):
         page = data.candles(market, cursor)
@@ -120,17 +129,24 @@ def _rows_for_current_day(data: UpbitMinutePublicData, market: str, now: datetim
         if max(stamps) >= cursor:
             raise ValueError("Upbit page is not strictly before its to cursor")
         for candle in page.candles:
-            if start <= candle.time_utc and candle.time_utc + MINUTE_CLOSE_DELAY <= now:
+            if (
+                start <= candle.time_utc
+                and (checkpoint is None or candle.time_utc > checkpoint)
+                and candle.time_utc + MINUTE_CLOSE_DELAY <= now
+            ):
                 by_time[candle.time_utc] = (candle, page.received_at)
         oldest = min(stamps)
-        if oldest <= start:
+        if checkpoint is not None and oldest <= checkpoint:
+            break
+        if checkpoint is None and oldest <= start:
             break
         cursor = oldest
     else:
         raise ValueError(f"current-day backfill exceeded {MAX_PAGES_PER_MARKET} pages")
     # A full final page means the bounded walk may have stopped before midnight.
     if (
-        by_time
+        checkpoint is None
+        and by_time
         and min(by_time) > start
         and page.candles
         and len(page.candles) >= PAGE_SIZE
@@ -202,21 +218,31 @@ async def collect_upbit_minute_candles(
 
     for market in targets:
         try:
-            rows = _rows_for_current_day(data, market, current)
-            inserted = len(rows)
-            if repo is not None and rows:
-                from sqlalchemy import select
+            latest_at = None
+            if repo is not None:
+                from sqlalchemy import func, select
 
+                from app.models.crypto_candles import CryptoCandle1m
                 from app.models.crypto_instruments import CryptoInstrument
 
-                result = await session.execute(
+                instrument_result = await session.execute(
                     select(CryptoInstrument.id).where(
                         CryptoInstrument.venue == "upbit",
                         CryptoInstrument.product == "spot",
                         CryptoInstrument.venue_symbol == market,
                     )
                 )
-                instrument_id = result.scalar_one()
+                instrument_id = int(instrument_result.scalar_one())
+                latest_result = await session.execute(
+                    select(func.max(CryptoCandle1m.time)).where(
+                        CryptoCandle1m.instrument_id == instrument_id,
+                        CryptoCandle1m.source == SOURCE,
+                    )
+                )
+                latest_at = latest_result.scalar_one_or_none()
+            rows = _rows_for_current_day(data, market, current, after=latest_at)
+            inserted = len(rows)
+            if repo is not None and rows:
                 inserted = await repo.insert_rows(
                     rows=[
                         MinuteCandleRow(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -51,16 +52,45 @@ def test_target_union_is_sorted_and_top_n_is_capped() -> None:
 
 def test_parser_uses_documented_response_shape_and_keeps_decimal_values() -> None:
     payload = FIXTURE.read_bytes()
-    now = datetime(2026, 11, 26, 0, 2, tzinfo=UTC)
+    now = datetime(2025, 7, 1, 12, 2, tzinfo=UTC)
     data = UpbitMinutePublicData(
         lambda _url: FetchResponse(200, payload),
         pacer=Pacer(0, sleep=lambda _: None),
         clock=lambda: now,
     )
     page = data.candles("KRW-BTC", now)
-    assert len(page.candles) == 2
-    assert str(page.candles[0].quote_volume) == "1234567.89"
-    assert page.candles[0].time_utc == datetime(2026, 11, 26, 0, 0, tzinfo=UTC)
+    assert len(page.candles) == 1
+    assert str(page.candles[0].quote_volume) == "4022470467.03403"
+    assert page.candles[0].time_utc == datetime(2025, 7, 1, 12, 0, tzinfo=UTC)
+
+
+def test_target_ranking_uses_24h_quote_value() -> None:
+    def fetch(url: str) -> FetchResponse:
+        if url.endswith("market/all?isDetails=false"):
+            return FetchResponse(
+                200,
+                b'[{"market":"KRW-AAA"},{"market":"KRW-BBB"},{"market":"KRW-CCC"}]',
+            )
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        markets = query["markets"][0].split(",")
+        records = {
+            "KRW-AAA": 10,
+            "KRW-BBB": 30,
+            "KRW-CCC": 20,
+        }
+        return FetchResponse(
+            200,
+            json.dumps(
+                [
+                    {"market": market, "acc_trade_price_24h": records[market]}
+                    for market in markets
+                ]
+            ).encode(),
+        )
+
+    data = UpbitMinutePublicData(fetch, pacer=Pacer(0, sleep=lambda _: None))
+    markets = data.markets()
+    assert data.top_by_trade_value(markets, 2) == ["KRW-BBB", "KRW-CCC"]
 
 
 class FakeData:
@@ -104,6 +134,24 @@ def test_forming_minute_is_excluded_and_closed_bar_is_returned_once() -> None:
     assert [row.time_utc for row, _ in rows] == [
         datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
     ]
+
+
+def test_existing_latest_bar_limits_repeat_fetch_to_newer_rows() -> None:
+    now = datetime(2026, 11, 26, 15, 5, tzinfo=UTC)
+    page = CandlePage(
+        tuple(
+            candle("KRW-BTC", datetime(2026, 11, 26, 15, minute, tzinfo=UTC))
+            for minute in (3, 2, 1)
+        ),
+        now,
+    )
+    rows = _rows_for_current_day(
+        FakeData({"KRW-BTC": [page]}),
+        "KRW-BTC",
+        now,
+        after=datetime(2026, 11, 26, 15, 1, tzinfo=UTC),
+    )
+    assert [row.time_utc.minute for row, _ in rows] == [2, 3]
 
 
 @pytest.mark.asyncio
