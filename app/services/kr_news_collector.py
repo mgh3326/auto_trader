@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
 MAINNEWS_FEED_SOURCE = "http_naver_mstock_mainnews"
 MAINNEWS_URL = "https://m.stock.naver.com/api/news/list"
+# Naver answers HTTP 400 above 50 (verified 2026-11-26 from the pi: 20/50 → 200, 100 → 400).
+MAINNEWS_PAGE_SIZE = 50
 DEFAULT_SYMBOL_CAP = 30
 
 
@@ -157,7 +159,8 @@ async def fetch_mainnews(
                 return response.json()
 
     payload = await get_json(
-        MAINNEWS_URL, {"category": "mainnews", "page": 1, "pageSize": 100}
+        MAINNEWS_URL,
+        {"category": "mainnews", "page": 1, "pageSize": MAINNEWS_PAGE_SIZE},
     )
     if not isinstance(payload, list):
         raise ValueError("mainnews_payload_shape")

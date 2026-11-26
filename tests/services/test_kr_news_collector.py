@@ -88,7 +88,7 @@ async def test_mainnews_parser_uses_recorded_shape_and_canonical_article_identit
     assert rows[0]["published"].value == datetime(2026, 11, 26, 12, 33, 10, tzinfo=UTC)
     assert request == {
         "url": collector.MAINNEWS_URL,
-        "params": {"category": "mainnews", "page": 1, "pageSize": 100},
+        "params": {"category": "mainnews", "page": 1, "pageSize": 50},
     }
 
 
