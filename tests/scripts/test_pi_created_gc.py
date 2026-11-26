@@ -26,7 +26,7 @@ def test_script_only_targets_never_started_auto_trader_job_containers() -> None:
     # The old broad at-* exclusion also skipped named job containers; it must be gone.
     assert "shiftgate-*|at-*) continue" not in text
     assert '[ "${started:0:4}" = "0001" ] || continue' in text
-    assert "86400" in text
+    assert "3600" in text and "86400" not in text
     # Removal only with --apply, one container at a time; never images or volumes.
     assert 'apply=0; [ "${1:-}" = "--apply" ] && apply=1' in text
     assert 'docker rm "$id"' in text
@@ -39,7 +39,7 @@ def test_script_only_targets_never_started_auto_trader_job_containers() -> None:
 
 def test_dag_runs_daily_on_pi_with_apply() -> None:
     doc = yaml.safe_load(DAG.read_text())
-    assert doc["schedule"] == "CRON_TZ=Asia/Seoul 30 5 * * *"
+    assert doc["schedule"] == "CRON_TZ=Asia/Seoul 30 * * * *"
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
     (step,) = doc["steps"]
