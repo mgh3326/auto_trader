@@ -276,13 +276,22 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 
 - 수동 실행: `python -m scripts.collect_kr_news [--dry-run|--commit] [--symbols 005930,000660]`.
   기본은 DB 연결 없는 드라이런이다. 저장 수집은 `symbol_news_store`만 사용한다.
-- 매 실행 `http_naver_stock_aggregate`의 main/flash/ranking/focus 집계와 작은 국내 종목 집합
-  (보유 ∪ 활성 watch ∪ 오늘의 국내 `first_captures`, 기본 상한 30)을 수집한다. 상한 절단 종목은
+- 매 실행 시장 전체 `https://m.stock.naver.com/api/news/list?category=mainnews&page=1&pageSize=100` 피드
+  (`http_naver_mstock_mainnews`)와 작은 국내 종목 집합
+  (보유 ∪ 활성 watch ∪ 오늘의 국내 `first_captures`, 기본 상한 30)의
+  `https://m.stock.naver.com/api/news/stock/{code}?page=1&pageSize=20` 피드를 수집한다.
+  mainnews 기사 ID는 `oid+aid`, canonical URL은
+  `https://n.news.naver.com/mnews/article/{oid}/{aid}`이며 Naver의 `dt`는 KST 초 단위다.
+  종목별 `datetime`은 KST 분 단위이고 제목 HTML entity를 unescape한다. 기존
+  `http_naver_stock_aggregate` 행은 읽기 호환만 유지하며 새 행에는 사용하지 않는다.
+  상한 절단 종목은
   JSON `symbol_cut_list`에 출처와 함께 남긴다. 종목별 Naver 뉴스 조회 실패는 해당 source의 error로
   보고하고 다른 source 처리는 계속한다. 보고서의 source별 `fetched`/`new`/`duplicate`/`errors`는
   정상 빈 응답과 조회 실패를 구분한다.
 - `news_articles.published_at_raw`는 제공자 시각 문자열 원문이고 `published_at`은 시간대가 있는 UTC 시각,
   `published_precision`은 `second`/`minute`/`date`다. Naver의 시간대 없는 값은 KST로 해석한다.
+  spike attribution은 `http_naver_mstock_mainnews` 중 `published_precision=second`만 KR exact로
+  인정하며 minute 정밀도 행은 시각 미확정으로 처리한다. 기존 aggregate source 행은 과거 clock 계약으로 읽는다.
   해석 실패는 parsed 시각·정밀도 NULL과 `published_at_reason`으로 남긴다. `first_received_at`은 최초
   INSERT 시각으로 URL 재수집에서 바뀌지 않는다. `article_published_at`은 기존 읽기 경로 호환을 위해
   유지한다. 신규 열은 기존 행을 backfill하지 않는다.

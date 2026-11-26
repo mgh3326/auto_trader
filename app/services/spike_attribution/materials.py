@@ -61,13 +61,13 @@ class FeedClock:
     """
 
     tz: ZoneInfo | None
-    precision: str  # "exact" | "date_only" | "unknown"
+    precision: str  # "exact" | "minute" | "date_only" | "unknown"
     confirmed: bool
     basis: str
 
 
-# KST wall-clock, confirmed by the 2026-08 publish-hour histogram: the KR
-# aggregate feed peaks 08:00-17:00 and empties overnight.
+# KST wall-clock for the second-precision mainnews endpoint. Legacy aggregate
+# rows retain their prior confirmed KST clock for read compatibility.
 _KR_EXACT = FeedClock(
     tz=_KST,
     precision="exact",
@@ -81,6 +81,12 @@ _KR_DATE_ONLY = FeedClock(
     confirmed=False,
     basis="all_rows_stored_at_midnight_time_of_day_not_captured",
 )
+_KR_MINUTE_NOT_EXACT = FeedClock(
+    tz=_KST,
+    precision="minute",
+    confirmed=False,
+    basis="provider_precision_minute_not_exact_for_kr_spike_attribution",
+)
 # US feeds look like naive UTC, but "looks like" is not a confirmation and a
 # 9-13 hour error would silently flip pre-move / post-move rulings.
 _US_UNCONFIRMED = FeedClock(
@@ -91,13 +97,14 @@ _US_UNCONFIRMED = FeedClock(
 )
 
 FEED_CLOCKS: dict[str, FeedClock] = {
+    "http_naver_mstock_mainnews": _KR_EXACT,
     "http_naver_stock_aggregate": _KR_EXACT,
     "browser_naver_research": _KR_DATE_ONLY,
     "browser_naver_research_company": _KR_DATE_ONLY,
     "browser_naver_research_economy": _KR_DATE_ONLY,
     "browser_naver_research_industry": _KR_DATE_ONLY,
     "browser_naver_research_invest": _KR_DATE_ONLY,
-    "naver_item_news": _KR_DATE_ONLY,
+    "naver_item_news": _KR_MINUTE_NOT_EXACT,
     "rss_yahoo_finance_topstories": _US_UNCONFIRMED,
     "rss_cnbc_us_markets": _US_UNCONFIRMED,
     "rss_cnbc_earnings": _US_UNCONFIRMED,
@@ -131,6 +138,19 @@ EXTERNALLY_JUDGED_STATUSES: frozenset[str] = frozenset({"confirmed", "excluded"}
 
 def feed_clock(feed_source: str | None) -> FeedClock:
     return FEED_CLOCKS.get(feed_source or "", _UNREGISTERED)
+
+
+def _news_feed_clock(
+    feed_source: str | None, published_precision: str | None
+) -> FeedClock:
+    clock = feed_clock(feed_source)
+    if feed_source == "http_naver_mstock_mainnews":
+        if published_precision == "second":
+            return clock
+        if published_precision == "minute":
+            return _KR_MINUTE_NOT_EXACT
+        return _UNREGISTERED
+    return clock
 
 
 def _localize(naive: dt.datetime | None, clock: FeedClock) -> dt.datetime | None:
@@ -224,6 +244,7 @@ async def _load_news_evidence(
                a.title        AS title,
                a.source       AS source,
                a.feed_source  AS feed_source,
+               a.published_precision AS published_precision,
                a.article_published_at AS published_at,
                r.status       AS rel_status,
                r.relationship AS rel_relationship,
@@ -259,7 +280,7 @@ async def _load_news_evidence(
 
     items: list[EvidenceItem] = []
     for row in rows:
-        clock = feed_clock(row.feed_source)
+        clock = _news_feed_clock(row.feed_source, row.published_precision)
         published = _localize(row.published_at, clock)
         eligibility = (
             rule_eligibility(

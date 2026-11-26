@@ -12,6 +12,7 @@ from app.services.spike_attribution.materials import (
     DAILY_TABLE_BY_MARKET,
     FEED_CLOCKS,
     feed_clock,
+    _news_feed_clock,
 )
 from tests.services.spike_attribution.test_attribute import make_event
 
@@ -24,13 +25,30 @@ def test_kr_aggregate_feed_is_a_confirmed_exact_kst_clock() -> None:
     assert clock.basis
 
 
+def test_mstock_mainnews_is_exact_only_with_second_precision() -> None:
+    exact = _news_feed_clock("http_naver_mstock_mainnews", "second")
+    minute = _news_feed_clock("http_naver_mstock_mainnews", "minute")
+    missing = _news_feed_clock("http_naver_mstock_mainnews", None)
+    assert exact.confirmed is True
+    assert exact.precision == "exact"
+    assert minute.confirmed is False
+    assert minute.precision == "minute"
+    assert missing.confirmed is False
+    assert missing.precision == "unknown"
+
+
+def test_naver_item_news_minute_precision_is_not_exact() -> None:
+    clock = feed_clock("naver_item_news")
+    assert clock.confirmed is False
+    assert clock.precision == "minute"
+
+
 @pytest.mark.parametrize(
     "feed",
     [
         "browser_naver_research",
         "browser_naver_research_company",
         "browser_naver_research_industry",
-        "naver_item_news",
     ],
 )
 def test_date_only_kr_feeds_are_never_treated_as_eligible(feed: str) -> None:
