@@ -237,6 +237,7 @@ tests/services/market_events/test_coverage_gate.py
 tests/services/market_events/test_crypto_notices.py
 tests/services/market_events/test_kis_ksd_dividends.py
 tests/services/market_events/test_kis_ksd_events.py
+tests/services/market_events/test_naver_disclosures.py
 tests/services/market_events/test_official_event_format.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/minute_candles/test_upbit_collector.py

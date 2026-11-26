@@ -110,6 +110,23 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 - 기존 시장 이벤트 조회의 `values`에 구조화 수치가 포함되고 MCP `get_disclosures(include_values=True)`는
   저장된 수치를 접수번호별로 조회한다. MCP 기본 응답은 기존과 동일하다.
 
+### 네이버 종목별 공시 접수 시각 및 KRX/NXT 세션 대조 (hk 6777)
+
+`scripts/collect_naver_disclosures.py`는 공개 네이버 종목별 공시 JSON을 읽어 `MarketEventsRepository`로만
+`market_events`에 기록한다. 기본은 dry-run이고 `--commit`만 삽입한다. taxonomy의 source는
+`naver_disclosure`, category는 `disclosure`, market은 `kr`, symbol은 6자리 코드, provider ID는
+`disclosureId`다. 네이버의 zone-less `datetime`은 `Asia/Seoul`로 해석해 UTC `provider_created_at`에,
+원 문자열은 `provider_created_raw`와 raw payload에 함께 보존하고, `event_date`는 KST 날짜다.
+`first_received_at`은 응답 후 수집기 시계이며 provider ID 충돌 시 기존 행·최초 수신 시각을 그대로 둔다.
+종목별 페이지 조회는 최신 저장 시각보다 모든 행이 새로울 때만 다음 페이지로 진행하고 최대 5페이지다.
+
+같은 심볼·KST 날짜·공백과 Unicode 호환형만 정규화한 제목이 유일하게 일치하는 저장 DART disclosure가
+있으면 그 접수번호만 네이버 행 `raw_payload_json.dart_rcept_no`에 기록한다. DART 행은 갱신하지 않는다.
+`scripts/diagnose_kr_sessions.py --date YYYY-MM-DD`는 네이버 세션 JSON을 한 번 읽어 exchange × market별
+창을 `session_segment_of`가 해당 날짜에 내는 경계와 대조한다. 진단은 read-only이며 mismatch가 하나라도
+있으면 exit 1, 그 밖에는 exit 0이다. HTTP 실패는 `unavailable` verdict로 출력한다.
+`deploy/dagu/at-naver-disclosures/`는 평일 07:30–20:00 KST 5분 주기의 미등록 사본이다.
+
 ### Benzinga calendar ingestion (hk 6513)
 
 운영자 결정 `hk:doc decision/2026-11-25/at-benzinga-trial-front-use`: 체험 요금제 기간에는 Benzinga 캘린더를 결정
