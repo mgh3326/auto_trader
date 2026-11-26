@@ -171,6 +171,18 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # hk 6674 news columns are newer than the stamped boundary. Drop
+            # current metadata columns so the migration can add them.
+            for column in (
+                "published_at_raw",
+                "published_at",
+                "published_precision",
+                "published_at_reason",
+                "first_received_at",
+            ):
+                await connection.execute(
+                    text(f"ALTER TABLE news_articles DROP COLUMN IF EXISTS {column}")
+                )
             # hk 4178 is newer than the stamped boundary. Remove the current
             # metadata objects so the migration creates and tests both of them.
             await connection.execute(
