@@ -34,7 +34,13 @@ async def insert_market_daily(
         if not rows:
             result_counts[name] = 0
             continue
-        values = [{**row, "first_received_at": first_received_at} for row in rows]
+        values = [
+            {
+                **row,
+                "first_received_at": row.get("first_received_at", first_received_at),
+            }
+            for row in rows
+        ]
         result = await session.execute(
             insert(model).values(values).on_conflict_do_nothing()
         )

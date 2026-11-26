@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from app.models.kr_market_daily import KRMarketBreadth
+from app.services.kr_market_daily import collector as market_daily_collector
 from app.services.kr_market_daily.client import (
     BreadthFetchError,
     NaverMarketDailyClient,
@@ -56,6 +57,42 @@ def test_deposit_fixture_confirms_hundred_million_krw_unit() -> None:
     assert row["customer_deposit"] == Decimal("62500.25")
 
 
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_decimal_parser_rejects_nonfinite_values(value: str) -> None:
+    payload = {
+        "content": [
+            {
+                "bizdate": "20261125",
+                "netAmounts": [
+                    {
+                        "investorGubun": "8000",
+                        "diffValue": value,
+                        "buyPrice": "0",
+                        "sellPrice": "0",
+                        "buyQuant": "0",
+                        "sellQuant": "0",
+                    }
+                ],
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="finite"):
+        parse_investor_rows(payload, date(2026, 11, 25))
+
+
+@pytest.mark.parametrize("value", [None, "bad", "20260230"])
+def test_investor_parser_rejects_missing_or_invalid_bizdate(value: Any) -> None:
+    with pytest.raises(ValueError, match="bizdate"):
+        parse_investor_rows({"content": [{"bizdate": value}]}, date(2026, 11, 25))
+
+
+def test_breadth_parser_requires_stock_identity() -> None:
+    with pytest.raises(ValueError, match="stockCode"):
+        parse_breadth_page(
+            {"totalCount": 1, "stocks": [{"compareToPreviousClosePrice": "1"}]}
+        )
+
+
 def test_breadth_key_keeps_intraday_and_after_close_observations() -> None:
     assert [
         column.name for column in KRMarketBreadth.__table__.primary_key.columns
@@ -67,7 +104,11 @@ def test_breadth_key_keeps_intraday_and_after_close_observations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_breadth_fetch_stores_partial_page_as_incomplete() -> None:
+async def test_breadth_fetch_stores_partial_page_as_incomplete(monkeypatch) -> None:
+    from app.services.research_candles import session_segment
+
+    monkeypatch.setattr(session_segment, "session_segment_of", lambda *_: "KRX_REGULAR")
+
     class FakeClient:
         async def fetch_breadth(self, market: str) -> dict[str, Any]:
             return {
@@ -96,6 +137,94 @@ async def test_breadth_fetch_stores_partial_page_as_incomplete() -> None:
     )
     assert result["breadth"][0]["complete"] is False
     assert result["breadth"][0]["fetched_count"] < result["breadth"][0]["total_count"]
+
+
+@pytest.mark.asyncio
+async def test_breadth_is_skipped_when_krx_session_segment_is_unknown(
+    monkeypatch,
+) -> None:
+    from app.services.research_candles import session_segment
+
+    monkeypatch.setattr(session_segment, "session_segment_of", lambda *_: "UNKNOWN")
+
+    class FakeClient:
+        breadth_calls = 0
+
+        async def fetch_breadth(self, market: str) -> dict[str, Any]:
+            self.breadth_calls += 1
+            return {}
+
+        async def fetch_investors(
+            self, market: str, bizdate: date
+        ) -> list[dict[str, Any]]:
+            return []
+
+        async def fetch_deposits(self) -> list[dict[str, Any]]:
+            return []
+
+    client = FakeClient()
+    result = await collect_market_daily(
+        target_date=date(2026, 11, 26),
+        today=date(2026, 11, 26),
+        client=client,
+        now=datetime(2026, 11, 26, 6, 40, tzinfo=UTC),
+    )
+    assert client.breadth_calls == 0
+    assert result["breadth"] == []
+
+
+@pytest.mark.asyncio
+async def test_first_received_at_is_captured_after_each_source_returns(
+    monkeypatch,
+) -> None:
+    from app.services.research_candles import session_segment
+
+    monkeypatch.setattr(session_segment, "session_segment_of", lambda *_: "KRX_REGULAR")
+    base = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
+
+    class Clock:
+        calls = 0
+
+        @classmethod
+        def now(cls, tz: Any) -> datetime:
+            value = base + timedelta(seconds=cls.calls)
+            cls.calls += 1
+            return value
+
+    monkeypatch.setattr(market_daily_collector, "datetime", Clock)
+
+    class FakeClient:
+        async def fetch_breadth(self, market: str) -> dict[str, Any]:
+            return {
+                "market": market,
+                "up_count": 1,
+                "down_count": 0,
+                "flat_count": 0,
+                "total_count": 1,
+                "fetched_count": 1,
+                "complete": True,
+            }
+
+        async def fetch_investors(
+            self, market: str, bizdate: date
+        ) -> list[dict[str, Any]]:
+            return [{"investor_code": market}]
+
+        async def fetch_deposits(self) -> list[dict[str, Any]]:
+            return [{"bizdate": date(2026, 11, 25)}]
+
+    result = await market_daily_collector.collect_market_daily(
+        target_date=date(2026, 11, 26),
+        today=date(2026, 11, 26),
+        client=FakeClient(),
+    )
+    timestamps = [
+        row["first_received_at"]
+        for group in ("breadth", "investor_groups", "deposit_credit")
+        for row in result[group]
+    ]
+    assert len(timestamps) == 5
+    assert len(set(timestamps)) == 5
 
 
 @pytest.mark.asyncio
@@ -189,8 +318,11 @@ async def test_404_is_a_typed_failure_not_an_empty_payload() -> None:
             return Response()
 
     class Http:
+        def __init__(self) -> None:
+            self.client = Client()
+
         def AsyncClient(self, **_: object) -> Client:
-            return Client()
+            return self.client
 
     with pytest.raises(BreadthFetchError):
         await NaverMarketDailyClient(http=Http()).get_json(
@@ -198,3 +330,56 @@ async def test_404_is_a_typed_failure_not_an_empty_payload() -> None:
             {},
             BreadthFetchError,
         )
+
+
+@pytest.mark.asyncio
+async def test_breadth_fetch_rejects_duplicate_symbols_across_pages() -> None:
+    class Response:
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class Client:
+        def __init__(self) -> None:
+            self.payloads = iter(
+                (
+                    {
+                        "totalCount": 2,
+                        "stocks": [
+                            {"stockCode": "A", "compareToPreviousClosePrice": "1"}
+                        ],
+                    },
+                    {
+                        "totalCount": 2,
+                        "stocks": [
+                            {"stockCode": "A", "compareToPreviousClosePrice": "1"}
+                        ],
+                    },
+                )
+            )
+
+        async def __aenter__(self) -> Client:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, *_: object, **__: object) -> Response:
+            return Response(next(self.payloads))
+
+    class Http:
+        def AsyncClient(self, **_: object) -> Client:
+            return Client()
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    with pytest.raises(BreadthFetchError, match="breadth payload invalid"):
+        await NaverMarketDailyClient(http=Http(), sleep=no_sleep).fetch_breadth("KOSPI")

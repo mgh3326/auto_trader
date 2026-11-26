@@ -459,6 +459,15 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # is in Base.metadata, so create_all built it and the migration
             # would collide with "already exists" unless it is dropped here.
             await connection.execute(text("DROP TABLE kr_symbol_trading_flags"))
+            # hk 6786 tables are newer than this stamped boundary and already
+            # exist because current Base.metadata created them above. Drop them
+            # so the migration can exercise the upgrade/downgrade round trip.
+            for table in (
+                "kr_market_breadth",
+                "kr_market_investor_net",
+                "kr_market_deposit_credit",
+            ):
+                await connection.execute(text(f"DROP TABLE public.{table}"))
             # hk 4702 trend state tables are later too (intents reference signals).
             await connection.execute(text("DROP TABLE review.binance_trend_intents"))
             await connection.execute(text("DROP TABLE review.binance_trend_signals"))

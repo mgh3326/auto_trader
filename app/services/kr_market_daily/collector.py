@@ -18,36 +18,59 @@ async def collect_market_daily(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Fetch facts and optionally insert them; no source failure is an empty success."""
-    received_at = now or datetime.now(UTC)
     breadth: list[dict[str, Any]] = []
     if target_date == today:
         from app.services.research_candles.session_segment import (
+            KRX_AFTER,
             KRX_REGULAR,
             session_segment_of,
         )
 
-        segment = session_segment_of("kr", "KRX", received_at)
-        label = "intraday" if segment == KRX_REGULAR else "after_close"
         for market in ("KOSPI", "KOSDAQ"):
-            row = await client.fetch_breadth(market)
-            breadth.append(
-                {
-                    **row,
-                    "trade_date": target_date,
-                    "session_label": label,
-                    "observed_at": received_at,
-                    "source": SOURCE,
-                }
-            )
+            started_at = now or datetime.now(UTC)
+            segment = session_segment_of("kr", "KRX", started_at)
+            label = {KRX_REGULAR: "intraday", KRX_AFTER: "after_close"}.get(segment)
+            if label is not None:
+                row = await client.fetch_breadth(market)
+                observed_at = now or datetime.now(UTC)
+                received_segment = session_segment_of("kr", "KRX", observed_at)
+                received_label = {
+                    KRX_REGULAR: "intraday",
+                    KRX_AFTER: "after_close",
+                }.get(received_segment)
+                if received_label is None:
+                    continue
+                breadth.append(
+                    {
+                        **row,
+                        "trade_date": target_date,
+                        "session_label": received_label,
+                        "observed_at": observed_at,
+                        "source": SOURCE,
+                        "first_received_at": observed_at,
+                    }
+                )
 
     investors: list[dict[str, Any]] = []
     for market in ("KOSPI", "KOSDAQ"):
+        rows = await client.fetch_investors(market, target_date)
+        received_at = now or datetime.now(UTC)
         investors.extend(
-            {**row, "market": market, "trade_date": target_date, "source": SOURCE}
-            for row in await client.fetch_investors(market, target_date)
+            {
+                **row,
+                "market": market,
+                "trade_date": target_date,
+                "source": SOURCE,
+                "first_received_at": received_at,
+            }
+            for row in rows
         )
 
-    deposits = [{**row, "source": SOURCE} for row in await client.fetch_deposits()]
+    rows = await client.fetch_deposits()
+    received_at = now or datetime.now(UTC)
+    deposits = [
+        {**row, "source": SOURCE, "first_received_at": received_at} for row in rows
+    ]
     inserted = None
     if session is not None:
         inserted = await insert_market_daily(

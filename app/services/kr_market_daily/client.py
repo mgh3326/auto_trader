@@ -100,9 +100,12 @@ def _decimal(value: object, *, field: str) -> Decimal:
     if not text:
         raise ValueError(f"{field} is empty")
     try:
-        return Decimal(text)
+        result = Decimal(text)
     except InvalidOperation as exc:
         raise ValueError(f"{field} is not decimal") from exc
+    if not result.is_finite():
+        raise ValueError(f"{field} must be finite")
+    return result
 
 
 def _items(payload: object, key: str) -> list[Mapping[str, Any]]:
@@ -119,6 +122,10 @@ def parse_breadth_page(payload: object) -> tuple[int, list[Mapping[str, Any]]]:
     total = payload.get("totalCount")
     if type(total) is not int or total < 0:
         raise ValueError("breadth totalCount must be a nonnegative integer")
+    for row in rows:
+        code = row.get("stockCode")
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("breadth stockCode must be a nonempty string")
     return total, rows
 
 
@@ -141,8 +148,20 @@ def parse_investor_rows(payload: object, expected_date: date) -> list[dict[str, 
     rows = _items(payload, "content")
     output: list[dict[str, Any]] = []
     for row in rows:
-        bizdate = str(row.get("bizdate", ""))
-        if bizdate != expected_date.strftime("%Y%m%d"):
+        raw_bizdate = row.get("bizdate")
+        if (
+            not isinstance(raw_bizdate, str)
+            or len(raw_bizdate) != 8
+            or not raw_bizdate.isdigit()
+        ):
+            raise ValueError("investor bizdate must be YYYYMMDD")
+        try:
+            bizdate = date(
+                int(raw_bizdate[:4]), int(raw_bizdate[4:6]), int(raw_bizdate[6:])
+            )
+        except ValueError as exc:
+            raise ValueError("investor bizdate is invalid") from exc
+        if bizdate != expected_date:
             continue
         amounts = row.get("netAmounts")
         if not isinstance(amounts, list) or any(
@@ -211,6 +230,7 @@ class NaverMarketDailyClient(_Client):
             raise BreadthFetchError("unsupported breadth market")
         url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}"
         rows: list[Mapping[str, Any]] = []
+        symbols: set[str] = set()
         total: int | None = None
         page = 1
         try:
@@ -225,8 +245,13 @@ class NaverMarketDailyClient(_Client):
                     total = page_total
                 elif total != page_total:
                     raise ValueError("breadth totalCount changed while paging")
+                for row in page_rows:
+                    code = row["stockCode"]
+                    if code in symbols:
+                        raise ValueError("breadth pages contain duplicate stockCode")
+                    symbols.add(code)
                 rows.extend(page_rows)
-                if not page_rows or len(rows) >= total:
+                if not page_rows or len(symbols) >= total:
                     break
                 page += 1
             up, down, flat = count_breadth(rows)
@@ -241,8 +266,8 @@ class NaverMarketDailyClient(_Client):
             "down_count": down,
             "flat_count": flat,
             "total_count": total,
-            "fetched_count": len(rows),
-            "complete": len(rows) == total,
+            "fetched_count": len(symbols),
+            "complete": len(symbols) == total,
         }
 
     async def fetch_investors(self, market: str, bizdate: date) -> list[dict[str, Any]]:

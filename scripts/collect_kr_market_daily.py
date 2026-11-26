@@ -85,7 +85,7 @@ def main() -> int:
     args = parse_args()
     from app.core.cli import setup_logging_and_sentry
 
-    setup_logging_and_sentry()
+    setup_logging_and_sentry(service_name="collect_kr_market_daily")
     return asyncio.run(run(args))
 
 
