@@ -16,6 +16,7 @@ from app.services.brokers.pre_send_account import PRE_SEND_ACCOUNT
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
+    TossInvestorRanking,
     TossListedStock,
     TossMarketIndicatorPrice,
     TossMarketInvestorTradingPage,
@@ -27,14 +28,15 @@ from app.services.brokers.toss.dto import (
     TossRankings,
     TossStockInvestorTradingPage,
     TossStockInvestorTradingRecord,
-    TossWarningInfo,
     TossTradingTrendPage,
-    TossInvestorRanking,
+    TossWarningInfo,
     parse_accounts,
     parse_buying_power,
     parse_candles,
     parse_commissions,
+    parse_credit_trades_page,
     parse_holdings,
+    parse_investor_trading_rankings,
     parse_listed_stocks,
     parse_market_indicator_prices,
     parse_market_investor_trading_page,
@@ -44,16 +46,14 @@ from app.services.brokers.toss.dto import (
     parse_order_placement_result,
     parse_orders,
     parse_prices,
+    parse_program_trades_page,
     parse_rankings,
+    parse_securities_lending_page,
     parse_sellable_quantity,
+    parse_short_selling_page,
     parse_stock_investor_trading_page,
     parse_stocks,
     parse_warnings,
-    parse_short_selling_page,
-    parse_securities_lending_page,
-    parse_credit_trades_page,
-    parse_program_trades_page,
-    parse_investor_trading_rankings,
 )
 from app.services.brokers.toss.errors import (
     TossApiResponseError,
@@ -478,8 +478,11 @@ class TossReadClient:
         self, symbol: str, *, count: int = 20, until: str | None = None
     ) -> TossTradingTrendPage:
         return await self._stock_trading_trend(
-            symbol, "securities-lending", parse_securities_lending_page,
-            count=count, until=until,
+            symbol,
+            "securities-lending",
+            parse_securities_lending_page,
+            count=count,
+            until=until,
         )
 
     async def stock_credit_trades(
@@ -493,7 +496,11 @@ class TossReadClient:
         self, symbol: str, *, count: int = 20, until: str | None = None
     ) -> TossTradingTrendPage:
         return await self._stock_trading_trend(
-            symbol, "program-trades", parse_program_trades_page, count=count, until=until
+            symbol,
+            "program-trades",
+            parse_program_trades_page,
+            count=count,
+            until=until,
         )
 
     async def investor_trading_rankings(

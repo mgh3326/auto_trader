@@ -16,12 +16,12 @@ if TYPE_CHECKING:
 from app.core.timezone import now_kst, today_kst
 
 from . import constants
-from .flow_signals import parse_member_summary, parse_vi_status_rows
 from ._base_market_data import (
     MarketDataBase,
     _aggregate_minute_candles_frame,
     _empty_minute_frame,
 )
+from .flow_signals import parse_member_summary, parse_vi_status_rows
 
 
 def _empty_day_frame() -> pd.DataFrame:
