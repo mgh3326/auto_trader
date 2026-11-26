@@ -243,9 +243,10 @@ class MarketEventsRepository:
             await self._upsert_value(event_id, value)
 
         await self.db.flush()
-        event = (
-            await self.db.execute(select(MarketEvent).where(MarketEvent.id == event_id))
-        ).scalar_one()
+        query = select(MarketEvent).where(MarketEvent.id == event_id)
+        if payload.get("source_event_id") and "published_precision" in payload:
+            query = query.execution_options(populate_existing=True)
+        event = (await self.db.execute(query)).scalar_one()
         return event
 
     async def _find_event_by_natural_key(
@@ -263,7 +264,7 @@ class MarketEventsRepository:
             value = payload.get(attr)
             stmt = stmt.where(column.is_(None) if value is None else column == value)
         if "published_precision" in payload:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def _upsert_value(self, event_id: int, value: dict[str, Any]) -> None:
@@ -506,8 +507,15 @@ class MarketEventsRepository:
         self,
         partition: MarketEventIngestionPartition,
         *,
-        error: str | CollectionFailure,
+        error: str | None = None,
+        failure_code: CollectionFailure | None = None,
     ) -> None:
+        """Record a closed v2 failure code or a legacy caller's error string."""
+        if (error is None) == (failure_code is None):
+            raise ValueError("provide one of error or failure_code")
+        if failure_code is not None:
+            error = CollectionFailure(failure_code).value
+        assert error is not None
         partition.status = "failed"
         partition.finished_at = datetime.now(UTC)
         partition.last_error = error[:2000]
