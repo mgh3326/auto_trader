@@ -263,12 +263,13 @@ class TossReadClient:
                 exc.envelope.code in _TOKEN_CODES
                 or _should_retry_get_non_json_auth_error(method, exc)
             ):
+                await self._rate_limiter.acquire(group)
                 token = await self._token_manager.get_access_token(
                     force_reissue=True, failed_token=token
                 )
                 headers["Authorization"] = f"Bearer {token}"
                 try:
-                    retry, _rate_limit_headers = await send()
+                    retry, _rate_limit_headers = await send(acquire_rate_limit=False)
                 except httpx.HTTPError as retry_exc:
                     await self._publish_error(
                         status_code=None,
