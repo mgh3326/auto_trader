@@ -29,6 +29,7 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -51,6 +52,7 @@ from app.services.invest_momentum_events.repository import (
 )
 from app.services.market_events.session_calendar import is_trading_session
 from app.services.naver_stock.parser import parse_domestic_stock_default
+from app.services.naver_stock.types import NaverStockRow
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,9 @@ MARKET_TYPE = "ALL"
 #: rising, falling, trading value. Naver's falling ranking is ``down``
 #: (probe 2026-11-24, see the hk 6154 PR body); ``low`` / ``lowTop`` are HTTP 400.
 ORDER_TYPES = ("up", "down", "priceTop")
+EXTENDED_ORDER_TYPES = ("up", "down")
 PAGE_SIZE = 50
+KIS_SOURCE = "kis_domestic_ranking"
 
 STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
@@ -73,8 +77,22 @@ class NaverRankingFetcher(Protocol):
     async def fetch_domestic_stock_default(self, **kwargs: Any) -> Any: ...
 
 
+class KisRankingFetcher(Protocol):
+    async def fluctuation_rank(
+        self, market: str = "J", direction: str = "up", limit: int = 30
+    ) -> list[dict[str, Any]]: ...
+
+    async def volume_rank(
+        self, market: str = "J", limit: int = 30
+    ) -> list[dict[str, Any]]: ...
+
+
 def surface_key(order_type: str) -> str:
     return f"stock:{TRADE_TYPE}:{MARKET_TYPE}:{order_type}"
+
+
+def extended_surface_key(source: str, venue: str, session: str, order_type: str) -> str:
+    return f"stock:{source}:{venue}:{session}:{MARKET_TYPE}:{order_type}"
 
 
 def run_id_for(snapshot_at: dt.datetime) -> uuid.UUID:
@@ -99,6 +117,19 @@ def krx_session_open(
     return bool(check(local.date()))
 
 
+def observation_window(now: dt.datetime) -> str | None:
+    """Return the exact KR mover window containing ``now`` (KST, end exclusive)."""
+    local = now.astimezone(_KST)
+    clock = local.time()
+    if KR_REGULAR_OPEN_KST <= clock < KR_REGULAR_CLOSE_KST:
+        return "regular"
+    if dt.time(8, 0) <= clock < dt.time(8, 50):
+        return "nxt_pre"
+    if dt.time(16, 0) <= clock < dt.time(20, 0):
+        return "after"
+    return None
+
+
 # ------------------------------------------------------------------ classification
 
 
@@ -107,6 +138,7 @@ class SurfaceOutcome:
     status: str
     reason: str | None
     rows: tuple[Any, ...] = ()
+    source: str = "naver_stock"
 
 
 def classify_error(exc: BaseException) -> str:
@@ -154,11 +186,11 @@ def classify_payload(payload: Any) -> SurfaceOutcome:
 
 
 async def fetch_surface(
-    fetcher: NaverRankingFetcher, order_type: str
+    fetcher: NaverRankingFetcher, order_type: str, *, trade_type: str = TRADE_TYPE
 ) -> SurfaceOutcome:
     try:
         payload = await fetcher.fetch_domestic_stock_default(
-            trade_type=TRADE_TYPE,
+            trade_type=trade_type,
             market_type=MARKET_TYPE,
             order_type=order_type,
             start_idx=0,
@@ -172,6 +204,98 @@ async def fetch_surface(
         )
         return SurfaceOutcome(STATUS_ERROR, classify_error(exc))
     return classify_payload(payload)
+
+
+def classify_kis_payload(payload: Any) -> SurfaceOutcome:
+    """Normalize recorded KIS domestic ranking rows without float conversion."""
+    if not isinstance(payload, list) or any(
+        not isinstance(row, Mapping) for row in payload
+    ):
+        return SurfaceOutcome(STATUS_ERROR, "bad_response", source=KIS_SOURCE)
+    if not payload:
+        return SurfaceOutcome(STATUS_EMPTY, RUN_EMPTY_REASON, source=KIS_SOURCE)
+    rows: list[NaverStockRow] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(payload, start=1):
+        code = raw.get("stck_shrn_iscd") or raw.get("mksc_shrn_iscd")
+        if not isinstance(code, str) or not code.strip().isdigit():
+            continue
+        symbol = code.strip().zfill(6)
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        rows.append(
+            NaverStockRow(
+                symbol=symbol,
+                name=str(raw["hts_kor_isnm"]) if raw.get("hts_kor_isnm") else None,
+                rank=index,
+                price=_decimal_value(raw.get("stck_prpr")),
+                change_amount=_decimal_value(raw.get("prdy_vrss")),
+                change_rate=_decimal_value(raw.get("prdy_ctrt")),
+                volume=_integer_value(raw.get("acml_vol")),
+                trade_value=_decimal_value(raw.get("acml_tr_pbmn")),
+                market_cap=_decimal_value(raw.get("hts_avls")),
+                raw_payload=dict(raw),
+            )
+        )
+    if rows:
+        return SurfaceOutcome(STATUS_OK, None, tuple(rows), KIS_SOURCE)
+    return SurfaceOutcome(STATUS_ERROR, "unparseable", source=KIS_SOURCE)
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _integer_value(value: Any) -> int | None:
+    number = _decimal_value(value)
+    return (
+        int(number)
+        if number is not None and number == number.to_integral_value()
+        else None
+    )
+
+
+async def fetch_kis_surface(
+    fetcher: KisRankingFetcher | None, order_type: str
+) -> SurfaceOutcome:
+    if fetcher is None:
+        return SurfaceOutcome(STATUS_ERROR, "source_unavailable", source=KIS_SOURCE)
+    try:
+        if order_type == "priceTop":
+            payload = await fetcher.volume_rank(market="NX", limit=PAGE_SIZE)
+        else:
+            payload = await fetcher.fluctuation_rank(
+                market="NX", direction=order_type, limit=PAGE_SIZE
+            )
+    except Exception as exc:  # noqa: BLE001 - exception text is never persisted
+        return SurfaceOutcome(STATUS_ERROR, classify_error(exc), source=KIS_SOURCE)
+    return classify_kis_payload(payload)
+
+
+async def fetch_extended_surface(
+    fetcher: NaverRankingFetcher,
+    kis_fetcher: KisRankingFetcher | None,
+    *,
+    venue: str,
+    order_type: str,
+) -> SurfaceOutcome:
+    outcome = await fetch_surface(fetcher, order_type, trade_type=venue)
+    # Naver accepts a venue selector but does not expose an NX venue in all
+    # rankings. Only its explicit unsupported response triggers the KIS NX read.
+    if (
+        venue == "NXT"
+        and outcome.status == STATUS_ERROR
+        and outcome.reason == "http_4xx"
+    ):
+        return await fetch_kis_surface(kis_fetcher, order_type)
+    return outcome
 
 
 # --------------------------------------------------------------------------- run
@@ -219,6 +343,7 @@ async def run_intraday_movers(
     commit: bool,
     order_types: Sequence[str] = ORDER_TYPES,
     is_session_day: Callable[[dt.date], bool] | None = None,
+    kis_fetcher: KisRankingFetcher | None = None,
 ) -> RunReport:
     """One observation run. ``session`` is unused unless ``commit``."""
     snapshot_at = now.astimezone(dt.UTC).replace(microsecond=0)
@@ -229,13 +354,38 @@ async def run_intraday_movers(
         trading_date=trading_date,
         run_id=run_id_for(snapshot_at),
     )
-    if not krx_session_open(snapshot_at, is_session_day=is_session_day):
+    window = observation_window(snapshot_at)
+    local_day = snapshot_at.astimezone(_KST).date()
+    check = is_session_day or (lambda day: is_trading_session("kr", day))
+    if window is None or not check(local_day):
         report.status = "outside_session"
         return report
 
-    for order_type in order_types:
-        surface = surface_key(order_type)
-        outcome = await fetch_surface(fetcher, order_type)
+    if window == "regular":
+        plans = [(TRADE_TYPE, "regular", order_type) for order_type in order_types]
+    elif window == "nxt_pre":
+        plans = [("NXT", "nxt_pre", order_type) for order_type in EXTENDED_ORDER_TYPES]
+    else:
+        plans = [
+            ("NXT", "nxt_post", order_type) for order_type in EXTENDED_ORDER_TYPES
+        ] + [("KRX", "krx_after", order_type) for order_type in order_types]
+
+    for venue, session_label, order_type in plans:
+        outcome = (
+            await fetch_surface(fetcher, order_type)
+            if window == "regular"
+            else await fetch_extended_surface(
+                fetcher,
+                kis_fetcher,
+                venue=venue,
+                order_type=order_type,
+            )
+        )
+        surface = (
+            surface_key(order_type)
+            if window == "regular"
+            else extended_surface_key(outcome.source, venue, session_label, order_type)
+        )
         line = SurfaceReport(
             surface=surface,
             status=outcome.status,
@@ -267,9 +417,15 @@ async def run_intraday_movers(
                         row,
                         snapshot_at=snapshot_at,
                         trading_date=trading_date,
-                        trade_type=TRADE_TYPE,
+                        trade_type=venue,
                         market_type=MARKET_TYPE,
                         order_type=order_type,
+                        source=outcome.source,
+                        surface=(
+                            "domestic_market_stock_default"
+                            if window == "regular"
+                            else surface
+                        ),
                     )
                 )
                 line.inserted_rows += 1 if inserted else 0
@@ -361,7 +517,9 @@ async def first_captures(
             # a US row's surface (``us:<source>:<session>:<side>``) is stored
             # because the session is not a column (hk 6510).
             surface=(
-                f"stock:{r.trade_type}:{r.market_type}:{r.order_type}"
+                r.surface
+                if r.market == "kr" and r.surface.startswith("stock:")
+                else f"stock:{r.trade_type}:{r.market_type}:{r.order_type}"
                 if r.market == "kr"
                 else r.surface
             ),

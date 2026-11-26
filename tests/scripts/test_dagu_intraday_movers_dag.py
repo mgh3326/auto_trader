@@ -15,8 +15,10 @@ ROOT = Path(__file__).resolve().parents[2] / "deploy" / "dagu" / "at-intraday-mo
 def test_dag_runs_in_krx_hours_every_five_minutes() -> None:
     doc = yaml.safe_load((ROOT / "at-intraday-movers.yaml").read_text())
     assert doc["schedule"] == [
+        "CRON_TZ=Asia/Seoul 0,5,10,15,20,25,30,35,40,45 8 * * 1-5",
         "CRON_TZ=Asia/Seoul */5 9-14 * * 1-5",
         "CRON_TZ=Asia/Seoul 0,5,10,15,20,25 15 * * 1-5",
+        "CRON_TZ=Asia/Seoul */5 16-19 * * 1-5",
     ]
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
