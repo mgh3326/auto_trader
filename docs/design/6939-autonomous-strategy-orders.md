@@ -66,7 +66,9 @@ scoring/budget comparison from hk 6790. Execution binding is the 6728 intent ref
 Required widenings (additive CHECK changes, owned by ticket N1 below, not a new store): `daily_plan_heads` market `kr`→
 `kr|us|crypto` and `mode` `plan_only`→`plan_only|executable`; `daily_plan_rows.execution_state` `plan_only`→
 `plan_only|executable` (an `executable` row is the only kind the intent issuer may read); `ACCOUNT_MODES` gains `upbit_live`
-and the mock accounts; symbol CHECK per market. No field above needs its own table.
+and the mock accounts; symbol CHECK per market; validator `VENUE_SESSIONS` gains the US venues (`NASD`/`NYSE`/`AMEX`, sessions
+`us_pre`/`us_regular`/`us_post` as §2 allows per broker) and `UPBIT` (`crypto_24h`); `normalize_symbol`'s market guard admits
+`us` and `crypto` so those rows reach the venue check. No field above needs its own table.
 
 ### 1.2 Scoring and budget (reuse 6790, extend)
 
@@ -109,7 +111,7 @@ key), halt/VI/expected-price block. Arming: MF = mock-first, LH = live half cap 
 |---|---|---|---|---|---|---|
 | KIS KR KRX regular | yes (`_place_order_impl`, `order_send_intents`) | 08:30–15:30 (from 08:30 auction) | 09:00–15:20 continuous, 15:20–15:30 closing auction | `ORD_DVSN` 00 limit / 01 market, integer qty; no amount field | code `domestic_orders.py:386,394` | MF (kis_mock KR) |
 | KIS KR NXT pre | yes for limit (NXT route, `nxt_tradable`) | 08:00–08:50 | 08:00–08:50 | 00 limit int; market [unverified] | KIS official `examples_llm/domestic_stock/order_cash` + NXT notice; until confirmed send 00 only | LH |
-| KIS KR NXT after | yes for limit | **from 15:30** (orders accepted for the after session) | **15:40–20:00** continuous (15:30–15:40 no NXT matching) | 00 limit int; market [unverified] | same as pre; first live day `kis_live_get_daily_orders` shows ODNO/fill time | LH; entries refused 15:30–15:40 by gateway (no fill possible, `session_segment_of` UNKNOWN until 16:00 label) |
+| KIS KR NXT after | yes for limit | **from 15:30** (orders accepted for the after session) | **15:40–20:00** continuous (15:30–15:40 no NXT matching) | 00 limit int; market [unverified] | same as pre; first live day `kis_live_get_daily_orders` shows ODNO/fill time | LH; entries refused 15:30–15:40 only (`entry_no_fill_window`) |
 | KIS KR KRX after-market | yes, listed-eligible only (`resolve_krx_after_capability`) | 16:00–20:00 | 16:00–20:00 | 00 limit int; market [unverified] | KRX rulebook + first live order | LH |
 | KIS KR NXT amount order | **no** — KIS client has no amount field | — | — | — | not reachable via KIS; not claimed | — |
 | KIS US regular | yes (`equity_us`) | ET 09:30–16:00 (KIS accepts earlier reservation) | ET 09:30–16:00 | limit int | `overseas_orders.py` | MF (kis_mock US) |
@@ -128,7 +130,9 @@ key), halt/VI/expected-price block. Arming: MF = mock-first, LH = live half cap 
 | nh_mock KR | yes (`_dispatch_new_intent`) | KRX regular | same | exact `"limit"`, non-SOR | existing | mock |
 | kis_futures_mock day | yes | 08:45–15:45 | same | MF200 limit 1 contract | `LOCKED_LIMITS` | mock |
 
-Rule: the gateway refuses a new entry when the current time is inside acceptance but outside fill for that cell
+Session source: the gateway classifies sessions with the quote/session classifier that `get_quote` uses (NXT after continuous
+from 15:40 KST), **not** research `session_segment_of` (which labels `NXT_POST` only from 16:00, hk 6298). Toss KR NXT after uses the
+same boundary. Rule: the gateway refuses a new entry when the current time is inside acceptance but outside fill for that cell
 (`entry_no_fill_window`), so an accepted-but-unmatchable order is never left resting by the autonomous path.
 
 ### 2.2 Arming state machine (per account × market × session-class)
@@ -138,6 +142,11 @@ Rule: the gateway refuses a new entry when the current time is inside acceptance
   failure/reconcile mismatch → `live_full`. Any error resets the counter.
 - LH: live with per-order cap 1,000,000 KRW for 10 clean live round trips → `live_full`. A qty=1 order whose one share costs
   more than the cap in force may go up to `ONE_SHARE_CEILING_KRW` (10,000,000 KRW) (decision text; Q7 offers a stricter start).
+- Envelope scope: for v3 intents on `kis_live`, `toss_live` and `upbit_live` the per-order cap is decided by the autonomous
+  decision module (I1/I1a/I1b) only; `decisions._caps_refusal`'s `LOCKED_ENVELOPE.max_single_notional_krw` check stays as is and
+  keeps bounding kis_mock and v1/v2 intents, and is not applied to v3 live intents (a 6,000,000 KRW one-share v3 order is allowed
+  by I1a; the same order on kis_mock is still refused). `MAX_INTENT_NOTIONAL_KRW` stays the v1/v2 schema bound; v3 has its own
+  schema bound `ONE_SHARE_CEILING_KRW`. Neither 5,000,000 constant changes.
 - Stored in append-only `review.autonomous_arming_events`; state is a fold. Kill freeze does not reset arming.
 
 ## 3. Invariant table
@@ -184,9 +193,12 @@ make the row stale, every supersession of a row is serialized against its reserv
   supersede this intent. If that row seq is greater than the intent's `plan_version`, the submit/amend is
   `refused/plan_version_stale`, no journal `sending`, broker calls 0.
 - **At the pre-send re-read.** After the `sending` row is committed and immediately before the adapter's first send, the
-  forwarder's pre-send hook takes the same lock and re-reads the same per-row latest seq and block state. If a newer version or block
+  forwarder's pre-send hook takes the same lock, **holds it through the adapter's first send call (bounded by the adapter timeout)**,
+  and re-reads the same per-row latest seq and block state. If a newer version or block
   committed in between, the child ends `not_sent` (proven unsent, reason `plan_version_stale`) and the reservation is
-  released. If the hook returned, the send happened or may have happened: later errors are `uncertain`.
+  released. Because a publish that changes the row needs that lock, it cannot commit between the final check and the first send; it
+  waits and commits after the send entered, which is case R1. If the hook returned, the send happened or may have happened:
+  later errors are `uncertain`.
 - **Already accepted orders** of the old version stay tracked: cancel (own key, kill/supersession not checked, account
   fingerprint checked — ROB-1440 rule) and reconcile continue. A new version never cancels or replaces an order by itself.
 - **Uncertain** is never resent, under any version. A new submit on the same (account, symbol, venue) is
@@ -198,6 +210,7 @@ make the row stale, every supersession of a row is serialized against its reserv
 |---|---|---|---|---|
 | R1 | Send just before the version switch | v1 child reserved; hook returns and broker accepts 10 shares; then v2 publish commits | v1 row `sending→accepted`; a v1 retry key replays `accepted` (sends 0); a new v1 child → `refused/plan_version_stale`; v2 child for same symbol → `refused/prior_intent_unsettled` until v1 settles | `kis_live_order_ledger` 1 accepted row; no fill row; broker sends = 1 |
 | R1b | Publish wins the lock first | v2 commits after v1 reservation, before hook | v1 row `sending→not_sent` (`plan_version_stale`) | no ledger row; broker sends = 0 |
+| R1c | Publish attempted between final check and first send | v2 publish for the row starts while the v1 hook holds the lock | v2 waits on the lock; v1 sends once (`accepted` or `uncertain`); v2 commits after; outcome = R1 | broker sends = 1; no send after v2 commit |
 | R2 | Version switch after a partial fill | v1 10 shares, 4 filled (in-effect ledger), v2 publishes with a smaller size | v1 open 6 remain cancellable: cancel child accepted when `broker_cancel_confirmed`; v2 submit refused `prior_intent_unsettled` until cancel + fills reconcile, then allowed for remaining budget only | projection 4 held / 0 open, cancelled 6; v2 intent budget = approved − 4×price; budget not reset by v2 |
 | R3 | Socket disconnect and reconnect | quotes stream, gap, reconnect, resubscribe ACK, REST snapshot, then new-generation WS tick | during gap and until resubscribe ACK + fresh WS book: children 0 (Fillwire `blocked`); REST snapshot alone: 0; backlog touches: 0; first eligible new tick: 1 child | broker sends = 1 after recovery; an `uncertain` child from before the disconnect is not resent |
 
@@ -266,8 +279,9 @@ F (mock retro) stay under hk 6728; N2/N9 are its B/E and are not duplicated ther
 
 ### 7.3 Per-ticket notes
 
-- **N1** C: daily_plan is KR `plan_only` only (`daily_plan.py:66,135`). D: additive CHECK widening, no new table. A: existing
-  KR tests byte-identical; `executable` row requires invalidation condition. O: sending.
+- **N1** C: daily_plan is KR `plan_only` only (`daily_plan.py:66,135`). D: additive CHECK widening plus validator `VENUE_SESSIONS`/market-guard widening (§1.1), no new table. A: existing
+  KR tests byte-identical; accepts a valid US row and a valid crypto row, rejects an unlisted venue/session pair;
+  `executable` row requires invalidation condition. O: sending.
 - **N2** C: no plan reference in intents; the journal trigger (`20261120_hk5441_upbit_intent_gateway.py:591-596`) allows
   `not_sent` only for `schema_version` 2 with reasons in the closed `NOT_SENT_REASONS` list. D: v3 binding; per-row §5 lock
   at publish, reservation, pre-send; migration widens that trigger to allow `not_sent` for `schema_version` 3 and adds the v3
