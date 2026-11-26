@@ -1,0 +1,27 @@
+{
+  "total": 2,
+  "items": [
+    {
+      "id": "0010001234",
+      "officeId": "001",
+      "articleId": "0001234",
+      "officeName": "연합뉴스",
+      "datetime": "202611262141",
+      "title": "삼성전자 &amp; 반도체",
+      "titleFull": "삼성전자 &amp; 반도체 최신 소식",
+      "body": "삼성전자 종목 기사입니다.",
+      "mobileNewsUrl": "https://n.news.naver.com/mnews/article/001/0001234"
+    },
+    {
+      "id": "0090005678",
+      "officeId": "009",
+      "articleId": "0005678",
+      "officeName": "한국경제",
+      "datetime": "202611262130",
+      "title": "코스피 동향",
+      "titleFull": "코스피 동향",
+      "body": "국내 증시 소식입니다.",
+      "mobileNewsUrl": "https://n.news.naver.com/mnews/article/009/0005678"
+    }
+  ]
+}
