@@ -15,8 +15,8 @@ from app.services.market_events.crypto_notices import (
     CryptoNoticeClient,
     CryptoNoticeContractError,
     CryptoNoticeHTTPError,
-    _write_notice,
     _request_json,
+    _write_notice,
     classify_notice_kind,
     collect_crypto_notices,
     extract_ticker,
@@ -308,11 +308,30 @@ async def test_revision_clears_symbol_only_when_title_no_longer_has_one_ticker()
 
 
 @pytest.mark.asyncio
+async def test_revision_keeps_symbol_when_parenthesized_ticker_is_unresolved():
+    repo = FakeRepository()
+    await collect_crypto_notices(
+        None,
+        repo=repo,
+        client=FakeClient(),
+        commit=True,
+        received_at=RECEIVED,
+    )
+    corrected = {**BITHUMB_NOTICE, "title": "안내 (MISSING) 거래소 공지"}
+    await collect_crypto_notices(
+        None,
+        repo=repo,
+        client=FakeClient(bithumb_rows=[corrected], markets={"STABLE"}),
+        commit=True,
+        received_at=datetime(2026, 11, 26, 2, 0, tzinfo=UTC),
+    )
+    assert repo.events[(BITHUMB_SOURCE, "23001")]["symbol"] == "STABLE"
+
+
+@pytest.mark.asyncio
 async def test_upbit_fixed_notices_are_processed_without_ending_normal_pagination():
     repo = FakeRepository()
-    client = FakeClient(
-        upbit_pages={1: [UPBIT_NOTICE]}, upbit_total_pages=1
-    )
+    client = FakeClient(upbit_pages={1: [UPBIT_NOTICE]}, upbit_total_pages=1)
     original = client.fetch_upbit_page
 
     async def with_fixed(page):
@@ -337,9 +356,7 @@ async def test_empty_store_bootstraps_through_page_cap_and_bithumb_independently
     session = FakeSession()
     page_one = {**UPBIT_NOTICE, "id": 88001}
     page_two = {**UPBIT_NOTICE, "id": 88002}
-    client = FakeClient(
-        upbit_pages={1: [page_one], 2: [page_two]}, upbit_total_pages=3
-    )
+    client = FakeClient(upbit_pages={1: [page_one], 2: [page_two]}, upbit_total_pages=3)
 
     first = await collect_crypto_notices(
         session,

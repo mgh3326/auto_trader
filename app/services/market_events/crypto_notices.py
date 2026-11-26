@@ -467,27 +467,33 @@ async def collect_crypto_notices(
                 processed_ids: set[str] = set()
 
                 async def process_upbit(
-                    row: dict[str, Any], observed_at: datetime
+                    row: dict[str, Any],
+                    observed_at: datetime,
+                    *,
+                    source_name: str = source,
+                    ticker_set: set[str] = tickers,
+                    known_ids: set[str] = existing,
+                    seen_ids: set[str] = processed_ids,
                 ) -> None:
                     event_id = str(row.get("id"))
-                    if event_id in processed_ids:
+                    if event_id in seen_ids:
                         return
-                    processed_ids.add(event_id)
-                    is_known = event_id in existing
+                    seen_ids.add(event_id)
+                    is_known = event_id in known_ids
                     event = normalize_upbit_notice(
-                        row, known_tickers=tickers, received_at=observed_at
+                        row, known_tickers=ticker_set, received_at=observed_at
                     )
-                    output[source]["fetched"] += 1
+                    output[source_name]["fetched"] += 1
                     if commit:
                         result = await _write_notice(
                             repo, event, row, observed_at=observed_at
                         )
                         if result in {"inserted", "revised"}:
-                            output[source][result] += 1
+                            output[source_name][result] += 1
                         elif result == "stale":
-                            output[source]["stale_observations"] += 1
+                            output[source_name]["stale_observations"] += 1
                     elif not is_known:
-                        output[source]["inserted"] += 1
+                        output[source_name]["inserted"] += 1
 
                 for page in range(1, pages + 1):
                     rows, total_pages, fixed_rows = await fetcher.fetch_upbit_page(page)
@@ -546,7 +552,9 @@ async def collect_crypto_notices(
                 output[source]["revised"] = 0
                 output[source]["stale_observations"] = 0
             output[source]["error"] = type(exc).__name__
-            logger.warning("%s notice collection failed: %s", source, type(exc).__name__)
+            logger.warning(
+                "%s notice collection failed: %s", source, type(exc).__name__
+            )
     return output
 
 
