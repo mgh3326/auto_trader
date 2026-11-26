@@ -334,7 +334,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     # Always: side-effect-free research + read-only tools
     register_market_data_tools(mcp)
-    register_fundamentals_tools(mcp)
+    register_fundamentals_tools(
+        mcp,
+        include_kr_flow=profile is McpProfile.DEFAULT,
+    )
     register_analysis_tools(mcp)
     # ROB-488 — snapshot-backed report generation/Hermes tools are default-off
     # by physical registration, matching the investment_snapshot gate. The
