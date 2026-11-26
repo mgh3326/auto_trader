@@ -44,6 +44,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import uuid
@@ -60,6 +61,8 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _POLL_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+SAVETICKER_SEEN_STATE = ".saveticker-seen-ids.json"
+SAVETICKER_SEEN_STATE_LIMIT = 10_000
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -73,6 +76,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     poll.add_argument("--date-from", default=None, help="YYYY-MM-DD UTC, inclusive")
     poll.add_argument("--date-to", default=None, help="YYYY-MM-DD UTC, inclusive")
     poll.add_argument("--poll-id", default=None, help="[A-Za-z0-9._-]+")
+    poll.add_argument(
+        "--skip-benzinga",
+        action="store_true",
+        help="Benzinga 소스를 비활성화",
+    )
     poll.add_argument(
         "--skip-finnhub",
         action="store_true",
@@ -169,6 +177,7 @@ async def _poll_symbol(
     date_from: str | None,
     date_to: str | None,
     skip_finnhub: bool,
+    skip_benzinga: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Poll one symbol, stamping each source after its own response.
 
@@ -179,7 +188,7 @@ async def _poll_symbol(
     """
     rows: list[dict] = []
     errors: list[str] = []
-    for ticker_param in ("primaryTickers", "tickers"):
+    for ticker_param in () if skip_benzinga else ("primaryTickers", "tickers"):
         try:
             fetched = await bz.fetch_benzinga_news(
                 symbol,
@@ -335,27 +344,37 @@ def _status_row(
     return row
 
 
-def _existing_saveticker_ids(out_dir: Path) -> set[str]:
-    """Read prior JSONL observations so page walking stops at the old boundary."""
-    found: set[str] = set()
-    for path in out_dir.glob("*.jsonl"):
+def _load_saveticker_seen_ids(out_dir: Path) -> list[str]:
+    """Load a bounded sidecar; never rescan the growing JSONL output history."""
+    path = out_dir / SAVETICKER_SEEN_STATE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise st.SaveTickerError("SeenStateInvalid") from None
+    ids = payload.get("ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+        raise st.SaveTickerError("SeenStateInvalid")
+    return list(dict.fromkeys(ids))[-SAVETICKER_SEEN_STATE_LIMIT:]
+
+
+def _save_saveticker_seen_ids(out_dir: Path, ids: list[str]) -> None:
+    """Atomically persist only the most recent bounded provider ID window."""
+    bounded = list(dict.fromkeys(ids))[-SAVETICKER_SEEN_STATE_LIMIT:]
+    path = out_dir / SAVETICKER_SEEN_STATE
+    temp_path = out_dir / f"{SAVETICKER_SEEN_STATE}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(
+            json.dumps({"ids": bounded}, ensure_ascii=False), encoding="utf-8"
+        )
+        os.replace(temp_path, path)
+    except OSError:
         try:
-            with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if (
-                        row.get("record_type") == "article"
-                        and row.get("source") == "saveticker"
-                    ):
-                        provider_id = row.get("provider_id")
-                        if isinstance(provider_id, str):
-                            found.add(provider_id)
+            temp_path.unlink(missing_ok=True)
         except OSError:
-            continue
-    return found
+            pass
+        raise st.SaveTickerError("SeenStateWriteFailed") from None
 
 
 def _saveticker_article_rows(
@@ -403,6 +422,28 @@ def _saveticker_article_rows(
     return articles, attention
 
 
+def _saveticker_attention_row(
+    item: dict, *, poll_id: str, observed_at: datetime, is_top_story: bool = False
+) -> dict:
+    return {
+        "record_type": "attention",
+        "source": "saveticker",
+        "provider_id": item["provider_id"],
+        "poll_id": poll_id,
+        "observed_at": observed_at.astimezone(UTC).isoformat(),
+        "view_count": item["view_count"],
+        "comment_count": item["comment_count"],
+        "like_stats": item["like_stats"],
+        "vote_stats": item["vote_stats"],
+        "like_count": item["like_count"],
+        "vote_count": item["vote_count"],
+        "is_top_story": is_top_story or item["is_top_story"],
+        "labels": item["labels"],
+        "tickers": item["tickers"],
+        "title": item["title"],
+    }
+
+
 async def _saveticker_poll(
     *,
     poll_id: str,
@@ -410,20 +451,57 @@ async def _saveticker_poll(
     polled_symbols: list[str],
     pages: int,
     page_size: int,
-) -> tuple[list[dict], list[dict], list[str]]:
+) -> tuple[list[dict], list[dict], list[str], list[str]]:
     """Fetch bounded market-wide Save+ pages and top stories, isolating errors."""
     if not 1 <= pages <= st.MAX_PAGES or not 1 <= page_size <= 100:
         raise ValueError(f"Save+ 제한: 페이지 수 1..{st.MAX_PAGES}, 페이지 크기 1..100")
-    old_ids = _existing_saveticker_ids(out_dir)
-    run_ids: set[str] = set()
+    state_ids = _load_saveticker_seen_ids(out_dir)
+    old_ids = set(state_ids)
+    state_id_set = set(state_ids)
+    articles_by_id: dict[str, list[dict]] = {}
+    attention_by_id: dict[str, dict] = {}
     records: list[dict] = []
-    attention_rows: list[dict] = []
     errors: list[str] = []
+
+    def observe_item(
+        item: dict, *, seen_at: datetime, query_param: str, is_top_story: bool
+    ) -> bool:
+        """Record a fresh article once and an attention observation once per run."""
+        provider_id = item["provider_id"]
+        if provider_id not in state_id_set:
+            state_id_set.add(provider_id)
+            state_ids.append(provider_id)
+        if provider_id not in attention_by_id:
+            attention_by_id[provider_id] = _saveticker_attention_row(
+                item, poll_id=poll_id, observed_at=seen_at, is_top_story=is_top_story
+            )
+        elif is_top_story:
+            attention_by_id[provider_id]["is_top_story"] = True
+        existing = articles_by_id.get(provider_id)
+        if existing is not None:
+            if is_top_story:
+                for row in existing:
+                    row["is_top_story"] = True
+            return False
+        if provider_id in old_ids:
+            return False
+        article_item = {**item, "is_top_story": item["is_top_story"] or is_top_story}
+        article_rows, _ = _saveticker_article_rows(
+            [article_item],
+            poll_id=poll_id,
+            observed_at=seen_at,
+            polled_symbols=polled_symbols,
+            query_param=query_param,
+        )
+        articles_by_id[provider_id] = article_rows
+        return True
+
     async with st.SaveTickerClient() as client:
         for source_name in ("news", "top_stories"):
-            raw_items: list[tuple[str, dict, datetime]] = []
             malformed = 0
             fetched_count = 0
+            new_count = 0
+            truncated_count = 0
             fetch_error: str | None = None
             try:
                 if source_name == "news":
@@ -436,12 +514,15 @@ async def _saveticker_poll(
                         stop = False
                         for item in normalized:
                             provider_id = item["provider_id"]
+                            new_count += observe_item(
+                                item,
+                                seen_at=seen_at,
+                                query_param=source_name,
+                                is_top_story=False,
+                            )
                             if provider_id in old_ids:
                                 stop = True
                                 break
-                            if provider_id not in run_ids:
-                                run_ids.add(provider_id)
-                                raw_items.append((source_name, item, seen_at))
                         if stop or not payload.get("has_older", False):
                             break
                 else:
@@ -449,33 +530,28 @@ async def _saveticker_poll(
                     seen_at = datetime.now(UTC)
                     normalized, malformed = st.normalize_envelope(payload)
                     fetched_count = len(normalized)
+                    truncated_count = max(0, fetched_count - page_size)
                     for item in normalized[:page_size]:
-                        provider_id = item["provider_id"]
-                        if provider_id in old_ids:
-                            break
-                        if provider_id not in run_ids:
-                            run_ids.add(provider_id)
-                            raw_items.append(
-                                (source_name, {**item, "is_top_story": True}, seen_at)
-                            )
+                        new_count += observe_item(
+                            item,
+                            seen_at=seen_at,
+                            query_param=source_name,
+                            is_top_story=True,
+                        )
             except Exception as exc:  # noqa: BLE001 - other feeds continue independently
                 seen_at = datetime.now(UTC)
-                error_class = type(exc).__name__
+                error_class = _saveticker_error_class(exc)
                 errors.append(f"saveticker [{source_name}]: {error_class}")
                 logger.warning(
                     "saveticker poll failed [%s]: %s", source_name, error_class
                 )
                 fetch_error = error_class
-            for query_param, item, seen_at in raw_items:
-                article_rows, attention = _saveticker_article_rows(
-                    [item],
-                    poll_id=poll_id,
-                    observed_at=seen_at,
-                    polled_symbols=polled_symbols,
-                    query_param=query_param,
-                )
-                records.extend(article_rows)
-                attention_rows.extend(attention)
+            malformed_only = (
+                malformed > 0 and fetched_count == 0 and fetch_error is None
+            )
+            if malformed_only:
+                fetch_error = "MalformedRows"
+                errors.append(f"saveticker [{source_name}]: MalformedRows")
             status_time = datetime.now(UTC)
             records.append(
                 _status_row(
@@ -485,14 +561,25 @@ async def _saveticker_poll(
                     status="error"
                     if fetch_error
                     else ("ok" if fetched_count else "empty"),
-                    count=len(raw_items),
+                    count=new_count,
                     error_class=fetch_error,
                     seen_at=status_time,
                     query_param=source_name,
-                    extra={"malformed_count": malformed},
+                    extra={
+                        "malformed_count": malformed,
+                        "truncated_count": truncated_count,
+                    },
                 )
             )
-    return records, attention_rows, errors
+    records[:0] = [row for rows in articles_by_id.values() for row in rows]
+    records.extend(attention_by_id.values())
+    return records, list(attention_by_id.values()), errors, state_ids
+
+
+def _saveticker_error_class(exc: Exception) -> str:
+    if isinstance(exc, st.SaveTickerError) and str(exc):
+        return str(exc)
+    return type(exc).__name__
 
 
 async def _kis_poll(
@@ -607,7 +694,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     api_key = None
-    if args.market == "us":
+    if args.market == "us" and not args.skip_benzinga:
         try:
             api_key = bz.read_api_key()
         except bz.BenzingaApiKeyMissing as exc:
@@ -666,6 +753,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                         saveticker_rows,
                         attention_rows,
                         saveticker_errors,
+                        saveticker_state,
                     ) = await _saveticker_poll(
                         poll_id=poll_id,
                         out_dir=out_dir,
@@ -676,6 +764,30 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     errors.extend(saveticker_errors)
                     for record in [*saveticker_rows, *attention_rows]:
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    try:
+                        _save_saveticker_seen_ids(out_dir, saveticker_state)
+                    except Exception as exc:  # noqa: BLE001 - state failures stay source-local
+                        error_class = _saveticker_error_class(exc)
+                        errors.append(f"saveticker [seen_state]: {error_class}")
+                        logger.warning(
+                            "saveticker seen-state write failed: %s", error_class
+                        )
+                        fh.write(
+                            json.dumps(
+                                _status_row(
+                                    source="saveticker",
+                                    symbol=None,
+                                    poll_id=poll_id,
+                                    status="error",
+                                    count=0,
+                                    error_class=error_class,
+                                    seen_at=datetime.now(UTC),
+                                    query_param="seen_state",
+                                ),
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
                 except Exception as exc:  # noqa: BLE001 - setup errors are source-local too
                     error_class = type(exc).__name__
                     seen_at = datetime.now(UTC)
@@ -727,6 +839,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                         date_from=args.date_from,
                         date_to=args.date_to,
                         skip_finnhub=args.skip_finnhub,
+                        skip_benzinga=args.skip_benzinga,
                     )
                 else:
                     rows, errs = [], []
@@ -913,6 +1026,17 @@ def _record_time(record: dict) -> datetime | None:
     return None
 
 
+def _first_received(record: dict) -> datetime | None:
+    raw = record.get("first_received_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
 def summarize_saveticker(
     saveticker_records: list[dict],
     benzinga_records: list[dict],
@@ -930,6 +1054,38 @@ def summarize_saveticker(
     articles = [r for r in saveticker_records if r.get("record_type") == "article"]
     attention = [r for r in saveticker_records if r.get("record_type") == "attention"]
     statuses = [r for r in saveticker_records if r.get("record_type") == "poll_status"]
+
+    def dedupe_source(records: list[dict]) -> list[dict]:
+        by_id: dict[str, dict] = {}
+        unkeyed: list[dict] = []
+        for record in records:
+            if record.get("record_type") != "article":
+                continue
+            raw_id = record.get("provider_id")
+            if not isinstance(raw_id, str) or not raw_id:
+                unkeyed.append({**record, "symbols": sorted(_record_symbols(record))})
+                continue
+            prior = by_id.get(raw_id)
+            if prior is None:
+                by_id[raw_id] = {**record, "symbols": sorted(_record_symbols(record))}
+                continue
+            merged_symbols = _record_symbols(prior) | _record_symbols(record)
+            prior_seen, current_seen = _first_received(prior), _first_received(record)
+            if current_seen is not None and (
+                prior_seen is None or current_seen < prior_seen
+            ):
+                prior = {**record, "symbols": sorted(merged_symbols)}
+                by_id[raw_id] = prior
+            else:
+                prior["symbols"] = sorted(merged_symbols)
+        return [*by_id.values(), *unkeyed]
+
+    unique_sources = {
+        "saveticker": dedupe_source(articles),
+        "benzinga": dedupe_source(benzinga_records),
+        "finnhub": dedupe_source(finnhub_records),
+        "kis": dedupe_source(kis_records),
+    }
     source_counts: dict[str, set[str]] = {
         "saveticker": {str(r.get("provider_id")) for r in articles},
         "benzinga": {
@@ -949,12 +1105,7 @@ def summarize_saveticker(
         },
     }
     ticker_coverage: dict[str, dict[str, set[str]]] = {}
-    for source_name, records in (
-        ("saveticker", articles),
-        ("benzinga", benzinga_records),
-        ("finnhub", finnhub_records),
-        ("kis", kis_records),
-    ):
+    for source_name, records in unique_sources.items():
         for record in records:
             if record.get("record_type") != "article":
                 continue
@@ -969,13 +1120,10 @@ def summarize_saveticker(
         if key:
             title_groups.setdefault(key, set()).add(str(record.get("provider_id")))
     internal_title_overlap = sum(max(0, len(ids) - 1) for ids in title_groups.values())
-    pair_counts = dict.fromkeys(("benzinga", "finnhub", "kis"), 0)
+    pair_matches = {source: set() for source in ("benzinga", "finnhub", "kis")}
     first_seen: list[dict] = []
     all_for_order = {
-        "saveticker": articles,
-        "benzinga": benzinga_records,
-        "finnhub": finnhub_records,
-        "kis": kis_records,
+        **unique_sources,
     }
     for source_name, records in all_for_order.items():
         for record in records:
@@ -991,12 +1139,8 @@ def summarize_saveticker(
                         "first_received_at": record.get("first_received_at"),
                     }
                 )
-    other_by_source = {
-        "benzinga": benzinga_records,
-        "finnhub": finnhub_records,
-        "kis": kis_records,
-    }
-    for save_record in articles:
+    other_by_source = {source: unique_sources[source] for source in pair_matches}
+    for save_record in unique_sources["saveticker"]:
         save_time = _record_time(save_record)
         save_symbols = _record_symbols(save_record)
         for source_name, records in other_by_source.items():
@@ -1011,11 +1155,28 @@ def summarize_saveticker(
                     abs((save_time - other_time).total_seconds())
                     <= time_window_minutes * 60
                 ):
-                    pair_counts[source_name] += 1
+                    pair_matches[source_name].add(
+                        (
+                            str(save_record.get("provider_id")),
+                            str(other.get("provider_id")),
+                        )
+                    )
+    pair_counts = {source: len(pairs) for source, pairs in pair_matches.items()}
+    first_seen_by_key: dict[tuple[str, str, str], dict] = {}
+    for row in first_seen:
+        key = (row["source"], str(row.get("provider_id") or ""), row["symbol"])
+        prior = first_seen_by_key.get(key)
+        current_at, prior_at = _first_received(row), _first_received(prior or {})
+        if prior is None or (
+            current_at is not None and (prior_at is None or current_at < prior_at)
+        ):
+            first_seen_by_key[key] = row
+    first_seen = list(first_seen_by_key.values())
     first_seen.sort(
         key=lambda r: (
             str(r.get("first_received_at") or ""),
             r["symbol"],
+            r["source"],
             str(r["provider_id"]),
         )
     )
@@ -1035,6 +1196,7 @@ def summarize_saveticker(
                     "status": row.get("status"),
                     "count": row.get("count"),
                     "malformed_count": row.get("malformed_count", 0),
+                    "truncated_count": row.get("truncated_count", 0),
                     "error_class": row.get("error_class"),
                 }
                 for row in statuses

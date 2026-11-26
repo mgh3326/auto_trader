@@ -137,7 +137,8 @@ BENZINGA_NEWS_SHADOW_ENABLED=true \
   피드로 보지 않는다.
 - `/api/news` 최신 페이지와 `/api/news/top-stories` 를 읽는다. 페이지 수 1–10,
   페이지 크기 1–100, 페이지 사이 최소 0.5초 간격, timeout, redirect 거부를 적용한다.
-  같은 출력 폴더의 이전 ID 를 처음 만나면 해당 뉴스 페이지 탐색을 멈춘다.
+  제한된 `.saveticker-seen-ids.json` sidecar 에서 이전 ID 를 처음 만나면 뉴스 페이지
+  탐색을 멈추되, 경계 항목은 해당 poll 의 관심도 행으로 다시 기록한다.
 - 제공 `tickers[].symbol` 만 `app/core/symbol.py::to_db_symbol` 로 정규화한다.
   캡처에는 `NVDA`, `DIS`, `0256C0.KR` 등이 있어 미국 티커는 그대로, 한국 티커는
   캡처된 `.KR` 접미와 DB `.` 구분자를 유지한다. 매칭된 폴링 심볼마다 기사 행을 쓰며,
@@ -152,7 +153,8 @@ BENZINGA_NEWS_SHADOW_ENABLED=true \
   Save+ 내부에서만 정규화 제목으로 겹침을 비교한다. 다른 소스와는 제목을 대조하지
   않고 ticker 가 겹치며 provider 생성 시각 차이가 10분 이내일 때 겹침으로 센다.
 
-`deploy/dagu/at-news-shadow/` 는 KST 07:00–23:59 3분 간격 설정을 담은 복사본일 뿐이며
+`deploy/dagu/at-news-shadow/` 의 Benzinga/Finnhub/KIS 주기는 기존 30분 간격을 유지한다.
+Save+ 전용 3분 설정은 `deploy/dagu/at-saveticker-shadow/` 에 따로 두며 두 복사본 모두
 등록하지 않는다. 실제 운영 등록은 설계 세션/운영자 소관이다.
 
 ## 운영

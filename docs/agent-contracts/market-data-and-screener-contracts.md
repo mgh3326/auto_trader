@@ -1114,7 +1114,8 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 endpoint·`www.saveticker.com`/Cloudflare·SSE·캘린더 ingest 는 범위 밖이다. Save+ 백엔드는 비공식이고
 변경될 수 있다. 목록 `/api/news` 는 1–10 페이지, 페이지당 1–100건으로 제한하며 정렬은 최신순이다.
 `/api/news/top-stories` 도 함께 읽는다. 요청은 timeout, redirect 금지, 고정 User-Agent 와 요청 간
-최소 0.5초 간격을 쓴다. 출력 폴더의 이전 Save+ ID 를 처음 만나면 뉴스 페이지 탐색을 멈춘다.
+최소 0.5초 간격을 쓴다. 출력 폴더의 bounded seen-ID sidecar 에서 이전 Save+ ID 를 처음 만나면
+뉴스 페이지 탐색을 멈춘다. 이미 본 경계 항목도 해당 poll 의 attention 스냅샷에는 남긴다.
 
 - 목록 응답은 `news_list` 배열이어야 한다. 항목은 유효한 `id`, `title`, timezone 포함 `created_at` 을
   요구한다. `created_at` 원문과 UTC 파싱값을 모두 보존한다. 잘못된 항목은 버리고 `malformed_count` 를
@@ -1132,7 +1133,9 @@ endpoint·`www.saveticker.com`/Cloudflare·SSE·캘린더 ingest 는 범위 밖�
   정규화 제목 기준으로 Save+ 내부에서만 중복을 비교한다. 다른 소스와의 headline overlap 은 제목을
   비교하지 않고 ticker 교집합 + provider `created_at` 차이 10분 이내로 판정한다. 이 값은 순차 요청의
   관측 신호이지 정밀 지연 측정이 아니다.
-- Dagu YAML 은 미등록 복사본으로만 둔다. 주기 등록·DB 적재는 별도 승인 없이는 하지 않는다.
+- `deploy/dagu/at-news-shadow/` 의 Benzinga/Finnhub/KIS 주기는 기존 ET 30분으로 유지한다.
+  Save+ 3분 주기는 별도 `deploy/dagu/at-saveticker-shadow/` 미등록 복사본에만 둔다.
+  주기 등록·DB 적재는 별도 승인 없이는 하지 않는다.
 
 ### KIS KSD 기업 일정 (hk 6583, hk 6662)
 

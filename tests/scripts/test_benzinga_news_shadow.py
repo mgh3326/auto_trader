@@ -703,6 +703,108 @@ def test_saveticker_attention_row_is_once_per_provider_item() -> None:
     assert attention[0]["vote_count"] == 4
 
 
+@pytest.mark.asyncio
+async def test_saveticker_old_boundary_still_writes_attention_and_scans_top_stories(
+    monkeypatch, tmp_path
+) -> None:
+    old = {"id": "old-id", "title": "기존 기사", "created_at": "2026-11-26T00:00:00Z"}
+    new_top = {
+        "id": "new-top",
+        "title": "새 톱스토리",
+        "created_at": "2026-11-26T00:01:00Z",
+    }
+    (tmp_path / cli.SAVETICKER_SEEN_STATE).write_text(
+        json.dumps({"ids": ["old-id"]}), encoding="utf-8"
+    )
+    requests = []
+
+    class _CaptureClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, page, page_size):
+            requests.append(("news", page))
+            return {"news_list": [old], "has_older": True}
+
+        async def top_stories(self):
+            requests.append(("top", None))
+            return {"news_list": [old, new_top]}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _CaptureClient)
+    rows, attention, errors, state_ids = await cli._saveticker_poll(
+        poll_id="p-growth",
+        out_dir=tmp_path,
+        polled_symbols=["NVDA"],
+        pages=3,
+        page_size=10,
+    )
+    assert requests == [("news", 1), ("top", None)]
+    assert errors == []
+    assert not [
+        row
+        for row in rows
+        if row.get("record_type") == "article" and row["provider_id"] == "old-id"
+    ]
+    assert {row["provider_id"] for row in attention} == {"old-id", "new-top"}
+    assert all(row["is_top_story"] for row in attention)
+    assert any(
+        row.get("record_type") == "article" and row["provider_id"] == "new-top"
+        for row in rows
+    )
+    assert set(state_ids) == {"old-id", "new-top"}
+
+
+def test_saveticker_seen_state_is_bounded_and_fails_closed_on_corruption(
+    tmp_path,
+) -> None:
+    ids = [f"news-{index}" for index in range(cli.SAVETICKER_SEEN_STATE_LIMIT + 3)]
+    cli._save_saveticker_seen_ids(tmp_path, ids)
+    loaded = cli._load_saveticker_seen_ids(tmp_path)
+    assert len(loaded) == cli.SAVETICKER_SEEN_STATE_LIMIT
+    assert loaded[0] == "news-3"
+    (tmp_path / cli.SAVETICKER_SEEN_STATE).write_bytes(b"\xffbroken")
+    with pytest.raises(st.SaveTickerError, match="SeenStateInvalid"):
+        cli._load_saveticker_seen_ids(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_saveticker_all_malformed_items_are_a_source_error(
+    monkeypatch, tmp_path
+) -> None:
+    class _MalformedClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, *_args):
+            return {"news_list": [{"id": "missing-title"}], "has_older": False}
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _MalformedClient)
+    rows, _attention, errors, _state = await cli._saveticker_poll(
+        poll_id="p-malformed",
+        out_dir=tmp_path,
+        polled_symbols=["NVDA"],
+        pages=1,
+        page_size=10,
+    )
+    news_status = next(
+        row
+        for row in rows
+        if row.get("record_type") == "poll_status" and row.get("query_param") == "news"
+    )
+    assert news_status["status"] == "error"
+    assert news_status["malformed_count"] == 1
+    assert "saveticker [news]: MalformedRows" in errors
+
+
 def test_saveticker_failure_is_recorded_and_does_not_stop_other_sources(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -774,7 +876,10 @@ def test_saveticker_failure_is_recorded_and_does_not_stop_other_sources(
         if row.get("record_type") == "poll_status" and row.get("source") == "saveticker"
     ]
     assert any(
-        row["status"] == "error" and row["query_param"] == "news" for row in save_status
+        row["status"] == "error"
+        and row["query_param"] == "news"
+        and row["error_class"] == "HTTPStatusError"
+        for row in save_status
     )
     assert {row.get("source") for row in lines} >= {
         "benzinga",
@@ -782,7 +887,51 @@ def test_saveticker_failure_is_recorded_and_does_not_stop_other_sources(
         "kis",
         "saveticker",
     }
-    assert "saveticker [news]: SaveTickerError" in capsys.readouterr().err
+    assert "saveticker [news]: HTTPStatusError" in capsys.readouterr().err
+
+
+def test_saveticker_only_cli_needs_no_benzinga_finnhub_or_kis(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv(bz.SHADOW_ENABLED_ENV, "true")
+    monkeypatch.delenv(bz.API_KEY_ENV, raising=False)
+
+    class _EmptySaveTicker:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, *_args):
+            return {"news_list": [], "has_older": False}
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    async def _unexpected_benzinga(*_args, **_kwargs):
+        raise AssertionError("Benzinga called in Save+-only mode")
+
+    monkeypatch.setattr(st, "SaveTickerClient", _EmptySaveTicker)
+    monkeypatch.setattr(bz, "fetch_benzinga_news", _unexpected_benzinga)
+    assert (
+        cli.main(
+            [
+                "poll",
+                "--symbols",
+                "NVDA",
+                "--out-dir",
+                str(tmp_path),
+                "--poll-id",
+                "p-saveticker-only",
+                "--saveticker",
+                "--skip-benzinga",
+                "--skip-finnhub",
+                "--skip-kis",
+            ]
+        )
+        == 0
+    )
 
 
 def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
@@ -796,7 +945,7 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         "provider_id": "save-1",
         "poll_id": "p-save",
         "query_symbol": "NVDA",
-        "symbols": ["NVDA"],
+        "symbols": ["NVDA", "0256C0.KR"],
         "title": "엔비디아 실적 전망",
         "created_utc": "2026-11-26T00:01:00+00:00",
         "first_received_at": "2026-11-26T00:02:00+00:00",
@@ -812,9 +961,22 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         "created_utc": "2026-11-26T00:00:00+00:00",
         "first_received_at": "2026-11-26T00:01:00+00:00",
     }
+    save_repeat = {
+        **save,
+        "poll_id": "p-later",
+        "query_symbol": "0256C0.KR",
+        "first_received_at": "2026-11-26T00:03:00+00:00",
+    }
+    benzinga_repeat = {
+        **benzinga,
+        "poll_id": "p-later",
+        "first_received_at": "2026-11-26T00:04:00+00:00",
+    }
     rows = [
         save,
+        save_repeat,
         benzinga,
+        benzinga_repeat,
         {
             "record_type": "attention",
             "source": "saveticker",
@@ -842,6 +1004,7 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         "saveticker",
         "benzinga",
     }
+    assert len(save_summary["first_seen_ordering"]) == 3
     assert (
         save_summary["headline_overlap"]["cross_source_pairs_by_source"]["benzinga"]
         == 1

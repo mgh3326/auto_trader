@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2] / "deploy" / "dagu" / "at-news-shadow
 
 def test_dag_schedule_entrypoint_and_pattern() -> None:
     doc = yaml.safe_load((ROOT / "at-news-shadow.yaml").read_text())
-    assert doc["schedule"] == ["CRON_TZ=Asia/Seoul */3 7-23 * * *"]
+    assert doc["schedule"] == ["CRON_TZ=America/New_York */30 4-19 * * 1-5"]
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
     # The gate must reach the container: DAG-level `env:` only sets the host
@@ -24,7 +24,7 @@ def test_dag_schedule_entrypoint_and_pattern() -> None:
     script = step["script"]
     assert "-m scripts.benzinga_news_shadow poll" in script
     assert "--symbols NVDA,AMD,QQQ,SMH,DELL,URBN" in script
-    assert "--saveticker --saveticker-pages 3" in script
+    assert "--saveticker" not in script
     assert "-e BENZINGA_NEWS_SHADOW_ENABLED=true" in script
     # `--rm` discards container paths: output must land on a host mount.
     assert "-v /root/at-run/benzinga-shadow:/out" in script
@@ -50,6 +50,19 @@ def test_readme_says_copy_not_registered() -> None:
     assert "at-news-shadow" in readme
     assert "-v /root/at-run/benzinga-shadow:/out" in readme
     assert {p.name for p in ROOT.glob("*.yaml")} == {"at-news-shadow.yaml"}
+
+
+def test_saveticker_dag_is_separate_and_does_not_poll_other_sources() -> None:
+    path = ROOT.parent / "at-saveticker-shadow" / "at-saveticker-shadow.yaml"
+    doc = yaml.safe_load(path.read_text())
+    assert doc["schedule"] == ["CRON_TZ=Asia/Seoul */3 7-23 * * *"]
+    (step,) = doc["steps"]
+    script = step["script"]
+    assert "--saveticker --saveticker-pages 3" in script
+    assert "--skip-benzinga --skip-finnhub --skip-kis" in script
+    assert "/root/at-run/saveticker-shadow:/out" in script
+    assert "--env-file /root/at-secrets/.env.benzinga" not in script
+    assert "등록하지 않는다" in path.read_text().splitlines()[0]
 
 
 def test_dag_header_says_not_registered() -> None:
