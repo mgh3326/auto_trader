@@ -324,6 +324,35 @@ class FakeKis:
             return self.down
         return {"output1": {"stat": "R"}, "output2": []}
 
+    async def inquire_overseas_mover_ranking(self, source, exchange_code, *, side):
+        self.calls.append((f"{source}:{exchange_code}", side))
+        return {"output1": {"stat": "R"}, "output2": []}
+
+
+class FakeToss:
+    async def rankings(
+        self,
+        *,
+        ranking_type,
+        market_country,
+        duration,
+        count=100,
+        exclude_investment_caution=False,
+    ):
+        return {"rankedAt": None, "response": {"rankings": []}}
+
+
+class FakeBenzinga:
+    async def market_movers(self):
+        return {
+            "result": {
+                "fromDate": "2026-11-25",
+                "toDate": "2026-11-25",
+                "gainers": [],
+                "losers": [],
+            }
+        }
+
 
 ETHER_MASTER = {
     "NVDA": us_sources.SymbolMaster(security_type="STOCK"),
@@ -361,6 +390,8 @@ async def _run(
     report = await us_intraday.run_us_intraday_movers(
         alpaca=alpaca if alpaca is not None else FakeAlpaca(),
         kis=kis if kis is not None else FakeKis(),
+        toss=FakeToss(),
+        benzinga=FakeBenzinga(),
         session=session,  # type: ignore[arg-type]
         now=now,
         commit=commit,
@@ -386,6 +417,17 @@ async def test_premarket_run_inserts_dell_and_urbn_and_a_replay_inserts_nothing(
         "us:alpaca_screener:us_pre:active",
         "us:kis_overseas_ranking:us_pre:up",
         "us:kis_overseas_ranking:us_pre:down",
+        "us:kis_overseas_price_fluct:us_pre:up",
+        "us:kis_overseas_price_fluct:us_pre:down",
+        "us:kis_overseas_volume_surge:us_pre:active",
+        "us:kis_overseas_new_highlow:us_pre:up",
+        "us:kis_overseas_new_highlow:us_pre:down",
+        "us:kis_overseas_volume_power:us_pre:active",
+        "us:toss_rankings:us_pre:up",
+        "us:toss_rankings:us_pre:down",
+        "us:toss_rankings:us_pre:active",
+        "us:benzinga_market_movers:us_pre:up",
+        "us:benzinga_market_movers:us_pre:down",
     }
     assert surfaces["us:kis_overseas_ranking:us_pre:up"].status == "empty"
     assert surfaces["us:alpaca_screener:us_pre:active"].source_updated_at == (
@@ -419,7 +461,7 @@ async def test_premarket_run_inserts_dell_and_urbn_and_a_replay_inserts_nothing(
     assert qqq.asset_type == "etf"
     assert qqq.trade_value is None
     assert qqq.field_reasons["price"] == "not_in_payload"
-    assert session.commits == 5
+    assert session.commits == 16
 
     count = len(MemoryRepo.rows)
     replay, _ = await _run()
@@ -563,6 +605,12 @@ async def test_half_configured_alpaca_credentials_become_source_unavailable(
     assert payload["sources"] == {
         "alpaca_screener": False,
         "kis_overseas_ranking": True,
+        "kis_overseas_price_fluct": True,
+        "kis_overseas_volume_surge": True,
+        "kis_overseas_new_highlow": True,
+        "kis_overseas_volume_power": True,
+        "toss_rankings": False,
+        "benzinga_market_movers": False,
     }
 
 
@@ -605,7 +653,8 @@ def test_us_modules_import_no_order_ledger_approval_or_broker_code() -> None:
     for relative in _NEW_FILES:
         for module in _imports(REPO / relative):
             allowed = relative == "scripts/us_intraday_movers.py" and module in {
-                "app.services.brokers.kis.client"
+                "app.services.brokers.kis.client",
+                "app.services.brokers.toss.client",
             }
             if allowed:
                 continue

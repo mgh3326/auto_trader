@@ -228,6 +228,7 @@ tests/services/fill_watch_context/test_migration_roundtrip.py
 tests/services/funding_advisory/test_telegram.py
 tests/services/invalid_sample_eligibility/test_migration.py
 tests/services/invest_momentum_events/test_us_alpaca_credentials.py
+tests/services/invest_momentum_events/test_us_new_sources.py
 tests/services/invest_screener_snapshots/test_alerts.py
 tests/services/invest_screener_snapshots/test_freshness_kr_session.py
 tests/services/invest_screener_snapshots/test_repository_candidate_pool.py

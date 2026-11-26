@@ -495,6 +495,49 @@ class OverseasMarketDataMixin(MarketDataBase):
         )
         return js if isinstance(js, dict) else {}
 
+    async def inquire_overseas_mover_ranking(
+        self, source: str, exchange_code: str, *, side: str
+    ) -> dict[str, Any]:
+        """Read one of the official overseas mover rankings, no order path."""
+        configured = constants.OVERSEAS_MOVER_RANKINGS.get(source)
+        if configured is None:
+            raise ValueError("unsupported overseas mover ranking")
+        if side not in ("up", "down", "active"):
+            raise ValueError("unsupported ranking side")
+        path, tr_id = configured
+        params: dict[str, str] = {
+            "AUTH": "",
+            "EXCD": constants.OVERSEAS_EXCHANGE_MAP.get(
+                exchange_code, exchange_code[:3]
+            ),
+            "KEYB": "",
+        }
+        if source == "kis_overseas_price_fluct":
+            params.update(
+                {"GUBN": "1" if side == "up" else "0", "MINX": "0", "VOL_RANG": "0"}
+            )
+        elif source == "kis_overseas_volume_surge":
+            params.update({"MINX": "0", "VOL_RANG": "0"})
+        elif source == "kis_overseas_new_highlow":
+            params.update(
+                {
+                    "MINX": "0",
+                    "VOL_RANG": "0",
+                    "GUBN": "1" if side == "up" else "0",
+                    "GUBN2": "1",
+                }
+            )
+        else:
+            params.update({"NDAY": "0", "VOL_RANG": "0"})
+        js = await self._request_with_token_retry(
+            tr_id=tr_id,
+            url=self._kis_url(path),
+            params=params,
+            timeout=10,
+            api_name=source,
+        )
+        return js if isinstance(js, dict) else {}
+
     # ── News headlines (hk 6661 news shadow, read-only) ──
 
     async def news_titles_overseas_brknews(self) -> list[dict[str, Any]]:

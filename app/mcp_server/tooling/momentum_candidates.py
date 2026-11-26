@@ -15,13 +15,29 @@ from app.services.invest_screener_snapshots.freshness import (
 )
 
 _ET = ZoneInfo("America/New_York")
-_US_SOURCES = ("kis_overseas_ranking", "alpaca_screener", "benzinga_pro")
+_US_SOURCES = (
+    "kis_overseas_ranking",
+    "alpaca_screener",
+    "benzinga_pro",
+    "kis_overseas_price_fluct",
+    "kis_overseas_volume_surge",
+    "kis_overseas_new_highlow",
+    "kis_overseas_volume_power",
+    "toss_rankings",
+    "benzinga_market_movers",
+)
 _US_SESSIONS = ("us_pre", "us_regular", "us_post")
 _US_SIDES = ("up", "down", "active")
 _US_SIDES_BY_SOURCE = {
     "kis_overseas_ranking": ("up", "down"),
     "alpaca_screener": _US_SIDES,
     "benzinga_pro": ("up", "down"),
+    "kis_overseas_price_fluct": ("up", "down"),
+    "kis_overseas_volume_surge": ("active",),
+    "kis_overseas_new_highlow": ("up", "down"),
+    "kis_overseas_volume_power": ("active",),
+    "toss_rankings": _US_SIDES,
+    "benzinga_market_movers": ("up", "down"),
 }
 
 
@@ -62,7 +78,17 @@ async def get_momentum_candidates_impl(
     limit: int = 20,
     session: Literal["us_pre", "us_regular", "us_post"] | None = None,
     side: Literal["up", "down", "active"] | None = None,
-    source: Literal["kis_overseas_ranking", "alpaca_screener", "benzinga_pro"]
+    source: Literal[
+        "kis_overseas_ranking",
+        "alpaca_screener",
+        "benzinga_pro",
+        "kis_overseas_price_fluct",
+        "kis_overseas_volume_surge",
+        "kis_overseas_new_highlow",
+        "kis_overseas_volume_power",
+        "toss_rankings",
+        "benzinga_market_movers",
+    ]
     | None = None,
     min_dollar_volume: float | None = None,
 ) -> dict[str, Any]:
@@ -187,7 +213,7 @@ def _us_collection_statuses(
             {
                 "source": source_name,
                 "source_label": "trial"
-                if source_name == "benzinga_pro"
+                if source_name in {"benzinga_pro", "benzinga_market_movers"}
                 else "standard",
                 "surfaces": surfaces,
             }
@@ -287,7 +313,7 @@ async def _get_us_momentum_candidates(
                 {
                     "source": row_source,
                     "source_label": "trial"
-                    if row_source == "benzinga_pro"
+                    if row_source in {"benzinga_pro", "benzinga_market_movers"}
                     else "standard",
                     "session": row_session,
                     "side": row_side,

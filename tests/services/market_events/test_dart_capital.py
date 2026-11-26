@@ -445,7 +445,9 @@ def test_dart_migration_is_single_head_and_guards_existing_values():
     assert rev.down_revision == "20261125_hk6579_benzinga_pro"
     heads = script.get_heads()
     assert len(heads) == 1
-    head = heads[0]
+    head = script.get_current_head()
+    assert head is not None
+    assert head == heads[0]
     assert rev.revision in {
         migration.revision for migration in script.iterate_revisions(head, "base")
     }

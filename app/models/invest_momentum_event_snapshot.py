@@ -44,7 +44,10 @@ class InvestMomentumEventSnapshot(Base):
         ),
         CheckConstraint(
             "source IN ('naver_stock', 'alpaca_screener', "
-            "'kis_overseas_ranking', 'benzinga_pro')",
+            "'kis_overseas_ranking', 'benzinga_pro', "
+            "'kis_overseas_price_fluct', 'kis_overseas_volume_surge', "
+            "'kis_overseas_new_highlow', 'kis_overseas_volume_power', "
+            "'toss_rankings', 'benzinga_market_movers')",
             name="ck_invest_momentum_event_snapshots_source",
         ),
         Index(
