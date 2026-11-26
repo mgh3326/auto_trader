@@ -206,7 +206,9 @@ async def test_collector_enriches_legacy_provider_url_row_publication_fields() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_collector_metadata_enrichment_keeps_publication_tuple_and_revision() -> None:
+async def test_collector_metadata_enrichment_keeps_publication_tuple_and_revision() -> (
+    None
+):
     existing_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
     incoming_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=102"
     updates: list[dict[str, object]] = []
