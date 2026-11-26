@@ -265,9 +265,7 @@ async def test_sessions_diagnostic_preserves_provider_date_and_counts_one_sided_
             return snapshot
 
     monkeypatch.setattr(naver, "_session_segment", lambda *_args: naver.UNKNOWN)
-    report, code = await diagnose_kr_sessions.run(
-        date(2026, 11, 26), client=Client()
-    )
+    report, code = await diagnose_kr_sessions.run(date(2026, 11, 26), client=Client())
     assert code == 1
     assert any(row["verdict"] == "naver_only" for row in report["comparisons"])
     assert report["server_time"] is None
@@ -277,9 +275,7 @@ async def test_sessions_diagnostic_preserves_provider_date_and_counts_one_sided_
         if row["verdict"] == "naver_only"
     )
 
-    report, code = await diagnose_kr_sessions.run(
-        date(2026, 11, 22), client=Client()
-    )
+    report, code = await diagnose_kr_sessions.run(date(2026, 11, 22), client=Client())
     assert code == 0
     assert {row["verdict"] for row in report["comparisons"]} == {"unavailable"}
 
@@ -351,7 +347,9 @@ async def test_collector_dart_match_survives_rollback_from_another_symbol(
     from app.services.market_events import repository as repository_module
 
     class Result:
-        def __init__(self, rows: list[Any] | None = None, scalars: list[Any] | None = None):
+        def __init__(
+            self, rows: list[Any] | None = None, scalars: list[Any] | None = None
+        ):
             self._rows = rows or []
             self._scalars = scalars or []
 
@@ -399,7 +397,15 @@ async def test_collector_dart_match_survives_rollback_from_another_symbol(
                 return Result(scalars=[ExpiringDartRow(self)])
             if len(columns) == 5:
                 return Result(
-                    rows=[("dart", "000660", date(2026, 11, 26), "실적 공시", "dart-rcept-2")]
+                    rows=[
+                        (
+                            "dart",
+                            "000660",
+                            date(2026, 11, 26),
+                            "실적 공시",
+                            "dart-rcept-2",
+                        )
+                    ]
                 )
             raise AssertionError(f"unexpected query shape: {columns!r}")
 

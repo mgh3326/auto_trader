@@ -271,7 +271,9 @@ def parse_sessions(payload: Any) -> SessionResponse:
                 label = session.get("displayLabel")
                 start = session.get("openAt")
                 end = session.get("closeAt")
-                if not all(isinstance(item, str) and item for item in (label, start, end)):
+                if not all(
+                    isinstance(item, str) and item for item in (label, start, end)
+                ):
                     raise NaverDisclosureResponseError("sessions entry is invalid")
                 try:
                     windows.append(
@@ -430,9 +432,7 @@ def compare_session_windows(
             )
             continue
         theirs = [
-            w
-            for w in response.windows
-            if w.exchange == exchange and w.market == market
+            w for w in response.windows if w.exchange == exchange and w.market == market
         ]
         ours = _ours_windows(day, exchange, market)
         if not theirs and not ours:

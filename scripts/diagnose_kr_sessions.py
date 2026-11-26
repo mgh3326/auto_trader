@@ -40,7 +40,9 @@ async def run(
             "comparisons": comparisons,
         }
         failed_verdicts = {"mismatch", "naver_only", "ours_only"}
-        return report, int(any(row["verdict"] in failed_verdicts for row in comparisons))
+        return report, int(
+            any(row["verdict"] in failed_verdicts for row in comparisons)
+        )
     except naver.NaverDisclosureError as exc:
         report = {
             "date": day.isoformat(),
