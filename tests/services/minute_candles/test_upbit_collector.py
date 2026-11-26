@@ -173,7 +173,10 @@ async def test_errors_are_market_rows_and_other_markets_continue() -> None:
     by_market = {row.market: row for row in result.markets}
     assert by_market["KRW-XRP"].status == "error"
     assert by_market["KRW-XRP"].rows is None
+    assert by_market["KRW-XRP"].new is None
     assert by_market["KRW-BTC"].status == "ok"
+    assert by_market["KRW-BTC"].rows == 1
+    assert by_market["KRW-BTC"].new is None  # dry-run does not query the DB
     assert by_market["KRW-ETH"].rows == 0
     assert result.errors == 1
 

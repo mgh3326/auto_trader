@@ -145,6 +145,8 @@ class UpbitMinutePublicData:
         values: list[tuple[Decimal, str]] = []
         for offset in range(0, len(markets), 100):
             batch = markets[offset : offset + 100]
+            expected = set(batch)
+            found: set[str] = set()
             query = urllib.parse.urlencode({"markets": ",".join(batch)}, safe=",")
             payload = self._get_json(f"{BASE_URL}{TICKER_PATH}?{query}", label="ticker")
             if not isinstance(payload, list):
@@ -152,6 +154,7 @@ class UpbitMinutePublicData:
             for row in payload:
                 if not isinstance(row, dict) or row.get("market") not in batch:
                     raise UpbitPublicError("ticker: malformed market row")
+                found.add(row["market"])
                 try:
                     value = Decimal(str(row["acc_trade_price_24h"]))
                 except (KeyError, InvalidOperation) as exc:
@@ -159,6 +162,8 @@ class UpbitMinutePublicData:
                 if not value.is_finite() or value < 0:
                     raise UpbitPublicError("ticker: invalid 24h trade value")
                 values.append((value, row["market"]))
+            if found != expected:
+                raise UpbitPublicError("ticker: response omitted requested markets")
         return [
             market
             for _, market in sorted(values, key=lambda item: (-item[0], item[1]))[
@@ -187,9 +192,9 @@ class UpbitMinutePublicData:
             ):
                 raise UpbitPublicError(f"{market}: malformed candle")
             try:
-                stamp = datetime.fromisoformat(row["candle_date_time_utc"]).replace(
-                    tzinfo=UTC
-                )
+                stamp = datetime.strptime(
+                    row["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S"
+                ).replace(tzinfo=UTC)
                 numbers = [
                     Decimal(str(row[key]))
                     for key in (

@@ -6,7 +6,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.core.symbol import to_upbit_symbol
 from app.services.minute_candles.repository import (
@@ -31,6 +31,7 @@ class MarketResult:
     market: str
     status: str
     rows: int | None
+    new: int | None
     error: str | None = None
 
 
@@ -89,7 +90,7 @@ async def _default_held_markets() -> set[str]:
         try:
             balance = Decimal(str(row.get("balance")))
             locked = Decimal(str(row.get("locked")))
-        except Exception:
+        except InvalidOperation:
             continue
         if all(v.is_finite() and v >= 0 for v in (balance, locked)) and (
             balance > 0 or locked > 0
@@ -241,9 +242,9 @@ async def collect_upbit_minute_candles(
                 )
                 latest_at = latest_result.scalar_one_or_none()
             rows = _rows_for_current_day(data, market, current, after=latest_at)
-            inserted = len(rows)
+            new_rows = 0 if repo is not None else None
             if repo is not None and rows:
-                inserted = await repo.insert_rows(
+                new_rows = await repo.insert_rows(
                     rows=[
                         MinuteCandleRow(
                             instrument_id=int(instrument_id),
@@ -262,7 +263,7 @@ async def collect_upbit_minute_candles(
                     ]
                 )
                 await session.commit()
-            results.append(MarketResult(market, "ok", inserted))
+            results.append(MarketResult(market, "ok", len(rows), new_rows))
         except Exception as exc:
             if session is not None and not dry_run:
                 await session.rollback()
@@ -271,7 +272,7 @@ async def collect_upbit_minute_candles(
                 if hasattr(exc, "status_code") and exc.status_code is not None
                 else type(exc).__name__
             )
-            results.append(MarketResult(market, "error", None, error))
+            results.append(MarketResult(market, "error", None, None, error))
 
     return CollectionResult(
         targets=targets,
