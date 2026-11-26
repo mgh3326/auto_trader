@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import ssl
+import time
 from collections.abc import Callable
 from inspect import isawaitable
 from typing import Any
@@ -11,6 +12,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
+from app.monitoring.execution_metrics import record_reconnect_recovery
 from app.schemas.execution_contracts import AccountMode
 from app.services.brokers.token_issuance import (
     TokenIssuanceCacheOnlyUnavailable,
@@ -110,6 +112,7 @@ class KISExecutionWebSocket:
         Raises:
             Exception: 연결 실패 시 (재연결 루프로 전파)
         """
+        recovery_started_at = time.perf_counter()
         await self._issue_approval_key_if_needed()
 
         self.websocket_url = await self._build_websocket_url()
@@ -117,6 +120,16 @@ class KISExecutionWebSocket:
         while self.current_attempt < self.max_reconnect_attempts and self.is_running:
             try:
                 await self._connect_and_subscribe_internal()
+                if self.current_attempt:
+                    record_reconnect_recovery(
+                        venue="kis",
+                        market="multi",
+                        account_kind="mock"
+                        if self.account_mode == "kis_mock"
+                        else "live",
+                        outcome="success",
+                        duration_seconds=time.perf_counter() - recovery_started_at,
+                    )
                 self.current_attempt = 0
                 self._last_reissue_msg_code = None
                 return
@@ -242,6 +255,15 @@ class KISExecutionWebSocket:
                     self._last_reissue_msg_code = None
 
                 if self.current_attempt >= self.max_reconnect_attempts:
+                    record_reconnect_recovery(
+                        venue="kis",
+                        market="multi",
+                        account_kind="mock"
+                        if self.account_mode == "kis_mock"
+                        else "live",
+                        outcome="failure",
+                        duration_seconds=time.perf_counter() - recovery_started_at,
+                    )
                     logger.error(
                         "Max reconnection attempts reached: messages_received=%s "
                         "execution_events_received=%s last_message_at=%s last_execution_at=%s "

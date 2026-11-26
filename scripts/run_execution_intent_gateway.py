@@ -36,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.monitoring.execution_metrics import configure_execution_metrics_logging
+
+    configure_execution_metrics_logging()
     args = build_parser().parse_args(argv)
     if not is_loopback(args.host):
         print(f"refused: {args.host} is not a loopback address", file=sys.stderr)

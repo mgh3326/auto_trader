@@ -184,6 +184,9 @@ async def execute(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.monitoring.execution_metrics import configure_execution_metrics_logging
+
+    configure_execution_metrics_logging()
     args = parser().parse_args(argv)
     try:
         result = asyncio.run(execute(args))

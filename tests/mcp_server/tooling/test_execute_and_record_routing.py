@@ -1,5 +1,7 @@
+import logging
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 
@@ -155,3 +157,59 @@ async def test_order_performance_failure_does_not_change_accepted_order(monkeypa
     )
 
     assert result == expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatched_request_error_is_observed_as_uncertain(
+    monkeypatch, caplog
+) -> None:
+    from app.mcp_server.tooling import order_execution as oe
+    from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
+
+    async def dispatched_request_error(**kwargs):
+        kwargs["send_outcome"].mark_dispatched()
+        raise httpx.ConnectTimeout("send outcome unknown")
+
+    monkeypatch.setattr(oe, "_execute_order", dispatched_request_error)
+
+    with caplog.at_level(logging.INFO, logger="app.monitoring.execution_metrics"):
+        with pytest.raises(oe.OrderSendOutcomeUnknown):
+            await oe._execute_and_record(
+                normalized_symbol="005930",
+                side="buy",
+                order_type="limit",
+                order_quantity=1.0,
+                price=70000.0,
+                market_type="equity_kr",
+                current_price=70000.0,
+                avg_price=0.0,
+                dry_run_result={
+                    "price": 70000.0,
+                    "quantity": 1.0,
+                    "estimated_value": 70000.0,
+                },
+                order_amount=70000.0,
+                reason="transport-metric-test",
+                exit_reason=None,
+                thesis=None,
+                strategy=None,
+                target_price=None,
+                stop_loss=None,
+                min_hold_days=None,
+                notes=None,
+                indicators_snapshot=None,
+                defensive_trim_ctx=None,
+                order_error_fn=lambda *args, **kwargs: {},
+                is_mock=False,
+                send_outcome=OrderSendOutcomeTracker(),
+            )
+
+    broker_accept = [
+        record.getMessage()
+        for record in caplog.records
+        if "metric=execution_stage_total" in record.getMessage()
+        and "stage=broker_accept" in record.getMessage()
+    ]
+    assert len(broker_accept) == 1
+    assert "outcome=uncertain" in broker_accept[0]

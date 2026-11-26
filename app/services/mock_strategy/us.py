@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -9,6 +10,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from app.core.symbol import to_db_symbol
 from app.models.mock_strategy import MockStrategyOrder
+from app.monitoring.execution_metrics import execution_stage, record_execution_stage
 from app.services.brokers.alpaca.exceptions import AlpacaPaperOrderNotFound
 from app.services.brokers.alpaca.schemas import Asset, Order, OrderRequest
 from app.services.mock_strategy.recorder import MockStrategyRecorder, OrderIntent
@@ -315,6 +317,25 @@ class UsPaperStrategy:
     async def _execute(
         self, row: MockStrategyOrder, asof: date, change: dict | None = None
     ) -> dict:
+        venue = "alpaca"
+        record_execution_stage(
+            venue=venue,
+            market="us",
+            account_kind="mock",
+            stage="receive",
+            outcome="success",
+            duration_seconds=0.0,
+        )
+        detect_started_at = time.perf_counter()
+        planned = row.status == "planned"
+        record_execution_stage(
+            venue=venue,
+            market="us",
+            account_kind="mock",
+            stage="detect",
+            outcome="success" if planned else "blocked",
+            duration_seconds=time.perf_counter() - detect_started_at,
+        )
         if row.status != "planned":
             return projection(await self._refresh(row))
         if row.side in {"sell", "cover"}:
@@ -331,19 +352,61 @@ class UsPaperStrategy:
             ):
                 return {**projection(row), "reason": "symbol_change_not_verified"}
         request = order_request(row)
+        gate_started_at = time.perf_counter()
         try:
             await self.broker.prepare(request, side=row.side, asof=asof, confirm=True)
         except PreDispatchRefusal:
+            record_execution_stage(
+                venue=venue,
+                market="us",
+                account_kind="mock",
+                stage="gate",
+                outcome="blocked",
+                duration_seconds=time.perf_counter() - gate_started_at,
+            )
             return {**projection(row), "reason": "pre_dispatch_refused"}
         if not await self.recorder.claim(row.client_order_id):
+            record_execution_stage(
+                venue=venue,
+                market="us",
+                account_kind="mock",
+                stage="gate",
+                outcome="blocked",
+                duration_seconds=time.perf_counter() - gate_started_at,
+            )
             current = await self.recorder.get(row.client_order_id)
             assert current is not None
             return projection(current)
+        record_execution_stage(
+            venue=venue,
+            market="us",
+            account_kind="mock",
+            stage="gate",
+            outcome="success",
+            duration_seconds=time.perf_counter() - gate_started_at,
+        )
         try:
-            order = await self.broker.submit(
-                request, side=row.side, asof=asof, confirm=True
-            )
-            return projection(await self._observe(row, order))
+            with execution_stage(
+                venue=venue,
+                market="us",
+                account_kind="mock",
+                stage="broker_accept",
+            ) as broker_observation:
+                order = await self.broker.submit(
+                    request, side=row.side, asof=asof, confirm=True
+                )
+                if not order.id:
+                    broker_observation.mark("uncertain")
+            with execution_stage(
+                venue=venue,
+                market="us",
+                account_kind="mock",
+                stage="fill_reconcile",
+            ) as fill_observation:
+                observed = await self._observe(row, order)
+                if observed.status in {"sending", "uncertain"}:
+                    fill_observation.mark("uncertain")
+            return projection(observed)
         except PreDispatchRefusal:
             # Late guard refusal has positive no-POST proof. Never reset the
             # committed claim; a due close may create a new indexed leg instead.

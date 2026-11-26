@@ -167,6 +167,9 @@ async def execute(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.monitoring.execution_metrics import configure_execution_metrics_logging
+
+    configure_execution_metrics_logging()
     venue_probe = argparse.ArgumentParser(add_help=False)
     venue_probe.add_argument("--venue")
     route, _ = venue_probe.parse_known_args(argv)
