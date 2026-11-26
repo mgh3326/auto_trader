@@ -118,6 +118,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.daily_plan_heads",
     # hk 6503 KR trading flags (public schema, not review.*) is later than the parent.
     "kr_symbol_trading_flags",
+    # hk 6786 market daily tables are later than the parent too.
+    "public.kr_market_breadth",
+    "public.kr_market_investor_net",
+    "public.kr_market_deposit_credit",
     "review.kis_us_inference_expiry_events",
     "review.account_external_flows",
     "review.account_value_snapshots",
@@ -304,8 +308,28 @@ async def scratch_database() -> AsyncIterator[str]:
                         "DROP COLUMN IF EXISTS exit_handoff_id"
                     )
                 )
+                # hk 6786's triggers belong to the migration and must be
+                # removed before the pre-parent tables are dropped below.
+                for table in (
+                    "kr_market_breadth",
+                    "kr_market_investor_net",
+                    "kr_market_deposit_credit",
+                ):
+                    for suffix in ("insert_only", "no_truncate"):
+                        await connection.execute(
+                            text(
+                                f"DROP TRIGGER IF EXISTS trg_{table}_{suffix} "
+                                f"ON public.{table}"
+                            )
+                        )
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                await connection.execute(
+                    text(
+                        "DROP FUNCTION IF EXISTS "
+                        "public.kr_market_daily_reject_mutation()"
+                    )
+                )
                 # hk 4186 (L5) execution_ledger basis columns are later than
                 # this boundary; their CHECKs drop with them.
                 for column in ("filled_at_basis", "fee_basis", "tax_amount"):

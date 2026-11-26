@@ -41,6 +41,17 @@
 
 ## 기준 원문 계약
 
+### KR 시장-wide 일일 맥락 — breadth·투자자별 순매수·예수금/신용잔고 (hk 6786)
+
+`scripts/collect_kr_market_daily.py [--date YYYY-MM-DD] [--dry-run|--commit]`는 기본 드라이런인 수동 수집기다. Naver 공개 JSON만 읽으며 요청은 전체 작업에서 초당 1회 이하, 호스트는 `m.stock.naver.com`과 `stock.naver.com`으로 제한하고 redirect를 따르지 않는다. 응답 `Content-Type`은 `application/json`이어야 한다. HTTP/shape/decimal 오류는 breadth·투자자·예수금/신용별 타입 오류로 남고 수집 CLI는 실패 종료(1)한다. 404를 정상 빈 데이터로 취급하지 않는다.
+
+- Breadth는 `/api/stocks/marketValue/{KOSPI|KOSDAQ}`를 `pageSize=100`으로 끝까지 페이지 처리한다. 종목별 `compareToPreviousClosePrice` 부호로 상승·하락·보합을 세고 `fetched_count == total_count`일 때만 완전하다. 부분 응답도 정상 응답이면 불완전 상태로 보존한다. breadth는 실행 시점의 KST 오늘에만 저장한다. `session_segment_of("kr", "KRX", observed_at)`가 `KRX_REGULAR`이면 `intraday`, 그 외에는 `after_close`로 표시한다. 키는 시장·거래일·세션이며 두 세션 자료를 함께 보존한다.
+- 투자자 자료는 `/api/domestic/market/trend/daily`의 `diffValue`, `buyPrice`, `sellPrice`, `buyQuant`, `sellQuant`를 소수점 손실 없이 저장한다. 단위는 KRW와 주다. 시장·거래일·원시 `investorGubun`이 키다. 알려진 코드만 이름에 연결하고 미등록 코드는 원시 코드와 `null` 이름으로 저장한다.
+- 예수금/신용 자료는 `/api/domestic/market/trendDeposit`의 사업일자별 `customerDeposit`, `creditLoan`, `creditLoanDiff`, 제공 시 `beneficiaryCertificate`를 저장한다. 금액 단위는 페이지가 표시하는 억원이며 DB에도 `amount_unit="억원"`을 명시한다. 시장 공통 사업일자가 키다.
+- 세 테이블은 추가형 마이그레이션으로 만들고 `Numeric`에 십진 값을 저장한다. `(market, trade_date, observed_at)`, `(market, trade_date, investor_code)`, `bizdate` 키를 insert-only로 유지한다. breadth의 `session_label`은 관측 시각과 함께 보존한다. `first_received_at`은 최초 관측이며 재수집이 덮어쓰지 않는다. 다운그레이드는 어느 테이블이든 행이 남아 있으면 거부한다. `at_app`이 있을 때 `SELECT, INSERT`만 조건부 부여한다.
+- `read_market_daily_context(session, today)`는 최신 breadth, 지정한 오늘의 KOSPI/KOSDAQ 투자자 그룹, 독립 business date가 붙은 최신 예수금/신용 자료를 제공한다. 소스가 없으면 값은 `null`이고 각 블록에 닫힌 `reason`을 넣는다. 이 저장소는 기존 closing summary나 intraday alert에 배선하지 않는다.
+- `deploy/dagu/at-kr-market-daily/`는 평일 15:40·18:30 KST 수집을 적은 정적 복사본일 뿐 등록하지 않는다. 주문·계좌 경로, 장중 반복 폴링, KRX/KOFIA 대체 원천은 범위 밖이다.
+
 ### KR/US Category Normalization & Lazy Fill (ROB-512)
 
 KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이블로 통합 관리합니다.
