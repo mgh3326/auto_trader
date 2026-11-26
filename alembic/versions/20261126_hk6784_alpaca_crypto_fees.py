@@ -1,7 +1,7 @@
 """Record exact Alpaca paper crypto fees and net received quantity.
 
 Revision ID: hk6784_crypto_fee
-Revises: 6f28395ebfc2
+Revises: 20261126_hk6786_kmd
 Create Date: 2026-11-26
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "hk6784_crypto_fee"
-down_revision: str | Sequence[str] | None = "6f28395ebfc2"
+down_revision: str | Sequence[str] | None = "20261126_hk6786_kmd"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
