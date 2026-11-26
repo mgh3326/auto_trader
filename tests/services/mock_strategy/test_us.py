@@ -561,9 +561,14 @@ async def test_refresh_recovers_entry_closure_after_exit_commit_interruption(
 
     monkeypatch.setattr(recorder, "update", update)
     resumed = await strategy.refresh()
-    assert next(
-        row for row in resumed["orders"] if row["client_order_id"] == entry.client_order_id
-    )["changed"] is False
+    assert (
+        next(
+            row
+            for row in resumed["orders"]
+            if row["client_order_id"] == entry.client_order_id
+        )["changed"]
+        is False
+    )
     assert entry.status == "closed"
     assert entry.realized_pnl == Decimal("1000")
 
@@ -595,16 +600,31 @@ async def test_refresh_finalizes_terminal_partial_entry_from_cumulative_exit_fil
     ].model_copy(
         update={
             "status": "canceled",
-            "filled_qty": Decimal("15"),
-            "filled_avg_price": Decimal("105"),
+            "filled_qty": Decimal("0"),
         }
     )
     broker.accept_only = True
     await strategy.close_due(asof=DAY, confirm=True)
+    second = next(
+        row
+        for row in recorder.rows.values()
+        if row.side == "sell" and row.meta["exit_leg"] == 1
+    )
+    assert second.qty == Decimal("40")
+    broker.orders[second.client_order_id] = broker.orders[
+        second.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("15"),
+            "filled_avg_price": Decimal("105"),
+        }
+    )
+    await strategy.close_due(asof=DAY, confirm=True)
     residual = next(
         row
         for row in recorder.rows.values()
-        if row.side == "sell" and row.client_order_id != first.client_order_id
+        if row.side == "sell" and row.meta["exit_leg"] == 2
     )
     assert residual.qty == Decimal("25")
     broker.orders[residual.client_order_id] = broker.orders[
@@ -618,7 +638,8 @@ async def test_refresh_finalizes_terminal_partial_entry_from_cumulative_exit_fil
     )
     await strategy.refresh()
     assert entry.status == "closed"
-    assert first.status == residual.status == "closed"
+    assert first.status == "canceled"
+    assert second.status == residual.status == "closed"
     assert entry.realized_pnl == Decimal("325")
 
 
