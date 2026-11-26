@@ -22,6 +22,8 @@ DISCLOSURE_URL = f"https://{DISCLOSURE_HOST}/api/stock/{{symbol}}/disclosure"
 SESSIONS_URL = f"https://{SESSIONS_HOST}/api/stockSecurity/exchanges/sessions"
 ALLOWED_HOSTS = frozenset({DISCLOSURE_HOST, SESSIONS_HOST})
 REQUEST_INTERVAL_SECONDS = 0.5
+DISCLOSURE_PAGE_SIZE = 20
+DISCLOSURE_MAX_PAGES = 5
 
 
 class NaverDisclosureError(RuntimeError):
@@ -128,7 +130,7 @@ async def collect_symbol_disclosures(
 ) -> dict[str, int]:
     """Page until the stored-time frontier, preserving provider rows first-write-wins."""
     inserted = pages = observed = 0
-    for page_number in range(1, max_pages + 1):
+    for page_number in range(1, min(max_pages, DISCLOSURE_MAX_PAGES) + 1):
         rows = await fetch_page(symbol, page_number)
         pages += 1
         if not rows:
@@ -333,12 +335,10 @@ class NaverPublicClient:
                 "Naver response JSON is invalid"
             ) from exc
 
-    async def disclosures(
-        self, symbol: str, *, page: int, page_size: int = 20
-    ) -> list[dict[str, Any]]:
+    async def disclosures(self, symbol: str, *, page: int) -> list[dict[str, Any]]:
         payload = await self._get_json(
             DISCLOSURE_URL.format(symbol=symbol),
-            params={"page": page, "pageSize": page_size},
+            params={"page": page, "pageSize": DISCLOSURE_PAGE_SIZE},
         )
         if type(payload) is not list or any(type(row) is not dict for row in payload):
             raise NaverDisclosureResponseError(

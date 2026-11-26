@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from app.services.market_events import naver_disclosures as naver
-from scripts import collect_naver_disclosures
+from scripts import collect_naver_disclosures, diagnose_kr_sessions
 
 pytestmark = pytest.mark.unit
 
@@ -148,6 +148,31 @@ async def test_pagination_stops_at_first_page_not_newer_than_frontier() -> None:
     )
     assert page_calls == [1, 2]
     assert result == {"pages": 2, "observed": 2, "inserted": 2}
+
+
+@pytest.mark.asyncio
+async def test_pagination_has_a_hard_five_page_cap() -> None:
+    calls: list[int] = []
+    row = {"disclosureId": "n1", "title": "공시", "datetime": "2026-11-14T10:00:00"}
+
+    async def fetch(_symbol: str, page: int) -> list[dict[str, object]]:
+        calls.append(page)
+        return [row]
+
+    async def unused_insert(_event: dict[str, object]) -> bool:
+        pytest.fail("dry-run attempted a write")
+
+    result = await naver.collect_symbol_disclosures(
+        symbol="005930",
+        fetch_page=fetch,
+        insert_event=unused_insert,
+        newest_stored_at=None,
+        received_at=lambda: datetime(2026, 11, 15, tzinfo=UTC),
+        commit=False,
+        max_pages=99,
+    )
+    assert calls == [1, 2, 3, 4, 5]
+    assert result == {"pages": 5, "observed": 5, "inserted": 0}
 
 
 @pytest.mark.asyncio
@@ -308,3 +333,39 @@ async def test_client_rejects_redirect_without_following_it() -> None:
     with pytest.raises(naver.NaverDisclosureHttpError, match="redirects"):
         await client.disclosures("005930", page=1)
     await raw.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sessions_diagnostic_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Client:
+        async def sessions(self) -> tuple[datetime, list[naver.SessionWindow]]:
+            return datetime(2026, 11, 13, 6, tzinfo=UTC), [
+                naver.SessionWindow(
+                    "krx",
+                    "KOSPI",
+                    "정규장",
+                    datetime(2026, 11, 13, 0, tzinfo=UTC),
+                    datetime(2026, 11, 13, 6, 31, tzinfo=UTC),
+                )
+            ]
+
+    monkeypatch.setattr(
+        naver,
+        "_session_segment",
+        lambda _market, _venue, at: (
+            "KRX_REGULAR" if at.astimezone(naver._KST).hour == 9 else naver.UNKNOWN
+        ),
+    )
+    report, code = await diagnose_kr_sessions.run(date(2026, 11, 13), client=Client())
+    assert code == 1
+    assert any(row["verdict"] == "mismatch" for row in report["comparisons"])
+
+    class Unavailable:
+        async def sessions(self) -> tuple[datetime, list[naver.SessionWindow]]:
+            raise naver.NaverDisclosureHttpError("fixture unavailable")
+
+    report, code = await diagnose_kr_sessions.run(
+        date(2026, 11, 13), client=Unavailable()
+    )
+    assert code == 0
+    assert {row["verdict"] for row in report["comparisons"]} == {"unavailable"}

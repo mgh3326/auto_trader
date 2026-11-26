@@ -68,6 +68,7 @@ async def run(
         "symbols": [],
         "errors": [],
     }
+    errors: list[dict[str, str]] = []
     now = datetime.now(UTC)
     try:
         async with session_factory() as session:
@@ -89,6 +90,13 @@ async def run(
                 )
                 symbols = targets.symbols
                 result["target_errors"] = targets.errors
+                errors.extend(
+                    {
+                        "origin": item["origin"],
+                        "error_class": item["error_class"],
+                    }
+                    for item in targets.errors
+                )
 
             result["symbols"] = symbols
             if not symbols:
@@ -120,7 +128,6 @@ async def run(
 
             repository = MarketEventsRepository(session)
             symbol_results: list[dict[str, object]] = []
-            errors: list[dict[str, str]] = []
             for symbol in symbols:
                 try:
                     stats = await naver.collect_symbol_disclosures(
