@@ -1,0 +1,610 @@
+{
+ "raw_meta": {
+  "total_count": 20,
+  "page": 1,
+  "page_size": 20,
+  "has_older": false
+ },
+ "items": [
+  {
+   "id": "news_278963",
+   "title": "트럼프 “젠슨 황 사면도 선택지…다만 필요하진 않을 것”",
+   "source": "뉴욕포스트",
+   "channel": "save-pick",
+   "created_at": "2026-11-24T23:01:13.768306Z",
+   "view_count": 48153,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "트럼프 대통령은 뉴욕포스트와의 단독 인터뷰에서 젠슨 황 엔비디아 CEO에 대한 사면 가능성을 열어두면서도, 실제로 사면이 필요하지는 않을 것으로...",
+   "excerpt": "트럼프 대통령은 뉴욕포스트와의 단독 인터뷰에서 젠슨 황 엔비디아 CEO에 대한 사면 가능성을 열어두면서도, 실제로 사면이 필요하지는 않을 것으로..."
+  },
+  {
+   "id": "news_278768",
+   "title": "(카더라) 젠슨 황 \"이사회, 국가안보 위협 없다는 확신 얻은 뒤 복귀 결정\"",
+   "source": "블룸버그",
+   "channel": "save-pick",
+   "created_at": "2026-11-24T18:29:24.339844Z",
+   "view_count": 26318,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "블룸버그 통신은 소식통을 인용해, 젠슨 황 엔비디아 CEO가 화요일 복귀 후 처음으로 열린 전 직원 회의에서 자신의 사임으로 이어진 행동에 대해...",
+   "excerpt": "블룸버그 통신은 소식통을 인용해, 젠슨 황 엔비디아 CEO가 화요일 복귀 후 처음으로 열린 전 직원 회의에서 자신의 사임으로 이어진 행동에 대해..."
+  },
+  {
+   "id": "news_278529",
+   "title": "헌터브룩 \"AMD, 중국 관련 의혹 보도 이후 홈페이지에서 관련 기업 삭제\"",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-24T14:31:04.201239Z",
+   "view_count": 20725,
+   "tickers": [
+    {
+     "id": 11,
+     "symbol": "AMD",
+     "name": "AMD(어드밴스드 마이크로 디바이시스)"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "헌터브룩은 자사가 AMD의 중국 관련 리스크를 보도한 이후, AMD가 AI 서버 파트너 페이지에서 미국 수출 블랙리스트에 오른 중국 기업과 연관...",
+   "excerpt": "헌터브룩은 자사가 AMD의 중국 관련 리스크를 보도한 이후, AMD가 AI 서버 파트너 페이지에서 미국 수출 블랙리스트에 오른 중국 기업과 연관..."
+  },
+  {
+   "id": "news_278369",
+   "title": "(카더라) 트럼프 행정부, 한국·중국·일본·EU 등 수십 개국 관세 인상 추진",
+   "source": "월스트리트저널",
+   "channel": "save-pick",
+   "created_at": "2026-11-24T13:10:10.201200Z",
+   "view_count": 42506,
+   "tickers": [
+    "속보"
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "월스트리트저널(WSJ)은 소식통을 인용해, 트럼프 행정부가 중국, 한국, 일본, 유럽연합(EU) 등 수십 개국이 자국 산업을 지원해 미국 기업에...",
+   "excerpt": "월스트리트저널(WSJ)은 소식통을 인용해, 트럼프 행정부가 중국, 한국, 일본, 유럽연합(EU) 등 수십 개국이 자국 산업을 지원해 미국 기업에..."
+  },
+  {
+   "id": "news_278150",
+   "title": "(카더라) 앤트로픽·오픈AI 내부서 차세대 AI 모델의 안전성 우려 확산",
+   "source": "Axios",
+   "channel": "save-pick",
+   "created_at": "2026-11-24T10:50:37.654071Z",
+   "view_count": 22673,
+   "tickers": [
+    {
+     "id": 106658,
+     "symbol": "ANT",
+     "name": "앤트로픽"
+    },
+    {
+     "id": 103209,
+     "symbol": "LAZR",
+     "name": "테마 포토닉스 및 광학 ETF"
+    },
+    {
+     "id": 10000876,
+     "symbol": "0258B0.KR",
+     "name": "1Q 미국AI테크플랫폼TOP10"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "악시오스는 소식통을 인용해, 앤트로픽과 오픈AI의 미공개 AI 모델이 기존 공개 모델보다 훨씬 강력해지면서, 이를 안전하게 외부에 출시하기 어렵...",
+   "excerpt": "악시오스는 소식통을 인용해, 앤트로픽과 오픈AI의 미공개 AI 모델이 기존 공개 모델보다 훨씬 강력해지면서, 이를 안전하게 외부에 출시하기 어렵..."
+  },
+  {
+   "id": "news_278124",
+   "title": "궈밍치, “젠슨 황 복귀 효과와 향후 과제”",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-24T10:21:11.328737Z",
+   "view_count": 14420,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 8,
+     "name": "정보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "TF 인터내셔널의 궈밍치 애널리스트는 젠슨 황의 엔비디아 CEO 복귀로 일부 불확실성은 해소됐지만, 여전히 남은 변수가 많다고 분석함 - 이...",
+   "excerpt": "TF 인터내셔널의 궈밍치 애널리스트는 젠슨 황의 엔비디아 CEO 복귀로 일부 불확실성은 해소됐지만, 여전히 남은 변수가 많다고 분석함 - 이..."
+  },
+  {
+   "id": "news_278022",
+   "title": "CNBC: 젠슨 황 복귀 이후 투자자들이 주목해야 할 6가지 쟁점",
+   "source": "CNBC",
+   "channel": "save-pick",
+   "created_at": "2026-11-24T07:43:19.728184Z",
+   "view_count": 20111,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 8,
+     "name": "정보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "CNBC 보도에 따르면, 젠슨 황 엔비디아 CEO의 전격 복귀로 주가가 하루 만에 31% 급등했지만, 미 의회와 투자자들이 짚어봐야 할 6가지...",
+   "excerpt": "CNBC 보도에 따르면, 젠슨 황 엔비디아 CEO의 전격 복귀로 주가가 하루 만에 31% 급등했지만, 미 의회와 투자자들이 짚어봐야 할 6가지..."
+  },
+  {
+   "id": "news_277577",
+   "title": "스콧 상원의원 \"젠슨 황 공개 청문회 12월 3일 개최 예정\"",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-23T17:06:00.277809Z",
+   "view_count": 22639,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "젠슨 황 엔비디아 최고경영자(CEO)가 오는 12월 3일(현지시간) 열리는 미국 상원 은행위원회 공개 청문회에 출석해 증언할 예정임",
+   "excerpt": "젠슨 황 엔비디아 최고경영자(CEO)가 오는 12월 3일(현지시간) 열리는 미국 상원 은행위원회 공개 청문회에 출석해 증언할 예정임"
+  },
+  {
+   "id": "news_277361",
+   "title": "트럼프 \"젠슨 황 복귀는 올바른 결정…미국 경제에도 중요\"",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-23T14:09:12.892893Z",
+   "view_count": 29004,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "트럼프 대통령은 엔비디아 이사회가 젠슨 황을 최고경영자(CEO)로 복귀시킨 것은 올바르고 적절한 결정이라며, 엔비디아뿐 아니라 미국 경제의 성공...",
+   "excerpt": "트럼프 대통령은 엔비디아 이사회가 젠슨 황을 최고경영자(CEO)로 복귀시킨 것은 올바르고 적절한 결정이라며, 엔비디아뿐 아니라 미국 경제의 성공..."
+  },
+  {
+   "id": "news_277327",
+   "title": "[내용 추가] 엔비디아, 젠슨 황 CEO 복귀 공식 발표…이사회 만장일치 승인",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-23T14:00:42.184207Z",
+   "view_count": 44010,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "엔비디아는 11월 23일(현지시간) 이사회가 젠슨 황을 사장 겸 최고경영자(CEO) 및 이사로 즉시 복귀시키는 안건을 만장일치로 승인했다고 발표...",
+   "excerpt": "엔비디아는 11월 23일(현지시간) 이사회가 젠슨 황을 사장 겸 최고경영자(CEO) 및 이사로 즉시 복귀시키는 안건을 만장일치로 승인했다고 발표..."
+  },
+  {
+   "id": "news_277314",
+   "title": "젠슨 황, 엔비디아 CEO 복귀… 이사회 만장일치 결정",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-23T13:56:51.994220Z",
+   "view_count": 51383,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "젠슨 황, 엔비디아 CEO 복귀… 이사회 만장일치 결정",
+   "excerpt": "젠슨 황, 엔비디아 CEO 복귀… 이사회 만장일치 결정"
+  },
+  {
+   "id": "news_277075",
+   "title": "크라우드스트라이크, 지스케일러 439억 달러에 인수…전액 주식 교환 방식",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-23T10:34:55.452177Z",
+   "view_count": 13592,
+   "tickers": [
+    {
+     "id": 318,
+     "symbol": "CRWD",
+     "name": "크라우드 스트라이크 홀딩스"
+    },
+    {
+     "id": 197,
+     "symbol": "ZS",
+     "name": "지스케일러"
+    },
+    {
+     "id": 10000876,
+     "symbol": "0258B0.KR",
+     "name": "1Q 미국AI테크플랫폼TOP10"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "크라우드스트라이크는 지스케일러를 인수하는 최종 계약을 체결했다고 밝힘 - 전액 주식 교환 방식이며 지스케일러 가치를 약 439억 달러로 평가...",
+   "excerpt": "크라우드스트라이크는 지스케일러를 인수하는 최종 계약을 체결했다고 밝힘 - 전액 주식 교환 방식이며 지스케일러 가치를 약 439억 달러로 평가..."
+  },
+  {
+   "id": "news_276773",
+   "title": "트럼프, 이란과 간접 협상 지속 시사…\"합의 없으면 새해 이후 타격 무게\"",
+   "source": "FOX뉴스",
+   "channel": "save-pick",
+   "created_at": "2026-11-22T17:39:40.698813Z",
+   "view_count": 31946,
+   "tickers": [
+    "속보"
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "트럼프 대통령은 폭스뉴스 인터뷰에서 이란과의 간접 협상이 계속 진행 중임을 시사함 - 그러면서도 합의가 이뤄지지 않을 경우 새해 이후 이란을...",
+   "excerpt": "트럼프 대통령은 폭스뉴스 인터뷰에서 이란과의 간접 협상이 계속 진행 중임을 시사함 - 그러면서도 합의가 이뤄지지 않을 경우 새해 이후 이란을..."
+  },
+  {
+   "id": "news_276746",
+   "title": "이코노미스트 - 2027년 주목해야 할 10대 트렌드 ",
+   "source": "이코노미스트",
+   "channel": "save-pick",
+   "created_at": "2026-11-22T13:49:40.353481Z",
+   "view_count": 21243,
+   "tickers": [
+    "정보",
+    "분석"
+   ],
+   "labels": [
+    {
+     "id": 8,
+     "name": "정보"
+    },
+    {
+     "id": 9,
+     "name": "분석"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "이코노미스트의 연례 전망서 '더 월드 어헤드 2027'을 맡은 톰 스탠디지 편집자는 2027년에 주목해야 할 10가지 주요 흐름을 제시함 포...",
+   "excerpt": "이코노미스트의 연례 전망서 '더 월드 어헤드 2027'을 맡은 톰 스탠디지 편집자는 2027년에 주목해야 할 10가지 주요 흐름을 제시함 포..."
+  },
+  {
+   "id": "news_276743",
+   "title": "(카더라) 델·HPE 등, 계약 체결 수개월 뒤 AI 서버 가격 최대 45% 인상 요구   ",
+   "source": "파이낸셜타임스",
+   "channel": "save-pick",
+   "created_at": "2026-11-22T13:37:17.807617Z",
+   "view_count": 21321,
+   "tickers": [
+    {
+     "id": 62,
+     "symbol": "DELL",
+     "name": "델테크놀로지"
+    },
+    {
+     "id": 137,
+     "symbol": "HPE",
+     "name": "휴렛패커드 엔터프라이즈"
+    },
+    {
+     "id": 61,
+     "symbol": "SMCI",
+     "name": "슈퍼 마이크로 컴퓨터"
+    },
+    {
+     "id": 32,
+     "symbol": "MU",
+     "name": "마이크론 테크놀로지"
+    },
+    {
+     "id": 17142,
+     "symbol": "SKHY",
+     "name": "SK하이닉스 ADR"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 8,
+     "name": "정보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "파이낸셜타임스(FT)는 소식통을 인용해, 델·HPE·레노버·슈퍼마이크로 등 주요 서버 공급업체들이 계약 체결 수개월 뒤 실제 납품 시점에 엔비...",
+   "excerpt": "파이낸셜타임스(FT)는 소식통을 인용해, 델·HPE·레노버·슈퍼마이크로 등 주요 서버 공급업체들이 계약 체결 수개월 뒤 실제 납품 시점에 엔비..."
+  },
+  {
+   "id": "news_276639",
+   "title": "📌2026년 11월 4주 차 주요 일정",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-21T13:43:55.448631Z",
+   "view_count": 25332,
+   "tickers": [
+    "일정"
+   ],
+   "labels": [
+    {
+     "id": 14,
+     "name": "일정"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "",
+   "excerpt": ""
+  },
+  {
+   "id": "news_276429",
+   "title": "(카더라) 크라우드스트라이크, 사이버보안 업체 지스케일러 인수 협상 중",
+   "source": "블룸버그",
+   "channel": "save-pick",
+   "created_at": "2026-11-20T21:07:00.216469Z",
+   "view_count": 6558,
+   "tickers": [
+    {
+     "id": 318,
+     "symbol": "CRWD",
+     "name": "크라우드 스트라이크 홀딩스"
+    },
+    {
+     "id": 197,
+     "symbol": "ZS",
+     "name": "지스케일러"
+    },
+    {
+     "id": 10000876,
+     "symbol": "0258B0.KR",
+     "name": "1Q 미국AI테크플랫폼TOP10"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "블룸버그 통신은 복수의 소식통을 인용해 사이버보안 기업 크라우드스트라이크가 지스케일러 인수를 위한 협상을 진행 중이라고 보도함 - 양사는 ...",
+   "excerpt": "블룸버그 통신은 복수의 소식통을 인용해 사이버보안 기업 크라우드스트라이크가 지스케일러 인수를 위한 협상을 진행 중이라고 보도함 - 양사는 ..."
+  },
+  {
+   "id": "news_276360",
+   "title": "(카더라) 미 SEC, 엔비디아 회계 문제 조사…잠재적 회계 처리 위반 여부에 초점",
+   "source": "로이터",
+   "channel": "save-pick",
+   "created_at": "2026-11-20T19:16:20.672927Z",
+   "view_count": 40375,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "로이터는 사안에 정통한 소식통을 인용해, 미국 증권거래위원회(SEC)가 엔비디아의 잠재적인 회계 처리 문제를 조사하고 있다고 보도함 - 앞서...",
+   "excerpt": "로이터는 사안에 정통한 소식통을 인용해, 미국 증권거래위원회(SEC)가 엔비디아의 잠재적인 회계 처리 문제를 조사하고 있다고 보도함 - 앞서..."
+  },
+  {
+   "id": "news_276320",
+   "title": "트럼프, 젠슨 황 엔비디아 복귀 지지…“사과하고 돌아오게 해야”",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-20T18:26:28.328633Z",
+   "view_count": 18603,
+   "tickers": [
+    {
+     "id": 8,
+     "symbol": "NVDA",
+     "name": "엔비디아"
+    },
+    {
+     "id": 10000871,
+     "symbol": "0256C0.KR",
+     "name": "1Q 엔비디아고정미국AI반도체"
+    }
+   ],
+   "labels": [
+    {
+     "id": 8,
+     "name": "정보"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "트럼프 대통령은 엔비디아의 젠슨 황 전 CEO가 잘못된 결정을 내리긴 했지만 뛰어난 인재라며, 그가 사과하고 엔비디아도 이를 받아들여 회사에 복...",
+   "excerpt": "트럼프 대통령은 엔비디아의 젠슨 황 전 CEO가 잘못된 결정을 내리긴 했지만 뛰어난 인재라며, 그가 사과하고 엔비디아도 이를 받아들여 회사에 복..."
+  },
+  {
+   "id": "news_276241",
+   "title": "연준 쿡 이사 “인플레이션 확산에 대응하기 위한 금리 인상 시급”",
+   "source": null,
+   "channel": "save-pick",
+   "created_at": "2026-11-20T17:18:05.329695Z",
+   "view_count": 16898,
+   "tickers": [
+    "속보",
+    "연준"
+   ],
+   "labels": [
+    {
+     "id": 7,
+     "name": "속보"
+    },
+    {
+     "id": 13,
+     "name": "연준"
+    }
+   ],
+   "comment_count": 0,
+   "is_headline_only": false,
+   "summary": "리사 쿡 연준 이사는 인플레이션을 잡기 위해 시급히 금리를 올려야 한다며, 대응을 미룰수록 앞으로 금리를 더 빠르고 큰 폭으로 인상해야 할 위험...",
+   "excerpt": "리사 쿡 연준 이사는 인플레이션을 잡기 위해 시급히 금리를 올려야 한다며, 대응을 미룰수록 앞으로 금리를 더 빠르고 큰 폭으로 인상해야 할 위험..."
+  }
+ ]
+}
