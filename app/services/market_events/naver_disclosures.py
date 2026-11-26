@@ -125,17 +125,19 @@ async def collect_symbol_disclosures(
     received_at: Callable[[], datetime],
     dart_rows: Sequence[Any] = (),
     commit: bool,
-    page_size: int = 20,
     max_pages: int = 5,
 ) -> dict[str, int]:
     """Page until the stored-time frontier, preserving provider rows first-write-wins."""
-    inserted = pages = 0
+    inserted = pages = observed = 0
     for page_number in range(1, max_pages + 1):
         rows = await fetch_page(symbol, page_number)
         pages += 1
+        if not rows:
+            break
         received = received_at()
         parsed = [parse_disclosure(symbol, row) for row in rows]
         for disclosure, raw in zip(parsed, rows, strict=True):
+            observed += 1
             if commit:
                 receipt = match_dart_receipt(disclosure, dart_rows)
                 inserted += await insert_event(
@@ -146,15 +148,11 @@ async def collect_symbol_disclosures(
                         raw_payload=raw,
                     )
                 )
-        if not rows:
-            break
         if newest_stored_at is not None and any(
             row.provider_created_at <= newest_stored_at for row in parsed
         ):
             break
-        if len(rows) < page_size:
-            break
-    return {"pages": pages, "inserted": inserted}
+    return {"pages": pages, "observed": observed, "inserted": inserted}
 
 
 def disclosure_event(
@@ -216,32 +214,56 @@ def parse_sessions(payload: Any) -> tuple[datetime, list[SessionWindow]]:
     exchanges = payload.get("exchanges")
     if type(exchanges) is not list:
         raise NaverDisclosureResponseError("sessions response missing exchanges")
-    try:
-        for exchange_item in exchanges:
-            exchange = exchange_item["exchange"]
-            markets = exchange_item["markets"]
-            if not isinstance(exchange, str) or type(markets) is not list:
-                raise ValueError("invalid exchange entry")
-            for market_item in markets:
-                market = market_item["market"]
-                sessions = market_item.get("sessions", [])
-                if not isinstance(market, str) or type(sessions) is not list:
-                    raise ValueError("invalid market entry")
-                for session in sessions:
-                    label = session.get("label") or session.get("name")
-                    start = session.get("openAt")
-                    end = session.get("closeAt")
-                    if not all(
-                        isinstance(item, str) and item for item in (label, start, end)
-                    ):
-                        continue
-                    windows.append(
-                        SessionWindow(
-                            exchange, market, label, _datetime(start), _datetime(end)
-                        )
+
+    def visit(
+        node: Any, exchange: str | None = None, market: str | None = None
+    ) -> None:
+        if isinstance(node, list):
+            for child in node:
+                visit(child, exchange, market)
+            return
+        if type(node) is not dict:
+            return
+        current_exchange = node.get("exchange", node.get("exchangeCode", exchange))
+        current_market = node.get("market", node.get("marketCode", market))
+        if not isinstance(current_exchange, str):
+            current_exchange = exchange
+        if not isinstance(current_market, str):
+            current_market = market
+        start = node.get("openAt")
+        end = node.get("closeAt")
+        label = node.get("label") or node.get("name") or node.get("sessionName")
+        if all(
+            isinstance(item, str) and item
+            for item in (current_exchange, current_market, label, start, end)
+        ):
+            try:
+                windows.append(
+                    SessionWindow(
+                        current_exchange,
+                        current_market,
+                        label,
+                        _datetime(start),
+                        _datetime(end),
                     )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise NaverDisclosureResponseError("sessions entry is invalid") from exc
+                )
+            except ValueError as exc:
+                raise NaverDisclosureResponseError(
+                    "sessions boundary is invalid"
+                ) from exc
+        for child in node.values():
+            if isinstance(child, (dict, list)):
+                visit(child, current_exchange, current_market)
+
+    for exchange_item in exchanges:
+        visit(exchange_item)
+    if not windows and any(type(item) is not dict for item in exchanges):
+        raise NaverDisclosureResponseError("sessions entry is invalid")
+    windows = list(
+        {
+            (w.exchange, w.market, w.label, w.open_at, w.close_at): w for w in windows
+        }.values()
+    )
     return server_time, windows
 
 
@@ -261,6 +283,7 @@ class NaverPublicClient:
         )
         self._owns_client = client is None
         self._last_request: float | None = None
+        self._request_lock = asyncio.Lock()
         self._monotonic = monotonic
         self._sleep = sleep
 
@@ -277,19 +300,22 @@ class NaverPublicClient:
             or parsed.password
         ):
             raise NaverDisclosureError("URL host is not allowed")
-        if self._last_request is not None:
-            delay = REQUEST_INTERVAL_SECONDS - (self._monotonic() - self._last_request)
-            if delay > 0:
-                await self._sleep(delay)
-        self._last_request = self._monotonic()
-        try:
-            response = await self._client.get(
-                url, params=params, follow_redirects=False
-            )
-        except httpx.TimeoutException as exc:
-            raise NaverDisclosureHttpError("Naver request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise NaverDisclosureHttpError("Naver request failed") from exc
+        async with self._request_lock:
+            if self._last_request is not None:
+                delay = REQUEST_INTERVAL_SECONDS - (
+                    self._monotonic() - self._last_request
+                )
+                if delay > 0:
+                    await self._sleep(delay)
+            self._last_request = self._monotonic()
+            try:
+                response = await self._client.get(
+                    url, params=params, follow_redirects=False
+                )
+            except httpx.TimeoutException as exc:
+                raise NaverDisclosureHttpError("Naver request timed out") from exc
+            except httpx.HTTPError as exc:
+                raise NaverDisclosureHttpError("Naver request failed") from exc
         if response.is_redirect:
             raise NaverDisclosureHttpError("Naver redirects are not followed")
         if response.status_code != 200:
@@ -361,11 +387,29 @@ def compare_session_windows(
     ]
     for exchange, market in pairs:
         theirs = [
-            w
+            SessionWindow(
+                w.exchange,
+                w.market,
+                w.label,
+                datetime.combine(day, w.open_at.astimezone(_KST).time(), tzinfo=_KST),
+                datetime.combine(day, w.close_at.astimezone(_KST).time(), tzinfo=_KST),
+            )
             for w in naver_windows
             if w.exchange.lower() == exchange and w.market.upper() == market
         ]
         ours = _ours_windows(day, exchange, market)
+        if not theirs and not ours:
+            output.append(
+                {
+                    "exchange": exchange,
+                    "market": market,
+                    "window": "no_sessions",
+                    "naver": "none",
+                    "ours": "none",
+                    "verdict": "match",
+                }
+            )
+            continue
         for window in theirs:
             exact = next(
                 (

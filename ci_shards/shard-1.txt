@@ -130,6 +130,7 @@ tests/scripts/test_dagu_futures_minutes_dags.py
 tests/scripts/test_dagu_intraday_movers_dag.py
 tests/scripts/test_dagu_kr_trading_flags_dag.py
 tests/scripts/test_dagu_kr_valuation_dag.py
+tests/scripts/test_dagu_naver_disclosures_dag.py
 tests/scripts/test_dagu_session_minutes_dags.py
 tests/scripts/test_diagnose_investment_reports.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py

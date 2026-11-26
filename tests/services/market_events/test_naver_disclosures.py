@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 
 from app.services.market_events import naver_disclosures as naver
+from scripts import collect_naver_disclosures
 
 pytestmark = pytest.mark.unit
 
@@ -46,7 +49,7 @@ async def test_rerun_is_insert_only_and_preserves_first_received_at() -> None:
     ]
 
     async def fetch(_symbol: str, _page: int) -> list[dict[str, object]]:
-        return rows
+        return rows if _page == 1 else []
 
     async def insert(event: dict[str, object]) -> bool:
         key = str(event["source_event_id"])
@@ -73,10 +76,10 @@ async def test_rerun_is_insert_only_and_preserves_first_received_at() -> None:
         "received_at": lambda: next(times),
         "dart_rows": [dart],
         "commit": True,
-        "page_size": 20,
     }
     first = await naver.collect_symbol_disclosures(**args)
     first_received_at = saved["r1"]["first_received_at"]
+    args["newest_stored_at"] = datetime(2026, 11, 13, 6, 36, 59, tzinfo=UTC)
     second = await naver.collect_symbol_disclosures(**args)
     assert first["inserted"] == 1
     assert second["inserted"] == 0
@@ -142,10 +145,9 @@ async def test_pagination_stops_at_first_page_not_newer_than_frontier() -> None:
         newest_stored_at=datetime(2026, 11, 13, 2, tzinfo=UTC),
         received_at=lambda: datetime(2026, 11, 15, tzinfo=UTC),
         commit=True,
-        page_size=1,
     )
     assert page_calls == [1, 2]
-    assert result == {"pages": 2, "inserted": 2}
+    assert result == {"pages": 2, "observed": 2, "inserted": 2}
 
 
 @pytest.mark.asyncio
@@ -217,5 +219,92 @@ async def test_client_requires_json_content_type_and_does_not_follow_redirects()
     raw = httpx.AsyncClient(transport=transport, follow_redirects=True)
     client = naver.NaverPublicClient(client=raw)
     with pytest.raises(naver.NaverDisclosureResponseError, match="not JSON"):
+        await client.disclosures("005930", page=1)
+    await raw.aclose()
+
+
+@pytest.mark.asyncio
+async def test_collector_reports_one_symbol_failure_and_continues() -> None:
+    class Result:
+        def all(self) -> list[Any]:
+            return []
+
+        def scalars(self) -> Result:
+            return self
+
+    class Session:
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def execute(self, _statement: object) -> Result:
+            return Result()
+
+        async def rollback(self) -> None:
+            return None
+
+    class Client:
+        async def disclosures(self, symbol: str, *, page: int) -> list[dict[str, Any]]:
+            assert page == 1
+            if symbol == "005930":
+                raise naver.NaverDisclosureHttpError("fixture failure")
+            return []
+
+    report = await collect_naver_disclosures.run(
+        collect_naver_disclosures._parse_args(
+            ["--symbols", "005930", "000660", "--dry-run"]
+        ),
+        client=Client(),  # type: ignore[arg-type]
+        session_factory=Session,
+    )
+    assert report["errors"] == [
+        {"symbol": "005930", "error_class": "NaverDisclosureHttpError"}
+    ]
+    assert report["results"] == [
+        {"symbol": "000660", "pages": 1, "observed": 0, "inserted": 0}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_serializes_requests_at_two_per_second() -> None:
+    now = [0.0]
+    request_times: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        request_times.append(now[0])
+        return httpx.Response(200, json=[])
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    client = naver.NaverPublicClient(
+        client=raw,
+        monotonic=lambda: now[0],
+        sleep=sleep,
+    )
+    await asyncio.gather(
+        client.disclosures("005930", page=1),
+        client.disclosures("000660", page=1),
+    )
+    assert len(request_times) == 2
+    assert request_times[1] - request_times[0] >= 0.5
+    await raw.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_redirect_without_following_it() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302, headers={"location": "https://m.stock.naver.com/elsewhere"}
+        )
+
+    raw = httpx.AsyncClient(
+        transport=httpx.MockTransport(handle), follow_redirects=True
+    )
+    client = naver.NaverPublicClient(client=raw)
+    with pytest.raises(naver.NaverDisclosureHttpError, match="redirects"):
         await client.disclosures("005930", page=1)
     await raw.aclose()
