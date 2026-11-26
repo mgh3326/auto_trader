@@ -12,7 +12,9 @@ class KISFlowResponseContractError(ValueError):
     """A KIS flow/event response did not match its documented wire shape."""
 
 
-_DECIMAL_FIELD = re.compile(r"_(?:vol|qty|pbmn|tr_pbmn|prpr|rate|ctrt|val|amt|price)\d*$")
+_DECIMAL_FIELD = re.compile(
+    r"_(?:vol|qty|pbmn|tr_pbmn|prpr|prc|dprt|rate|ctrt|val|amt|price|count)\d*$"
+)
 
 
 def _decimal(value: Any, field: str) -> Decimal:
@@ -57,9 +59,15 @@ def parse_vi_status_rows(raw: Any, *, symbol: str) -> list[dict[str, Any]]:
     for row in raw:
         if not isinstance(row, dict):
             raise KISFlowResponseContractError("VI output rows must be objects")
-        code = row.get("stck_shrn_iscd")
+        code = row.get("mksc_shrn_iscd")
         if code != symbol:
             raise KISFlowResponseContractError("VI row symbol did not match request")
+        for field in ("cntg_vi_hour", "vi_cncl_hour"):
+            hour = row.get(field)
+            if hour not in (None, "") and (
+                not isinstance(hour, str) or not re.fullmatch(r"\d{6}", hour)
+            ):
+                raise KISFlowResponseContractError(f"{field} must be HHMMSS")
         rows.append(_normalize_fields(row))
     return rows
 
@@ -71,16 +79,19 @@ def parse_member_summary(raw: Any) -> dict[str, list[dict[str, Any]]]:
     buyers: list[dict[str, Any]] = []
     sellers: list[dict[str, Any]] = []
     for rank in range(1, 6):
-        for side, target, member_field, name_field, volume_field, amount_field in (
-            ("buyer", buyers, f"shnu_mbcr_no{rank}", f"shnu_mbcr_name{rank}", f"shnu_vol{rank}", f"shnu_tr_pbmn{rank}"),
-            ("seller", sellers, f"seln_mbcr_no{rank}", f"seln_mbcr_name{rank}", f"seln_vol{rank}", f"seln_tr_pbmn{rank}"),
+        for side, target, member_field, name_field, volume_field in (
+            ("buyer", buyers, f"shnu_mbcr_no{rank}", f"shnu_mbcr_name{rank}", f"total_shnu_qty{rank}"),
+            ("seller", sellers, f"seln_mbcr_no{rank}", f"seln_mbcr_name{rank}", f"total_seln_qty{rank}"),
         ):
             name = normalized.get(name_field)
             code = normalized.get(member_field)
             volume = normalized.get(volume_field)
-            amount = normalized.get(amount_field)
-            if name in (None, "") and code in (None, "") and volume in (None, "") and amount in (None, ""):
-                continue
+            if name in (None, "") and code in (None, ""):
+                if volume in (None, "") or volume == Decimal("0"):
+                    continue
+                raise KISFlowResponseContractError(
+                    f"member {side} rank {rank} has volume without identity"
+                )
             if not isinstance(name, str) or not name or not isinstance(code, str) or not code:
                 raise KISFlowResponseContractError(
                     f"member {side} rank {rank} is incomplete"
@@ -89,9 +100,5 @@ def parse_member_summary(raw: Any) -> dict[str, list[dict[str, Any]]]:
                 raise KISFlowResponseContractError(
                     f"member {side} rank {rank} volume is invalid"
                 )
-            if not isinstance(amount, Decimal):
-                raise KISFlowResponseContractError(
-                    f"member {side} rank {rank} amount is invalid"
-                )
-            target.append({"rank": rank, "member_code": code, "member_name": name, "volume": volume, "trading_amount": amount})
+            target.append({"rank": rank, "member_code": code, "member_name": name, "volume": volume})
     return {"buyers": buyers, "sellers": sellers}

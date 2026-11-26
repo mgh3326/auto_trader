@@ -747,10 +747,9 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
                 "securities-lending": (
                     "executionQuantity", "repaymentQuantity", "balanceQuantity", "balanceAmount",
                 ),
-                "credit-trades": ("marginLoan", "stockLoan"),
                 "program-trades": ("arbitrage", "nonArbitrage"),
             }
-            for field in required[endpoint]:
+            for field in required.get(endpoint, ()):
                 if field not in normalized or normalized[field] is None:
                     raise TossResponseContractError(f"'{field}' is required")
             nested_required = {
@@ -764,7 +763,11 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
                 },
             }.get(endpoint, {})
             for field, nested_fields in nested_required.items():
+                if endpoint == "credit-trades":
+                    normalized.setdefault(field, None)
                 nested = normalized[field]
+                if nested is None:
+                    continue
                 if not isinstance(nested, dict) or any(name not in nested for name in nested_fields):
                     raise TossResponseContractError(f"'{field}' is incomplete")
             records.append(normalized)

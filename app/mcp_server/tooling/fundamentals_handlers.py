@@ -382,9 +382,10 @@ def _register_fundamentals_tools_impl(
         @mcp.tool(
             name="get_kr_flow_signals",
             description=(
-                "국내 종목의 공매도·대차·신용·프로그램매매, KIS VI 현황과 거래원 "
-                "매수·매도 상위를 조회합니다. 각 소스의 상태와 관측 시각을 따로 "
-                "반환하는 읽기 전용 도구입니다."
+                "국내 종목의 위험 신호(KIS VI·저장된 거래정지/관리/시장경고)와 "
+                "참고 수급(Toss 공매도·대차·신용·프로그램·투자자 랭킹, KIS 거래원)을 "
+                "분리해 조회합니다. 저장되지 않은 상태는 unknown으로 반환합니다. "
+                "소스별 상태·제공자 시각·조회 시각이 있는 읽기 전용 도구입니다."
             ),
         )
         async def get_kr_flow_signals(
@@ -397,7 +398,8 @@ def _register_fundamentals_tools_impl(
             name="get_kr_investor_rankings",
             description=(
                 "토스 국내 종목의 외국인·기관·개인 순매수 또는 순매도 랭킹을 "
-                "조회합니다. 금액은 KRW이며 제공자 관측 시각을 함께 반환합니다."
+                "reference 블록으로 조회합니다. 금액은 KRW이며 제공자 관측 시각과 "
+                "조회 시각을 함께 반환합니다."
             ),
         )
         async def get_kr_investor_rankings(

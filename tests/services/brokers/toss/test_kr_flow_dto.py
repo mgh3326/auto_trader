@@ -62,3 +62,15 @@ def test_toss_rankings_parse_exact_amount_and_asof():
     assert rankings["foreigner"].buy[0]["amount"] == Decimal("386487682000")
     assert rankings["foreigner"].ranked_at.isoformat() == "2026-10-20T15:41:19+09:00"
     assert rankings["institution"].ranked_at is None
+
+
+@pytest.mark.parametrize("field", ["marginLoan", "stockLoan"])
+@pytest.mark.parametrize("value", [None, "missing"])
+def test_credit_trade_nullable_details_are_preserved(field, value):
+    raw = fixture("toss_credit_trades.json")
+    if value == "missing":
+        del raw["records"][0][field]
+    else:
+        raw["records"][0][field] = value
+    page = parse_credit_trades_page(raw)
+    assert page.records[0][field] is None

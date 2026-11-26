@@ -442,7 +442,7 @@ DB 접근 전에 순서대로 비활성 404, `RETRO_API_READ_TOKEN` 미설정 40
 
 `get_kr_flow_signals(symbol, days=20)`와 `get_kr_investor_rankings(investor="foreign", side="buy", limit=20)`는 DEFAULT 프로필에서만 등록되는 읽기 전용 MCP 도구다. `config/mcp_lane_allowlists/kr.txt`만 두 도구를 광고한다(`spec:kr-flow-signals`). DB·주문·원장 쓰기와 스케줄러 연결은 없다.
 
-- `get_kr_flow_signals`는 Toss 공매도·대차·신용·프로그램매매와 KIS VI 현황·회원사 매수/매도 상위 정보를 각각 독립 블록으로 반환한다. 각 블록은 `status`(`ok`/`empty`/`error`), `as_of`, `data` 또는 `error_class`를 가진다. 한 소스의 실패는 다른 소스를 버리지 않는다.
+- `get_kr_flow_signals` 결과는 `risk`와 `reference` 두 블록이다. `risk`는 KIS VI와 기존 `kr_symbol_trading_flags` 저장소의 거래정지·관리·시장경고·정리매매 상태를 반환한다. 저장 행이 없는 분류는 `state="unknown"`으로 두며 `none`으로 추론하지 않는다. `reference`는 Toss 공매도·대차·신용·프로그램매매·투자자 랭킹과 KIS 회원사 매수/매도 상위 정보를 각각 독립 블록으로 반환한다. 각 소스는 `status`(`ok`/`empty`/`error`), 제공자 `as_of`, 로컬 `fetched_at`, `data` 또는 `error_class`를 가진다. 제공자 시각이 없으면 `as_of`는 null이다. 한 소스의 실패는 다른 소스를 버리지 않는다.
 - `days`는 1..100의 정확한 정수이며 Toss endpoint의 `count`로 전달된다. KIS VI는 호출 당일 KST의 단일 날짜를 읽고, 회원사 매매동향은 현재 요약이다.
-- 투자자 랭킹은 `investor ∈ {foreign, institution, individual}`, `side ∈ {buy, sell}`, `limit` 1..100을 받는다. `as_of`는 해당 투자자 섹션의 제공자 `rankedAt`이며 null일 수 있다. 금액은 KRW 정수 단위로 온다.
+- `get_kr_investor_rankings`는 `investor ∈ {foreign, institution, individual}`, `side ∈ {buy, sell}`, `limit` 1..100을 받으며 `reference.toss_investor_rankings` 블록으로 반환한다. `as_of`는 해당 투자자 섹션의 제공자 `rankedAt`이며 null일 수 있다. 금액은 KRW 정수 단위로 온다.
 - 공식 근거: [Toss Open API v1.2.28](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json), [KIS 국내주식 공식 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py).
