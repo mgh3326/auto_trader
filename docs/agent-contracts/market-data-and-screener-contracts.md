@@ -294,6 +294,12 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 
 **안전 경계**: 풀 PDF 본문 / 전체 추출 텍스트는 스키마 단계에서 거부 (`full_text_exported`/`pdf_body_excluded=true` 페이로드는 reject). `summary_text` 1000자, `detail.excerpt` 500자로 트렁케이트. 모든 DB 쓰기는 `ResearchReportsRepository` 경유. 브로커/주문/감시 mutation 없음.
 
+**네이버 리서치 공개 JSON 수집 (hk 6681)**: `app/services/research_reports/naver_client.py`는 `https://stock.naver.com/api/stockSecurity/researches/v2`의 `market`·`company`·`industry`·`invest`·`economy` 목록, `/{category}/{nid}` 상세, `/company/by-items`만 읽는다. `httpx` timeout, redirect 거부, 고정 User-Agent, 요청 간 최소 0.5초 간격 및 응답 shape 검증을 적용한다. API 목록의 `index`는 offset이며 `page`를 사용하지 않는다. `content` HTML은 텍스트로 바꿔 `summary_text` 1000자·`detail.excerpt` 500자로 제한한다. PDF는 상세의 `attachUrl`·`attachName` 참조만 보존하며 내려받거나 본문을 읽지 않는다.
+
+`app/services/research_reports/naver_collector.py`는 카테고리마다 최신 offset 0부터 읽어 이미 저장된 `source_report_id`(NID)를 만나면 해당 카테고리 폴링을 멈춘다. 다섯 카테고리는 독립 실행되어 한 카테고리 실패를 기록하고 나머지는 계속 수집한다. NID는 `source_report_id`와 dedup key에 보존한다. `writeDate`는 `published_at_text`에 `YYYY-MM-DD` 정밀도로만 기록하고 `published_at` 시각은 만들지 않는다. 목표주가는 정확한 decimal 문자열로 심볼 후보 메타데이터에 기록하고(종목 코드가 없는 보고서는 허용된 report detail metadata에 둔다), 값이 없으면 NULL과 `not_provided` 사유를 보존한다. 첫 수신 시각 전용 열은 현재 모델에 없으며 이 작업에서 추가하지 않는다.
+
+수동 실행은 `python -m scripts.ingest_naver_research --dry-run`(DB 세션 없이 미리보기) 또는 `--commit`(기존 ingestion service 경유)이다. `deploy/dagu/at-naver-research/at-naver-research.yaml`은 07:00–20:00 KST 30분 간격 실행을 기술한 미등록 복사본이다. 스케줄러 연결은 없다.
+
 ### Invest Screener US Activation (ROB-204)
 
 US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 스냅샷 기반 결과를 제공합니다. 첫 번째 US 프로덕션 write는 다음을 요구합니다:
