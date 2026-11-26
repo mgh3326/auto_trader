@@ -239,6 +239,7 @@ tests/services/kis_mock_runner/test_cli.py
 tests/services/kis_mock_runner/test_control.py
 tests/services/kis_mock_runner/test_correlation.py
 tests/services/kis_websocket/test_protocol.py
+tests/services/kr_market_close_summary/test_kr_market_close_summary.py
 tests/services/mandate/test_batch_callback.py
 tests/services/mandate/test_batch_cli.py
 tests/services/mandate/test_batch_migration_shape.py
@@ -435,6 +436,7 @@ tests/test_frontend_no_forexfactory_request_path.py
 tests/test_hermes_ingest_dimension_refs.py
 tests/test_hk4734_kiwoom_broker_migration.py
 tests/test_hk4734_kiwoom_broker_schema_db.py
+tests/test_hk6758_kr_mover_source_migration.py
 tests/test_invest_action_readiness.py
 tests/test_invest_benchmark_gap.py
 tests/test_invest_calendar_weekly_summary_router.py

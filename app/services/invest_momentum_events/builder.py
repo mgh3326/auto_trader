@@ -83,12 +83,15 @@ def momentum_upsert_from_row(
     trade_type: str,
     market_type: str,
     order_type: str,
+    source: str = "naver_stock",
+    surface: str = "domestic_market_stock_default",
 ) -> MomentumEventUpsert:
     """One parsed Naver stock row -> snapshot payload (shared with hk 6154)."""
     return MomentumEventUpsert(
         snapshot_at=snapshot_at,
         trading_date=trading_date,
-        surface="domestic_market_stock_default",
+        surface=surface,
+        source=source,
         trade_type=trade_type,
         market_type=market_type,
         order_type=order_type,

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
+from research.crypto_universe.public_http import FetchResponse
 from research.data_plane.collect import CollectError, collect
 from research.data_plane.contract import (
     DATASET_ACTIONS,
@@ -444,12 +446,24 @@ def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, caps
         "make_public_fetch",
         lambda **_: FakeSources(missing=frozenset({"BTCUSDT", "ETHUSDT"})),
     )
+    monkeypatch.setattr(cli, "code_commit", lambda _: "fixture-commit")
     monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
     monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
     _FrozenDatetime.frozen = evening("crypto", day)
     code = cli.main(["collect", "--root", str(tmp_path), "--market", "crypto"])
     out = capsys.readouterr()
     assert code == 2
+    assert "runner_commit fixture-commit" in out.out
+    assert (
+        "dataset_outcome universe crypto 2026-10-30 status=written reason=none"
+    ) in out.out
+    assert (
+        "dataset_outcome bars_1d crypto 2026-10-30 "
+        'status=not_collected reason="bars_1d crypto 2026-10-30: coverage'
+    ) in out.out
+    assert (
+        "dataset_outcome corporate_actions crypto 2026-10-30 status=written reason=none"
+    ) in out.out
     assert "written universe crypto 2026-10-30" in out.out
     assert "written corporate_actions crypto 2026-10-30" in out.out
     assert "not collected: bars_1d crypto 2026-10-30" in out.err
@@ -465,6 +479,51 @@ class _FrozenDatetime:
         return cls.frozen
 
     fromisoformat = _dt.fromisoformat
+
+
+@pytest.mark.unit
+def test_cli_refuses_us_collection_from_runner_before_universe_fix(
+    tmp_path, monkeypatch, capsys
+):
+    from research.data_plane import cli
+    from research.data_plane import collect as collect_module
+
+    day = date(2026, 11, 25)
+    fetch_calls = []
+    monkeypatch.setattr(
+        cli,
+        "make_public_fetch",
+        lambda **_: fetch_calls.append(True) or FakeSources(),
+    )
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(cli, "code_commit", lambda _: "b4ddb1f", raising=False)
+    monkeypatch.setattr(
+        cli, "_runner_has_minimum_commit", lambda _: False, raising=False
+    )
+    _FrozenDatetime.frozen = evening("us", day)
+
+    code = cli.main(
+        [
+            "collect",
+            "--root",
+            str(tmp_path),
+            "--market",
+            "us",
+        ]
+    )
+    out = capsys.readouterr()
+
+    assert code == 2
+    assert "runner_commit b4ddb1f" in out.out
+    for dataset in market_datasets("us"):
+        assert (
+            f"dataset_outcome {dataset} us 2026-11-25 "
+            "status=not_collected reason=runner_stale"
+        ) in out.out
+    assert "runner_stale" in out.err
+    assert fetch_calls == []
+    assert not partition_path(tmp_path, DATASET_UNIVERSE, "us", day).exists()
 
 
 @pytest.mark.unit
@@ -571,6 +630,60 @@ def test_vendor_relabel_of_a_venue_is_not_a_truncated_source(tmp_path):
     venues = {r["venue"] for r in rows}
     assert "Texas Stock Exchange" in venues
     assert not any(v.startswith("UNKNOWN:") for v in venues)
+
+
+@pytest.mark.unit
+def test_archived_nasdaq_files_replay_without_universe_shrink(tmp_path):
+    fixture_dir = (
+        Path(__file__).parents[2] / "fixtures" / "research" / "data_plane" / "us_nasdaq"
+    )
+    capture_manifest = json.loads(
+        (fixture_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    captures = {item["path"]: item for item in capture_manifest["captures"]}
+
+    def body(name: str) -> bytes:
+        raw = (fixture_dir / name).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == captures[name]["sha256"]
+        return raw
+
+    otherlisted = body("otherlisted-20261024.txt")
+
+    def fetch(nasdaq_name: str):
+        nasdaqlisted = body(nasdaq_name)
+
+        def read(url: str) -> FetchResponse:
+            if url.endswith("nasdaqlisted.txt"):
+                return FetchResponse(200, nasdaqlisted)
+            if url.endswith("otherlisted.txt"):
+                return FetchResponse(200, otherlisted)
+            raise AssertionError(f"unexpected public source URL: {url}")
+
+        return read
+
+    first_day, later_day = date(2026, 11, 1), date(2026, 11, 25)
+    first = collect(
+        tmp_path,
+        market="us",
+        day=first_day,
+        datasets=[DATASET_UNIVERSE],
+        fetch=fetch("nasdaqlisted-20261024.txt"),
+        now=lambda: evening("us", first_day),
+        commit="fixture",
+    )
+    later = collect(
+        tmp_path,
+        market="us",
+        day=later_day,
+        datasets=[DATASET_UNIVERSE],
+        fetch=fetch("nasdaqlisted-20261125.txt"),
+        now=lambda: evening("us", later_day),
+        commit="fixture",
+    )
+
+    assert [r.action for r in first + later] == ["written", "written"]
+    assert first[0].rows == 13262
+    assert later[0].rows == 13245
 
 
 @pytest.mark.unit

@@ -79,6 +79,15 @@ class CollectError(RuntimeError):
     """A dataset could not be collected; nothing was written for it."""
 
 
+@dataclass(frozen=True)
+class DatasetFailure:
+    dataset: str
+    market: str
+    partition_date: date
+    status: str  # refused | not_collected
+    reason: str
+
+
 @dataclass
 class _Run:
     root: Path
@@ -169,6 +178,7 @@ def collect(
     _configure_bar_sources(run, source_order, broker_clients, budgets)
     run.source_unavailable = dict(source_unavailable or {})
     results: list[PublishResult] = []
+    failures: list[DatasetFailure] = []
     errors: list[CollectError | RefusedRowError] = []
     for dataset in DATASETS:  # fixed order: universe, bars, adjusted, actions
         if dataset not in datasets:
@@ -178,9 +188,30 @@ def collect(
         try:
             results.append(_collect_one(run, dataset))
         except (CollectError, RefusedRowError) as exc:
+            failures.append(
+                DatasetFailure(
+                    dataset=dataset,
+                    market=market,
+                    partition_date=day,
+                    status="refused"
+                    if isinstance(exc, RefusedRowError)
+                    else "not_collected",
+                    reason=str(exc),
+                )
+            )
             errors.append(exc)
         except ManifestMismatchError as exc:
-            errors.append(CollectError(str(exc)))
+            failure = CollectError(str(exc))
+            failures.append(
+                DatasetFailure(
+                    dataset=dataset,
+                    market=market,
+                    partition_date=day,
+                    status="not_collected",
+                    reason=str(exc),
+                )
+            )
+            errors.append(failure)
     if errors:
         # Refusals outrank collection failures; every error is attached.
         errors.sort(key=lambda e: 0 if isinstance(e, RefusedRowError) else 1)
@@ -188,6 +219,7 @@ def collect(
         for other in errors[1:]:
             first.add_note(f"also: {type(other).__name__}: {other}")
         first.results = results  # type: ignore[attr-defined]
+        first.failures = failures  # type: ignore[attr-defined]
         raise first
     return results
 
