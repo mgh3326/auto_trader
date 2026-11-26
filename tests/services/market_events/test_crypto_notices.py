@@ -329,6 +329,50 @@ async def test_revision_keeps_symbol_when_parenthesized_ticker_is_unresolved():
 
 
 @pytest.mark.asyncio
+async def test_receipt_clock_is_sampled_after_each_provider_response():
+    repo = FakeRepository()
+    client = FakeClient()
+    completed_responses = 0
+    fetch_upbit_page = client.fetch_upbit_page
+    fetch_bithumb = client.fetch_bithumb
+
+    async def tracked_upbit(page):
+        nonlocal completed_responses
+        response = await fetch_upbit_page(page)
+        completed_responses += 1
+        return response
+
+    async def tracked_bithumb():
+        nonlocal completed_responses
+        response = await fetch_bithumb()
+        completed_responses += 1
+        return response
+
+    client.fetch_upbit_page = tracked_upbit
+    client.fetch_bithumb = tracked_bithumb
+    instants = iter(
+        (
+            RECEIVED,
+            datetime(2026, 11, 26, 2, 0, tzinfo=UTC),
+        )
+    )
+    clock_response_counts = []
+
+    def clock():
+        clock_response_counts.append(completed_responses)
+        return next(instants)
+
+    await collect_crypto_notices(
+        None, pages=1, repo=repo, client=client, commit=True, clock=clock
+    )
+    assert clock_response_counts == [1, 2]
+    assert repo.events[(UPBIT_SOURCE, "88001")]["first_received_at"] == RECEIVED
+    assert repo.events[(BITHUMB_SOURCE, "23001")]["first_received_at"] == datetime(
+        2026, 11, 26, 2, 0, tzinfo=UTC
+    )
+
+
+@pytest.mark.asyncio
 async def test_upbit_fixed_notices_are_processed_without_ending_normal_pagination():
     repo = FakeRepository()
     client = FakeClient(upbit_pages={1: [UPBIT_NOTICE]}, upbit_total_pages=1)

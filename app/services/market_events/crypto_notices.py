@@ -411,6 +411,7 @@ async def collect_crypto_notices(
     client: CryptoNoticeClient | None = None,
     repo: MarketEventsRepository | None = None,
     received_at: datetime | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch both feeds, stopping at known IDs and optionally persisting rows."""
     if type(pages) is not int or not 1 <= pages <= 20:
@@ -422,6 +423,11 @@ async def collect_crypto_notices(
     if repo is None:
         raise ValueError("a repository is required to check stored IDs")
     fetcher = client or CryptoNoticeClient()
+    capture_received_at = clock or (lambda: datetime.now(UTC))
+
+    def received_time() -> datetime:
+        return received_at if received_at is not None else capture_received_at()
+
     known_upbit: set[str] = set()
     if db is not None:
         known_upbit = set(
@@ -497,7 +503,7 @@ async def collect_crypto_notices(
 
                 for page in range(1, pages + 1):
                     rows, total_pages, fixed_rows = await fetcher.fetch_upbit_page(page)
-                    now = received_at or datetime.now(UTC)
+                    now = received_time()
                     for row in fixed_rows:
                         await process_upbit(row, now)
                     stop = False
@@ -519,7 +525,7 @@ async def collect_crypto_notices(
                     output[source]["older_history_uncollected"] = True
             else:
                 rows, tickers = await fetcher.fetch_bithumb()
-                now = received_at or datetime.now(UTC)
+                now = received_time()
                 saw_known = False
                 for row in rows:
                     event_id = _bithumb_id(row.get("pc_url"))
