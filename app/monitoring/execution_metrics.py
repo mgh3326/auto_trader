@@ -8,12 +8,31 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Final, Literal
 
 logger = logging.getLogger(__name__)
+
+
+def configure_execution_metrics_logging() -> None:
+    """Send execution observations to stderr even when the host app has no logger setup."""
+    logger.setLevel(logging.INFO)
+    if any(
+        getattr(handler, "_execution_metrics_handler", False)
+        for handler in logger.handlers
+    ):
+        return
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    handler._execution_metrics_handler = True  # type: ignore[attr-defined]
+    logger.addHandler(handler)
+
 
 Venue = Literal["kis", "upbit", "kiwoom", "alpaca", "binance"]
 Market = Literal["kr", "us", "crypto", "multi"]
@@ -73,13 +92,15 @@ def record_execution_stage(
 
 
 class _StageOutcome:
-    __slots__ = ("value",)
+    __slots__ = ("value", "marked")
 
     def __init__(self) -> None:
         self.value: Outcome = "success"
+        self.marked = False
 
     def mark(self, value: Outcome) -> None:
         self.value = value
+        self.marked = True
 
 
 @contextmanager
@@ -96,7 +117,8 @@ def execution_stage(
     try:
         yield result
     except BaseException:
-        result.mark("failure")
+        if not result.marked:
+            result.mark("failure")
         raise
     finally:
         record_execution_stage(
@@ -120,6 +142,7 @@ def account_kind_for_mode(
         return "live"
     if (
         mode.endswith("_mock")
+        or mode.endswith("_mock_us")
         or mode.endswith("_demo")
         or mode
         in {
@@ -196,6 +219,7 @@ def record_stale_quote_block(
 
 __all__ = [
     "account_kind_for_mode",
+    "configure_execution_metrics_logging",
     "execution_stage",
     "record_reconnect_recovery",
     "record_execution_stage",

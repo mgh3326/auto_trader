@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import sys
+from io import StringIO
 
 import pytest
 
 from app.monitoring.execution_metrics import (
     account_kind_for_mode,
+    configure_execution_metrics_logging,
     execution_stage,
     record_execution_stage,
     record_reconnect_recovery,
@@ -49,6 +52,8 @@ def test_execution_stage_emits_named_count_and_latency_with_bounded_labels(
     [
         ("kis_live", False, "live"),
         ("kis_mock", False, "mock"),
+        ("kis_mock_us", False, "mock"),
+        ("other_mock_us", False, "mock"),
         ("binance_spot_demo", False, "mock"),
         ("upbit", True, "shadow"),
         (None, False, None),
@@ -94,6 +99,54 @@ def test_execution_stage_emits_failure_observations_when_fake_operation_raises(
 
     assert len(caplog.records) == 2
     assert all("outcome=failure" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ["blocked", "uncertain"])
+def test_execution_stage_preserves_explicit_outcome_when_operation_raises(
+    caplog: pytest.LogCaptureFixture, outcome: str
+) -> None:
+    with caplog.at_level(logging.INFO, logger="app.monitoring.execution_metrics"):
+        with pytest.raises(RuntimeError, match="fake send failure"):
+            with execution_stage(
+                venue="kis",
+                market="kr",
+                account_kind="mock",
+                stage="broker_accept",
+            ) as observation:
+                observation.mark(outcome)  # type: ignore[arg-type]
+                raise RuntimeError("fake send failure")
+
+    assert len(caplog.records) == 2
+    assert all(f"outcome={outcome}" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_execution_metrics_logger_emits_info_to_stderr_without_stdout_json_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    configure_execution_metrics_logging()
+    configure_execution_metrics_logging()
+    try:
+        record_execution_stage(
+            venue="kis",
+            market="kr",
+            account_kind="mock",
+            stage="receive",
+            outcome="success",
+            duration_seconds=0.1,
+        )
+    finally:
+        metric_logger = logging.getLogger("app.monitoring.execution_metrics")
+        for handler in tuple(metric_logger.handlers):
+            if getattr(handler, "_execution_metrics_handler", False):
+                metric_logger.removeHandler(handler)
+                handler.close()
+
+    assert "metric=execution_stage_total" in stream.getvalue()
+    assert stream.getvalue().count("metric=execution_stage_total") == 1
 
 
 @pytest.mark.unit

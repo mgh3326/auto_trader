@@ -63,6 +63,7 @@ class UpbitPublicWebSocketClient:
         self.reconnect_delay = 5
         self.max_reconnect_attempts = 10
         self.current_attempt = 0
+        self._recovery_started_at: float | None = None
 
     def _create_ssl_context(self):
         """Create SSL context for WebSocket connection."""
@@ -83,29 +84,27 @@ class UpbitPublicWebSocketClient:
 
     async def connect_and_subscribe(self):
         """Connect to Upbit WebSocket and subscribe to market data."""
-        recovery_started_at = time.perf_counter()
         while self.current_attempt < self.max_reconnect_attempts and self.is_running:
             try:
                 await self._connect_and_subscribe_internal()
-                if self.current_attempt:
-                    record_reconnect_recovery(
-                        venue="upbit",
-                        market="crypto",
-                        account_kind="shadow",
-                        outcome="success",
-                        duration_seconds=time.perf_counter() - recovery_started_at,
-                    )
                 self.current_attempt = 0
             except Exception as e:
+                if self._recovery_started_at is None:
+                    self._recovery_started_at = time.perf_counter()
                 self.current_attempt += 1
-                if self.current_attempt >= self.max_reconnect_attempts:
+                if (
+                    self.current_attempt >= self.max_reconnect_attempts
+                    and self._recovery_started_at is not None
+                ):
                     record_reconnect_recovery(
                         venue="upbit",
                         market="crypto",
                         account_kind="shadow",
                         outcome="failure",
-                        duration_seconds=time.perf_counter() - recovery_started_at,
+                        duration_seconds=time.perf_counter()
+                        - self._recovery_started_at,
                     )
+                    self._recovery_started_at = None
                 logger.error(
                     f"WebSocket connection failed (attempt {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
                 )
@@ -143,6 +142,16 @@ class UpbitPublicWebSocketClient:
         subscribe_message = self._create_subscribe_message()
         await self.websocket.send(json.dumps(subscribe_message))
         logger.info("Subscription message sent")
+
+        if self.current_attempt and self._recovery_started_at is not None:
+            record_reconnect_recovery(
+                venue="upbit",
+                market="crypto",
+                account_kind="shadow",
+                outcome="success",
+                duration_seconds=time.perf_counter() - self._recovery_started_at,
+            )
+            self._recovery_started_at = None
 
         await self._listen_for_messages()
 

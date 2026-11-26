@@ -1474,6 +1474,14 @@ async def _execute_and_record(
                     if broker_observation is not None:
                         broker_observation.mark("uncertain")
                     raise
+                except httpx.RequestError:
+                    if broker_observation is not None and (
+                        send_outcome is None
+                        or send_outcome.disposition
+                        is not OrderSendDisposition.NOT_CREATED
+                    ):
+                        broker_observation.mark("uncertain")
+                    raise
                 except BaseException:
                     if broker_observation is not None:
                         broker_observation.mark("failure")
