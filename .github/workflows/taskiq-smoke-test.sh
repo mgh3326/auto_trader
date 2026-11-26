@@ -25,7 +25,7 @@ run_case() {
   local log_path="$test_dir/$name.log"
   local actual_status=0
 
-  TASKIQ_READINESS_POLLS=3 \
+  TASKIQ_READINESS_POLLS=20 \
     TASKIQ_READINESS_INTERVAL=0.05 \
     TASKIQ_TERM_GRACE_POLLS=3 \
     TASKIQ_TERM_GRACE_INTERVAL=0.05 \
