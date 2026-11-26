@@ -96,6 +96,13 @@ class FeedArticleInput:
 
 
 @dataclass(frozen=True)
+class FeedArticleUpsertResult:
+    new_articles: int
+    new_links: int
+    article_ids_by_canonical_url: dict[str, int]
+
+
+@dataclass(frozen=True)
 class StoredSymbolNews:
     article_id: int
     url: str
@@ -155,10 +162,10 @@ async def upsert_feed_articles(
     Returns the number of *newly created* pending links (ROB-506 enqueue
     trigger). 0 when every (article, symbol) pair already existed.
     """
-    _articles_new, new_links = await _upsert_feed_articles(
+    result = await _upsert_feed_articles(
         db, market, symbol, items, feed_source=feed_source
     )
-    return new_links
+    return result.new_links
 
 
 async def _upsert_feed_articles(
@@ -169,10 +176,11 @@ async def _upsert_feed_articles(
     *,
     feed_source: str,
     canonical_dedupe: bool = False,
+    promote_feed_source_on_precision_upgrade: bool = False,
     commit: bool = True,
-) -> tuple[int, int]:
+) -> FeedArticleUpsertResult:
     if not items:
-        return 0, 0
+        return FeedArticleUpsertResult(0, 0, {})
     items_by_key: dict[str, FeedArticleInput] = {}
     candidate_urls: set[str] = set()
     candidate_prefixes: set[str] = set()
@@ -289,6 +297,12 @@ async def _upsert_feed_articles(
                     values["published_at_reason"] = item.published_at_reason
                 if item.published_offset is not None:
                     values["published_offset"] = item.published_offset
+                if (
+                    promote_feed_source_on_precision_upgrade
+                    and item.published_precision == "second"
+                    and incoming_published_at is not None
+                ):
+                    values["feed_source"] = feed_source
             else:
                 if existing_raw is None and item.published_at_raw is not None:
                     values["published_at_raw"] = item.published_at_raw
@@ -503,7 +517,11 @@ async def _upsert_feed_articles(
         new_links = int(result.rowcount or 0)
     if commit:
         await db.commit()
-    return new_articles, new_links
+    return FeedArticleUpsertResult(
+        new_articles=new_articles,
+        new_links=new_links,
+        article_ids_by_canonical_url=url_to_id,
+    )
 
 
 async def upsert_kr_feed_articles(
@@ -526,6 +544,28 @@ async def upsert_kr_collector_articles(
     commit: bool = True,
 ) -> tuple[int, int]:
     """Store collector articles and return (new articles, new symbol links)."""
+    result = await _upsert_feed_articles(
+        db,
+        "kr",
+        symbol,
+        items,
+        feed_source=feed_source,
+        canonical_dedupe=True,
+        commit=commit,
+    )
+    return result.new_articles, result.new_links
+
+
+async def upsert_kr_collector_articles_with_ids(
+    db: AsyncSession,
+    symbol: str | None,
+    items: list[FeedArticleInput],
+    *,
+    feed_source: str,
+    promote_feed_source_on_precision_upgrade: bool = False,
+    commit: bool = True,
+) -> FeedArticleUpsertResult:
+    """Store collector articles and return IDs resolved by canonical identity."""
     return await _upsert_feed_articles(
         db,
         "kr",
@@ -533,6 +573,7 @@ async def upsert_kr_collector_articles(
         items,
         feed_source=feed_source,
         canonical_dedupe=True,
+        promote_feed_source_on_precision_upgrade=promote_feed_source_on_precision_upgrade,
         commit=commit,
     )
 

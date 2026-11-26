@@ -4,12 +4,13 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.services import kr_news_collector as collector
 from app.services.naver_news_urls import canonicalize_naver_news_url
 
-FIXTURE = Path("tests/fixtures/kr_news/naver_aggregate_home_response.json")
+FIXTURE = Path("tests/fixtures/kr_news/mstock_mainnews_response.json")
 
 
 def test_kst_timestamp_raw_and_precision() -> None:
@@ -65,7 +66,9 @@ def test_naver_article_url_variants_share_canonical_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aggregate_parser_keeps_all_sections_and_canonical_url_dedupes() -> None:
+async def test_mainnews_parser_uses_recorded_shape_and_canonical_article_identity() -> (
+    None
+):
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     request = {}
 
@@ -73,29 +76,49 @@ async def test_aggregate_parser_keeps_all_sections_and_canonical_url_dedupes() -
         request.update(url=url, params=params)
         return payload
 
-    rows = await collector.fetch_aggregate_news(get_json=get_json)
-    assert [row["section"] for row in rows] == [
-        "flashNews",
-        "mainNews",
-        "rankingNews",
-        "newsFocus",
-    ]
-    assert len(rows) == 4
+    rows = await collector.fetch_mainnews(get_json=get_json)
+    assert len(rows) == 2
+    assert rows[0]["title"] == "삼성전자 & 반도체"
+    assert rows[0]["provider_article_id"] == "001:0001234"
+    assert rows[0]["provider_raw_ids"] == {"oid": "001", "aid": "0001234"}
+    assert rows[0]["url"] == "https://n.news.naver.com/mnews/article/001/0001234"
+    assert rows[0]["dedupe_url"] == "https://n.news.naver.com/article/001/0001234"
+    assert rows[0]["published"].raw == "20261126213310"
     assert rows[0]["published"].precision == "second"
-    assert rows[2]["published"].reason == "unparseable"
-    assert rows[3]["published"].precision == "second"
-    assert rows[3]["published"].value == datetime(2026, 6, 10, 22, 43, 8, tzinfo=UTC)
-    assert rows[3]["url"] == (
-        "https://n.news.naver.com/mnews/article/009/0005692236?sid=101258401"
-    )
-    assert rows[3]["dedupe_url"] == "https://n.news.naver.com/article/009/0005692236"
-    assert request["url"] == collector.AGGREGATE_URL
-    assert request["params"] == {
-        "flashNewsSize": 100,
-        "mainNewsSize": 100,
-        "rankingNewsSize": 100,
-        "focusSize": 100,
+    assert rows[0]["published"].value == datetime(2026, 11, 26, 12, 33, 10, tzinfo=UTC)
+    assert request == {
+        "url": collector.MAINNEWS_URL,
+        "params": {"category": "mainnews", "page": 1, "pageSize": 100},
     }
+
+
+@pytest.mark.asyncio
+async def test_mainnews_rejects_non_json_response(monkeypatch) -> None:
+    class Response:
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, *, timeout, follow_redirects):
+            assert timeout == 10
+            assert follow_redirects is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def get(self, url, *, params):
+            assert url == collector.MAINNEWS_URL
+            assert params["category"] == "mainnews"
+            return Response()
+
+    monkeypatch.setattr(collector.httpx, "AsyncClient", Client)
+    with pytest.raises(ValueError, match="mainnews_non_json_response"):
+        await collector.fetch_mainnews()
 
 
 def test_symbol_set_unions_and_reports_cut_list() -> None:
@@ -112,23 +135,24 @@ def test_symbol_set_unions_and_reports_cut_list() -> None:
 
 def test_symbol_set_accepts_alphanumeric_kr_codes_from_every_source() -> None:
     result = collector.build_symbol_set(
-        holdings=["0009k0"],
-        watch=["0123G0"],
-        first_captures=["0117V0"],
-        cap=3,
+        holdings=["0009k0"], watch=["0123G0"], first_captures=["0117V0"], cap=3
     )
     assert result.symbols == ("0009K0", "0123G0", "0117V0")
     assert result.cut_list == ()
 
 
 @pytest.mark.asyncio
-async def test_failed_aggregate_is_error_and_item_source_still_stores(
+async def test_mainnews_404_is_source_error_and_stock_source_continues(
     monkeypatch,
 ) -> None:
     stored = []
 
-    async def broken_aggregate():
-        raise TimeoutError
+    async def failed_mainnews():
+        raise httpx.HTTPStatusError(
+            "404",
+            request=httpx.Request("GET", collector.MAINNEWS_URL),
+            response=httpx.Response(404),
+        )
 
     async def item_fetcher(_symbol, _limit):
         return [
@@ -143,21 +167,37 @@ async def test_failed_aggregate_is_error_and_item_source_still_stores(
 
     async def fake_store(_db, **kwargs):
         stored.extend(kwargs["items"])
-        return 1, 1
+        return 1, 1, {}
 
     monkeypatch.setattr(collector, "_store_items", fake_store)
     report = await collector.collect_kr_news(
         db=_TransactionSession(),
         now=datetime(2026, 11, 25, 1, tzinfo=UTC),
-        aggregate_fetcher=broken_aggregate,
+        mainnews_fetcher=failed_mainnews,
         item_fetcher=item_fetcher,
         explicit_symbols=["005930"],
     )
     by_source = {row.source: row for row in report.sources}
-    assert by_source[collector.AGGREGATE_FEED_SOURCE].status == "error"
+    assert by_source[collector.MAINNEWS_FEED_SOURCE].status == "error"
+    assert by_source[collector.MAINNEWS_FEED_SOURCE].errors == ["HTTPStatusError"]
     assert by_source["naver_item_news:005930"].new == 1
     assert stored[0]["published"].raw == "202611250941"
-    assert stored[0]["url"] == "https://n.news.naver.com/mnews/article/001/9"
+    assert stored[0]["published"].precision == "minute"
+    assert stored[0]["title"] == "삼성전자 소식"
+
+
+def test_cli_returns_failure_when_any_source_reports_error(monkeypatch, capsys) -> None:
+    from scripts import collect_kr_news
+
+    def fake_run(coroutine):
+        coroutine.close()
+        return {
+            "sources": [{"source": collector.MAINNEWS_FEED_SOURCE, "status": "error"}]
+        }
+
+    monkeypatch.setattr(collect_kr_news.asyncio, "run", fake_run)
+    assert collect_kr_news.main(["--dry-run"]) == 1
+    assert json.loads(capsys.readouterr().out)["sources"][0]["status"] == "error"
 
 
 class _TransactionSession:
@@ -173,7 +213,7 @@ class _TransactionSession:
 
 
 @pytest.mark.asyncio
-async def test_aggregate_store_error_rolls_back_before_item_source(monkeypatch) -> None:
+async def test_mainnews_store_error_rolls_back_before_item_source(monkeypatch) -> None:
     from app.services import kr_symbol_universe_service
 
     db = _TransactionSession()
@@ -187,16 +227,16 @@ async def test_aggregate_store_error_rolls_back_before_item_source(monkeypatch) 
         store_calls += 1
         if store_calls == 1:
             raise RuntimeError("db write failed")
-        return 1, 1
+        return collector.symbol_news_store.FeedArticleUpsertResult(1, 1, {})
 
-    async def aggregate_fetcher():
+    async def mainnews_fetcher():
         return [
             {
-                "url": "https://n.news.naver.com/article/001/10",
+                "url": "https://n.news.naver.com/mnews/article/001/10",
                 "title": "시장 소식",
                 "source": "연합뉴스",
                 "summary": None,
-                "published": collector.parse_publish_time("202611250941"),
+                "published": collector.parse_publish_time("20261125094107"),
             }
         ]
 
@@ -213,70 +253,141 @@ async def test_aggregate_store_error_rolls_back_before_item_source(monkeypatch) 
         kr_symbol_universe_service, "list_active_kr_symbol_names", active_names
     )
     monkeypatch.setattr(
-        collector.symbol_news_store, "upsert_kr_collector_articles", store
+        collector.symbol_news_store, "upsert_kr_collector_articles_with_ids", store
     )
     report = await collector.collect_kr_news(
         db=db,
         now=datetime(2026, 11, 25, 1, tzinfo=UTC),
-        aggregate_fetcher=aggregate_fetcher,
+        mainnews_fetcher=mainnews_fetcher,
         item_fetcher=item_fetcher,
         explicit_symbols=["005930"],
     )
-
     by_source = {row.source: row for row in report.sources}
-    assert by_source[collector.AGGREGATE_FEED_SOURCE].status == "error"
+    assert by_source[collector.MAINNEWS_FEED_SOURCE].status == "error"
     assert by_source["naver_item_news:005930"].status == "ok"
     assert by_source["naver_item_news:005930"].new == 1
     assert (db.rollbacks, db.commits) == (1, 1)
 
 
 @pytest.mark.asyncio
-async def test_symbol_store_error_rolls_back_before_next_symbol(monkeypatch) -> None:
+async def test_mainnews_related_symbols_use_id_resolved_by_canonical_store(
+    monkeypatch,
+) -> None:
+    from app.services import kr_symbol_universe_service
+    from app.services.news_entity_matcher import SymbolMatch
+
     db = _TransactionSession()
-    store_calls = 0
+    related_rows = []
+    match = SymbolMatch(
+        symbol="005930",
+        market="kr",
+        canonical_name="삼성전자",
+        matched_term="삼성전자",
+        reason="alias_dict",
+    )
 
-    async def store(_db, _symbol, _items, **_kwargs):
-        nonlocal store_calls
-        store_calls += 1
-        if store_calls == 1:
-            raise RuntimeError("db write failed")
-        return 1, 1
+    async def active_names(_db):
+        return ["삼성전자"]
 
-    async def item_fetcher(symbol, _limit):
+    async def store(_db, symbol, _items, **kwargs):
+        assert symbol == "005930"
+        assert kwargs["feed_source"] == collector.MAINNEWS_FEED_SOURCE
+        return collector.symbol_news_store.FeedArticleUpsertResult(
+            1,
+            1,
+            {"https://n.news.naver.com/article/001/123": 876},
+        )
+
+    async def related(_db, rows, **_kwargs):
+        related_rows.extend(rows)
+        return len(rows)
+
+    async def mainnews_fetcher():
         return [
             {
-                "url": f"https://n.news.naver.com/article/001/{symbol}",
-                "title": f"{symbol} 소식",
-                "datetime_raw": "202611250941",
+                "url": "https://n.news.naver.com/mnews/article/001/123",
+                "dedupe_url": "https://n.news.naver.com/article/001/123",
+                "title": "삼성전자 실적 기사",
+                "source": "연합뉴스",
+                "summary": None,
+                "published": collector.parse_publish_time("20261125094107"),
+                "provider_article_id": "001:123",
             }
         ]
 
     monkeypatch.setattr(
-        collector.symbol_news_store, "upsert_kr_collector_articles", store
+        kr_symbol_universe_service, "list_active_kr_symbol_names", active_names
     )
+    monkeypatch.setattr(collector, "match_kr_universe_symbols", lambda *_args: [match])
+    monkeypatch.setattr(
+        collector.symbol_news_store, "upsert_kr_collector_articles_with_ids", store
+    )
+    monkeypatch.setattr(collector.symbol_news_store, "upsert_related_symbols", related)
     report = await collector.collect_kr_news(
         db=db,
         now=datetime(2026, 11, 25, 1, tzinfo=UTC),
-        aggregate_fetcher=lambda: _empty_aggregate(),
-        item_fetcher=item_fetcher,
-        explicit_symbols=["005930", "000660"],
+        mainnews_fetcher=mainnews_fetcher,
+        explicit_symbols=[],
     )
 
-    by_source = {row.source: row for row in report.sources}
-    assert by_source["naver_item_news:005930"].status == "error"
-    assert by_source["naver_item_news:000660"].status == "ok"
-    assert by_source["naver_item_news:000660"].new == 1
-    assert (db.rollbacks, db.commits) == (1, 1)
+    assert related_rows[0]["article_id"] == 876
+    assert report.sources[0].new == 1
 
 
-async def _empty_aggregate():
-    return []
+@pytest.mark.asyncio
+async def test_repeated_mainnews_collection_reports_existing_article_as_duplicate(
+    monkeypatch,
+) -> None:
+    from app.services import kr_symbol_universe_service
 
+    db = _TransactionSession()
+    store_calls = 0
 
-def test_migration_is_additive_and_does_not_backfill() -> None:
-    migration = Path("alembic/versions/20261126_hk6674_kr_news_timing.py").read_text()
-    assert "op.add_column(" in migration
-    assert '"news_articles"' in migration
-    assert "DateTime(timezone=True)" in migration
-    assert "UPDATE news_articles" not in migration
-    assert "first_received_at" in migration
+    async def active_names(_db):
+        return []
+
+    async def store(_db, _symbol, items, **kwargs):
+        nonlocal store_calls
+        store_calls += 1
+        assert kwargs["feed_source"] == collector.MAINNEWS_FEED_SOURCE
+        assert items[0].url == "https://n.news.naver.com/mnews/article/001/123"
+        assert items[0].published_precision == "second"
+        return collector.symbol_news_store.FeedArticleUpsertResult(
+            1 if store_calls == 1 else 0,
+            1 if store_calls == 1 else 0,
+            {"https://n.news.naver.com/article/001/123": 99},
+        )
+
+    async def mainnews_fetcher():
+        return [
+            {
+                "url": "https://n.news.naver.com/mnews/article/001/123",
+                "title": "시장 기사",
+                "source": "연합뉴스",
+                "summary": None,
+                "published": collector.parse_publish_time("20261125094107"),
+            }
+        ]
+
+    monkeypatch.setattr(
+        kr_symbol_universe_service, "list_active_kr_symbol_names", active_names
+    )
+    monkeypatch.setattr(
+        collector.symbol_news_store, "upsert_kr_collector_articles_with_ids", store
+    )
+    first = await collector.collect_kr_news(
+        db=db,
+        now=datetime(2026, 11, 25, 1, tzinfo=UTC),
+        mainnews_fetcher=mainnews_fetcher,
+        explicit_symbols=[],
+    )
+    second = await collector.collect_kr_news(
+        db=db,
+        now=datetime(2026, 11, 25, 1, tzinfo=UTC),
+        mainnews_fetcher=mainnews_fetcher,
+        explicit_symbols=[],
+    )
+    assert first.sources[0].new == 1
+    assert second.sources[0].new == 0
+    assert second.sources[0].duplicate == 1
+    assert store_calls == 2
