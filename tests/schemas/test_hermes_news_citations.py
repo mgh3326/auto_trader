@@ -12,6 +12,7 @@ from app.schemas.investment_report_composition import (
     ReportCompositionResult,
     ReportNewsCitation,
 )
+from app.schemas.investment_reports import IngestReportItem
 
 
 def _base_composition(**extra):
@@ -69,3 +70,32 @@ def test_news_citation_requires_some_ref() -> None:
             role="catalyst",
             decision_impact="strengthen_buy",
         )  # neither external_article_id nor canonical_url
+
+
+def _item(**overrides) -> IngestReportItem:
+    return IngestReportItem(
+        **{
+            "client_item_key": "k1",
+            "item_kind": "action",
+            "operation": "review",
+            "intent": "buy_review",
+            "rationale": "r",
+            "apply_policy": "requires_user_approval",
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.unit
+def test_composition_rejects_non_review_operation() -> None:
+    items = [_item(operation="create")]
+    with pytest.raises(ValidationError, match="advisory-only"):
+        ReportCompositionResult(**_base_composition(items=items))
+
+
+@pytest.mark.unit
+def test_composition_rejects_other_apply_policy() -> None:
+    with pytest.raises(ValidationError, match="requires_user_approval"):
+        ReportCompositionResult(
+            **_base_composition(items=[_item(apply_policy="auto_apply")])
+        )
