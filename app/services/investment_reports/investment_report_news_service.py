@@ -14,7 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from app.models.investment_reports import InvestmentReport
-from app.schemas.hermes_composition import HermesCompositionResult
+from app.schemas.investment_report_composition import ReportCompositionResult
 from app.services.investment_reports.news_persistence import build_news_persistence
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
@@ -29,7 +29,7 @@ class InvestmentReportNewsService:
         self,
         *,
         report: InvestmentReport,
-        composition: HermesCompositionResult,
+        composition: ReportCompositionResult,
         news_payloads: list[dict[str, Any]],
     ) -> int:
         """Returns the number of citations written. Never raises on matching

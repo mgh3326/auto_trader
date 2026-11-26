@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import registry
 from app.mcp_server.tooling.niche import NicheMCP
+from tests.mcp_server._operator_retired_tools import OPERATOR_RETIRED_TOOL_NAMES
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 
 pytestmark = [pytest.mark.unit]
@@ -34,7 +35,8 @@ def _expected_niche(profile: str) -> set[str]:
         cells = [cell.strip() for cell in line.strip("|").split("|")]
         if len(cells) == 10 and cells[4] == "C" and profile in cells[1].split(", "):
             expected.add(cells[0])
-    return expected
+    # hk 6930: operator-retired tools are no longer registered.
+    return expected - OPERATOR_RETIRED_TOOL_NAMES
 
 
 def _all_gates(monkeypatch: pytest.MonkeyPatch) -> None:

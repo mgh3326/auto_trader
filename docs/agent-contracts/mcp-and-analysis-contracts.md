@@ -7,7 +7,7 @@
 - MCP 표면 계약
 - Runtime LLM ownership boundary
 - Investment Report Item Contract
-- Hermes Report Generation (ROB-287)
+- Hermes Report Generation (ROB-287) — retired (hk 6930)
 - investment_report_create item 계약 (ROB-458)
 - get_news 관련성 파이프라인 (ROB-491)
 
@@ -136,22 +136,15 @@ are nested-`watch_condition`-only). Top-level and an explicitly-sent
 rejections are single-response dicts on the MCP create path; existing rows,
 the scanner, and reprocessing paths are unaffected.
 
-### Hermes Report Generation (ROB-287)
+### Hermes Report Generation (ROB-287) — retired (hk 6930)
 
-`auto_trader`는 결정적 evidence + persistence 레이어, Hermes는 LLM reasoning + composition. 4개 MCP tool (`investment_report_prepare_bundle` / `..._get_hermes_context` / `investment_stage_artifacts_ingest_from_hermes` / `..._create_from_hermes_composition`) 을 제공한다. 같은 surface의 HTTP transport(`/trading/api/investment-reports/hermes/*`)는 hk 6933에서 제거했다 — 라우터, AuthMiddleware 토큰 분기, Hermes ingest 토큰 설정이 모두 없다. MCP tools는 후속 PR 전까지 유지한다.
+외부 report composition(Hermes)은 은퇴했다. 다시 만들거나 대체 경로를 붙이려면 새 결정이 필요하다.
 
-- **MCP tools**: `app/mcp_server/tooling/investment_hermes_handlers.py`
-- **서비스**: `app/services/investment_stages/{hermes_context,hermes_ingest}.py`
-- **런북**: `docs/runbooks/hermes-report-generation.md`
-
-(ROB-986: `app/flows/hermes_bundle_preparation_flow.py` — 미배포·미호출 확인 후 제거됨. bundle 준비는 MCP `investment_report_prepare_bundle` 호출 시점에 ad hoc로 이루어짐, 별도 스케줄 없음.)
-
-**Env / config 게이트 (모두 default off)**:
-- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools 게이트 (hk 6933 이후 HTTP endpoints 없음)
-
-**안전 경계**: 모든 쓰기는 service-layer를 통해서만. 어떤 경로도 broker/order/watch/order-intent mutation 도달 안 함. PR #898 static import guard가 `app/services/action_report/snapshot_backed/` + `app/services/investment_stages/` 전체에서 in-process LLM provider 재도입 차단.
-
-**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover)의 MCP 절차만 유효하다 — HTTP 절차는 hk 6933에서 제거됨. 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
+- **제거됨**: HTTP transport(`/trading/api/investment-reports/hermes/*`, 토큰 분기·ingest 토큰 설정 포함, hk 6933). MCP 도구 5개 — `investment_report_prepare_bundle`, `investment_report_get_hermes_context`, `investment_report_create_from_hermes_composition`, `investment_stage_artifacts_ingest_from_hermes`, `investment_report_prepare_intraday_context` — 와 서비스(`investment_hermes_handlers`, `investment_stages/{hermes_context,hermes_ingest,symbol_report_ingest}`, `investment_dimensions/dimension_report_ingest`), 스키마(`schemas/{hermes_composition,investment_symbol_reports,investment_dimension_reports}`), `scripts/shadow_replay_probe.py`·`scripts/shadow_replay.py` 드라이버(hk 6950).
+- **이력으로 동결**: ingest 전용 테이블 `investment_dimension_reports`·`investment_symbol_intermediate_reports` 는 읽기 전용 이력이다(writer 를 호출하는 코드 없음). 공유 `investment_stage_runs`/`artifacts`·`investment_report_news_citations`, DB 모델, CHECK 값 `hermes`, 저장된 `HERMES_ADVISOR` 프로필 값도 그대로다. 마이그레이션·drop 없음. dimension report 읽기 라우트는 남는다.
+- **유지**: `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED`(`investment_report_generate_from_bundle` 와 investment_reports router 게이트, 기본 off), 라이브 watch notifier `app/services/hermes_client.py`, `hermes-paper-kis` 프로필과 Task 881 도구. 뉴스 citation·composition 형태는 `app/schemas/investment_report_composition.py` 에 있다.
+- **안전 경계(불변)**: in-process LLM provider 금지(ROB-501, 정적 import guard).
+- **런북(은퇴 기록)**: `docs/runbooks/hermes-report-generation.md`
 
 ### Report writer diagnostic (ROB-1488)
 

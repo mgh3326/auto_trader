@@ -13,7 +13,9 @@
 
 ## 공식 리포트 생성 flow (이슈 질문 5)
 
-"순차 활용"은 auto_trader가 MCP를 명령형으로 줄세워 호출하는 게 아니다. 결정적 prepare → Hermes pull/compose/push의 비대칭 흐름이다. auto_trader는 compose를 오케스트레이션하지 않는다(in-process LLM import guard 유지).
+> **은퇴 (hk 6930)**: 외부 composer(Hermes)가 frozen bundle 을 pull 해 compose 하고 push 하던 흐름(prepare → context → ingest → composition 도구)은 은퇴했다. 해당 MCP 도구는 없다 — `docs/runbooks/hermes-report-generation.md`.
+
+남아 있는 생성 경로는 두 가지이며 둘 다 in-process LLM 이 없다(import guard 유지).
 
 ```text
 Phase 0  축적 (생성 경로 밖, 평소 pre-collect)
@@ -21,22 +23,15 @@ Phase 0  축적 (생성 경로 밖, 평소 pre-collect)
   screener job  → invest_screener_snapshots / investor_flow_snapshots / invest_crypto_screener_snapshots
   KIS sync      → holdings / cash / pending orders (account truth)
 
-Phase 1  prepare (auto_trader, 결정적, in-process LLM 없음)
-  1. investment_report_prepare_bundle        (SnapshotBundleEnsureService)
-  2. production_collector_registry 실행       (fetch_policy 적용 — 아래 표)
-  3. bundle freeze                            (investment_snapshots + bundle_items)
+경로 A  investment_report_generate_from_bundle   (SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED, 기본 off)
+  bundle ensure (SnapshotBundleEnsureService) → production_collector_registry 실행(fetch_policy 적용 — 아래 표)
+  → bundle freeze (investment_snapshots + bundle_items) → report 저장
 
-Phase 2  4. investment_report_get_hermes_context   (frozen bundle을 pull 대상으로 노출)
-
-Phase 3  [Hermes, out-of-process LLM] pull → compose
-
-Phase 4  push (ingest)
-  5. investment_stage_artifacts_ingest_from_hermes
-  6. investment_report_create_from_hermes_composition   (final report + items)
+경로 B  investment_report_create                 (세션이 작성한 report + items 저장)
 ```
 
-- **공식 생성 MCP** (canonical): 위 4개 (`prepare_bundle` / `get_hermes_context` / `..._ingest_from_hermes` / `..._create_from_hermes_composition`).
-- **KR staged report 계약**: `docs/invest/report-workflows/`에 `pre` → `nxt` → `regular` 단계형 리포트와 sanitized composer template을 둔다. 운영 프롬프트는 이 계약을 private operator workspace에서 감싸되, public repo에는 비밀값·계좌 상태·generated report를 넣지 않는다.
+- **공식 생성 MCP**: `investment_report_generate_from_bundle` (bundle-backed) / `investment_report_create`.
+- **KR staged report 계약**: `docs/invest/report-workflows/`에 `pre` → `nxt` → `regular` 단계형 리포트의 단계·lineage 계약이 있다(외부 composer 절차는 은퇴).
 - **보조 MCP** (`get_quote` / `get_orderbook` / `get_indicators` / `get_valuation` / `get_financials` / `screen_stocks` / `get_top_stocks` / `get_news` / `search_news` / `get_holdings` / `get_cash_balance` / `get_order_history` / …)는 **read-only 진단**이다. UI/diagnostics 용도이며, 그 직접 호출 결과는 리포트 근거가 아니다.
 
 ## 보조 MCP는 언제 collector로 흡수되나 (이슈 질문 6)
@@ -83,7 +78,7 @@ Phase 4  push (ingest)
 2. **뉴스가 부족하면 어디서 채우나?** `naver_finance` 어댑터를 **ingestion source**로 추가해 `news_articles`에 insert/upsert한다(supplementary). request-path scraping이 아니라 축적 경로다. (Naver article body 저장 여부는 follow-up에서 확정 — PR1은 title/snippet/url metadata 가정.)
 3. **국내주식 screener는 어떤 source/type?** durable: `invest_screener_snapshots`(primary), `investor_flow_snapshots`(supplementary). type: top_gainers/losers/volume/trade_value, foreign/institution net-buy, theme/sector leader, risk-excluded/watch-only. crypto는 `invest_crypto_screener_snapshots`(`upbit_live`).
 4. **Toss screener/popular/watchlist를 보나?** `low_trust_attention` `retail_attention` 시드로만. **buy rationale 금지, primary market-data 권위 금지, account/order truth 금지.** `may_affect_ranking=False` 고정. stale screener는 "오늘 신규 후보"에서 제외하되 stale context로는 표시.
-5. **공식 리포트 flow?** 위 "공식 리포트 생성 flow" 참조 (`prepare_bundle` → `get_hermes_context` → Hermes compose → `create_from_hermes_composition`).
+5. **공식 리포트 flow?** 위 "공식 리포트 생성 flow" 참조 (`investment_report_generate_from_bundle` / `investment_report_create`).
 6. **보조 MCP 직접 호출은 언제 흡수?** 위 "보조 MCP는 언제 collector로 흡수되나" 참조.
 7. **Toss Open API를 통한 Universe Enrichment 및 Market Cap 산출은 어떻게 이뤄지나?** `toss_openapi` 소스를 통해 `kr_symbol_universe` 및 `us_symbol_universe`에 symbol-master 메타데이터(보안구분, 보통주여부, ISIN, 상장일 등)를 보강하며, `market_valuation_snapshots` 테이블에 `source='toss_openapi'`로 일자별 시가총액(`shares_outstanding * last_price`)을 기록합니다. 이는 Scraping이 아닌 공식 Open API 보강 경로입니다.
 

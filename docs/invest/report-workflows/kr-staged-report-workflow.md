@@ -21,26 +21,11 @@ vocabulary: `pre`, `nxt`, `regular`, `post`, and `24x7` where applicable.
 
 ## Canonical generation flow
 
-The official stored report path is bundle-backed and Hermes-composed:
-
-```text
-Phase 1: prepare bundle in auto_trader
-  investment_report_prepare_bundle
-
-Phase 2: expose frozen context
-  investment_report_get_hermes_context
-
-Phase 3: compose outside auto_trader
-  Hermes reads the frozen context and writes structured stage artifacts and a
-  final composition.
-
-Phase 4: ingest in auto_trader
-  investment_stage_artifacts_ingest_from_hermes
-  investment_report_create_from_hermes_composition
-```
-
-`auto_trader` should provide deterministic evidence and persist the result. It
-must not import an LLM provider or compose the investment narrative in-process.
+The external composer path this section used to describe is retired (hk 6930);
+see [`../../runbooks/hermes-report-generation.md`](../../runbooks/hermes-report-generation.md).
+Stored reports are created with `investment_report_create` or the gated
+`investment_report_generate_from_bundle`. `auto_trader` must not import an LLM
+provider or compose the investment narrative in-process.
 
 ## Stage responsibilities
 

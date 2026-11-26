@@ -1,5 +1,10 @@
 # KR report composer prompt template
 
+> **Retired (hk 6930)**: the frozen-context read tool and the composition ingest
+> tools this template feeds no longer exist — see
+> [`../../runbooks/hermes-report-generation.md`](../../runbooks/hermes-report-generation.md).
+> Kept as a historical prompt shape; do not wire it to the application.
+
 This is a public-safe template for Hermes or another external composer. Private
 operator prompts may import or adapt it, but must keep credentials, account
 amounts, generated reports, and local MCP routing out of the public repository.
@@ -29,13 +34,8 @@ out-of-process LLM reasoning layer.
 
 ## Canonical inputs
 
-The primary input is the result of:
-
-```text
-investment_report_get_hermes_context
-```
-
-The context should identify:
+The primary input was the retired frozen-context export. That context
+identified:
 
 - `snapshot_bundle_uuid`
 - `bundle_status`
@@ -93,7 +93,7 @@ Compose a regular-open report:
 ## Required output shape
 
 Produce two logical payloads: stage artifacts and final composition. Field names
-should stay close to the existing `HermesCompositionResult` and
+should stay close to the existing `ReportCompositionResult` and
 `StageArtifactPayload` schemas.
 
 ### Stage artifact sketch

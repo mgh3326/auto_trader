@@ -75,7 +75,6 @@ REVIEWED_LAUNCHERS = {
     "docker-compose.prod.yml",
     "scripts/mcp_server.sh",
     "scripts/mock_session_mcp.py",
-    "scripts/shadow_replay_mcp.json",
 }
 # Mentions the module name in a docstring only; it launches nothing.
 NON_LAUNCHERS = {
@@ -122,12 +121,6 @@ def test_compose_mcp_services_each_set_an_explicit_profile() -> None:
     for value in launched.values():
         assert "$" not in value  # a literal, never an interpolated fallback
         require_mcp_profile(value)
-
-
-def test_shadow_replay_stdio_config_sets_its_profile() -> None:
-    config = json.loads((REPO / "scripts" / "shadow_replay_mcp.json").read_text())
-    (server,) = config["mcpServers"].values()
-    assert server["env"]["MCP_PROFILE"] == "shadow-replay"
 
 
 def test_mock_session_launcher_sets_the_approved_profile() -> None:

@@ -28,16 +28,14 @@ _FORBIDDEN = {
     "investment_report_create",
     "place_order",
     "kis_mock_place_order",
-    "investment_report_create_from_hermes_composition",
 }
 
 
 @pytest.mark.unit
 def test_shadow_replay_exposes_only_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Registration is unconditional (Step 3 of the brief) — the flag is
-    # enforced at call time inside investment_report_get_hermes_context_impl,
-    # not at registration time — but set it anyway to prove the allowlist
-    # holds regardless of the flag's value.
+    # The shadow-replay profile registers unconditionally; set the report
+    # generator flag anyway to prove the allowlist holds regardless of its
+    # value.
     monkeypatch.setenv("SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", "true")
     mcp = DummyMCP()
     register_all_tools(cast(Any, mcp), profile=McpProfile.SHADOW_REPLAY)

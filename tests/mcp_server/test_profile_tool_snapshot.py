@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.mcp_server.profiles import McpProfile
+from tests.mcp_server._operator_retired_tools import OPERATOR_RETIRED_TOOL_NAMES
 from tests.mcp_server._registration_recorder import collect_profile_tools
 
 pytestmark = pytest.mark.unit
@@ -79,7 +80,6 @@ _RETAINED_DEAD_TOOL_NAMES = {
     "stage_analysis_get",
     "update_manual_holdings",
     "paper_cancel_pending_order",
-    "investment_report_prepare_intraday_context",
     "investment_watch_void",
     "investment_watch_expire",
     "investment_report_set_status",
@@ -88,7 +88,6 @@ _RETAINED_DEAD_TOOL_NAMES = {
     "delete_paper_account",
     "sweep_expired_watches",
     "reset_paper_account",
-    "investment_report_create_from_hermes_composition",
     "investment_report_update",
     "update_trade_journal",
     "investment_report_add_items",
@@ -176,6 +175,9 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
 
     expected["default"].update(NH_MOCK_TOOL_NAMES)
+    # hk 6930: operator-retired external report composition tools.
+    for names in expected.values():
+        names -= OPERATOR_RETIRED_TOOL_NAMES
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"

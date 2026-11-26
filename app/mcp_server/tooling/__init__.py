@@ -23,14 +23,12 @@ from typing import Any
 # report판 MCP tools were dead (shadowed by the brief판). The report판 SERVICE
 # (app/services/market_report_service.py) stays for the n8n write path + weekly_summary.
 __all__ = [
-    "INVESTMENT_HERMES_TOOL_NAMES",
     "INVESTMENT_SNAPSHOTS_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
     "PROPOSAL_REVALIDATE_TOOL_NAMES",
     "SESSION_BOOTSTRAP_TOOL_NAMES",
     "TRADE_JOURNAL_TOOL_NAMES",
     "register_all_tools",
-    "register_investment_hermes_tools",
     "register_investment_snapshots_tools",
     "register_trade_journal_tools",
     "register_news_tools",
@@ -41,14 +39,6 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
-    "INVESTMENT_HERMES_TOOL_NAMES": (
-        "app.mcp_server.tooling.investment_hermes_handlers",
-        "INVESTMENT_HERMES_TOOL_NAMES",
-    ),
-    "register_investment_hermes_tools": (
-        "app.mcp_server.tooling.investment_hermes_handlers",
-        "register_investment_hermes_tools",
-    ),
     "INVESTMENT_SNAPSHOTS_TOOL_NAMES": (
         "app.mcp_server.tooling.investment_snapshots_registration",
         "INVESTMENT_SNAPSHOTS_TOOL_NAMES",

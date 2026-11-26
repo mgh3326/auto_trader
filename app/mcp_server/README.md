@@ -352,17 +352,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ### Snapshot-backed report generation
 
-Snapshot-backed generator/Hermes MCP tools are registered only when
-`SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true`. With the default `false`
-setting they are physically absent from the MCP surface instead of returning
-disabled no-op payloads:
-
-- `investment_report_generate_from_bundle`
-- `investment_report_prepare_bundle`
-- `investment_report_get_hermes_context`
-- `investment_report_create_from_hermes_composition`
-- `investment_stage_artifacts_ingest_from_hermes`
-- `investment_report_prepare_intraday_context`
+The snapshot-backed generator MCP tool `investment_report_generate_from_bundle`
+is registered only when `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true`. With
+the default `false` setting it is physically absent from the MCP surface instead
+of returning a disabled no-op payload. The external report-composition MCP tools
+that shared this gate were retired in hk 6930.
 
 ### Frozen analysis snapshot bundles (ROB-838)
 

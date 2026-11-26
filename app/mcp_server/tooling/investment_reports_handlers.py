@@ -114,7 +114,7 @@ GENERATE_FROM_BUNDLE_DESCRIPTION = (
     "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
     "Supported market/account_scope pairs ONLY: kr/kis_live, us/kis_live, "
     "crypto/upbit_live — any other pair fails closed with "
-    "error:'unsupported_account_scope' (use the Hermes composition path for "
+    "error:'unsupported_account_scope' (use investment_report_create for "
     "alpaca_paper). user_id is auto-resolved from MCP_USER_ID when omitted so "
     "kis_live/upbit_live portfolios are readable; pass user_id to override. "
     "Optional market_session (regular|nxt|pre|post|24x7) refines US/KR session "
@@ -144,7 +144,7 @@ CREATE_DESCRIPTION = (
     "account_scope accepts kis_live | kis_mock | alpaca_paper | upbit_live "
     "(alpaca_paper IS accepted here; only "
     "investment_report_generate_from_bundle restricts to the live "
-    "KIS/Upbit pairs and steers paper to the Hermes composition path). "
+    "KIS/Upbit pairs). "
     "No broker / order submission is performed. "
     "items[] each require: client_item_key, item_kind (action|watch|risk), "
     "intent (buy_review|sell_review|risk_review|trend_recovery_review|"
@@ -1362,7 +1362,7 @@ async def investment_report_generate_from_bundle_impl(
 
     # ROB-352 — fail closed on unsupported account scopes BEFORE building the
     # request, with an actionable error that names the supported pairs and
-    # routes paper accounts to the Hermes composition path.
+    # routes paper accounts to investment_report_create.
     expected_scope = _SUPPORTED_MARKET_ACCOUNT_PAIRS.get(market)
     if expected_scope is None or account_scope != expected_scope:
         return {
@@ -1373,9 +1373,7 @@ async def investment_report_generate_from_bundle_impl(
             "supported_pairs": _SUPPORTED_MARKET_ACCOUNT_PAIRS,
             "hint": (
                 "This snapshot-backed generator only collects live KIS/Upbit "
-                "data. For alpaca_paper / paper:<name> reports use the Hermes "
-                "composition path (investment_report_create_from_hermes_"
-                "composition)."
+                "data. For alpaca_paper reports use investment_report_create."
             ),
         }
 

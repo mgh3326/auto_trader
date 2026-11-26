@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from app.schemas.hermes_composition import HermesNewsCitation
+from app.schemas.investment_report_composition import ReportNewsCitation
 from app.services.investment_reports.news_persistence import build_news_persistence
 
 
@@ -63,7 +63,7 @@ def _news_payload():
 def test_matches_by_external_id_and_copies_snapshot() -> None:
     item_uuid = uuid.uuid4()
     cites = [
-        HermesNewsCitation(
+        ReportNewsCitation(
             external_article_id="hash-aapl-1",
             symbol="AAPL",
             relevance="direct",
@@ -100,7 +100,7 @@ def test_matches_by_external_id_and_copies_snapshot() -> None:
 @pytest.mark.unit
 def test_unmatched_ref_is_dropped_and_recorded() -> None:
     cites = [
-        HermesNewsCitation(
+        ReportNewsCitation(
             external_article_id="does-not-exist",
             symbol="AAPL",
             relevance="direct",
@@ -121,7 +121,7 @@ def test_unmatched_ref_is_dropped_and_recorded() -> None:
 @pytest.mark.unit
 def test_matches_by_canonical_url_fallback() -> None:
     cites = [
-        HermesNewsCitation(
+        ReportNewsCitation(
             canonical_url="https://x/msft-1",
             symbol="MSFT",
             relevance="related",
@@ -146,7 +146,7 @@ def test_summary_truncated_to_1000() -> None:
     payload = _news_payload()
     payload["articles"][0]["summary"] = "x" * 2000
     cites = [
-        HermesNewsCitation(
+        ReportNewsCitation(
             external_article_id="hash-aapl-1",
             symbol="AAPL",
             relevance="direct",

@@ -26,7 +26,6 @@ tests/core/test_logging_config.py
 tests/infra/test_database_guard_completeness.py
 tests/infra/test_schema_barrier.py
 tests/integration/services/daily_candles/test_full_cycle.py
-tests/integration/test_rob301_symbol_reports_run_scoped.py
 tests/jobs/test_kis_mock_reconciliation_job.py
 tests/mcp/test_trade_journal_enrich.py
 tests/mcp_server/test_alpaca_paper_manual_boundary.py
@@ -225,7 +224,6 @@ tests/services/invalid_sample_eligibility/test_persistence.py
 tests/services/invalid_sample_eligibility/test_post_fill.py
 tests/services/invest_screener_snapshots/test_freshness_dispatch.py
 tests/services/invest_screener_snapshots/test_guards.py
-tests/services/investment_dimensions/test_dimension_report_ingest.py
 tests/services/investment_dimensions/test_fundamentals_evidence.py
 tests/services/investment_dimensions/test_sentiment_evidence.py
 tests/services/investment_reports/mock_preview/test_no_mutation_imports.py
@@ -238,7 +236,6 @@ tests/services/investment_snapshots/test_policy.py
 tests/services/investment_snapshots/test_repository.py
 tests/services/investment_stages/stages/test_news.py
 tests/services/investment_stages/stages/test_symbol.py
-tests/services/investment_stages/test_hermes_context_fundamentals_dimension.py
 tests/services/investment_stages/test_query_service.py
 tests/services/investment_stages/test_stage_runner.py
 tests/services/kis_mock_runner/test_cli.py
@@ -440,7 +437,6 @@ tests/test_filled_orders_indicators.py
 tests/test_financial_fundamentals_builder_orchestration.py
 tests/test_foreigners_liquidity.py
 tests/test_frontend_no_forexfactory_request_path.py
-tests/test_hermes_ingest_dimension_refs.py
 tests/test_hk4734_kiwoom_broker_migration.py
 tests/test_hk4734_kiwoom_broker_schema_db.py
 tests/test_hk6302_news_timing_migration.py
@@ -569,7 +565,6 @@ tests/test_services_dart.py
 tests/test_services_forexfactory_calendar.py
 tests/test_services_kis_market_data_unit.py
 tests/test_session_context_mcp.py
-tests/test_shadow_replay_probe_cli.py
 tests/test_snapshot_kind_kr_market_ranking.py
 tests/test_stock_detail_service.py
 tests/test_symbol_sectors_service.py

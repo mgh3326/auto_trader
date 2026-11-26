@@ -44,8 +44,8 @@ from app.services.investment_snapshots.repository import (
 
 # ROB-375 Bug 1 — advisory reports persist as status="draft" (no publish step),
 # but so does smoke/CI boilerplate. ``created_by_profile`` is the reliable
-# discriminator: the Hermes advisory composition path hard-codes
-# "HERMES_ADVISOR" (investment_hermes_handlers / hermes_ingest), and no
+# discriminator: the retired (hk 6930) external composition path hard-coded
+# "HERMES_ADVISOR" on the rows it wrote, and no
 # smoke/test/operator profile ("t", "test", "schedule", "pilot-operator", …)
 # uses it. So a draft counts as an advisory prior iff it carries an advisory
 # profile.
