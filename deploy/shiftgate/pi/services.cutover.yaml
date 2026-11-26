@@ -38,7 +38,7 @@ services:
     # 두 번째 파일이 이긴다 (at-swap 과 같은 순서).
     env_files: [/srv/at/secrets/.env.api, /srv/at/secrets/.env.scheduler]
     args: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "{port}"]
-    health: {http: /healthz, timeout: 60s, interval: 2s}
+    health: {http: /healthz, timeout: 180s, interval: 2s}
     check: {inter: 5s, fall: 2, rise: 1}
     drain_timeout: 120s
   - name: at-mcp
@@ -62,7 +62,7 @@ services:
     args: ["python", "-m", "app.mcp_server.main"]
     # 인증 없는 GET /health (app/mcp_server/lifecycle.py): DB·Redis 를 건드리지 않는 이벤트 루프 생존 확인.
     # /mcp 는 토큰이 필요하므로 헬스 경로로 쓸 수 없다. POST 가 필요한 MCP 스트림은 HAProxy 가 점검하지 않는다.
-    health: {http: /health, timeout: 60s, interval: 2s}
+    health: {http: /health, timeout: 180s, interval: 2s}
     check: {inter: 5s, fall: 2, rise: 1}
     # 드레인은 서비스 잠금을 잡은 채 이 시간까지 CLI 를 막는다(shiftgate docs/design.md). 5분 = 도구 호출 한 건의 상한보다 길게.
     drain_timeout: 300s
