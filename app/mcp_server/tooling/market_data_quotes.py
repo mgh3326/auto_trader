@@ -770,7 +770,11 @@ async def _fetch_krx_after_venue(
     trade = await _fetch_venue_last_trade(symbol, venue="krx", kis_market_code="J")
     if trade is not None:
         traded_at = trade.traded_at
-        if traded_at is None or traded_at.tzinfo is None or traded_at.utcoffset() is None:
+        if (
+            traded_at is None
+            or traded_at.tzinfo is None
+            or traded_at.utcoffset() is None
+        ):
             trade = None
         else:
             traded_at = traded_at.astimezone(_KST)
@@ -1004,9 +1008,7 @@ async def _apply_nxt_quote_overlay(
                     krx_close = None
         else:
             session_ohlcv = {}
-            krx_close = await _fetch_krx_regular_close(
-                symbol, session_date=now.date()
-            )
+            krx_close = await _fetch_krx_regular_close(symbol, session_date=now.date())
     else:
         base_close = _positive_price(quote.get("price"))
         krx_close = (

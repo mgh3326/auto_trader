@@ -527,9 +527,7 @@ async def test_apply_nxt_quote_overlay_after_hours_session_state(monkeypatch):
     monkeypatch.setattr(
         market_data_quotes,
         "_fetch_quote_session_ohlcv",
-        AsyncMock(
-            return_value=({}, (70000.0, "2026-11-26T15:30:00+09:00"))
-        ),
+        AsyncMock(return_value=({}, (70000.0, "2026-11-26T15:30:00+09:00"))),
     )
     monkeypatch.setattr(
         market_data_quotes, "_fetch_venue_last_trade", AsyncMock(return_value=None)
@@ -618,7 +616,9 @@ async def test_krx_after_venue_omits_pre_session_last_trade(monkeypatch):
 async def test_nxt_quote_session_boundary_is_1540(monkeypatch):
     from app.mcp_server.tooling import market_data_quotes as quotes
 
-    monkeypatch.setattr(quotes, "get_kr_nxt_session_from_toss", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        quotes, "get_kr_nxt_session_from_toss", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(quotes, "is_kr_session_day", lambda _day: True)
     day = dt.date(2026, 11, 26)
 
@@ -1059,9 +1059,7 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
         "get_orderbook",
         get_orderbook_mock,
     )
-    monkeypatch.setattr(
-        market_data_quotes, "_fetch_quote_session_ohlcv", session_bars
-    )
+    monkeypatch.setattr(market_data_quotes, "_fetch_quote_session_ohlcv", session_bars)
 
     result = await tools["get_quote"]("005930")
 
