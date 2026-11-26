@@ -1,7 +1,7 @@
 """Unit tests for AlpacaPaperBrokerService methods with mocked transport (ROB-57)."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock
@@ -391,6 +391,20 @@ async def test_order_filtered_fill_and_fee_activities_preserve_link_context():
         "order-001",
     ]
     assert calls[1].args[1] == "/v2/account/activities/CFEE"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_daily_fill_read_is_paginated_by_activity_date():
+    transport = AsyncMock()
+    transport.request = AsyncMock(return_value=_make_response(FILL_DATA))
+    svc = _make_service(transport)
+
+    fills = await svc.list_fills_for_date(date=date(2024, 1, 1))
+
+    assert len(fills) == 1
+    assert fills[0].order_id == "order-001"
+    assert transport.request.call_args.kwargs["params"]["date"] == "2024-01-01"
 
 
 @pytest.mark.unit

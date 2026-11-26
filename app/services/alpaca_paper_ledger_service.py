@@ -596,6 +596,8 @@ class AlpacaPaperLedgerService:
             "fee_activity_coverage_incomplete",
             "fee_exceeds_filled_quantity",
             "broker_order_id_missing",
+            "fee_activity_unattributable",
+            "fee_pending_eod",
         }
         if reason is not None:
             if reason not in allowed_reasons or any(
@@ -604,6 +606,8 @@ class AlpacaPaperLedgerService:
             ):
                 raise ValueError("invalid unknown crypto fee evidence")
         else:
+            if row.order_status != "filled":
+                raise ValueError("complete crypto fee evidence requires filled order")
             if fee_amount is None or fee_currency not in {
                 "USD",
                 row.execution_symbol.split("/")[0],
@@ -629,7 +633,8 @@ class AlpacaPaperLedgerService:
                 AlpacaPaperOrderLedger.side == row.side,
                 AlpacaPaperOrderLedger.broker_order_id == expected_broker_order_id,
                 AlpacaPaperOrderLedger.filled_qty == expected_filled_qty,
-                AlpacaPaperOrderLedger.order_status.in_(KNOWN_TERMINAL_BROKER_STATUSES),
+                AlpacaPaperOrderLedger.order_status
+                == ("filled" if reason is None else row.order_status),
             )
             .values(
                 fee_amount=fee_amount,
@@ -1750,6 +1755,23 @@ class AlpacaPaperLedgerService:
                     AlpacaPaperOrderLedger.filled_qty <= filled_qty,
                 )
             )
+            if (
+                getattr(target_row, "account_mode", None) == "alpaca_paper_crypto"
+                and getattr(target_row, "side", None) in {"buy", "sell"}
+            ):
+                snapshot_changed = AlpacaPaperOrderLedger.filled_qty.is_distinct_from(
+                    filled_qty
+                )
+                for field in (
+                    "fee_amount",
+                    "fee_currency",
+                    "fee_evidence_reason",
+                    "net_received_qty",
+                ):
+                    column = getattr(AlpacaPaperOrderLedger, field)
+                    update_vals[field] = case(
+                        (snapshot_changed, None), else_=column
+                    )
 
         update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
@@ -1758,23 +1780,6 @@ class AlpacaPaperLedgerService:
         )
         rowcount = getattr(update_result, "rowcount", None)
         write_applied = rowcount is None or rowcount > 0
-
-        if write_applied and filled_qty is not None:
-            await self._db.execute(
-                update(AlpacaPaperOrderLedger)
-                .where(
-                    AlpacaPaperOrderLedger.id == target_row.id,
-                    AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
-                    AlpacaPaperOrderLedger.side.in_(("buy", "sell")),
-                    AlpacaPaperOrderLedger.filled_qty == filled_qty,
-                )
-                .values(
-                    fee_amount=None,
-                    fee_currency=None,
-                    fee_evidence_reason=None,
-                    net_received_qty=None,
-                )
-            )
 
         if raw_response is not None and write_applied:
             await self._accumulate_raw_response(

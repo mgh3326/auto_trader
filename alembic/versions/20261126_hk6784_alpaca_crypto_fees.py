@@ -45,7 +45,8 @@ def upgrade() -> None:
         "'fee_activity_missing','fee_activity_unreadable','fee_activity_order_mismatch',"
         "'fee_activity_symbol_mismatch','fee_activity_type_unknown','fee_currency_ambiguous',"
         "'fee_fill_set_incomplete','fee_activity_coverage_incomplete',"
-        "'fee_exceeds_filled_quantity','broker_order_id_missing')",
+        "'fee_exceeds_filled_quantity','broker_order_id_missing',"
+        "'fee_activity_unattributable','fee_pending_eod')",
         schema="review",
     )
 

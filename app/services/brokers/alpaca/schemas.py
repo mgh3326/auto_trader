@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date as Date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, StrictBool
@@ -104,6 +104,7 @@ class Fill(BaseModel):
 class CryptoFeeActivity(BaseModel):
     id: str
     activity_type: str
+    date: Date | None = None
     order_id: str | None = None
     symbol: str | None = None
     qty: Decimal | None = None

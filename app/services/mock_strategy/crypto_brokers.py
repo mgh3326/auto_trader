@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from app.services.alpaca_paper_crypto_fee_evidence import resolve_crypto_fee_evidence
+from app.services.alpaca_paper_crypto_fee_evidence import (
+    activity_posting_date,
+    count_filled_legs_for_day,
+    resolve_crypto_fee_evidence,
+)
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.brokers.binance.demo.quantity import venue_order_quantity
@@ -466,16 +470,11 @@ class AlpacaCryptoPaper:
         evidence = self._evidence(response, order)
         if evidence.filled_qty <= 0:
             return evidence
-        if evidence.status.lower() not in {
-            "filled",
-            "canceled",
-            "expired",
-            "rejected",
-        }:
+        if evidence.status.lower() != "filled":
             return FillEvidence(
                 **{
                     **evidence.__dict__,
-                    "fee_evidence_reason": "fee_fill_set_incomplete",
+                    "fee_evidence_reason": "fee_pending_eod",
                 }
             )
         try:
@@ -488,6 +487,29 @@ class AlpacaCryptoPaper:
             activities = await self.client.list_crypto_fee_activities(
                 order_id=evidence.broker_order_id
             )
+            posting_date = (
+                activity_posting_date(activities[0]) if activities else None
+            ) or next(
+                (
+                    fill.transaction_time.date()
+                    for fill in reversed(fills)
+                    if fill.transaction_time is not None
+                ),
+                datetime.now(UTC).date(),
+            )
+            if activities and all(
+                activity_posting_date(activity) == posting_date
+                for activity in activities
+            ):
+                day_fills = await self.client.list_fills_for_date(date=posting_date)
+                filled_leg_count = count_filled_legs_for_day(
+                    fills=day_fills,
+                    symbol=self.execution_symbol(order.symbol),
+                    posting_date=posting_date,
+                    expected_order_id=evidence.broker_order_id,
+                )
+            else:
+                filled_leg_count = 0
         except Exception:
             return FillEvidence(
                 **{
@@ -496,14 +518,13 @@ class AlpacaCryptoPaper:
                 }
             )
         fee_evidence = resolve_crypto_fee_evidence(
-            order_id=evidence.broker_order_id,
             symbol=self.execution_symbol(order.symbol),
             side=order.side,
             filled_qty=evidence.filled_qty,
             activities=activities,
-            fill_count=len(fills),
-            order_id_filter_applied=True,
-            terminal=True,
+            posting_date=posting_date,
+            filled_leg_count=filled_leg_count,
+            terminal_filled=True,
         )
         return FillEvidence(
             **{

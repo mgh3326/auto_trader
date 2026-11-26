@@ -569,21 +569,24 @@ async def close_due(
                     in_flight.append(leg)
             if planned_count > 1:
                 raise ValueError("multiple planned close legs require review")
-            if venue == "alpaca_paper_crypto" and evidence.held_qty is None:
-                results.append(
-                    {
-                        "client_order_id": entry.client_order_id,
-                        "status": "exit_refused_fee_unknown",
-                        "reason": evidence.fee_evidence_reason
-                        or "net_received_quantity_unknown",
-                    }
-                )
-                continue
-            held = (
-                evidence.held_qty
-                if evidence.held_qty is not None
-                else evidence.filled_qty
+            rules, price = (
+                await broker.rules(entry.symbol),
+                await broker.price(entry.symbol),
             )
+            recorded_net = entry.meta.get("net_received_qty")
+            try:
+                recorded_net_qty = (
+                    Decimal(str(recorded_net)) if recorded_net is not None else None
+                )
+            except Exception:
+                recorded_net_qty = None
+            held = evidence.held_qty or recorded_net_qty
+            if venue == "alpaca_paper_crypto" and held is None:
+                held = rules.floor(
+                    evidence.filled_qty * Decimal("0.9975"), price
+                )
+            if held is None:
+                held = evidence.filled_qty
             remaining = held - sold
             if remaining < 0:
                 raise ValueError("close fills exceed attributed entry")
@@ -599,15 +602,19 @@ async def close_due(
             position_limited = False
             dust_remaining = False
             if venue == "alpaca_paper_crypto" and remaining:
-                # The entry's net receive is an upper bound; the shared paper
-                # account may have less available after unrelated activity.
                 available = await broker.available_qty(entry)
+                if available < remaining:
+                    results.append(
+                        {
+                            "client_order_id": entry.client_order_id,
+                            "status": "broker_qty_unavailable",
+                            "reason": "broker_qty_unavailable",
+                            "residual_qty": str(remaining),
+                        }
+                    )
+                    continue
                 sellable_remaining = min(remaining, available)
                 position_limited = sellable_remaining < remaining
-            rules, price = (
-                await broker.rules(entry.symbol),
-                await broker.price(entry.symbol),
-            )
             qty = None
             if sellable_remaining:
                 try:

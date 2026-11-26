@@ -3,6 +3,7 @@
     {
       "id": "fee-buy-activity-1",
       "activity_type": "CFEE",
+      "date": "2026-11-26",
       "symbol": "BTCUSD",
       "qty": "-0.00000175",
       "price": "60630.38",
@@ -13,6 +14,8 @@
     {
       "id": "fee-sell-activity-1",
       "activity_type": "FEE",
+      "date": "2026-11-26",
+      "symbol": "BTCUSD",
       "net_amount": "-0.08",
       "currency": "USD",
       "status": "executed"

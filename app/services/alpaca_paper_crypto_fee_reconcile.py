@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.services.alpaca_paper_crypto_fee_evidence import resolve_crypto_fee_evidence
+from app.services.alpaca_paper_crypto_fee_evidence import (
+    activity_posting_date,
+    count_filled_legs_for_day,
+    resolve_crypto_fee_evidence,
+)
 
 
 class AlpacaPaperCryptoFeeReconcileService:
@@ -28,38 +33,78 @@ class AlpacaPaperCryptoFeeReconcileService:
             order_id = row.broker_order_id
             if not order_id:
                 evidence = None
-                reason = "broker_order_id_missing"
+                reason = "fee_pending_eod"
             else:
                 try:
-                    terminal = row.order_status in {
-                        "filled",
-                        "canceled",
-                        "expired",
-                        "rejected",
-                    }
+                    terminal_filled = row.order_status == "filled"
                     fills = await self._broker.list_order_fills(order_id=order_id)
                     filled_qty = Decimal(str(row.filled_qty))
                     if (
-                        not terminal
+                        not terminal_filled
                         or not fills
                         or sum((fill.qty for fill in fills), Decimal("0")) != filled_qty
                         or any(fill.order_id != order_id for fill in fills)
                     ):
-                        evidence = None
-                        reason = "fee_fill_set_incomplete"
-                    else:
                         activities = await self._broker.list_crypto_fee_activities(
                             order_id=order_id
                         )
+                        posting_date = (
+                            activity_posting_date(activities[0]) if activities else None
+                        ) or next(
+                            (
+                                fill.transaction_time.date()
+                                for fill in reversed(fills)
+                                if fill.transaction_time is not None
+                            ),
+                            datetime.now(UTC).date(),
+                        )
                         evidence = resolve_crypto_fee_evidence(
-                            order_id=order_id,
                             symbol=row.execution_symbol,
                             side=row.side,
                             filled_qty=filled_qty,
                             activities=activities,
-                            fill_count=len(fills),
-                            order_id_filter_applied=True,
-                            terminal=True,
+                            posting_date=posting_date,
+                            filled_leg_count=0,
+                            terminal_filled=False,
+                        )
+                        reason = evidence.reason
+                    else:
+                        activities = await self._broker.list_crypto_fee_activities(
+                            order_id=order_id
+                        )
+                        posting_date = (
+                            activity_posting_date(activities[0]) if activities else None
+                        ) or next(
+                            (
+                                fill.transaction_time.date()
+                                for fill in reversed(fills)
+                                if fill.transaction_time is not None
+                            ),
+                            datetime.now(UTC).date(),
+                        )
+                        if activities and all(
+                            activity_posting_date(activity) == posting_date
+                            for activity in activities
+                        ):
+                            day_fills = await self._broker.list_fills_for_date(
+                                date=posting_date
+                            )
+                            filled_leg_count = count_filled_legs_for_day(
+                                fills=day_fills,
+                                symbol=row.execution_symbol,
+                                posting_date=posting_date,
+                                expected_order_id=order_id,
+                            )
+                        else:
+                            filled_leg_count = 0
+                        evidence = resolve_crypto_fee_evidence(
+                            symbol=row.execution_symbol,
+                            side=row.side,
+                            filled_qty=filled_qty,
+                            activities=activities,
+                            posting_date=posting_date,
+                            filled_leg_count=filled_leg_count,
+                            terminal_filled=terminal_filled,
                         )
                         reason = evidence.reason
                 except Exception:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -295,6 +296,8 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
             return True
 
     class FeeBroker:
+        competing_order = False
+
         async def list_order_fills(self, *, order_id):
             assert order_id == "alpaca-buy-1"
             return [SimpleNamespace(order_id=order_id, qty=Decimal("0.0007"))]
@@ -305,6 +308,7 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
                 {
                     "id": "activity-1",
                     "activity_type": "CFEE",
+                    "date": "2026-11-26",
                     "order_id": order_id,
                     "symbol": "BTCUSD",
                     "qty": "-0.00000175",
@@ -313,11 +317,31 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
                 }
             ]
 
+        async def list_fills_for_date(self, *, date):
+            assert date.isoformat() == "2026-11-26"
+            fills = [
+                SimpleNamespace(
+                    order_id="alpaca-buy-1",
+                    symbol="BTCUSD",
+                    transaction_time=datetime(2026, 11, 26, 12, tzinfo=UTC),
+                )
+            ]
+            if self.competing_order:
+                fills.append(
+                    SimpleNamespace(
+                        order_id="other-buy",
+                        symbol="BTCUSD",
+                        transaction_time=datetime(2026, 11, 26, 13, tzinfo=UTC),
+                    )
+                )
+            return fills
+
         async def submit_order(self, *_args, **_kwargs):
             raise AssertionError("fee reconciliation must never submit orders")
 
     ledger = FeeLedger()
-    service = AlpacaPaperCryptoFeeReconcileService(ledger, FeeBroker())
+    broker = FeeBroker()
+    service = AlpacaPaperCryptoFeeReconcileService(ledger, broker)
     preview = await service.reconcile()
     assert preview["dry_run"] is True
     assert preview["items"][0]["net_received_qty"] == "0.00069825"
@@ -338,6 +362,10 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
             },
         )
     ]
+    broker.competing_order = True
+    ambiguous = await service.reconcile()
+    assert ambiguous["items"][0]["fee_amount"] is None
+    assert ambiguous["items"][0]["reason"] == "fee_activity_unattributable"
 
 
 @pytest.mark.asyncio
@@ -1000,7 +1028,8 @@ async def test_fee_evidence_write_rejects_a_fill_snapshot_that_lost_its_cas():
 
 
 @pytest.mark.asyncio
-async def test_status_fill_change_invalidates_prior_crypto_fee_evidence():
+@pytest.mark.parametrize("filled_qty", ["0.0007", "0.0008"])
+async def test_status_fill_snapshot_clears_fee_evidence_only_on_change(filled_qty):
     from sqlalchemy.sql.dml import Update
 
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
@@ -1041,16 +1070,17 @@ async def test_status_fill_change_invalidates_prior_crypto_fee_evidence():
         "client-buy",
         {
             "status": "filled",
-            "filled_qty": "0.0008",
+            "filled_qty": filled_qty,
             "filled_avg_price": "60630.38",
             "id": "alpaca-buy-1",
         },
         return_write_result=True,
     )
 
-    assert len(session.updates) == 2
-    invalidation_values = {
-        key.key: value for key, value in session.updates[1]._values.items()
-    }
-    assert getattr(invalidation_values["fee_amount"], "value", None) is None
-    assert getattr(invalidation_values["net_received_qty"], "value", None) is None
+    assert len(session.updates) == 1
+    status_values = {key.key: value for key, value in session.updates[0]._values.items()}
+    assert "fee_amount" in status_values
+    assert "fee_currency" in status_values
+    assert "fee_evidence_reason" in status_values
+    assert "net_received_qty" in status_values
+    assert "IS DISTINCT FROM" in str(status_values["fee_amount"]).upper()

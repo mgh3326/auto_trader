@@ -299,7 +299,7 @@ async def test_uncertain_claim_is_never_sent_again():
 
 
 @pytest.mark.asyncio
-async def test_alpaca_crypto_exit_refuses_when_net_received_quantity_is_unknown():
+async def test_alpaca_crypto_exit_uses_conservative_fee_fallback_when_net_is_unknown():
     recorder = Recorder()
     broker = Broker(recorder)
     broker.unknown_received_qty = True
@@ -322,8 +322,17 @@ async def test_alpaca_crypto_exit_refuses_when_net_received_quantity_is_unknown(
         dry_run=False,
         confirm=True,
     )
-    assert all(row["status"] == "exit_refused_fee_unknown" for row in result["orders"])
-    assert len(broker.calls) == sent_before_exit
+    entries = [row for row in recorder.rows.values() if row.side == "buy"]
+    assert len(result["orders"]) == len(entries)
+    exits = [call for call in broker.calls[sent_before_exit:] if call.side == "sell"]
+    assert len(exits) == len(entries)
+    for exit_order, entry in zip(exits, entries, strict=True):
+        gross = Decimal(entry.meta["filled_qty"])
+        rules = await broker.rules(entry.symbol)
+        expected = rules.floor(
+            gross * Decimal("0.9975"), await broker.price(entry.symbol)
+        )
+        assert exit_order.qty == expected
 
 
 @pytest.mark.asyncio
@@ -427,13 +436,19 @@ async def test_alpaca_crypto_zero_available_keeps_unsold_residual_open():
     await close_due(**args)
     entries = [row for row in recorder.rows.values() if row.side == "buy"]
     assert all(row.status == "filled" for row in entries)
+    episode_state_before = {
+        row.client_order_id: (row.status, dict(row.meta)) for row in entries
+    }
     broker.partial = False
     broker.available = Decimal("0")
     before = len(broker.calls)
     result = await close_due(**args)
     assert all(row.status == "filled" for row in entries)
+    assert all(row["status"] == "broker_qty_unavailable" for row in result["orders"])
+    assert all(row["reason"] == "broker_qty_unavailable" for row in result["orders"])
     assert all(
-        row["status"] == "waiting_for_position_availability" for row in result["orders"]
+        (row.status, row.meta) == episode_state_before[row.client_order_id]
+        for row in entries
     )
     assert len(broker.calls) == before
 

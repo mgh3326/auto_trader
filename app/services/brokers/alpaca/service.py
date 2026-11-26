@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import httpx
@@ -281,6 +281,7 @@ class AlpacaPaperBrokerService:
         self,
         *,
         order_id: str | None = None,
+        date: date | None = None,
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -291,6 +292,8 @@ class AlpacaPaperBrokerService:
         params: dict[str, str | int] = {}
         if order_id is not None:
             params["order_id"] = order_id
+        if date is not None:
+            params["date"] = date.isoformat()
         if after is not None:
             params["after"] = after.isoformat()
         if until is not None:
@@ -329,6 +332,29 @@ class AlpacaPaperBrokerService:
                 raise ValueError("alpaca_order_fill_pagination_invalid")
             page_token = next_token
         raise ValueError("alpaca_order_fill_pagination_limit_exceeded")
+
+    async def list_fills_for_date(self, *, date: date) -> list[Fill]:
+        """Read every FILL activity for one UTC activity date."""
+        collected: dict[str, Fill] = {}
+        page_token: str | None = None
+        for _ in range(20):
+            page = await self.list_fills(
+                date=date,
+                page_token=page_token,
+                page_size=100,
+                direction="asc",
+            )
+            for fill in page:
+                if not fill.id or not fill.order_id:
+                    raise ValueError("alpaca_daily_fill_identity_missing")
+                collected.setdefault(fill.id, fill)
+            if len(page) < 100:
+                return list(collected.values())
+            next_token = page[-1].id
+            if not next_token or next_token == page_token:
+                raise ValueError("alpaca_daily_fill_pagination_invalid")
+            page_token = next_token
+        raise ValueError("alpaca_daily_fill_pagination_limit_exceeded")
 
     async def list_crypto_fee_activities(
         self, *, order_id: str
