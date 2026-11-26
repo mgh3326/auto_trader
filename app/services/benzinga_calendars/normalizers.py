@@ -690,21 +690,31 @@ def _normalize_split(
     if symbol is None:
         raise ValueError("benzinga split row missing ticker")
     event = _base_event(
-        category="split", row=row,
+        category="split",
+        row=row,
         source_event_id=_event_id("split", row, f"{symbol}:{event_date}"),
-        event_date=event_date, symbol=symbol,
-        company_name=_text(row.get("name")), title=f"{symbol} stock split",
-        status="released", importance=_int(row.get("importance")),
-        first_received_at=first_received_at, fetched_at=fetched_at,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=_text(row.get("name")),
+        title=f"{symbol} stock split",
+        status="released",
+        importance=_int(row.get("importance")),
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
     )
     values: list[dict[str, Any]] = []
     ratio = _text(row.get("ratio"))
     if ratio and ":" in ratio:
         numerator, denominator = ratio.split(":", maxsplit=1)
-        for metric, raw in (("split_ratio_numerator", numerator), ("split_ratio_denominator", denominator)):
+        for metric, raw in (
+            ("split_ratio_numerator", numerator),
+            ("split_ratio_denominator", denominator),
+        ):
             amount = _decimal(raw)
             if amount is not None:
-                values.append({"metric_name": metric, "actual": amount, "unit": "shares"})
+                values.append(
+                    {"metric_name": metric, "actual": amount, "unit": "shares"}
+                )
     return NormalizedRow(event=event, values=values)
 
 
@@ -712,23 +722,42 @@ def _normalize_merger_acquisition(
     row: dict[str, Any], *, first_received_at: datetime, fetched_at: datetime
 ) -> NormalizedRow:
     event_date = _required_date(row, "date", "M&A")
-    symbol = _row_symbol(row, key="acquirer_ticker") or _row_symbol(row, key="target_ticker")
+    symbol = _row_symbol(row, key="acquirer_ticker") or _row_symbol(
+        row, key="target_ticker"
+    )
     currency = _text(row.get("currency")) or "USD"
-    title = " / ".join(part for part in (
-        _text(row.get("acquirer_name")), _text(row.get("target_name")),
-        _text(row.get("deal_type")),
-    ) if part) or "Merger or acquisition"
+    title = (
+        " / ".join(
+            part
+            for part in (
+                _text(row.get("acquirer_name")),
+                _text(row.get("target_name")),
+                _text(row.get("deal_type")),
+            )
+            if part
+        )
+        or "Merger or acquisition"
+    )
     event = _base_event(
-        category="merger_acquisition", row=row,
+        category="merger_acquisition",
+        row=row,
         source_event_id=_event_id("merger_acquisition", row, f"{title}:{event_date}"),
-        event_date=event_date, symbol=symbol,
+        event_date=event_date,
+        symbol=symbol,
         company_name=_text(row.get("acquirer_name")) or _text(row.get("target_name")),
-        title=title, status="released", importance=_int(row.get("importance")),
-        currency=currency, first_received_at=first_received_at, fetched_at=fetched_at,
+        title=title,
+        status="released",
+        importance=_int(row.get("importance")),
+        currency=currency,
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
     )
     amount = _decimal(row.get("deal_size"))
-    values = ([{"metric_name": "deal_size", "actual": amount, "unit": currency}]
-              if amount is not None else [])
+    values = (
+        [{"metric_name": "deal_size", "actual": amount, "unit": currency}]
+        if amount is not None
+        else []
+    )
     return NormalizedRow(event=event, values=values)
 
 
@@ -741,12 +770,18 @@ def _normalize_offering(
         raise ValueError("benzinga offering row missing ticker")
     currency = _text(row.get("currency")) or "USD"
     event = _base_event(
-        category="offering", row=row,
+        category="offering",
+        row=row,
         source_event_id=_event_id("offering", row, f"{symbol}:{event_date}"),
-        event_date=event_date, symbol=symbol,
-        company_name=_text(row.get("name")), title=f"{symbol} offering",
-        status="released", importance=_int(row.get("importance")), currency=currency,
-        source_url=_text(row.get("url")), first_received_at=first_received_at,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=_text(row.get("name")),
+        title=f"{symbol} offering",
+        status="released",
+        importance=_int(row.get("importance")),
+        currency=currency,
+        source_url=_text(row.get("url")),
+        first_received_at=first_received_at,
         fetched_at=fetched_at,
     )
     values: list[dict[str, Any]] = []
@@ -784,13 +819,20 @@ def _normalize_fda(
                 break
     drug = row.get("drug") if isinstance(row.get("drug"), dict) else {}
     drug_name = _text(drug.get("name"))
-    title = " ".join(part for part in (company_name, drug_name, _text(row.get("event_type"))) if part)
+    title = " ".join(
+        part for part in (company_name, drug_name, _text(row.get("event_type"))) if part
+    )
     event = _base_event(
-        category="fda", row=row,
+        category="fda",
+        row=row,
         source_event_id=_event_id("fda", row, f"{symbol or company_name}:{event_date}"),
-        event_date=event_date, symbol=symbol, company_name=company_name,
-        title=title or "FDA event", status="released",
-        source_url=_text(row.get("source_link")), first_received_at=first_received_at,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=company_name,
+        title=title or "FDA event",
+        status="released",
+        source_url=_text(row.get("source_link")),
+        first_received_at=first_received_at,
         fetched_at=fetched_at,
     )
     return NormalizedRow(event=event, values=[])
@@ -799,7 +841,9 @@ def _normalize_fda(
 def _normalize_ipo(
     row: dict[str, Any], *, first_received_at: datetime, fetched_at: datetime
 ) -> NormalizedRow:
-    event_date = _parse_iso_date(row.get("date")) or _parse_iso_date(row.get("pricing_date"))
+    event_date = _parse_iso_date(row.get("date")) or _parse_iso_date(
+        row.get("pricing_date")
+    )
     if event_date is None:
         raise ValueError("benzinga IPO row missing a valid date or pricing_date")
     symbol = _row_symbol(row)
@@ -813,11 +857,17 @@ def _normalize_ipo(
         "postponed": "tentative",
     }.get(deal_status, "scheduled")
     event = _base_event(
-        category="ipo", row=row,
+        category="ipo",
+        row=row,
         source_event_id=_event_id("ipo", row, f"{symbol}:{event_date}"),
-        event_date=event_date, symbol=symbol, company_name=_text(row.get("name")),
-        title=f"{symbol} IPO", status=status,
-        first_received_at=first_received_at, fetched_at=fetched_at, currency=currency,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=_text(row.get("name")),
+        title=f"{symbol} IPO",
+        status=status,
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
+        currency=currency,
     )
     values: list[dict[str, Any]] = []
     for metric, key, unit in (
@@ -840,11 +890,16 @@ def _normalize_option_activity(
     if symbol is None:
         raise ValueError("benzinga option activity row missing ticker")
     event = _base_event(
-        category="option_activity", row=row,
+        category="option_activity",
+        row=row,
         source_event_id=_event_id("option_activity", row, f"{symbol}:{event_date}"),
-        event_date=event_date, symbol=symbol, company_name=None,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=None,
         title=_text(row.get("description")) or f"{symbol} unusual options activity",
-        status="released", first_received_at=first_received_at, fetched_at=fetched_at,
+        status="released",
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
         currency="USD",
     )
     values: list[dict[str, Any]] = []
@@ -874,13 +929,20 @@ def _normalize_insider_trade(
     owner = row.get("owner") if isinstance(row.get("owner"), dict) else {}
     company = _text(row.get("company_name"))
     event = _base_event(
-        category="insider_trade", row=row,
-        source_event_id=_event_id("insider_trade", row, f"{symbol or company}:{event_date}"),
-        event_date=event_date, symbol=symbol, company_name=company,
+        category="insider_trade",
+        row=row,
+        source_event_id=_event_id(
+            "insider_trade", row, f"{symbol or company}:{event_date}"
+        ),
+        event_date=event_date,
+        symbol=symbol,
+        company_name=company,
         title=f"{symbol or company or 'Company'} insider filing: "
         f"{_text(owner.get('insider_name')) or 'insider'}",
-        status="released", source_url=_text(row.get("html_url")),
-        first_received_at=first_received_at, fetched_at=fetched_at,
+        status="released",
+        source_url=_text(row.get("html_url")),
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
     )
     values: list[dict[str, Any]] = []
     transactions = row.get("transactions")
@@ -892,11 +954,32 @@ def _normalize_insider_trade(
             shares = _decimal(transaction.get("shares"))
             price = _decimal(transaction.get("price_per_share"))
             if shares is not None:
-                values.append({"metric_name": f"transaction_{index + 1}_shares", "actual": shares, "unit": "shares", "period": period})
+                values.append(
+                    {
+                        "metric_name": f"transaction_{index + 1}_shares",
+                        "actual": shares,
+                        "unit": "shares",
+                        "period": period,
+                    }
+                )
             if price is not None:
-                values.append({"metric_name": f"transaction_{index + 1}_price", "actual": price, "unit": "USD/share", "period": period})
+                values.append(
+                    {
+                        "metric_name": f"transaction_{index + 1}_price",
+                        "actual": price,
+                        "unit": "USD/share",
+                        "period": period,
+                    }
+                )
             if shares is not None and price is not None:
-                values.append({"metric_name": f"transaction_{index + 1}_value", "actual": shares * price, "unit": "USD", "period": period})
+                values.append(
+                    {
+                        "metric_name": f"transaction_{index + 1}_value",
+                        "actual": shares * price,
+                        "unit": "USD",
+                        "period": period,
+                    }
+                )
     return NormalizedRow(event=event, values=values)
 
 
@@ -910,27 +993,37 @@ def _normalize_congress_trade(
     name = _text(security.get("name"))
     member = _text(filer.get("display_name")) or _text(filer.get("member_name"))
     event = _base_event(
-        category="congress_trade", row=row,
+        category="congress_trade",
+        row=row,
         source_event_id=_event_id("congress_trade", row, f"{member}:{event_date}"),
-        event_date=event_date, symbol=symbol, company_name=name,
-        title=f"Congress trade: {member or 'member'}" + (f" {symbol}" if symbol else ""),
-        status="released", source_url=_text(row.get("disclosure_url")),
-        first_received_at=first_received_at, fetched_at=fetched_at,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=name,
+        title=f"Congress trade: {member or 'member'}"
+        + (f" {symbol}" if symbol else ""),
+        status="released",
+        source_url=_text(row.get("disclosure_url")),
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
         currency="USD",
     )
     values: list[dict[str, Any]] = []
     amount = _text(row.get("amount"))
     if amount:
         bounds = re.findall(r"\d[\d,]*(?:\.\d+)?", amount)
-        for metric, raw in zip(("trade_amount_min", "trade_amount_max"), bounds):
+        for metric, raw in zip(
+            ("trade_amount_min", "trade_amount_max"), bounds, strict=False
+        ):
             number = _decimal(raw.replace(",", ""))
             if number is not None:
-                values.append({
-                    "metric_name": metric,
-                    "actual": number,
-                    "unit": "USD",
-                    "period": _text(row.get("transaction_date")),
-                })
+                values.append(
+                    {
+                        "metric_name": metric,
+                        "actual": number,
+                        "unit": "USD",
+                        "period": _text(row.get("transaction_date")),
+                    }
+                )
     return NormalizedRow(event=event, values=values)
 
 
@@ -941,19 +1034,30 @@ def _normalize_analyst_insight(
     security = row.get("security") if isinstance(row.get("security"), dict) else {}
     symbol = _row_symbol(security, key="symbol")
     insight = _text(row.get("analyst_insights"))
-    title = " ".join(part for part in (symbol, _text(row.get("firm")), _text(row.get("action"))) if part)
+    title = " ".join(
+        part
+        for part in (symbol, _text(row.get("firm")), _text(row.get("action")))
+        if part
+    )
     event = _base_event(
-        category="analyst_insight", row=row,
+        category="analyst_insight",
+        row=row,
         source_event_id=_event_id("analyst_insight", row, f"{symbol}:{event_date}"),
-        event_date=event_date, symbol=symbol,
-        company_name=_text(security.get("name")), title=title or "Analyst insight",
-        status="released", first_received_at=first_received_at, fetched_at=fetched_at,
+        event_date=event_date,
+        symbol=symbol,
+        company_name=_text(security.get("name")),
+        title=title or "Analyst insight",
+        status="released",
+        first_received_at=first_received_at,
+        fetched_at=fetched_at,
         currency="USD",
     )
     values: list[dict[str, Any]] = []
     target = _decimal(row.get("pt"))
     if target is not None:
-        values.append({"metric_name": "price_target", "actual": target, "unit": "USD/share"})
+        values.append(
+            {"metric_name": "price_target", "actual": target, "unit": "USD/share"}
+        )
     # Keep the provider's insight text in raw_payload_json; duplicating the
     # unbounded narrative into a numeric value is neither useful nor safe.
     if insight is None:

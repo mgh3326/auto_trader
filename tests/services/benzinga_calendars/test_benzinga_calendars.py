@@ -71,15 +71,63 @@ def test_every_fixture_normalizes_to_a_benzinga_market_event(category):
 @pytest.mark.parametrize(
     "category,expected_symbol,expected_date,expected_id,decimal_metric",
     [
-        ("split", "TCBP", date(2025, 12, 30), "677675329a903000017cb6f1", "split_ratio_numerator"),
-        ("merger_acquisition", "DXPE", date(2026, 1, 5), "695bc1b183cac20001bec44e", None),
-        ("offering", "SBC", date(2025, 12, 29), "69531bc06ab0a40001b39686", "dollar_shares"),
+        (
+            "split",
+            "TCBP",
+            date(2025, 12, 30),
+            "677675329a903000017cb6f1",
+            "split_ratio_numerator",
+        ),
+        (
+            "merger_acquisition",
+            "DXPE",
+            date(2026, 1, 5),
+            "695bc1b183cac20001bec44e",
+            None,
+        ),
+        (
+            "offering",
+            "SBC",
+            date(2025, 12, 29),
+            "69531bc06ab0a40001b39686",
+            "dollar_shares",
+        ),
         ("fda", "DRTS", date(2026, 1, 5), "695bc49183cac20001bec514", None),
-        ("ipo", "SEPGU", date(2024, 1, 9), "604b6d8a36622a000186b793", "offering_shares"),
-        ("option_activity", "FCX", date(2025, 12, 29), "6952ef7b6ab0a40001b39586", "option_price"),
-        ("insider_trade", "COFS", date(2026, 1, 5), "695c171b1bd4be0001967659", "transaction_1_shares"),
-        ("congress_trade", None, date(2026, 6, 9), "6a296077f07735f389b33f69", "trade_amount_min"),
-        ("analyst_insight", "INOD", date(2026, 1, 5), "695bdd0f7bad4dcabd14a073", "price_target"),
+        (
+            "ipo",
+            "SEPGU",
+            date(2024, 1, 9),
+            "604b6d8a36622a000186b793",
+            "offering_shares",
+        ),
+        (
+            "option_activity",
+            "FCX",
+            date(2025, 12, 29),
+            "6952ef7b6ab0a40001b39586",
+            "option_price",
+        ),
+        (
+            "insider_trade",
+            "COFS",
+            date(2026, 1, 5),
+            "695c171b1bd4be0001967659",
+            "transaction_1_shares",
+        ),
+        (
+            "congress_trade",
+            None,
+            date(2026, 6, 9),
+            "6a296077f07735f389b33f69",
+            "trade_amount_min",
+        ),
+        (
+            "analyst_insight",
+            "INOD",
+            date(2026, 1, 5),
+            "695bdd0f7bad4dcabd14a073",
+            "price_target",
+        ),
     ],
 )
 def test_documented_category_examples_normalize_exact_values(
@@ -316,21 +364,102 @@ async def test_client_uses_endpoint_specific_pagination_names():
 @pytest.mark.parametrize(
     "category,row_key,symbols,page_size_key,date_from_key,date_to_key,extra",
     [
-        ("split", "splits", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
-        ("merger_acquisition", "ma", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
-        ("offering", "offerings", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
-        ("fda", "fda", "DRTS", "pagesize", "parameters[date_from]", "parameters[date_to]", {"parameters[securities]": "DRTS"}),
-        ("ipo", "ipos", None, "pagesize", "parameters[date_from]", "parameters[date_to]", {}),
-        ("option_activity", "option_activity", "FCX", "pageSize", "parameters[date_from]", "parameters[date_to]", {"parameters[tickers]": "FCX"}),
-        ("insider_trade", "data", "COFS", "pagesize", "date_from", "date_to", {"search_keys_type": "symbol", "search_keys": "COFS"}),
-        ("congress_trade", "data", "FCX", "pagesize", None, None, {"search_keys_type": "ticker", "search_keys": "FCX", "updated_since": 1767225600}),
-        ("analyst_insight", "analyst-insights", "INOD", "pageSize", "date_from", "date_to", {"symbols": "INOD"}),
+        (
+            "split",
+            "splits",
+            None,
+            "pagesize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {},
+        ),
+        (
+            "merger_acquisition",
+            "ma",
+            None,
+            "pagesize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {},
+        ),
+        (
+            "offering",
+            "offerings",
+            None,
+            "pagesize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {},
+        ),
+        (
+            "fda",
+            "fda",
+            "DRTS",
+            "pagesize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {"parameters[securities]": "DRTS"},
+        ),
+        (
+            "ipo",
+            "ipos",
+            None,
+            "pagesize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {},
+        ),
+        (
+            "option_activity",
+            "option_activity",
+            "FCX",
+            "pageSize",
+            "parameters[date_from]",
+            "parameters[date_to]",
+            {"parameters[tickers]": "FCX"},
+        ),
+        (
+            "insider_trade",
+            "data",
+            "COFS",
+            "pagesize",
+            "date_from",
+            "date_to",
+            {"search_keys_type": "symbol", "search_keys": "COFS"},
+        ),
+        (
+            "congress_trade",
+            "data",
+            "FCX",
+            "pagesize",
+            None,
+            None,
+            {
+                "search_keys_type": "ticker",
+                "search_keys": "FCX",
+                "updated_since": 1767225600,
+            },
+        ),
+        (
+            "analyst_insight",
+            "analyst-insights",
+            "INOD",
+            "pageSize",
+            "date_from",
+            "date_to",
+            {"symbols": "INOD"},
+        ),
     ],
 )
 async def test_new_endpoint_requests_use_documented_paging_parameters(
     category, row_key, symbols, page_size_key, date_from_key, date_to_key, extra
 ):
-    client, http = _client([_FakeResponse(load(f"{category}_doc_example.json")), _FakeResponse({row_key: []})])
+    client, http = _client(
+        [
+            _FakeResponse(load(f"{category}_doc_example.json")),
+            _FakeResponse({row_key: []}),
+        ]
+    )
     await client.fetch(
         category,
         from_date=date(2026, 1, 1),
@@ -352,16 +481,24 @@ async def test_new_endpoint_requests_use_documented_paging_parameters(
 @pytest.mark.asyncio
 async def test_insider_trade_without_symbols_uses_documented_date_paging():
     client, http = _client([_FakeResponse({"data": []})])
-    assert await client.fetch(
-        "insider_trade", from_date=date(2026, 1, 1), to_date=date(2026, 1, 7)
-    ) == []
+    assert (
+        await client.fetch(
+            "insider_trade", from_date=date(2026, 1, 1), to_date=date(2026, 1, 7)
+        )
+        == []
+    )
     assert http.requests[0]["params"]["page"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "deal_status,expected",
-    [("Priced", "released"), ("Withdrawn", "cancelled"), ("Postponed", "tentative"), ("Filed", "scheduled")],
+    [
+        ("Priced", "released"),
+        ("Withdrawn", "cancelled"),
+        ("Postponed", "tentative"),
+        ("Filed", "scheduled"),
+    ],
 )
 def test_ipo_status_tracks_documented_deal_status(deal_status, expected):
     from app.services.benzinga_calendars.normalizers import normalize_row
@@ -623,12 +760,21 @@ async def test_reingest_of_the_same_payload_adds_nothing():
 @pytest.mark.parametrize(
     "category",
     [
-        "split", "merger_acquisition", "offering", "fda", "ipo",
-        "option_activity", "insider_trade", "congress_trade", "analyst_insight",
+        "split",
+        "merger_acquisition",
+        "offering",
+        "fda",
+        "ipo",
+        "option_activity",
+        "insider_trade",
+        "congress_trade",
+        "analyst_insight",
     ],
 )
 async def test_new_category_reingest_keeps_first_received_at(category):
-    from app.services.benzinga_calendars.ingestion import ingest_benzinga_category_for_range
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
     from app.services.benzinga_calendars.normalizers import normalize_row
 
     row = ROWS_BY_CATEGORY[category][0]
@@ -642,8 +788,14 @@ async def test_new_category_reingest_keeps_first_received_at(category):
     client = FakeClient({category: [row]})
     for fetched_at in (OBSERVED, later):
         result = await ingest_benzinga_category_for_range(
-            None, category, event_date, event_date,
-            client=client, repo=repo, fetched_at=fetched_at, skip_succeeded=False,
+            None,
+            category,
+            event_date,
+            event_date,
+            client=client,
+            repo=repo,
+            fetched_at=fetched_at,
+            skip_succeeded=False,
         )
         assert all(item.status == "succeeded" for item in result)
         if category == "congress_trade":
@@ -656,7 +808,9 @@ async def test_new_category_reingest_keeps_first_received_at(category):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_congress_trade_lookback_keeps_recent_disclosures_of_older_trades():
-    from app.services.benzinga_calendars.ingestion import ingest_benzinga_category_for_range
+    from app.services.benzinga_calendars.ingestion import (
+        ingest_benzinga_category_for_range,
+    )
 
     row = ROWS_BY_CATEGORY["congress_trade"][0]
     report_date = date.fromisoformat(row["report_date"])
@@ -677,6 +831,7 @@ async def test_congress_trade_lookback_keeps_recent_disclosures_of_older_trades(
     assert client.calls[0][2] == requested_date
     assert repo.events[0]["event"]["event_date"] == report_date
     assert len(results) == 31
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

@@ -76,7 +76,14 @@ def test_insider_trade_accepts_optional_symbols():
 @pytest.mark.unit
 def test_new_category_accepts_documented_symbols_and_dry_run():
     ns = cli.parse_args(
-        ["--category", "insider_trade,analyst_insight", "--date", "2026-11-25", "--symbols", "AAPL"]
+        [
+            "--category",
+            "insider_trade,analyst_insight",
+            "--date",
+            "2026-11-25",
+            "--symbols",
+            "AAPL",
+        ]
     )
     assert ns.categories == ["insider_trade", "analyst_insight"]
     assert ns.symbols == "AAPL"
