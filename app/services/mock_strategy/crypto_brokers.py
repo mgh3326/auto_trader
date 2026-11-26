@@ -26,6 +26,7 @@ from app.services.brokers.binance.spot_demo.execution_client import (
 from app.services.mock_strategy.crypto_orders import (
     MarketRules,
     binance_rules,
+    crypto_pair_currencies,
     positive,
 )
 
@@ -400,9 +401,8 @@ class AlpacaCryptoPaper:
 
     @staticmethod
     def execution_symbol(symbol: str) -> str:
-        if not symbol.endswith("USDT"):
-            raise ValueError("expected Binance USDT symbol")
-        return symbol.removesuffix("USDT") + "/USD"
+        base, _ = crypto_pair_currencies(symbol, "alpaca_paper_crypto")
+        return base + "/USD"
 
     async def rules(self, symbol: str) -> MarketRules:
         execution = self.execution_symbol(symbol)
@@ -433,7 +433,7 @@ class AlpacaCryptoPaper:
 
     async def available_qty(self, order: Any) -> Decimal:
         position = await self.client.get_position(
-            order.symbol.removesuffix("USDT") + "USD"
+            crypto_pair_currencies(order.symbol, "alpaca_paper_crypto")[0] + "USD"
         )
         if position is None or position.qty_available is None:
             raise ValueError("paper crypto quantity unavailable")
@@ -445,7 +445,10 @@ class AlpacaCryptoPaper:
         execution = self.execution_symbol(order.symbol)
         if (
             response.symbol
-            not in {execution, order.symbol.removesuffix("USDT") + "USD"}
+            not in {
+                execution,
+                crypto_pair_currencies(order.symbol, "alpaca_paper_crypto")[0] + "USD",
+            }
             or response.side != order.side
             or response.client_order_id != order.client_order_id
             or response.qty != order.qty

@@ -388,6 +388,23 @@ def test_crypto_fee_evidence_requires_unique_filled_leg_and_terminal_order():
     assert nonterminal.reason == "fee_activity_unattributable"
 
 
+def test_crypto_pair_currencies_support_alpaca_and_binance_symbols():
+    from app.services.mock_strategy.crypto_orders import crypto_pair_currencies
+
+    assert crypto_pair_currencies("BTC/USD", "alpaca_paper_crypto") == (
+        "BTC",
+        "USD",
+    )
+    assert crypto_pair_currencies("BTCUSDT", "binance_spot_demo") == (
+        "BTC",
+        "USDT",
+    )
+    assert crypto_pair_currencies("BTCUSDT", "alpaca_paper_crypto") == (
+        "BTC",
+        "USD",
+    )
+
+
 def test_crypto_fee_day_match_counts_distinct_same_symbol_orders():
     from app.services.alpaca_paper_crypto_fee_evidence import (
         count_filled_legs_for_day,

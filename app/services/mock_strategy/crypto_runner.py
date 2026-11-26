@@ -21,6 +21,7 @@ from app.services.mock_strategy.crypto_brokers import (
 from app.services.mock_strategy.crypto_orders import (
     BelowVenueMinimum,
     client_id,
+    crypto_pair_currencies,
     positive,
     strategy_id,
 )
@@ -38,6 +39,19 @@ def _entry_status(evidence: FillEvidence) -> str:
 
 
 async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
+    meta = {
+        "filled_qty": str(evidence.filled_qty),
+        "fee_amount": (
+            str(evidence.fee_amount) if evidence.fee_amount is not None else None
+        ),
+        "fee_currency": evidence.fee_currency,
+        "fee_evidence_reason": evidence.fee_evidence_reason,
+        "entry_terminal": evidence.terminal,
+        "broker_status": evidence.status,
+    }
+    # A missing fee lookup is not a revocation of an earlier positive net proof.
+    if evidence.held_qty is not None:
+        meta["net_received_qty"] = str(evidence.held_qty)
     await recorder.update(
         order.client_order_id,
         status=_entry_status(evidence),
@@ -48,19 +62,7 @@ async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
             if evidence.filled_qty and getattr(order, "opened_at", None) is None
             else None
         ),
-        meta={
-            "filled_qty": str(evidence.filled_qty),
-            "net_received_qty": (
-                str(evidence.held_qty) if evidence.held_qty is not None else None
-            ),
-            "fee_amount": (
-                str(evidence.fee_amount) if evidence.fee_amount is not None else None
-            ),
-            "fee_currency": evidence.fee_currency,
-            "fee_evidence_reason": evidence.fee_evidence_reason,
-            "entry_terminal": evidence.terminal,
-            "broker_status": evidence.status,
-        },
+        meta=meta,
     )
 
 
@@ -729,7 +731,10 @@ async def close_due(
                         for item in fee_values:
                             if item.fee_currency == "USD":
                                 fees_usd += item.fee_amount or Decimal("0")
-                            elif item.fee_currency == entry.symbol.removesuffix("USDT"):
+                            elif (
+                                item.fee_currency
+                                == crypto_pair_currencies(entry.symbol, venue)[0]
+                            ):
                                 reference_price = item.price
                                 if reference_price is None:
                                     known = False

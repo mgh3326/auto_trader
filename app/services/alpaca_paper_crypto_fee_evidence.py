@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.services.mock_strategy.crypto_orders import crypto_pair_currencies
+
 
 @dataclass(frozen=True)
 class CryptoFeeEvidence:
@@ -101,10 +103,10 @@ def resolve_crypto_fee_evidence(
     )
     if filled_dates != {date.fromisoformat(expected_date[:10])}:
         return CryptoFeeEvidence(None, None, None, "fee_activity_unattributable")
-    pair = symbol.upper().split("/")
-    if len(pair) != 2:
+    try:
+        base, quote = crypto_pair_currencies(symbol, "alpaca_paper_crypto")
+    except ValueError:
         return CryptoFeeEvidence(None, None, None, "fee_currency_ambiguous")
-    base, quote = pair
     for row in activities:
         activity_id = _field(row, "id")
         activity_type = str(_field(row, "activity_type") or "").upper()
