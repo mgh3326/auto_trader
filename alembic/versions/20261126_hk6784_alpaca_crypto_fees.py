@@ -18,6 +18,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Widen-only precision change on a small paper ledger (approved by auto_trader-design).
+    # expand-contract: contract-step 6784
     op.alter_column(
         "alpaca_paper_order_ledger",
         "fee_amount",
