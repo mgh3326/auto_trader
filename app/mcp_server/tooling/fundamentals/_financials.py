@@ -39,7 +39,10 @@ from app.mcp_server.tooling.shared import (
 from app.models.market_events import MarketEventIngestionPartition
 from app.services.benzinga_http import calendars_enabled as benzinga_calendars_enabled
 from app.services.market_events.freshness_service import _ensure_aware, _is_stale
-from app.services.market_events.query_service import MarketEventsQueryService
+from app.services.market_events.query_service import (
+    MarketEventsQueryService,
+    select_current_metric_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,10 +250,8 @@ def _number_or_none(value: Decimal | int | float | None) -> int | float | None:
 
 
 def _metric_value(event: Any, metric_name: str, field_name: str) -> int | float | None:
-    for value in event.values:
-        if value.metric_name == metric_name:
-            return _number_or_none(getattr(value, field_name))
-    return None
+    value = select_current_metric_value(event, metric_name)
+    return _number_or_none(getattr(value, field_name)) if value is not None else None
 
 
 async def _fetch_earnings_calendar_market_events_kr(

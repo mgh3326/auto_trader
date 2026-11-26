@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -21,6 +22,7 @@ from ._base_market_data import (
     _empty_minute_frame,
     news_title_rows,
 )
+from .flow_signals import parse_member_summary, parse_vi_status_rows
 
 
 def _empty_day_frame() -> pd.DataFrame:
@@ -142,6 +144,118 @@ class DomesticMarketDataMixin(MarketDataBase):
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise RuntimeError("Malformed KIS KSD dividend response")
         return rows
+
+    async def _ksd_event_rows(
+        self,
+        kind: str,
+        from_date: str,
+        to_date: str,
+        *,
+        symbol: str = "",
+        gb1: str = "1",
+        market_gb: str = "0",
+    ) -> list[dict[str, Any]]:
+        """Read one KSD calendar endpoint through the real-account client."""
+        if getattr(self._parent, "_is_mock_client", False):
+            raise RuntimeError(
+                "KSD event calendars are available for real accounts only"
+            )
+        try:
+            path, tr_id = constants.KSD_EVENT_ENDPOINTS[kind]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported KSD event kind: {kind}") from exc
+
+        params = {
+            "CTS": "",
+            "F_DT": from_date,
+            "T_DT": to_date,
+            "SHT_CD": symbol,
+        }
+        if kind == "paidin_capin":
+            params["GB1"] = gb1
+        elif kind == "rev_split":
+            params["MARKET_GB"] = market_gb
+        response = await self._request_with_token_retry(
+            tr_id=tr_id,
+            url=self._kis_url(path),
+            params=params,
+            api_name=f"ksd_{kind}",
+        )
+        rows = response.get("output1", [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise RuntimeError(f"Malformed KIS KSD {kind} response")
+        return rows
+
+    async def ksd_paidin_capin(
+        self, from_date: str, to_date: str, *, symbol: str = "", gb1: str = "1"
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "paidin_capin", from_date, to_date, symbol=symbol, gb1=gb1
+        )
+
+    async def ksd_bonus_issue(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "bonus_issue", from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_purreq(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows("purreq", from_date, to_date, symbol=symbol)
+
+    async def ksd_merger_split(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "merger_split", from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_rev_split(
+        self, from_date: str, to_date: str, *, symbol: str = "", market_gb: str = "0"
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "rev_split", from_date, to_date, symbol=symbol, market_gb=market_gb
+        )
+
+    async def ksd_cap_dcrs(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows("cap_dcrs", from_date, to_date, symbol=symbol)
+
+    async def ksd_list_info(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "list_info", from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_pub_offer(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "pub_offer", from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_forfeit(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows("forfeit", from_date, to_date, symbol=symbol)
+
+    async def ksd_mand_deposit(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "mand_deposit", from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_sharehld_meet(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._ksd_event_rows(
+            "sharehld_meet", from_date, to_date, symbol=symbol
+        )
 
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         js = await self._request_with_token_retry(
@@ -467,6 +581,50 @@ class DomesticMarketDataMixin(MarketDataBase):
             )
 
         return output1, output2
+
+    async def inquire_vi_status(
+        self, code: str, session_date: datetime.date
+    ) -> list[dict[str, Any]]:
+        """Read KIS VI status for one symbol and KST business date (FHPST01390000)."""
+        if not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("code must be a six-digit Korean stock code")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_VI_STATUS_TR,
+            url=self._kis_url(constants.DOMESTIC_VI_STATUS_URL),
+            params={
+                "FID_DIV_CLS_CODE": "0",
+                "FID_COND_SCR_DIV_CODE": "20139",
+                "FID_MRKT_CLS_CODE": "0",
+                "FID_INPUT_ISCD": code,
+                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_INPUT_DATE_1": session_date.strftime("%Y%m%d"),
+                "FID_TRGT_CLS_CODE": "",
+                "FID_TRGT_EXLS_CLS_CODE": "",
+            },
+            api_name="inquire_vi_status",
+        )
+        rows = js.get("output")
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise RuntimeError("Malformed KIS VI status payload: expected output list")
+        return parse_vi_status_rows(rows, symbol=code)
+
+    async def inquire_member(self, code: str) -> dict[str, Any]:
+        """Read current broker/member buy-sell summary (FHKST01010600)."""
+        if not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("code must be a six-digit Korean stock code")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_MEMBER_TR,
+            url=self._kis_url(constants.DOMESTIC_MEMBER_URL),
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": code,
+            },
+            api_name="inquire_member",
+        )
+        output = js.get("output")
+        if not isinstance(output, dict):
+            raise RuntimeError("Malformed KIS member payload: expected output object")
+        return parse_member_summary(output)
 
     async def inquire_investor(
         self,

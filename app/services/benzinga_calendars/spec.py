@@ -48,6 +48,10 @@ class CalendarEndpoint:
     requires_symbols: bool = False
     nested_symbol_map: bool = False
     extra_params: dict[str, str] = field(default_factory=dict)
+    paging_style: str = "calendar"
+    symbol_param: str = "parameters[tickers]"
+    symbol_search_type: str | None = None
+    lookback_days: int = 0
 
 
 CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
@@ -111,6 +115,79 @@ CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
             docs_url="https://docs.benzinga.com/api-reference/news-api/wiims/get-wiims",
             page_size=100,
             extra_params={"channels": "WIIM", "displayOutput": "headline"},
+        ),
+        CalendarEndpoint(
+            category="split",
+            path="/api/v2.1/calendar/splits",
+            row_key="splits",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-splits",
+        ),
+        CalendarEndpoint(
+            category="merger_acquisition",
+            path="/api/v2.1/calendar/ma",
+            row_key="ma",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-ma",
+        ),
+        CalendarEndpoint(
+            category="offering",
+            path="/api/v2.1/calendar/offerings",
+            row_key="offerings",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-offerings",
+        ),
+        CalendarEndpoint(
+            category="fda",
+            path="/api/v2.1/calendar/fda",
+            row_key="fda",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-fda",
+            symbol_param="parameters[securities]",
+        ),
+        CalendarEndpoint(
+            category="ipo",
+            path="/api/v2.1/calendar/ipos",
+            row_key="ipos",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-ipos",
+        ),
+        CalendarEndpoint(
+            category="option_activity",
+            path="/api/v1/signal/option_activity",
+            row_key="option_activity",
+            docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-optionactivity",
+            page_size=1000,
+            paging_style="calendar_page_size",
+        ),
+        CalendarEndpoint(
+            category="insider_trade",
+            path="/api/v1/sec/insider_transactions/filings",
+            row_key="data",
+            docs_url=(
+                "https://docs.benzinga.com/api-reference/calendar-api/"
+                "insider-transaction/get-insider-transaction-filing"
+            ),
+            paging_style="v1_calendar",
+            symbol_search_type="symbol",
+        ),
+        CalendarEndpoint(
+            category="congress_trade",
+            path="/api/v1/gov/usa/congress/trades",
+            row_key="data",
+            docs_url=(
+                "https://docs.benzinga.com/api-reference/calendar-api/"
+                "government-trades/get-government-trades"
+            ),
+            paging_style="v1_updated",
+            symbol_search_type="ticker",
+            lookback_days=30,
+        ),
+        CalendarEndpoint(
+            category="analyst_insight",
+            path="/api/v1/analyst/insights",
+            row_key="analyst-insights",
+            docs_url=(
+                "https://docs.benzinga.com/api-reference/calendar-api/"
+                "analyst-insights/get-analyst-insights"
+            ),
+            page_size=100,
+            paging_style="analyst",
         ),
     )
 }
