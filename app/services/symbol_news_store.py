@@ -79,7 +79,7 @@ class FeedArticleInput:
     url: str
     title: str
     source: str | None
-    published_at: datetime | None
+    published_at: datetime | None = None
     summary: str | None = None
     published_at_raw: str | None = None
     published_precision: str | None = None

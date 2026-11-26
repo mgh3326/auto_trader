@@ -351,7 +351,6 @@ async def ingest_news_ingestor_bulk(
             NewsArticle.summary.is_distinct_from(update_values["summary"]),
             NewsArticle.stock_symbol.is_distinct_from(update_values["stock_symbol"]),
             NewsArticle.stock_name.is_distinct_from(update_values["stock_name"]),
-            NewsArticle.keywords.is_distinct_from(update_values["keywords"]),
             *[
                 getattr(NewsArticle, name).is_distinct_from(update_values[name])
                 for name in symbol_news_store.PUBLICATION_CONTENT_FIELDS
