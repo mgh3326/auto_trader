@@ -433,6 +433,7 @@ tests/test_frontend_no_forexfactory_request_path.py
 tests/test_hermes_ingest_dimension_refs.py
 tests/test_hk4734_kiwoom_broker_migration.py
 tests/test_hk4734_kiwoom_broker_schema_db.py
+tests/test_hk6758_kr_mover_source_migration.py
 tests/test_invest_action_readiness.py
 tests/test_invest_benchmark_gap.py
 tests/test_invest_calendar_weekly_summary_router.py
