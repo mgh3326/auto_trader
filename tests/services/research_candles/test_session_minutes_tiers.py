@@ -468,6 +468,50 @@ def test_settings_defaults_are_the_benchmarks_and_the_tier_budgets() -> None:
     assert fields["SESSION_MINUTES_MAX_SYMBOLS_KR"].default == 150
 
 
+@pytest.mark.asyncio
+async def test_production_kr_fixed_list_is_reported_as_targets() -> None:
+    targets = await _targets(session=_Session(), kis=_Kis(), fixed="069500,229200")
+
+    assert {"069500", "229200"} <= set(targets.symbols)
+    assert _tier(targets, "fixed").cut == 0
+    assert not {"069500", "229200"} & {cut["symbol"] for cut in targets.cuts}
+
+
+def test_fixed_list_report_marks_env_override_and_keeps_effective_symbols() -> None:
+    from scripts.collect_session_minutes import _fixed_list_report
+
+    default = _fixed_list_report(
+        market="kr", raw="069500,229200", configured_fields=set()
+    )
+    override = _fixed_list_report(
+        market="kr",
+        raw="000001,229200",
+        configured_fields={"SESSION_MINUTES_FIXED_SYMBOLS_KR"},
+    )
+
+    assert default == {
+        "fixed_list_source": "default",
+        "fixed_list_symbols": ["069500", "229200"],
+    }
+    assert override == {
+        "fixed_list_source": "env",
+        "fixed_list_symbols": ["000001", "229200"],
+    }
+
+
+def test_settings_fields_set_tracks_fixed_list_env_source(monkeypatch) -> None:
+    from app.core.config import Settings
+
+    field = "SESSION_MINUTES_FIXED_SYMBOLS_KR"
+    monkeypatch.delenv(field, raising=False)
+    default_settings = Settings(_env_file=None)
+    assert field not in default_settings.model_fields_set
+
+    monkeypatch.setenv(field, "069500,229200")
+    env_settings = Settings(_env_file=None)
+    assert field in env_settings.model_fields_set
+
+
 def test_collector_cli_module_imports_and_keeps_its_arguments() -> None:
     from scripts import collect_session_minutes as cli
 

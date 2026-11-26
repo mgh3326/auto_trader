@@ -31,7 +31,9 @@ is open. Toss off: no Toss read, and the report says ``toss: disabled``.
 Output: one JSON object (inserted / already_present / skipped_forming / errors) plus
 ``targeted_symbols``, ``targets_tiers`` (per-tier budget, allowance, candidates,
 selected, cut) and ``targets_cuts`` (symbol, tier, reason ``budget_cut``). Feed this
-line to ``scripts/diagnose_session_coverage.py --collect-report``.
+line to ``scripts/diagnose_session_coverage.py --collect-report``. The report also
+includes the market's normalized ``fixed_list_symbols`` and ``fixed_list_source``
+(``default`` or ``env``).
 Exit 0 = clean, 1 = at least one error, 2 = usage.
 """
 
@@ -72,6 +74,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--user-id", type=int, default=1)
     return parser.parse_args(argv)
+
+
+def _fixed_list_report(
+    *, market: collector.Market, raw: str | None, configured_fields: set[str]
+) -> dict[str, object]:
+    field = (
+        "SESSION_MINUTES_FIXED_SYMBOLS_KR"
+        if market == "kr"
+        else "SESSION_MINUTES_FIXED_SYMBOLS_US"
+    )
+    return {
+        "fixed_list_source": "env" if field in configured_fields else "default",
+        "fixed_list_symbols": collector.parse_symbol_list(market, raw),
+    }
 
 
 async def _toss_us_inputs(
@@ -183,6 +199,13 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
     if toss is None and toss_input_status != "not_requested":
         report["toss"] = toss_input_status
     report.update(collector.targets_report(targets))
+    report.update(
+        _fixed_list_report(
+            market=market,
+            raw=fixed_raw,
+            configured_fields=settings.model_fields_set,
+        )
+    )
     return report
 
 
