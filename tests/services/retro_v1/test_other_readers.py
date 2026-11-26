@@ -521,9 +521,11 @@ async def test_data_gaps_reports_existing_staleness_signals() -> None:
         "negative_class_recording.us",
         "negative_class_recording.crypto",
     }
-    # The 5 existing rows plus crypto_insight.aggregate_oi, which is disabled
-    # by design and therefore always a row. Every other new source is fresh here.
-    assert response["total"] == 6
+    # A missing Benzinga Pro push capture is an explicit stale/lag signal.
+    benzinga = by_dataset["market_events.benzinga_pro.breaking_news.us"]
+    assert benzinga["missing_reason"] == "stale"
+    # The 5 existing rows, the disabled aggregate OI row, and the Benzinga lag.
+    assert response["total"] == 7
 
 
 @pytest.mark.asyncio
