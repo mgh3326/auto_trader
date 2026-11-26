@@ -167,6 +167,17 @@ CANARY_RULES: dict[str, CanaryRule] = {
                 "reference only; 60-day entry window, 91 days in total (design §8.2)"
             ),
         ),
+        # hk 6735 (4885): live Upbit long-only trend sleeve. Metric and horizon
+        # are reference labels only; each sleeve version holds the binding
+        # operator pre-registration.
+        CanaryRule(
+            rule_id="trend.upbit_long_tsmom_v1",
+            design_section="docs/design/4885-upbit-trend-long-live.md §3",
+            title="Upbit long-only trend TSMOM v1",
+            markets=frozenset({"crypto"}),
+            metric="reference only; episode net result vs cash (design §7)",
+            horizon="reference only; 30 crypto sessions",
+        ),
     )
 }
 
