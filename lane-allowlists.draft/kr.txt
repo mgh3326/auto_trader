@@ -7,6 +7,10 @@ analysis_artifact_get	prompt
 analysis_artifact_save	prompt
 analyze_stock_batch	prompt
 cancel_order	prompt
+daily_plan_confirm_links	spec:5750
+daily_plan_get	spec:5750
+daily_plan_list	spec:5750
+daily_plan_write_version	spec:5750
 forecast_resolve	prompt
 forecast_save	prompt
 get_available_capital	prompt
