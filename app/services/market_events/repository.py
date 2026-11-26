@@ -1,4 +1,4 @@
-"""Market events repository — only place that writes the three market_events tables (ROB-128).
+"""Market events repository — only place that writes the market event tables (ROB-128).
 
 Idempotency strategy:
 * When `source_event_id` is provided, upsert keyed by (source, category, market, source_event_id).
@@ -11,9 +11,10 @@ Values are upserted by (event_id, metric_name, period).
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,9 +22,64 @@ from app.models.market_events import (
     MarketEvent,
     MarketEventIngestionPartition,
     MarketEventRevision,
+    MarketEventSource,
     MarketEventValue,
 )
 from app.services.alpaca_paper_ledger_service import _redact_sensitive_keys
+
+PUBLICATION_FIELDS = (
+    "published_at",
+    "published_date",
+    "published_offset",
+    "published_precision",
+)
+PUBLICATION_RANK = {"date": 1, "minute": 2, "second": 3}
+EVENT_FORMAT_FIELDS = (
+    "revised_at",
+    "effective_at",
+    "relevance",
+    "relevance_state",
+    "relevance_basis",
+    "instrument_type",
+    "group_key",
+    "redistributable",
+    "symbols",
+    "backfilled",
+)
+
+
+class CollectionFailure(StrEnum):
+    HTTP_4XX = "http_4xx"
+    HTTP_5XX = "http_5xx"
+    TIMEOUT = "timeout"
+    TRANSPORT = "transport"
+    BAD_RESPONSE = "bad_response"
+    UNPARSEABLE = "unparseable"
+    QUOTA = "quota"
+
+
+def _normalize_publication(payload: dict[str, Any]) -> None:
+    """Validate an opt-in publication tuple and normalize instants to UTC."""
+    if not any(key in payload for key in PUBLICATION_FIELDS):
+        return
+    precision = payload.get("published_precision")
+    timestamp = payload.get("published_at")
+    day = payload.get("published_date")
+    if precision == "date":
+        if type(day) is not date or timestamp is not None:
+            raise ValueError("date precision requires published_date only")
+    elif precision in ("minute", "second"):
+        if (
+            day is not None
+            or not isinstance(timestamp, datetime)
+            or timestamp.utcoffset() is None
+        ):
+            raise ValueError("timed publication requires an aware published_at")
+        payload["published_at"] = timestamp.astimezone(UTC)
+    else:
+        raise ValueError("published_precision must be date, minute or second")
+    for key in PUBLICATION_FIELDS:
+        payload.setdefault(key, None)
 
 
 def value_keys(values: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
@@ -44,6 +100,7 @@ class MarketEventsRepository:
         if not event_data.get("source_event_id"):
             raise ValueError("source_event_id is required")
         payload = dict(event_data)
+        _normalize_publication(payload)
         if payload.get("raw_payload_json") is not None:
             payload["raw_payload_json"] = _redact_sensitive_keys(
                 payload["raw_payload_json"]
@@ -70,6 +127,7 @@ class MarketEventsRepository:
         preserve_dart_detail: bool = False,
     ) -> MarketEvent:
         payload = dict(event_data)
+        _normalize_publication(payload)
         if payload.get("raw_payload_json") is not None:
             payload["raw_payload_json"] = _redact_sensitive_keys(
                 payload["raw_payload_json"]
@@ -95,6 +153,7 @@ class MarketEventsRepository:
                 "provider_created_raw",
                 "provider_updated_at",
                 "provider_updated_raw",
+                *EVENT_FORMAT_FIELDS,
             )
             if k in payload
         }
@@ -129,16 +188,27 @@ class MarketEventsRepository:
             if preserve_dart_detail:
                 update_columns.pop("raw_payload_json", None)
                 update_columns.pop("event_date", None)
-            stmt = (
-                pg_insert(MarketEvent.__table__)
-                .values(**payload)
-                .on_conflict_do_update(
-                    index_elements=["source", "category", "market", "source_event_id"],
-                    index_where=MarketEvent.__table__.c.source_event_id.isnot(None),
-                    set_=update_columns,
+            table = MarketEvent.__table__
+            insert = pg_insert(table).values(**payload)
+            if precision := payload.get("published_precision"):
+                stored_rank = case(
+                    PUBLICATION_RANK, value=table.c.published_precision, else_=0
                 )
-                .returning(MarketEvent.__table__.c.id)
-            )
+                replace_publication = stored_rank <= PUBLICATION_RANK[precision]
+                update_columns.update(
+                    {
+                        key: case(
+                            (replace_publication, insert.excluded[key]),
+                            else_=table.c[key],
+                        )
+                        for key in PUBLICATION_FIELDS
+                    }
+                )
+            stmt = insert.on_conflict_do_update(
+                index_elements=["source", "category", "market", "source_event_id"],
+                index_where=table.c.source_event_id.isnot(None),
+                set_=update_columns,
+            ).returning(table.c.id)
             result = await self.db.execute(stmt)
             event_id = result.scalar_one()
         else:
@@ -148,6 +218,13 @@ class MarketEventsRepository:
                 self.db.add(event)
                 await self.db.flush()
             else:
+                precision = payload.get("published_precision")
+                if precision and PUBLICATION_RANK[precision] >= PUBLICATION_RANK.get(
+                    event.published_precision or "", 0
+                ):
+                    update_columns.update(
+                        {key: payload[key] for key in PUBLICATION_FIELDS}
+                    )
                 for key, value in update_columns.items():
                     if key != "updated_at":
                         setattr(event, key, value)
@@ -185,6 +262,8 @@ class MarketEventsRepository:
             column = getattr(MarketEvent, attr)
             value = payload.get(attr)
             stmt = stmt.where(column.is_(None) if value is None else column == value)
+        if "published_precision" in payload:
+            stmt = stmt.with_for_update()
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def _upsert_value(self, event_id: int, value: dict[str, Any]) -> None:
@@ -253,6 +332,21 @@ class MarketEventsRepository:
                 await self.db.delete(row)
         await self.db.flush()
 
+    async def append_source(self, source_data: dict[str, Any]) -> bool:
+        """Store the first provenance observation for a provider ID."""
+        payload = dict(source_data)
+        if not payload.get("source_event_id"):
+            raise ValueError("source_event_id is required")
+        _normalize_publication(payload)
+        table = MarketEventSource.__table__
+        stmt = (
+            pg_insert(table)
+            .values(**payload)
+            .on_conflict_do_nothing(index_elements=["source", "source_event_id"])
+            .returning(table.c.id)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none() is not None
+
     # -- provider revisions (hk 6513) ---------------------------------------
 
     async def latest_revision(
@@ -288,6 +382,8 @@ class MarketEventsRepository:
         provider_created_at: datetime | None = None,
         provider_updated_at: datetime | None = None,
         raw_payload_json: dict[str, Any] | None = None,
+        changed_fields: dict[str, Any] | None = None,
+        source_revision_id: str | None = None,
     ) -> bool:
         """Append one provider revision; return False when the write lost a race.
 
@@ -321,6 +417,14 @@ class MarketEventsRepository:
                 else None
             ),
         }
+        if changed_fields is not None:
+            if raw_payload_json is not None:
+                raise ValueError(
+                    "derived revision fields must be stored without a raw payload"
+                )
+            payload["changed_fields"] = _redact_sensitive_keys(changed_fields)
+        if source_revision_id is not None:
+            payload["source_revision_id"] = source_revision_id
         stmt = (
             pg_insert(MarketEventRevision.__table__)
             .values(**payload)
@@ -402,7 +506,7 @@ class MarketEventsRepository:
         self,
         partition: MarketEventIngestionPartition,
         *,
-        error: str,
+        error: str | CollectionFailure,
     ) -> None:
         partition.status = "failed"
         partition.finished_at = datetime.now(UTC)
