@@ -410,7 +410,23 @@ def valuation_gap(
 def market_event_gap(row: Any) -> tuple[Row | None, datetime | None]:
     """One freshness-service row. Its ``latest_failed_error`` text is never read."""
     last = row.latest_succeeded_finished_at
-    if row.latest_succeeded_partition_date is None:
+    is_benzinga_pro_push = (
+        row.source == "benzinga_pro"
+        and row.category == "breaking_news"
+        and row.market == "us"
+    )
+    if is_benzinga_pro_push:
+        if row.partition_count_failed > 0:
+            reason = "incomplete_evidence"
+        elif row.latest_succeeded_partition_date is None:
+            # This source is push captured and has no ingestion partition.
+            # No capture in the window is lag, not proof of missing data.
+            reason = "stale"
+        elif row.stale:
+            reason = "stale"
+        else:
+            return None, last
+    elif row.latest_succeeded_partition_date is None:
         reason = "missing_data"
     elif row.stale:
         reason = "stale"
