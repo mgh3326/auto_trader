@@ -37,6 +37,10 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 1,
         "period": 0.2,
     },
+    "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice": {
+        "rate": 10,
+        "period": 1.0,
+    },
     # hk 6661: KIS news-shadow headline reads.
     "FHKST01011801|/uapi/overseas-price/v1/quotations/brknews-title": {
         "rate": 2,

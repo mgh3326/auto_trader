@@ -32,7 +32,9 @@ class YahooFallbackRow:
 async def fetch_us_daily_yahoo_fallback(
     *, symbol: str, n: int
 ) -> list[YahooFallbackRow]:
-    frame = await yahoo_service.fetch_ohlcv(ticker=symbol, days=n, period="day")
+    frame = await yahoo_service.fetch_ohlcv(
+        ticker=symbol, days=n, period="day", empty_ok=True
+    )
     if frame.empty or "close" not in frame.columns:
         return []
 

@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+
+import pandas as pd
+import pytest
+from sqlalchemy.exc import OperationalError
+
+from app.core.config import DEFAULT_KIS_API_RATE_LIMITS
+from app.services.brokers.toss.rate_limiter import _BASE_LIMITS, TossApiGroup
+from app.services.daily_candles.repository import MarketKey
+from app.services.daily_candles.sync_service import (
+    DailyCandleSyncService,
+    NoDataError,
+    SyncTarget,
+    UsDailyLane,
+)
+from app.services.daily_candles.yahoo_us_fallback import YahooFallbackRow
+
+
+def _frame(symbol: str, price: int = 10) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "date": "2026-11-20",
+                "open": price,
+                "high": price + 1,
+                "low": price - 1,
+                "close": price,
+                "volume": 100,
+                "value": price * 100,
+            }
+        ]
+    )
+
+
+class _Repo:
+    def __init__(self, *, write=None) -> None:
+        self.session = AsyncMock()
+        self.rows = []
+        self.write = write
+
+    async def upsert_rows(self, *, market, rows):
+        assert market is MarketKey.US
+        if self.write is not None:
+            return await self.write(rows)
+        self.rows.extend(rows)
+        return len(rows)
+
+
+class _LimiterSpy:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def acquire(self) -> bool:
+        self.calls += 1
+        return True
+
+
+def _target(symbol: str) -> SyncTarget:
+    return SyncTarget(MarketKey.US, symbol, "NASD")
+
+
+def _service(
+    repo: _Repo, lanes: list[UsDailyLane] | None, yahoo=None
+) -> DailyCandleSyncService:
+    service = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=yahoo or AsyncMock(return_value=[]),
+        upbit_crypto_fetcher=AsyncMock(),
+        us_daily_lanes=lanes,
+    )
+    service._resolve_universe = AsyncMock()  # type: ignore[method-assign]
+    return service
+
+
+@pytest.mark.asyncio
+async def test_us_targets_are_distributed_and_each_symbol_uses_one_source() -> None:
+    repo = _Repo()
+    kis_limiter, toss_limiter = _LimiterSpy(), _LimiterSpy()
+    kis_symbols, toss_symbols = [], []
+    kis_started, toss_started = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_both_lanes() -> None:
+        await asyncio.wait_for(
+            asyncio.gather(kis_started.wait(), toss_started.wait()), timeout=1
+        )
+
+    async def kis(target, _n):
+        kis_symbols.append(target.symbol)
+        kis_started.set()
+        await wait_for_both_lanes()
+        return _frame(target.symbol, 11)
+
+    async def toss(target, _n):
+        toss_symbols.append(target.symbol)
+        toss_started.set()
+        await wait_for_both_lanes()
+        return _frame(target.symbol, 22)
+
+    service = _service(
+        repo,
+        [
+            UsDailyLane("kis", "kis", kis, 10, 10, kis_limiter),
+            UsDailyLane("toss", "toss_fallback", toss, 5, 5, toss_limiter),
+        ],
+    )
+    targets = [_target(f"S{i}") for i in range(4)]
+    service._resolve_universe.return_value = targets
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["status"] == "ok"
+    expected_by_symbol = {
+        target.symbol: (
+            "kis"
+            if service._assigned_lane_index(target.symbol, 2) == 0
+            else "toss_fallback"
+        )
+        for target in targets
+    }
+    assert set(kis_symbols) == {
+        symbol for symbol, source in expected_by_symbol.items() if source == "kis"
+    }
+    assert set(toss_symbols) == {
+        symbol
+        for symbol, source in expected_by_symbol.items()
+        if source == "toss_fallback"
+    }
+    assert {row.symbol: row.source for row in repo.rows} == expected_by_symbol
+    assert len(repo.rows) == 4
+    assert repo.session.commit.await_count == 1
+    assert kis_limiter.calls == result["lane_counts"]["kis"]["attempted"]
+    assert toss_limiter.calls == result["lane_counts"]["toss"]["attempted"]
+    assert (
+        result["lane_counts"]["kis"]["attempted"]
+        + result["lane_counts"]["toss"]["attempted"]
+        == 4
+    )
+
+
+@pytest.mark.asyncio
+async def test_us_lane_assignment_is_stable_when_universe_membership_changes() -> None:
+    repo = _Repo()
+    service = _service(repo, [])
+
+    before = [_target("AAPL")]
+    after = [_target("MSFT"), _target("AAPL")]
+    assert service._assigned_lane_index(
+        before[0].symbol, 4
+    ) == service._assigned_lane_index(after[1].symbol, 4)
+
+
+@pytest.mark.asyncio
+async def test_us_fetch_and_write_progress_is_committed_per_bounded_chunk() -> None:
+    repo = _Repo()
+    fetch_started_after_commit: list[bool] = []
+
+    async def kis(target, _n):
+        fetch_started_after_commit.append(repo.session.commit.await_count > 0)
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [_target(f"S{i}") for i in range(101)]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["rows_upserted"] == 101
+    assert repo.session.commit.await_count == 2
+    assert fetch_started_after_commit[:100] == [False] * 100
+    assert fetch_started_after_commit[100:] == [True]
+
+
+@pytest.mark.asyncio
+async def test_empty_assigned_lane_tries_other_lane_then_yahoo() -> None:
+    repo = _Repo()
+    calls: list[str] = []
+
+    async def kis(target, _n):
+        calls.append(f"kis:{target.symbol}")
+        return pd.DataFrame()
+
+    async def toss(target, _n):
+        calls.append(f"toss:{target.symbol}")
+        return pd.DataFrame()
+
+    async def yahoo(*, symbol, n):
+        calls.append(f"yahoo:{symbol}")
+        return [
+            YahooFallbackRow(
+                datetime(2026, 11, 20, tzinfo=UTC), symbol, 1, 2, 1, 2, None, 3, 6
+            )
+        ]
+
+    service = _service(
+        repo,
+        [
+            UsDailyLane("kis", "kis", kis, 10, 10, _LimiterSpy()),
+            UsDailyLane("toss", "toss_fallback", toss, 5, 5, _LimiterSpy()),
+        ],
+        yahoo,
+    )
+    service._resolve_universe.return_value = [_target("YHOO")]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    first = "kis" if service._assigned_lane_index("YHOO", 2) == 0 else "toss"
+    second = "toss" if first == "kis" else "kis"
+    assert calls == [f"{first}:YHOO", f"{second}:YHOO", "yahoo:YHOO"]
+    assert result["status"] == "ok"
+    assert {row.symbol: row.source for row in repo.rows} == {"YHOO": "yahoo_fallback"}
+
+
+@pytest.mark.asyncio
+async def test_yahoo_empty_is_reported_as_no_data_after_each_lane_once() -> None:
+    repo = _Repo()
+    calls = []
+
+    async def empty(name):
+        async def fetch(target, _n):
+            calls.append(f"{name}:{target.symbol}")
+            return pd.DataFrame()
+
+        return fetch
+
+    async def yahoo(*, symbol, n):
+        calls.append(f"yahoo:{symbol}")
+        return []
+
+    service = _service(
+        repo,
+        [
+            UsDailyLane("kis", "kis", await empty("kis"), 10, 10),
+            UsDailyLane("toss", "toss_fallback", await empty("toss"), 5, 5),
+        ],
+        yahoo,
+    )
+    service._resolve_universe.return_value = [_target("EMPTY")]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert calls == ["kis:EMPTY", "toss:EMPTY", "yahoo:EMPTY"]
+    assert result["failed_symbols"] == [
+        {"symbol": "EMPTY", "error_class": NoDataError.__name__}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_yahoo_fallback_concurrency_is_bounded() -> None:
+    active = 0
+    max_active = 0
+
+    async def empty_lane(target, _n):
+        return pd.DataFrame()
+
+    async def yahoo(*, symbol, n):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return []
+
+    service = _service(_Repo(), [UsDailyLane("kis", "kis", empty_lane, 20, 20)], yahoo)
+    service._resolve_universe.return_value = [_target(f"Y{i}") for i in range(12)]
+
+    await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert max_active == 5
+
+
+@pytest.mark.asyncio
+async def test_single_symbol_us_sync_uses_the_same_lane_dispatcher() -> None:
+    repo = _Repo()
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+
+    result = await service.sync_one(target=_target("ONE"), horizon_bars=10)
+
+    assert result.rows_upserted == 1
+    assert result.fallback_used is False
+    assert [row.source for row in repo.rows] == ["kis"]
+
+
+@pytest.mark.asyncio
+async def test_single_symbol_us_no_data_returns_skip_result() -> None:
+    repo = _Repo()
+
+    async def empty(target, _n):
+        return pd.DataFrame()
+
+    service = _service(repo, [UsDailyLane("kis", "kis", empty, 10, 10)])
+
+    result = await service.sync_one(target=_target("EMPTY"), horizon_bars=10)
+
+    assert result.rows_upserted == 0
+    assert result.skipped_reason == "no_data"
+    assert repo.rows == []
+    repo.session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lane_error_does_not_stop_other_lane_or_symbols() -> None:
+    repo = _Repo()
+
+    async def kis(target, _n):
+        if target.symbol == "BAD_KIS":
+            raise RuntimeError("provider down")
+        return pd.DataFrame()
+
+    async def toss(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(
+        repo,
+        [
+            UsDailyLane("kis", "kis", kis, 10, 10),
+            UsDailyLane("toss", "toss_fallback", toss, 5, 5),
+        ],
+    )
+    service._resolve_universe.return_value = [_target("BAD_KIS"), _target("TOSS")]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["status"] == "ok"
+    assert result["failed_symbols"] == []
+    assert {row.symbol for row in repo.rows} == {"BAD_KIS", "TOSS"}
+    assert result["lane_counts"]["kis"]["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_job_wide_database_failure_still_aborts_us_sync() -> None:
+    async def fail_write(_rows):
+        raise OperationalError("insert", {}, RuntimeError("connection lost"))
+
+    repo = _Repo(write=fail_write)
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [_target("DB_FAIL")]
+
+    with pytest.raises(OperationalError):
+        await service.sync_market_universe(market="us", horizon_bars=10)
+
+    repo.session.rollback.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_symbol_local_database_failure_is_reported_and_other_symbol_commits() -> (
+    None
+):
+    repo = _Repo()
+
+    async def write(rows):
+        if any(row.symbol == "BAD_WRITE" for row in rows):
+            raise ValueError("statement rejected")
+        repo.rows.extend(rows)
+        return len(rows)
+
+    repo.write = write
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [_target("BAD_WRITE"), _target("GOOD")]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["status"] == "partial"
+    assert result["failed_symbols"] == [
+        {"symbol": "BAD_WRITE", "error_class": "ValueError"}
+    ]
+    assert [row.symbol for row in repo.rows] == ["GOOD"]
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_symbol_commit_is_not_counted_as_upserted() -> None:
+    repo = _Repo()
+    repo.session.commit.side_effect = [ValueError("commit rejected"), None]
+
+    async def write(rows):
+        if len(rows) > 1:
+            raise ValueError("batch rejected")
+        return len(rows)
+
+    repo.write = write
+
+    async def kis(target, _n):
+        return _frame(target.symbol)
+
+    service = _service(repo, [UsDailyLane("kis", "kis", kis, 10, 10)])
+    service._resolve_universe.return_value = [
+        _target("COMMIT_FAIL"),
+        _target("GOOD"),
+    ]
+
+    result = await service.sync_market_universe(market="us", horizon_bars=10)
+
+    assert result["rows_upserted"] == 1
+    assert result["failed_symbols"] == [
+        {"symbol": "COMMIT_FAIL", "error_class": "ValueError"}
+    ]
+
+
+def test_us_daily_lane_rate_budgets_match_provider_limits() -> None:
+    assert DEFAULT_KIS_API_RATE_LIMITS[
+        "HHDFS76240000|/uapi/overseas-price/v1/quotations/dailyprice"
+    ] == {"rate": 10, "period": 1.0}
+    assert _BASE_LIMITS[TossApiGroup.MARKET_DATA_CHART] == 5
+    service = _service(_Repo(), None)
+    service._toss_us = AsyncMock()
+    assert [(lane.name, lane.rate_per_second) for lane in service._us_lanes()] == [
+        ("kis", 10),
+        ("toss", 5),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_yahoo_empty_daily_result_is_a_normal_empty_fallback(monkeypatch) -> None:
+    from app.services.brokers.yahoo import client as yahoo_client
+    from app.services.daily_candles import yahoo_us_fallback
+
+    calling_thread = threading.get_ident()
+    fetch_thread = []
+
+    def download(*_args, **_kwargs):
+        fetch_thread.append(threading.get_ident())
+        return pd.DataFrame(
+            columns=["Open", "High", "Low", "Close", "Volume"],
+            index=pd.DatetimeIndex([], name="Date"),
+        )
+
+    async def fetch(*, ticker, days, period, empty_ok):
+        assert empty_ok is True
+        return await yahoo_client._fetch_ohlcv_raw(
+            ticker=ticker, days=days, period=period, empty_ok=empty_ok
+        )
+
+    monkeypatch.setattr(yahoo_client.yf, "download", download)
+    monkeypatch.setattr(yahoo_us_fallback.yahoo_service, "fetch_ohlcv", fetch)
+    monkeypatch.setattr(
+        yahoo_us_fallback.yahoo_service,
+        "_filter_closed_buckets_nyse",
+        lambda frame, _period: frame,
+    )
+
+    assert (
+        await yahoo_us_fallback.fetch_us_daily_yahoo_fallback(symbol="EMPTY", n=10)
+        == []
+    )
+    assert fetch_thread and fetch_thread[0] != calling_thread

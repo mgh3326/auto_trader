@@ -602,6 +602,12 @@ async def test_place_order_does_not_retry_403_non_json_for_mutation() -> None:
 async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     calls = 0
     sleeps: list[float] = []
+    acquired_groups: list[TossApiGroup] = []
+
+    class Limiter:
+        async def acquire(self, group):
+            acquired_groups.append(group)
+            return True
 
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
@@ -643,6 +649,7 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     client = TossReadClient(
         token_manager=_TokenManager(),
         transport=httpx.MockTransport(handler),
+        rate_limiter=Limiter(),
     )
     try:
         prices = await client.prices(["AAPL"])
@@ -650,6 +657,7 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
         await client.aclose()
 
     assert calls == 2
+    assert acquired_groups == [TossApiGroup.MARKET_DATA] * 2
     assert sleeps == [2.0]
     assert prices[0].last_price == Decimal("190.12")
 
