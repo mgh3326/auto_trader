@@ -463,3 +463,151 @@ def test_decimal_conversion_preserves_source_precision_and_absence_reason():
     assert value == "123450.6700"
     assert reason is None
     assert _decimal_text(None) == (None, "not_provided")
+
+
+FLAT_FIXTURES = Path(__file__).parents[2] / "fixtures" / "naver_research" / "2026-11-27"
+FLAT_DETAIL_NIDS = {
+    "company": "98510",
+    "industry": "47246",
+    "market": "38309",
+    "invest": "40964",
+    "economy": "14065",
+}
+
+
+def _flat_detail(category: str) -> dict[str, Any]:
+    return json.loads(
+        (
+            FLAT_FIXTURES / f"detail-{category}-{FLAT_DETAIL_NIDS[category]}.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _flat_list_item(category: str) -> dict[str, Any]:
+    from app.services.research_reports.naver_client import parse_list_response
+
+    page = json.loads(
+        (FLAT_FIXTURES / f"list-{category}-0.json").read_text(encoding="utf-8")
+    )
+    return parse_list_response(page, requested_index=0)["items"][0]
+
+
+@pytest.mark.unit
+def test_flat_company_detail_maps_target_price_opinion_pdf_url_and_name():
+    from app.schemas.research_reports import ResearchReportPayloadV1
+    from app.services.research_reports.naver_client import parse_detail_response
+    from app.services.research_reports.naver_collector import map_report
+
+    raw = _flat_detail("company")
+    detail = parse_detail_response(raw, expected_nid="98510")
+    assert detail["attachUrl"] == raw["attachUrl"]
+    report = ResearchReportPayloadV1.model_validate(
+        map_report("company", _flat_list_item("company"), detail)
+    )
+    symbol = report.symbol_candidates[0]
+    assert symbol.symbol == "003720"
+    assert symbol.goal_price == "4100"
+    assert symbol.goal_price_reason is None
+    assert symbol.opinion == "매수"
+    assert symbol.opinion_type == "buy"
+    assert report.detail.title == "매수"
+    assert report.pdf.url == raw["attachUrl"]
+    assert report.pdf.filename == raw["attachName"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("category", ["industry", "market", "invest", "economy"])
+def test_flat_details_without_target_or_opinion_keep_those_fields_null(category):
+    from app.schemas.research_reports import ResearchReportPayloadV1
+    from app.services.research_reports.naver_client import parse_detail_response
+    from app.services.research_reports.naver_collector import map_report
+
+    raw = _flat_detail(category)
+    assert "goalPrice" not in raw and "opinionText" not in raw
+    detail = parse_detail_response(raw, expected_nid=FLAT_DETAIL_NIDS[category])
+    assert detail.get("goalPrice") is None
+    report = ResearchReportPayloadV1.model_validate(
+        map_report(category, _flat_list_item(category), detail)
+    )
+    assert report.detail.title is None
+    assert report.detail.subtitle == "goal_price_reason=not_provided"
+    assert all(row.goal_price is None for row in report.symbol_candidates)
+    assert report.pdf.url == raw["attachUrl"]
+
+
+@pytest.mark.unit
+def test_detail_parser_still_rejects_nid_mismatch_non_object_and_unknown_shapes():
+    from app.services.research_reports.naver_client import (
+        NaverResearchError,
+        parse_detail_response,
+    )
+
+    raw = _flat_detail("company")
+    with pytest.raises(NaverResearchError, match="detail_nid_mismatch"):
+        parse_detail_response(raw, expected_nid="1")
+    with pytest.raises(NaverResearchError, match="invalid_detail_response"):
+        parse_detail_response([raw], expected_nid="98510")
+    with pytest.raises(NaverResearchError, match="invalid_detail_response"):
+        parse_detail_response(
+            {"researchContent": "not-an-object"}, expected_nid="98510"
+        )
+    with pytest.raises(NaverResearchError, match="invalid_detail_response"):
+        parse_detail_response({"title": "no nid anywhere"}, expected_nid="98510")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recorded_flat_fixtures_map_all_five_categories_through_the_client():
+    import httpx
+
+    from app.schemas.research_reports import ResearchReportPayloadV1
+    from app.services.research_reports.naver_client import (
+        BASE_URL,
+        CATEGORIES,
+        NaverResearchClient,
+    )
+    from app.services.research_reports.naver_collector import collect_naver_reports
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tail = request.url.path.split("/researches/v2/", 1)[1]
+        category, _, nid = tail.partition("/")
+        if nid:
+            assert nid == FLAT_DETAIL_NIDS[category]
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json=_flat_detail(category),
+            )
+        if request.url.params.get("index") == "0":
+            page = json.loads(
+                (FLAT_FIXTURES / f"list-{category}-0.json").read_text(encoding="utf-8")
+            )
+        else:
+            page = {
+                "hasNext": False,
+                "items": [],
+                "index": 1,
+                "size": "20",
+                "totalCount": "0",
+            }
+        return httpx.Response(
+            200, headers={"content-type": "application/json"}, json=page
+        )
+
+    now = [0.0]
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = NaverResearchClient(http, sleep=sleep, monotonic=lambda: now[0])
+    result = await collect_naver_reports(
+        client, _FakeRepository(), categories=CATEGORIES, size=20
+    )
+    await http.aclose()
+    assert BASE_URL.endswith("/researches/v2")
+    assert result.category_errors == {}
+    assert result.category_counts == dict.fromkeys(CATEGORIES, 1)
+    assert {row["category"] for row in result.reports} == set(CATEGORIES)
+    for row in result.reports:
+        ResearchReportPayloadV1.model_validate(row)

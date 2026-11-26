@@ -93,8 +93,19 @@ def parse_list_response(value: Any, *, requested_index: int) -> dict[str, Any]:
 
 
 def parse_detail_response(value: Any, *, expected_nid: str) -> dict[str, Any]:
+    """Parse a detail body: the flat object Naver serves now, or the old wrapper.
+
+    The flat shape is the object itself (keys such as nid, title, attachUrl,
+    goalPrice when present); the legacy shape nests it under ``researchContent``.
+    Any other body, including one without an nid, is an error.
+    """
     body = _mapping(value, "detail_response")
-    content = _mapping(body.get("researchContent"), "detail_response")
+    if "researchContent" in body:
+        content = _mapping(body["researchContent"], "detail_response")
+    elif "nid" in body:
+        content = body
+    else:
+        raise NaverResearchError("invalid_detail_response")
     if _nid(content.get("nid")) != expected_nid:
         raise NaverResearchError("detail_nid_mismatch")
     for key in ("attachUrl", "attachName", "goalPrice", "opinionText", "opinionType"):
