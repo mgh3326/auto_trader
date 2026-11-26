@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -710,7 +709,10 @@ class TossTradingTrendPage:
 
 def _flow_decimal_tree(value: Any, field: str) -> Any:
     if isinstance(value, dict):
-        return {key: _flow_decimal_tree(item, f"{field}.{key}") for key, item in value.items()}
+        return {
+            key: _flow_decimal_tree(item, f"{field}.{key}")
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_flow_decimal_tree(item, f"{field}[]") for item in value]
     if value is None:
@@ -733,7 +735,11 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
             updated_raw = row.get("updatedAt")
             if updated_raw is None and endpoint != "program-trades":
                 raise TossResponseContractError("'updatedAt' is required")
-            updated_at = _req_datetime(updated_raw, "updatedAt") if updated_raw is not None else None
+            updated_at = (
+                _req_datetime(updated_raw, "updatedAt")
+                if updated_raw is not None
+                else None
+            )
             normalized: dict[str, Any] = {
                 "date": row_date,
                 "updated_at": updated_at,
@@ -745,7 +751,10 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
             required: dict[str, tuple[str, ...]] = {
                 "short-selling": ("shortSellingVolume", "shortSellingAmount"),
                 "securities-lending": (
-                    "executionQuantity", "repaymentQuantity", "balanceQuantity", "balanceAmount",
+                    "executionQuantity",
+                    "repaymentQuantity",
+                    "balanceQuantity",
+                    "balanceAmount",
                 ),
                 "program-trades": ("arbitrage", "nonArbitrage"),
             }
@@ -754,8 +763,20 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
                     raise TossResponseContractError(f"'{field}' is required")
             nested_required = {
                 "credit-trades": {
-                    "marginLoan": ("newQuantity", "returnQuantity", "balanceQuantity", "balanceRate", "tradingRate"),
-                    "stockLoan": ("newQuantity", "returnQuantity", "balanceQuantity", "balanceRate", "tradingRate"),
+                    "marginLoan": (
+                        "newQuantity",
+                        "returnQuantity",
+                        "balanceQuantity",
+                        "balanceRate",
+                        "tradingRate",
+                    ),
+                    "stockLoan": (
+                        "newQuantity",
+                        "returnQuantity",
+                        "balanceQuantity",
+                        "balanceRate",
+                        "tradingRate",
+                    ),
                 },
                 "program-trades": {
                     "arbitrage": ("buyVolume", "sellVolume", "netBuyVolume"),
@@ -768,7 +789,9 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
                 nested = normalized[field]
                 if nested is None:
                     continue
-                if not isinstance(nested, dict) or any(name not in nested for name in nested_fields):
+                if not isinstance(nested, dict) or any(
+                    name not in nested for name in nested_fields
+                ):
                     raise TossResponseContractError(f"'{field}' is incomplete")
             records.append(normalized)
         next_until = _opt_str(result.get("nextUntil"), "nextUntil")
@@ -834,19 +857,29 @@ def parse_investor_trading_rankings(raw: Any) -> dict[str, TossInvestorRanking]:
             for field in ("netBuyRankings", "netSellRankings"):
                 rows = section.get(field)
                 if not isinstance(rows, list):
-                    raise TossResponseContractError(f"'{investor}.{field}' must be a list")
+                    raise TossResponseContractError(
+                        f"'{investor}.{field}' must be a list"
+                    )
                 parsed_rows = []
                 for item in rows:
                     row = _req_map(item, f"{investor}.{field}[]")
-                    parsed_rows.append({
-                        "rank": _req_int(row.get("rank"), "rank"),
-                        "symbol": _req_str(row.get("symbol"), "symbol"),
-                        "currency": _req_str(row.get("currency"), "currency"),
-                        "amount": _req_decimal(
-                            row.get("netBuyAmount" if field == "netBuyRankings" else "netSellAmount"),
-                            "netBuyAmount" if field == "netBuyRankings" else "netSellAmount",
-                        ),
-                    })
+                    parsed_rows.append(
+                        {
+                            "rank": _req_int(row.get("rank"), "rank"),
+                            "symbol": _req_str(row.get("symbol"), "symbol"),
+                            "currency": _req_str(row.get("currency"), "currency"),
+                            "amount": _req_decimal(
+                                row.get(
+                                    "netBuyAmount"
+                                    if field == "netBuyRankings"
+                                    else "netSellAmount"
+                                ),
+                                "netBuyAmount"
+                                if field == "netBuyRankings"
+                                else "netSellAmount",
+                            ),
+                        }
+                    )
                 lists.append(parsed_rows)
             parsed[investor] = TossInvestorRanking(
                 ranked_at=ranked_at, buy=lists[0], sell=lists[1]

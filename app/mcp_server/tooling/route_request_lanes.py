@@ -627,6 +627,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_investment_opinions",
         "get_investor_trends",
         "get_kimchi_premium",
+        # hk 6664: read-only KR flow and investor-ranking evidence.
+        "get_kr_flow_signals",
+        "get_kr_investor_rankings",
         "get_krx_session_health",
         "get_latest_market_brief",
         "get_market_index",

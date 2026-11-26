@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from decimal import Decimal
 import json
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,7 +29,11 @@ async def test_flow_tool_isolates_one_source_failure(monkeypatch):
             raise RuntimeError("fixture failure")
 
         async def stock_securities_lending(self, symbol, *, count):
-            return SimpleNamespace(records=[{"date": date(2026, 11, 25), "balanceAmount": Decimal("123.40")}])
+            return SimpleNamespace(
+                records=[
+                    {"date": date(2026, 11, 25), "balanceAmount": Decimal("123.40")}
+                ]
+            )
 
         async def stock_credit_trades(self, symbol, *, count):
             return SimpleNamespace(records=[])
@@ -40,7 +44,7 @@ async def test_flow_tool_isolates_one_source_failure(monkeypatch):
         async def investor_trading_rankings(self, *, count):
             return {
                 investor: SimpleNamespace(
-                    ranked_at=datetime(2026, 11, 25, 15, 30, tzinfo=timezone.utc),
+                    ranked_at=datetime(2026, 11, 25, 15, 30, tzinfo=UTC),
                     buy=[{"rank": 1, "symbol": "005930", "amount": Decimal("100")}],
                     sell=[],
                 )
@@ -85,16 +89,17 @@ async def test_flow_tool_isolates_one_source_failure(monkeypatch):
         async def __aexit__(self, *args):
             return None
 
-    monkeypatch.setattr(TossReadClient, "from_settings", classmethod(lambda cls: FakeToss()))
+    monkeypatch.setattr(
+        TossReadClient, "from_settings", classmethod(lambda cls: FakeToss())
+    )
     monkeypatch.setattr("app.core.db.AsyncSessionLocal", FakeSession)
+
     async def empty_records(db, symbols):
         return {}
 
     monkeypatch.setattr(store, "load_flag_records", empty_records)
     monkeypatch.setattr(kr_flow_signals, "today_kst", lambda: date(2026, 11, 26))
-    monkeypatch.setattr(
-        "app.services.brokers.kis.client.KISClient", lambda: FakeKis()
-    )
+    monkeypatch.setattr("app.services.brokers.kis.client.KISClient", lambda: FakeKis())
 
     result = await kr_flow_signals.handle_get_kr_flow_signals("005930", 5)
     sources = result["reference"]
@@ -129,7 +134,9 @@ def test_provider_as_of_handles_date_and_datetime_rows(name, parser):
 
 
 @pytest.mark.asyncio
-async def test_trading_flag_snapshot_keeps_missing_unknown_and_explicit_none(monkeypatch):
+async def test_trading_flag_snapshot_keeps_missing_unknown_and_explicit_none(
+    monkeypatch,
+):
     from app.services.kr_trading_flags import store
     from app.services.kr_trading_flags.vocabulary import CATEGORY_MANAGEMENT
 
@@ -140,7 +147,7 @@ async def test_trading_flag_snapshot_keeps_missing_unknown_and_explicit_none(mon
         async def __aexit__(self, *args):
             return None
 
-    observed_at = datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 11, 26, 0, 0, tzinfo=UTC)
     record = store.FlagRecord(
         category=CATEGORY_MANAGEMENT,
         state="none",

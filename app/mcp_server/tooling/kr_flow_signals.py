@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from typing import Any, Awaitable, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.timezone import today_kst
@@ -40,7 +41,9 @@ def _as_of(records: list[dict[str, Any]]) -> str | None:
     return _wire(max(stamps, key=lambda item: item[0])[1]) if stamps else None
 
 
-def _vi_as_of(rows: list[dict[str, Any]], session_date: dt.date) -> dt.date | dt.datetime:
+def _vi_as_of(
+    rows: list[dict[str, Any]], session_date: dt.date
+) -> dt.date | dt.datetime:
     stamps: list[dt.datetime] = []
     timezone = ZoneInfo("Asia/Seoul")
     for row in rows:
@@ -117,12 +120,16 @@ def _has_data(value: Any) -> bool:
     return value is not None
 
 
-def _source_result(awaitable: Awaitable[Any], normalize: Callable[[Any], Any]) -> Awaitable[dict[str, Any]]:
+def _source_result(
+    awaitable: Awaitable[Any], normalize: Callable[[Any], Any]
+) -> Awaitable[dict[str, Any]]:
     async def run() -> dict[str, Any]:
         try:
             normalized = normalize(await awaitable)
             records = normalized if isinstance(normalized, list) else []
-            data = normalized.get("data") if isinstance(normalized, dict) else normalized
+            data = (
+                normalized.get("data") if isinstance(normalized, dict) else normalized
+            )
             as_of = (
                 normalized.get("as_of", normalized.get("observed_at"))
                 if isinstance(normalized, dict)
@@ -200,7 +207,9 @@ async def handle_get_kr_flow_signals(symbol: str, days: int = 20) -> dict[str, A
             },
             kis_error,
         ),
-        "trading_flags": _source_result(_trading_flags_snapshot(symbol), lambda value: value),
+        "trading_flags": _source_result(
+            _trading_flags_snapshot(symbol), lambda value: value
+        ),
     }
     reference_sources = {
         "toss_short_selling": _guarded_source(
@@ -229,7 +238,9 @@ async def handle_get_kr_flow_signals(symbol: str, days: int = 20) -> dict[str, A
             kis_error,
         ),
         "toss_investor_rankings": _guarded_source(
-            lambda: toss.investor_trading_rankings(count=days), _ranking_snapshot, toss_error,
+            lambda: toss.investor_trading_rankings(count=days),
+            _ranking_snapshot,
+            toss_error,
         ),
     }
     try:
@@ -256,7 +267,11 @@ async def handle_get_kr_investor_rankings(
 ) -> dict[str, Any]:
     from app.services.brokers.toss.client import TossReadClient
 
-    investor_key = {"foreign": "foreigner", "institution": "institution", "individual": "individual"}.get(investor)
+    investor_key = {
+        "foreign": "foreigner",
+        "institution": "institution",
+        "individual": "individual",
+    }.get(investor)
     if investor_key is None:
         raise ValueError("investor must be foreign, institution, or individual")
     if side not in {"buy", "sell"}:
