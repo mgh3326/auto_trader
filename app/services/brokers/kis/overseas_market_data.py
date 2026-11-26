@@ -537,6 +537,7 @@ class OverseasMarketDataMixin(MarketDataBase):
             api_name=source,
         )
         return js if isinstance(js, dict) else {}
+
     # ── News headlines (hk 6661 news shadow, read-only) ──
 
     async def news_titles_overseas_brknews(self) -> list[dict[str, Any]]:
