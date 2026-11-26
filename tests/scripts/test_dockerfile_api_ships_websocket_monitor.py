@@ -13,5 +13,5 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_dockerfile_api_copies_websocket_monitor() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.api").read_text()
-    assert "COPY websocket_monitor.py ./" in dockerfile
+    assert "COPY --chown=appuser:appuser websocket_monitor.py ./" in dockerfile
     assert (REPO_ROOT / "websocket_monitor.py").is_file()

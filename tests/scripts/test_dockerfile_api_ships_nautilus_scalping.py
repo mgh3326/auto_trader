@@ -53,7 +53,7 @@ ENTRY_SCRIPTS = (
     "scripts/upbit_intraday_shadow.py",
 )
 RESEARCH_MODULE = "research.nautilus_scalping.rob974_features"
-SCRIPT_COPY = "COPY research/nautilus_scalping/ ./research/nautilus_scalping/"
+SCRIPT_COPY = "COPY --chown=appuser:appuser research/nautilus_scalping/ ./research/nautilus_scalping/"
 PAPER_RESEARCH_FILES = {
     "research/stock_selection/__init__.py",
     "research/stock_selection/forward.py",
