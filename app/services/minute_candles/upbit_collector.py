@@ -287,7 +287,9 @@ async def collect_upbit_minute_candles(
                     "error" if walk.incomplete else "ok",
                     len(rows),
                     new_rows,
-                    f"page_limit_{MAX_PAGES_PER_MARKET}_gap" if walk.incomplete else None,
+                    f"page_limit_{MAX_PAGES_PER_MARKET}_gap"
+                    if walk.incomplete
+                    else None,
                 )
             )
         except Exception as exc:

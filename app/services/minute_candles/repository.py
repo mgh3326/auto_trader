@@ -122,10 +122,21 @@ class MinuteCandlesRepository:
 
     async def _insert_only_chunk(self, payload: list[dict[str, object]]) -> int:
         columns = (
-            "instrument_id", "time", "open", "high", "low", "close",
-            "base_volume", "quote_volume", "trade_count", "vwap",
-            "taker_buy_base_volume", "taker_buy_quote_volume", "is_closed",
-            "source", "source_event_at",
+            "instrument_id",
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "base_volume",
+            "quote_volume",
+            "trade_count",
+            "vwap",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
+            "is_closed",
+            "source",
+            "source_event_at",
         )
         values = []
         params: dict[str, object] = {}

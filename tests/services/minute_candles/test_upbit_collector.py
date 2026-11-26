@@ -64,7 +64,9 @@ def test_parser_uses_documented_response_shape_and_keeps_decimal_values() -> Non
     assert page.candles[0].time_utc == datetime(2025, 7, 1, 12, 0, tzinfo=UTC)
 
 
-def test_default_fetcher_allows_exact_collector_paths_without_network(monkeypatch) -> None:
+def test_default_fetcher_allows_exact_collector_paths_without_network(
+    monkeypatch,
+) -> None:
     requested: list[str] = []
 
     class Response:
@@ -191,8 +193,7 @@ def test_midnight_checkpoint_collects_closed_previous_day_tail() -> None:
     now = datetime(2026, 11, 27, 15, 1, tzinfo=UTC)  # 00:01 KST
     page = CandlePage(
         tuple(
-            candle("KRW-BTC", now - timedelta(minutes=minute))
-            for minute in range(1, 6)
+            candle("KRW-BTC", now - timedelta(minutes=minute)) for minute in range(1, 6)
         ),
         now,
     )
@@ -303,7 +304,11 @@ async def test_insert_only_repository_reports_zero_for_replayed_rows() -> None:
             return type(
                 "Result",
                 (),
-                {"scalars": lambda _self: type("Scalars", (), {"all": lambda _self: values})()},
+                {
+                    "scalars": lambda _self: type(
+                        "Scalars", (), {"all": lambda _self: values}
+                    )()
+                },
             )()
 
     session = Session()
@@ -336,7 +341,11 @@ async def test_insert_only_repository_counts_multirow_insert_without_rowcount():
             return type(
                 "Result",
                 (),
-                {"scalars": lambda _self: type("Scalars", (), {"all": lambda _self: values})()},
+                {
+                    "scalars": lambda _self: type(
+                        "Scalars", (), {"all": lambda _self: values}
+                    )()
+                },
             )()
 
     rows = [
