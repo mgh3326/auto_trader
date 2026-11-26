@@ -38,8 +38,25 @@ UPBIT_NOTICE = fixture("upbit_page.json")["data"]["notices"][0]
 BITHUMB_NOTICE = fixture("bithumb_notices.json")[0]
 
 
+class FakeSession:
+    def __init__(self, tickers=()):
+        self.commits = 0
+        self.rollbacks = 0
+        self.tickers = set(tickers)
+
+    async def execute(self, _statement):
+        return SimpleNamespace(scalars=lambda: iter(self.tickers))
+
+    async def commit(self):
+        self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
 class FakeRepository:
     def __init__(self):
+        self.db = FakeSession({"STABLE"})
         self.events = {}
         self.revisions = {}
 
@@ -110,21 +127,6 @@ class FakeClient:
     async def fetch_bithumb(self):
         self.bithumb_calls += 1
         return self.bithumb_rows, self.markets
-
-
-class FakeSession:
-    def __init__(self):
-        self.commits = 0
-        self.rollbacks = 0
-
-    async def execute(self, _statement):
-        return SimpleNamespace(scalars=lambda: iter(()))
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        self.rollbacks += 1
 
 
 def test_recorded_shapes_keep_provider_timestamps_categories_and_exact_tickers():
@@ -425,13 +427,13 @@ async def test_upbit_fixed_notices_are_processed_without_ending_normal_paginatio
 @pytest.mark.asyncio
 async def test_empty_store_bootstraps_through_page_cap_and_bithumb_independently():
     repo = FakeRepository()
-    session = FakeSession()
+    session = repo.db
     page_one = {**UPBIT_NOTICE, "id": 88001}
     page_two = {**UPBIT_NOTICE, "id": 88002}
     client = FakeClient(upbit_pages={1: [page_one], 2: [page_two]}, upbit_total_pages=3)
 
     first = await collect_crypto_notices(
-        session,
+        None,
         pages=2,
         repo=repo,
         client=client,
@@ -451,7 +453,7 @@ async def test_empty_store_bootstraps_through_page_cap_and_bithumb_independently
         upbit_pages={1: [page_one], 2: [page_two]}, upbit_total_pages=3
     )
     second = await collect_crypto_notices(
-        session,
+        None,
         pages=2,
         repo=repo,
         client=rerun_client,
@@ -482,6 +484,23 @@ async def test_upbit_fetch_failure_does_not_prevent_bithumb_collection():
     assert report[UPBIT_SOURCE]["error"] == "CryptoNoticeHTTPError"
     assert report[BITHUMB_SOURCE]["inserted"] == 1
     assert client.bithumb_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_uses_repository_session_and_rejects_mismatched_sessions():
+    repo = FakeRepository()
+    client = FakeClient()
+    with pytest.raises(ValueError, match="db must match the repository session"):
+        await collect_crypto_notices(
+            FakeSession(), repo=repo, client=client, commit=True
+        )
+    assert client.pages == []
+    assert client.bithumb_calls == 0
+
+    with pytest.raises(ValueError, match="commit requires a repository session"):
+        await collect_crypto_notices(None, repo=object(), client=client, commit=True)
+    assert client.pages == []
+    assert client.bithumb_calls == 0
 
 
 @pytest.mark.asyncio

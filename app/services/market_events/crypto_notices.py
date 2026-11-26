@@ -422,6 +422,16 @@ async def collect_crypto_notices(
         repo = MarketEventsRepository(db)
     if repo is None:
         raise ValueError("a repository is required to check stored IDs")
+    repository_session = getattr(repo, "db", None)
+    if (
+        db is not None
+        and repository_session is not None
+        and repository_session is not db
+    ):
+        raise ValueError("db must match the repository session")
+    session = db if db is not None else repository_session
+    if commit and session is None:
+        raise ValueError("commit requires a repository session")
     fetcher = client or CryptoNoticeClient()
     capture_received_at = clock or (lambda: datetime.now(UTC))
 
@@ -429,9 +439,9 @@ async def collect_crypto_notices(
         return received_at if received_at is not None else capture_received_at()
 
     known_upbit: set[str] = set()
-    if db is not None:
+    if session is not None:
         known_upbit = set(
-            (await db.execute(select(UpbitSymbolUniverse.base_currency))).scalars()
+            (await session.execute(select(UpbitSymbolUniverse.base_currency))).scalars()
         )
     else:
         known_upbit = set(getattr(fetcher, "upbit_tickers", ()))
@@ -550,11 +560,11 @@ async def collect_crypto_notices(
                     output[source]["truncated"] = True
                     output[source]["page_cap"] = 20
                     output[source]["older_history_uncollected"] = True
-            if commit and db is not None:
-                await db.commit()
+            if commit and session is not None:
+                await session.commit()
         except Exception as exc:
-            if commit and db is not None:
-                await db.rollback()
+            if commit and session is not None:
+                await session.rollback()
                 output[source]["inserted"] = 0
                 output[source]["revised"] = 0
                 output[source]["stale_observations"] = 0
