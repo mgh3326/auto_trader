@@ -7,6 +7,7 @@ ADX, Stochastic RSI, OBV, Fibonacci).
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from dataclasses import dataclass
@@ -498,9 +499,9 @@ def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
     return value
 
 
-_NXT_AFTER_OPEN = datetime.time(15, 30)
-_NXT_AFTER_CLOSE = datetime.time(20, 0)
 _KST = ZoneInfo("Asia/Seoul")
+_QUOTE_SESSION_BAR_PAGE_CAP = {"J": 22, "NX": 8}
+_QUOTE_SESSION_OHLCV_TIMEOUT_S = 2.0
 
 
 def _current_kst_datetime(now: datetime.datetime | None = None) -> datetime.datetime:
@@ -517,7 +518,18 @@ async def _nxt_quote_session(
 ) -> str | None:
     current = _current_kst_datetime(now)
     toss_session = await get_kr_nxt_session_from_toss(current)
-    if toss_session in {"nxt_premarket", "nxt_after"}:
+    venue_session = kr_quote_price.quote_session_at(current, "nxt")
+    # Do not let a provider calendar's broader label move the quote boundary:
+    # research minute labels and quote selection share 08:00 / 16:00 / 20:00.
+    if (
+        toss_session == "nxt_premarket"
+        and venue_session == kr_quote_price.PRICE_SESSION_NXT_PRE
+    ):
+        return toss_session
+    if (
+        toss_session == "nxt_after"
+        and venue_session == kr_quote_price.PRICE_SESSION_NXT_POST
+    ):
         return toss_session
     if toss_session == "closed":
         return None
@@ -528,10 +540,260 @@ async def _nxt_quote_session(
     if not is_kr_session_day(current.date()):
         return None
 
-    current_time = current.timetz().replace(tzinfo=None)
-    if _NXT_AFTER_OPEN <= current_time < _NXT_AFTER_CLOSE:
+    if venue_session == kr_quote_price.PRICE_SESSION_NXT_POST:
         return "nxt_after"
     return None
+
+
+def _krx_regular_close_from_frame(
+    frame: pd.DataFrame, *, session_date: datetime.date
+) -> tuple[float, str] | None:
+    """Find the KRX 15:30 closing-auction bar and preserve its bar timestamp."""
+    if frame is None or frame.empty or "datetime" not in frame:
+        return None
+    for _, row in frame.iterrows():
+        raw_at = row.get("datetime")
+        if raw_at is None or pd.isna(raw_at):
+            continue
+        at = pd.Timestamp(raw_at).to_pydatetime()
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=_KST)
+        else:
+            at = at.astimezone(_KST)
+        if (
+            at.date() != session_date
+            or at.time().replace(tzinfo=None)
+            != kr_quote_price.KRX_AUCTION_WINDOWS[1][1]
+        ):
+            continue
+        close = kr_quote_price.positive_price(row.get("close"))
+        if close is not None:
+            return close, at.isoformat()
+    return None
+
+
+def _quote_session_ohlcv_from_frame(
+    frame: pd.DataFrame, *, venue: str
+) -> dict[str, dict[str, Any]]:
+    """Aggregate supplied KIS minute bars into venue-specific session OHLCV."""
+    from app.services.research_candles.session_segment import (
+        KRX_AFTER,
+        KRX_REGULAR,
+        NXT_POST,
+        session_segment_of,
+    )
+
+    if frame is None or frame.empty or "datetime" not in frame:
+        return {}
+    segment_for_venue = {
+        "krx": {KRX_REGULAR: "regular", KRX_AFTER: "krx_after"},
+        "nxt": {NXT_POST: "nxt_post"},
+    }.get(venue, {})
+    bars: dict[str, list[dict[str, Any]]] = {}
+    for _, row in frame.iterrows():
+        raw_at = row.get("datetime")
+        if raw_at is None or pd.isna(raw_at):
+            continue
+        at = pd.Timestamp(raw_at).to_pydatetime()
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=_KST)
+        else:
+            at = at.astimezone(_KST)
+        segment = session_segment_of("kr", "KRX" if venue == "krx" else "NTX", at)
+        # KIS labels the closing-auction print with a 15:30 bar start. The shared
+        # research classifier intentionally leaves that boundary minute UNKNOWN;
+        # for quote OHLCV the bar is the regular session's closing evidence.
+        if (
+            venue == "krx"
+            and segment == "UNKNOWN"
+            and at.time().replace(tzinfo=None)
+            == kr_quote_price.KRX_AUCTION_WINDOWS[1][1]
+        ):
+            segment = KRX_REGULAR
+        key = segment_for_venue.get(segment)
+        if key is None:
+            continue
+        bars.setdefault(key, []).append({**row.to_dict(), "_at": at})
+    result: dict[str, dict[str, Any]] = {}
+    for key, rows in bars.items():
+        rows.sort(key=lambda item: item["_at"])
+        result[key] = {
+            "open": rows[0].get("open"),
+            "high": max(
+                (row.get("high") for row in rows if row.get("high") is not None),
+                default=None,
+            ),
+            "low": min(
+                (row.get("low") for row in rows if row.get("low") is not None),
+                default=None,
+            ),
+            "close": rows[-1].get("close"),
+            "volume": sum((float(row.get("volume") or 0) for row in rows), 0.0),
+            "source": "kis_minute_chart",
+            "as_of": rows[-1]["_at"].isoformat(),
+        }
+    return result
+
+
+async def _fetch_krx_regular_close(
+    symbol: str, *, session_date: datetime.date
+) -> tuple[float, str] | None:
+    """Read the KRX closing-auction minute independently of the after-market quote."""
+    try:
+        frame = await KISClient().inquire_minute_chart(
+            code=symbol,
+            market="J",
+            time_unit=1,
+            n=30,
+            end_date=session_date,
+            end_time="153100",
+        )
+    except Exception as exc:  # noqa: BLE001 - close provenance is optional quote context
+        logger.info("KRX regular close unavailable for %s: %s", symbol, exc)
+        return None
+    return _krx_regular_close_from_frame(frame, session_date=session_date)
+
+
+async def _fetch_quote_venue_session_bars(
+    kis: Any,
+    *,
+    symbol: str,
+    market: str,
+    now: datetime.datetime,
+    session_open: datetime.time,
+    page_cap: int,
+) -> pd.DataFrame:
+    """Page today's minute bars within the venue window and configured cap."""
+    parts: list[pd.DataFrame] = []
+    cursor = now.strftime("%H%M%S")
+    seen: set[datetime.datetime] = set()
+    for _ in range(page_cap):
+        frame = await kis.inquire_minute_chart(
+            code=symbol,
+            market=market,
+            time_unit=1,
+            n=30,
+            end_date=now.date(),
+            end_time=cursor,
+        )
+        if frame is None or frame.empty or "datetime" not in frame:
+            break
+        fresh_rows = []
+        for _, row in frame.iterrows():
+            raw_at = row.get("datetime")
+            if raw_at is None or pd.isna(raw_at):
+                continue
+            at = pd.Timestamp(raw_at).to_pydatetime()
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=_KST)
+            else:
+                at = at.astimezone(_KST)
+            if at not in seen:
+                seen.add(at)
+                fresh_rows.append(row)
+        if not fresh_rows:
+            break
+        parts.append(pd.DataFrame(fresh_rows))
+        oldest = min(
+            pd.Timestamp(row["datetime"]).to_pydatetime().replace(tzinfo=_KST)
+            if pd.Timestamp(row["datetime"]).tzinfo is None
+            else pd.Timestamp(row["datetime"]).to_pydatetime().astimezone(_KST)
+            for row in fresh_rows
+        )
+        if (
+            oldest.date() != now.date()
+            or oldest.time().replace(tzinfo=None) <= session_open
+        ):
+            break
+        cursor = (oldest - datetime.timedelta(seconds=1)).strftime("%H%M%S")
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+async def _fetch_quote_session_ohlcv(
+    symbol: str, *, now: datetime.datetime
+) -> tuple[dict[str, dict[str, Any]], tuple[float, str] | None]:
+    """Read capped session bars and derive the KRX close from the same frame."""
+    try:
+        kis = KISClient()
+        krx_result, nxt_result = await asyncio.gather(
+            _fetch_quote_venue_session_bars(
+                kis,
+                symbol=symbol,
+                market="J",
+                now=now,
+                session_open=kr_quote_price.KRX_REGULAR_START,
+                page_cap=_QUOTE_SESSION_BAR_PAGE_CAP["J"],
+            ),
+            _fetch_quote_venue_session_bars(
+                kis,
+                symbol=symbol,
+                market="NX",
+                now=now,
+                session_open=kr_quote_price.NXT_POST_OHLCV_START,
+                page_cap=_QUOTE_SESSION_BAR_PAGE_CAP["NX"],
+            ),
+            return_exceptions=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - supplemental session OHLCV is advisory
+        logger.info("KR session OHLCV unavailable for %s: %s", symbol, exc)
+        return {}, None
+    result: dict[str, dict[str, Any]] = {}
+    krx_close = None
+    if isinstance(krx_result, Exception):
+        logger.info("KRX session OHLCV unavailable for %s: %s", symbol, krx_result)
+    else:
+        result.update(_quote_session_ohlcv_from_frame(krx_result, venue="krx"))
+        krx_close = _krx_regular_close_from_frame(krx_result, session_date=now.date())
+    if isinstance(nxt_result, Exception):
+        logger.info("NXT session OHLCV unavailable for %s: %s", symbol, nxt_result)
+    else:
+        result.update(_quote_session_ohlcv_from_frame(nxt_result, venue="nxt"))
+    return result, krx_close
+
+
+async def _fetch_krx_after_venue(
+    symbol: str, *, now: datetime.datetime
+) -> dict[str, Any]:
+    """Return KRX book/trade fields during after-market, failing open on read errors."""
+    try:
+        snapshot = await market_data_service.get_orderbook(symbol, "kr", venue="krx")
+    except Exception as exc:  # noqa: BLE001 - KRX venue is supplemental quote context
+        logger.info("KRX after-market book unavailable for %s: %s", symbol, exc)
+        return {}
+    book = kr_quote_price.VenueBook(
+        venue="krx",
+        best_bid=snapshot.bids[0].price if snapshot.bids else None,
+        best_ask=snapshot.asks[0].price if snapshot.asks else None,
+        observed_at=snapshot.as_of,
+        expected_price=snapshot.expected_price,
+    )
+    trade = await _fetch_venue_last_trade(symbol, venue="krx", kis_market_code="J")
+    if trade is not None:
+        traded_at = trade.traded_at
+        if (
+            traded_at is None
+            or traded_at.tzinfo is None
+            or traded_at.utcoffset() is None
+        ):
+            trade = None
+        else:
+            traded_at = traded_at.astimezone(_KST)
+            after_open = datetime.datetime.combine(
+                now.date(), kr_quote_price.KRX_AFTER_OPEN_KST, tzinfo=_KST
+            )
+            if not after_open <= traded_at <= now:
+                trade = None
+    selection = kr_quote_price.select_kr_price(
+        session=kr_quote_price.PRICE_SESSION_KRX_AFTER,
+        session_start=datetime.datetime.combine(
+            now.date(), kr_quote_price.KRX_AFTER_OPEN_KST, tzinfo=_KST
+        ),
+        now=now,
+        venue_books={"krx": book},
+        last_trades={"krx": trade} if trade is not None else {},
+        primary_venue="krx",
+    )
+    return selection.venues
 
 
 def _positive_price(value: float | int | None) -> float | None:
@@ -562,9 +824,9 @@ def _annotate_nxt_session_change(
 
     - ``session_state``: ``premarket`` | ``nxt_after`` (normalized from the NXT
       session label).
-    - ``krx_prev_close``: the most recent completed KRX regular close — captured
-      as the quote's pre-overlay price (prior-day close in premarket, today's
-      regular close during nxt_after). ``None`` when unavailable.
+    - ``krx_prev_close``: the most recent completed KRX regular close. During
+      ``nxt_after`` the caller supplies the 15:30 KRX closing-auction bar, never
+      the after-market quote's pre-overlay price. ``None`` when unavailable.
     - ``change_pct``: ``(nxt_price - krx_prev_close) / krx_prev_close * 100``,
       rounded to 2dp. ``None`` (never a fake 0, never raise) when either side is
       missing/non-positive — mirrors the ROB-448 previous_close convention.
@@ -701,7 +963,11 @@ async def _fetch_nxt_quote_overlay(
 
 
 async def _apply_nxt_quote_overlay(
-    symbol: str, quote: dict[str, Any], *, data_state: str
+    symbol: str,
+    quote: dict[str, Any],
+    *,
+    data_state: str,
+    include_session_ohlcv: bool = False,
 ) -> bool:
     """Overlay an NXT-derived price onto ``quote`` during NXT sessions (ROB-725).
 
@@ -714,16 +980,79 @@ async def _apply_nxt_quote_overlay(
     session = await _nxt_quote_session(data_state)
     if session is None:
         return False
-    # ROB-888: capture the pre-overlay price (the most recent completed KRX
-    # regular close) before ``quote.update`` overwrites it with the NXT price.
-    krx_prev_close = _positive_price(quote.get("price"))
+    now = _current_kst_datetime()
     overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
     if overlay is None:
         return False
+
+    # ROB-888: the daily quote can already include after-market activity. During
+    # NXT post, read the KRX 15:30 closing-auction bar as the only close basis.
+    krx_close = None
+    if session == "nxt_after":
+        if include_session_ohlcv:
+            try:
+                session_ohlcv, krx_close = await asyncio.wait_for(
+                    _fetch_quote_session_ohlcv(symbol, now=now),
+                    timeout=_QUOTE_SESSION_OHLCV_TIMEOUT_S,
+                )
+            except TimeoutError:
+                logger.info("KR session OHLCV timed out for %s", symbol)
+                session_ohlcv = {}
+            if krx_close is None:
+                try:
+                    krx_close = await asyncio.wait_for(
+                        _fetch_krx_regular_close(symbol, session_date=now.date()),
+                        timeout=0.5,
+                    )
+                except TimeoutError:
+                    krx_close = None
+        else:
+            session_ohlcv = {}
+            krx_close = await _fetch_krx_regular_close(symbol, session_date=now.date())
+    else:
+        base_close = _positive_price(quote.get("price"))
+        krx_close = (
+            (base_close, quote.get("price_as_of")) if base_close is not None else None
+        )
+        session_ohlcv = {}
+    krx_venue: dict[str, Any] = {}
+    if session == "nxt_after":
+        quote["session_state"] = "nxt_after"
+        if krx_close is not None:
+            quote["krx_prev_close"] = krx_close[0]
+            quote["krx_prev_close_source"] = "kis_krx_1530_closing_bar"
+            quote["krx_prev_close_as_of"] = krx_close[1]
+        else:
+            quote["krx_prev_close"] = None
+            quote["krx_prev_close_source"] = None
+            quote["krx_prev_close_as_of"] = None
+        if session_ohlcv:
+            quote["session_ohlcv"] = session_ohlcv
+        krx_venue = await _fetch_krx_after_venue(symbol, now=now)
     quote.update(overlay)
+    if krx_venue:
+        quote.setdefault("venues", {}).update(krx_venue)
+    if krx_close is not None:
+        quote["krx_prev_close"] = krx_close[0]
+        quote["krx_prev_close_source"] = (
+            "kis_krx_1530_closing_bar"
+            if session == "nxt_after"
+            else "kis_regular_quote"
+        )
+        quote["krx_prev_close_as_of"] = krx_close[1]
+    elif session == "nxt_after":
+        quote["krx_prev_close"] = None
+        quote["krx_prev_close_source"] = None
+        quote["krx_prev_close_as_of"] = None
+    if session_ohlcv:
+        quote["session_ohlcv"] = session_ohlcv
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
-    _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
+    _annotate_nxt_session_change(
+        quote,
+        session=session,
+        krx_prev_close=krx_close[0] if krx_close is not None else None,
+    )
     _annotate_orderbook_price_freshness(
         quote,
         quote.get("price_as_of"),
@@ -2104,6 +2433,8 @@ async def _get_quote_impl(
     symbol: str | int,
     market: str | None = None,
     include_extended_hours: bool = False,
+    *,
+    include_session_ohlcv: bool = False,
 ) -> dict[str, Any]:
     """Implementation for get_quote tool.
 
@@ -2152,7 +2483,12 @@ async def _get_quote_impl(
                 symbol, quote, nxt_tradable=quote.get("nxt_tradable") is True
             )
             return _with_base_price_kind(premarket_quote, data_state)
-        if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
+        if await _apply_nxt_quote_overlay(
+            symbol,
+            quote,
+            data_state=data_state,
+            include_session_ohlcv=include_session_ohlcv,
+        ):
             return quote
 
         quote["data_state"] = data_state
@@ -2411,7 +2747,12 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         market: str | None = None,
         include_extended_hours: bool = False,
     ) -> dict[str, Any]:
-        return await _get_quote_impl(symbol, market, include_extended_hours)
+        return await _get_quote_impl(
+            symbol,
+            market,
+            include_extended_hours,
+            include_session_ohlcv=True,
+        )
 
     @mcp.tool(
         name="get_orderbook",

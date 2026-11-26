@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,6 +17,7 @@ from app.services.minute_candles.upbit_collector import (
     MAX_PAGES_PER_MARKET,
     MAX_TOP_N,
     SOURCE,
+    _PageWalk,
     _rows_for_current_day,
     _walk_rows,
     collect_upbit_minute_candles,
@@ -65,6 +67,7 @@ def test_parser_uses_documented_response_shape_and_keeps_decimal_values() -> Non
     assert len(page.candles) == 1
     assert str(page.candles[0].quote_volume) == "4022470467.03403"
     assert page.candles[0].time_utc == datetime(2025, 7, 1, 12, 0, tzinfo=UTC)
+    assert page.received_at == now
 
 
 def test_default_fetcher_allows_exact_collector_paths_without_network(
@@ -160,18 +163,181 @@ def candle(market: str, stamp: datetime) -> Candle:
 
 
 def test_forming_minute_is_excluded_and_closed_bar_is_returned_once() -> None:
-    now = datetime(2026, 11, 26, 15, 2, tzinfo=UTC)
+    now = datetime(2026, 11, 26, 15, 2, 2, tzinfo=UTC)
     page = CandlePage(
         (
+            candle("KRW-BTC", datetime(2026, 11, 26, 15, 2, tzinfo=UTC)),
             candle("KRW-BTC", datetime(2026, 11, 26, 15, 1, tzinfo=UTC)),
             candle("KRW-BTC", datetime(2026, 11, 26, 15, 0, tzinfo=UTC)),
         ),
         now,
     )
     rows = _rows_for_current_day(FakeData({"KRW-BTC": [page]}), "KRW-BTC", now)
-    assert [row.time_utc for row, _ in rows] == [
-        datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
-    ]
+    stamps = [row.time_utc for row, _ in rows]
+    assert datetime(2026, 11, 26, 15, 1, tzinfo=UTC) in stamps
+    assert datetime(2026, 11, 26, 15, 2, tzinfo=UTC) not in stamps
+
+
+@pytest.mark.asyncio
+async def test_fast_market_is_committed_while_another_fetch_is_still_running(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 26, 15, 2, 2, tzinfo=UTC)
+    timestamps = {
+        "KRW-BTC": datetime(2026, 11, 26, 15, 0, tzinfo=UTC),
+        "KRW-ETH": datetime(2026, 11, 26, 14, 59, tzinfo=UTC),
+        "KRW-XRP": datetime(2026, 11, 26, 14, 58, tzinfo=UTC),
+    }
+    slow_finished = False
+
+    def walk(_data, market, _now, *, after=None):
+        nonlocal slow_finished
+        if market == "KRW-BTC":
+            time.sleep(0.5)
+            slow_finished = True
+        return _PageWalk(
+            [(candle(market, timestamps[market]), now)], 1, True, None, False
+        )
+
+    monkeypatch.setattr("app.services.minute_candles.upbit_collector._walk_rows", walk)
+
+    class Session:
+        def __init__(self) -> None:
+            self.pending: datetime | None = None
+            self.first_market_committed_while_slow = False
+
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            return type("Result", (), {"scalar_one_or_none": lambda _self: None})()
+
+        async def commit(self) -> None:
+            if self.pending is not None:
+                self.first_market_committed_while_slow |= not slow_finished
+                self.pending = None
+
+        async def rollback(self) -> None:
+            return None
+
+    class CapturingRepository:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def insert_rows(self, *, rows):
+            self.session.pending = rows[0].time_utc
+            return len(rows)
+
+    session = Session()
+    monkeypatch.setattr(
+        "app.services.minute_candles.upbit_collector.MinuteCandlesRepository",
+        CapturingRepository,
+    )
+    data = FakeData({market: [CandlePage((), now)] for market in timestamps})
+
+    result = await collect_upbit_minute_candles(
+        session=session,
+        data=data,
+        held_markets_loader=lambda: _resolved(set()),
+        now=now,
+        top_n=0,
+        dry_run=False,
+    )
+
+    assert session.first_market_committed_while_slow is True
+    assert [item.market for item in result.markets] == list(result.targets)
+
+
+@pytest.mark.asyncio
+async def test_collector_stores_exchange_bar_time_separately_from_receive_time(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 26, 15, 2, 8, tzinfo=UTC)
+    received_at = now - timedelta(seconds=2)
+    bar_at = datetime(2026, 11, 26, 15, 1, tzinfo=UTC)
+    page = CandlePage((candle("KRW-BTC", bar_at),), received_at)
+    data = FakeData(
+        {
+            market: [page if market == "KRW-BTC" else CandlePage((), received_at)]
+            for market in ("KRW-BTC", "KRW-XRP", "KRW-ETH")
+        }
+    )
+
+    class Session:
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            return type("Result", (), {"scalar_one_or_none": lambda _self: None})()
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    class CapturingRepository:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def insert_rows(self, *, rows):
+            captured.extend(rows)
+            return len(rows)
+
+    captured: list[MinuteCandleRow] = []
+    monkeypatch.setattr(
+        "app.services.minute_candles.upbit_collector.MinuteCandlesRepository",
+        CapturingRepository,
+    )
+    await collect_upbit_minute_candles(
+        session=Session(),
+        data=data,
+        held_markets_loader=lambda: _resolved(set()),
+        now=now,
+        top_n=0,
+        dry_run=False,
+    )
+
+    btc_row = next(row for row in captured if row.time_utc == bar_at)
+    assert btc_row.time_utc == bar_at
+    assert btc_row.source_event_at == received_at
+
+
+@pytest.mark.asyncio
+async def test_collector_skips_market_with_latest_closed_bar() -> None:
+    now = datetime(2026, 11, 26, 15, 2, 8, tzinfo=UTC)
+    data = FakeData(
+        {market: [CandlePage((), now)] for market in ("KRW-BTC", "KRW-XRP", "KRW-ETH")}
+    )
+
+    class Session:
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            latest = datetime(2026, 11, 26, 15, 1, tzinfo=UTC)
+            return type("Result", (), {"scalar_one_or_none": lambda _self: latest})()
+
+        async def commit(self) -> None:
+            return None
+
+    result = await collect_upbit_minute_candles(
+        session=Session(),
+        data=data,
+        held_markets_loader=lambda: _resolved(set()),
+        now=now,
+        top_n=0,
+        dry_run=False,
+    )
+
+    assert data.calls == {}
+    assert all(item.status == "ok" and item.pages == 0 for item in result.markets)
 
 
 def test_existing_latest_bar_limits_repeat_fetch_to_newer_rows() -> None:

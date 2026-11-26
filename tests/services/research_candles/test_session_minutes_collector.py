@@ -71,7 +71,9 @@ class RecordingWriter:
         self.calls: list[tuple[list[sc.MinuteBar], str, datetime]] = []
         self.present = present or set()
 
-    async def insert(self, bars, *, batch_id, retrieved_at):
+    async def insert(
+        self, bars, *, batch_id, retrieved_at, auction_observed_before=None
+    ):
         self.calls.append((list(bars), batch_id, retrieved_at))
         already = sum(
             1 for b in bars if (b.symbol, b.venue, b.time_utc) in self.present
@@ -847,3 +849,117 @@ def test_import_closure_reaches_no_execution_ledger_package() -> None:
         m for m in closure if m.startswith("app.services.execution_ledger")
     )
     assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_auction_replay_preserves_first_receipt_and_revision() -> None:
+    class Session:
+        def __init__(self):
+            self.originals = {}
+            self.revisions = {}
+
+        async def execute(self, statement, params):
+            sql = str(statement)
+            key = (params["time_utc"], params["symbol"], params["venue"])
+            assert "ON CONFLICT (time_utc, symbol, venue) DO NOTHING" in sql
+            if "INSERT INTO research.kr_candles_1m" in sql:
+                created = key not in self.originals
+                self.originals.setdefault(key, params)
+                return SimpleNamespace(rowcount=int(created))
+            assert "INSERT INTO research.kr_auction_minute_revisions" in sql
+            assert "retrieved_at < :observed_before" in sql
+            assert "batch_id NOT ILIKE '%backfill%'" in sql
+            assert self.originals[key]["retrieved_at"] < params["observed_before"]
+            self.revisions.setdefault(key, params)
+            return SimpleNamespace(rowcount=1)
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+    session = Session()
+    writer = sc.SqlMinuteWriter(session, "kr")
+    first_at = datetime(2026, 11, 26, 15, 43, 23, tzinfo=KST)
+    revised_at = datetime(2026, 11, 26, 15, 45, tzinfo=KST)
+
+    async def run(price: int, volume: int, now: datetime):
+        frame = _frame(["2026-11-26 15:30"], base=price)
+        frame["volume"] = volume
+        kis = FakeKis(kr_frames={("005930", "J"): frame})
+        result = await sc.collect(
+            market="kr", symbols=["005930"], kis=kis, writer=writer, clock=_clock(now)
+        )
+        assert result["errors"] == 0
+        assert kis.kr_calls == [("005930", "J")]
+        return result
+
+    assert (await run(171500, 0, first_at))["inserted"] == 1
+    assert not session.revisions
+    assert (await run(171300, 1137019, revised_at))["already_present"] == 1
+    await run(171400, 1137019, revised_at.replace(minute=50))
+
+    (original,) = session.originals.values()
+    (revised,) = session.revisions.values()
+    assert (original["close"], original["volume"], original["retrieved_at"]) == (
+        Decimal(171500),
+        Decimal(0),
+        first_at,
+    )
+    assert (revised["close"], revised["volume"], revised["revised_at"]) == (
+        Decimal(171300),
+        Decimal(1137019),
+        revised_at,
+    )
+    assert revised["value"] is None
+
+
+def test_auction_revision_migration_is_additive_and_guards_downgrade(
+    monkeypatch,
+) -> None:
+    from runpy import run_path
+    from unittest.mock import Mock
+
+    from alembic import op as alembic_op
+
+    migration = run_path(
+        str(REPO / "alembic/versions/20261126_hk6757_kr_auction_revisions.py")
+    )
+    op = Mock(spec=alembic_op)
+    monkeypatch.setitem(migration["upgrade"].__globals__, "op", op)
+    migration["upgrade"]()
+    create, grant = [call.args[0] for call in op.execute.call_args_list]
+    assert "CREATE TABLE research.kr_auction_minute_revisions" in create
+    assert "PRIMARY KEY (time_utc, symbol, venue)" in create
+    assert "ALTER TABLE" not in create
+    assert "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'at_app')" in grant
+    assert "GRANT SELECT, INSERT ON research.kr_auction_minute_revisions" in grant
+    op.drop_table.assert_not_called()
+    op.reset_mock()
+    migration["downgrade"]()
+    lock, guard = [call.args[0] for call in op.execute.call_args_list]
+    assert "IN ACCESS EXCLUSIVE MODE" in lock
+    assert "IF EXISTS (SELECT 1 FROM research.kr_auction_minute_revisions)" in guard
+    assert "RAISE EXCEPTION" in guard
+    op.drop_table.assert_called_once_with(
+        "kr_auction_minute_revisions", schema="research"
+    )
+    assert op.mock_calls[-1].args == ("kr_auction_minute_revisions",)
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [
+        (9, 4, None),
+        (9, 5, ("08:59", "09:00")),
+        (9, 30, None),
+        (15, 34, None),
+        (15, 35, ("15:19", "15:30")),
+        (16, 0, None),
+    ],
+)
+def test_auction_windows(hour, minute, expected) -> None:
+    window = sc._auction_window(datetime(2026, 11, 26, hour, minute, tzinfo=KST))
+    labels = tuple(clock.strftime("%H:%M") for clock in window) if window else None
+    assert labels == expected
