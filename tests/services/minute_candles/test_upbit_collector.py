@@ -172,8 +172,8 @@ def test_forming_minute_is_excluded_and_closed_bar_is_returned_once() -> None:
     )
     rows = _rows_for_current_day(FakeData({"KRW-BTC": [page]}), "KRW-BTC", now)
     assert [row.time_utc for row, _ in rows] == [
+        datetime(2026, 11, 26, 15, 0, tzinfo=UTC),
         datetime(2026, 11, 26, 15, 1, tzinfo=UTC),
-        datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
     ]
 
 
@@ -232,6 +232,39 @@ async def test_collector_stores_exchange_bar_time_separately_from_receive_time(
     btc_row = next(row for row in captured if row.time_utc == bar_at)
     assert btc_row.time_utc == bar_at
     assert btc_row.source_event_at == received_at
+
+
+@pytest.mark.asyncio
+async def test_collector_skips_market_with_latest_closed_bar() -> None:
+    now = datetime(2026, 11, 26, 15, 2, 8, tzinfo=UTC)
+    data = FakeData(
+        {market: [CandlePage((), now)] for market in ("KRW-BTC", "KRW-XRP", "KRW-ETH")}
+    )
+
+    class Session:
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            latest = datetime(2026, 11, 26, 15, 1, tzinfo=UTC)
+            return type("Result", (), {"scalar_one_or_none": lambda _self: latest})()
+
+        async def commit(self) -> None:
+            return None
+
+    result = await collect_upbit_minute_candles(
+        session=Session(),
+        data=data,
+        held_markets_loader=lambda: _resolved(set()),
+        now=now,
+        top_n=0,
+        dry_run=False,
+    )
+
+    assert data.calls == {}
+    assert all(item.status == "ok" and item.pages == 0 for item in result.markets)
 
 
 def test_existing_latest_bar_limits_repeat_fetch_to_newer_rows() -> None:

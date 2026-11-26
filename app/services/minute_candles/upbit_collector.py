@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -24,7 +25,8 @@ SOURCE = "upbit_rest_1m"
 FIXED_MARKETS = frozenset({"KRW-BTC", "KRW-XRP", "KRW-ETH"})
 MAX_TOP_N = 100
 MAX_PAGES_PER_MARKET = 8
-MINUTE_CLOSE_DELAY = timedelta(seconds=70)
+CANDLE_FINALIZATION_DELAY = timedelta(seconds=67)
+MAX_CONCURRENT_MARKETS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +159,7 @@ def _walk_rows(
             if (
                 candle.time_utc >= lower_bound
                 and (checkpoint is None or candle.time_utc > checkpoint)
-                and candle.time_utc + MINUTE_CLOSE_DELAY <= now
+                and candle.time_utc + CANDLE_FINALIZATION_DELAY <= now
             ):
                 by_time[candle.time_utc] = (candle, page.received_at)
         oldest = min(stamps)
@@ -237,7 +239,6 @@ async def collect_upbit_minute_candles(
     )
     results: list[MarketResult] = []
     repo = None
-    instrument_id: int | None = None
     if not dry_run:
         if session is None:
             raise ValueError("session is required when dry_run is false")
@@ -264,6 +265,9 @@ async def collect_upbit_minute_candles(
         )
         await session.commit()
 
+    instrument_ids: dict[str, int] = {}
+    latest_by_market: dict[str, datetime | None] = {}
+    market_errors: dict[str, str] = {}
     for market in targets:
         try:
             latest_at = None
@@ -280,26 +284,68 @@ async def collect_upbit_minute_candles(
                         CryptoInstrument.venue_symbol == market,
                     )
                 )
-                instrument_id = int(instrument_result.scalar_one())
+                instrument_ids[market] = int(instrument_result.scalar_one())
                 latest_result = await session.execute(
                     select(func.max(CryptoCandle1m.time)).where(
-                        CryptoCandle1m.instrument_id == instrument_id,
+                        CryptoCandle1m.instrument_id == instrument_ids[market],
                         CryptoCandle1m.source == SOURCE,
                     )
                 )
                 latest_at = latest_result.scalar_one_or_none()
-            walk = _walk_rows(data, market, current, after=latest_at)
+            latest_by_market[market] = latest_at
+        except Exception as exc:
+            if session is not None and not dry_run:
+                await session.rollback()
+            market_errors[market] = (
+                f"HTTP_{exc.status_code}"
+                if hasattr(exc, "status_code") and exc.status_code is not None
+                else type(exc).__name__
+            )
+
+    market_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MARKETS)
+
+    async def fetch_market(market: str) -> _PageWalk:
+        latest_at = latest_by_market[market]
+        latest_closed_at = (current - CANDLE_FINALIZATION_DELAY).replace(
+            second=0, microsecond=0
+        )
+        if latest_at is not None and latest_at.astimezone(UTC) >= latest_closed_at:
+            return _PageWalk([], 0, True, None, False)
+        async with market_semaphore:
+            return await asyncio.to_thread(
+                _walk_rows, data, market, current, after=latest_at
+            )
+
+    fetchable = [market for market in targets if market not in market_errors]
+    fetched = await asyncio.gather(
+        *(fetch_market(market) for market in fetchable), return_exceptions=True
+    )
+    walks: dict[str, _PageWalk] = {}
+    for market, outcome in zip(fetchable, fetched, strict=True):
+        if isinstance(outcome, BaseException):
+            market_errors[market] = (
+                f"HTTP_{outcome.status_code}"
+                if hasattr(outcome, "status_code") and outcome.status_code is not None
+                else type(outcome).__name__
+            )
+        else:
+            walks[market] = outcome
+
+    for market in targets:
+        if market in market_errors:
+            results.append(
+                MarketResult(market, "error", None, None, market_errors[market])
+            )
+            continue
+        try:
+            walk = walks[market]
             rows = walk.rows
             new_rows = 0 if repo is not None else None
             if repo is not None and rows and not walk.incomplete:
-                if instrument_id is None:
-                    raise RuntimeError(
-                        "instrument id unavailable for Upbit candle write"
-                    )
                 new_rows = await repo.insert_rows(
                     rows=[
                         MinuteCandleRow(
-                            instrument_id=int(instrument_id),
+                            instrument_id=instrument_ids[market],
                             time_utc=candle.time_utc,
                             open=candle.open,
                             high=candle.high,

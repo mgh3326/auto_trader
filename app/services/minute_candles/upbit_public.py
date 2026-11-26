@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -66,11 +67,13 @@ class Pacer:
     ) -> None:
         self.interval, self.clock, self.sleep = interval, clock, sleep
         self._next = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
-        now = self.clock()
-        start = max(now, self._next)
-        self._next = start + self.interval
+        with self._lock:
+            now = self.clock()
+            start = max(now, self._next)
+            self._next = start + self.interval
         if start > now:
             self.sleep(start - now)
 
