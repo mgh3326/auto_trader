@@ -12,7 +12,7 @@
 # fetch 전에 건너뛰어 개정을 영영 못 본다. --force 로 매 틱 재조회하고, 같은 payload 는
 # payload 해시 비교로 0행이다.
 #
-# 게이트·키는 premarket DAG 과 같다. short_interest 는 symbols 필수라 여기 없다.
+# 게이트·키는 premarket DAG 과 같다. short_interest 와 insider_trade 는 symbols 필수라 여기 없다.
 description: "Benzinga calendars intraday (earnings/ratings/wiim/conference/splits/M&A/offerings/FDA/IPO/options/congress/analyst insights)"
 schedule: "CRON_TZ=America/New_York */30 9-16 * * 1-5"
 max_active_runs: 1
