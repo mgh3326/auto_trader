@@ -34,6 +34,9 @@ class MarketResult:
     rows: int | None
     new: int | None
     error: str | None = None
+    pages: int = 0
+    reached_boundary: bool = False
+    pending_gap: tuple[datetime, datetime] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,9 @@ class CollectionResult:
 @dataclass(frozen=True, slots=True)
 class _PageWalk:
     rows: list[tuple[Candle, datetime]]
+    pages: int
+    reached_boundary: bool
+    pending_gap: tuple[datetime, datetime] | None
     incomplete: bool
 
 
@@ -124,8 +130,13 @@ def _walk_rows(
     after: datetime | None = None,
 ):
     start = _kst_day_start(now)
-    cursor = now.astimezone(UTC)
     checkpoint = after.astimezone(UTC) if after is not None else None
+    cursor = now.astimezone(UTC)
+    if checkpoint is not None:
+        page_window = timedelta(minutes=MAX_PAGES_PER_MARKET * PAGE_SIZE)
+        if cursor - checkpoint > page_window:
+            # Upbit pages backward, so cap the first run to the oldest window.
+            cursor = checkpoint + page_window
     # A new collector starts with a short overlap so a run at midnight can
     # still capture the previous day's final closed minutes. Existing
     # checkpoints are retained across midnight and bound the walk directly.
@@ -133,8 +144,10 @@ def _walk_rows(
     by_time: dict[datetime, tuple[Candle, datetime]] = {}
     reached_bound = False
     page = None
+    pages = 0
     for _ in range(MAX_PAGES_PER_MARKET):
         page = data.candles(market, cursor)
+        pages += 1
         if not page.candles:
             break
         stamps = [row.time_utc for row in page.candles]
@@ -149,6 +162,7 @@ def _walk_rows(
                 by_time[candle.time_utc] = (candle, page.received_at)
         oldest = min(stamps)
         if checkpoint is not None and oldest <= checkpoint:
+            reached_bound = True
             break
         if oldest <= lower_bound:
             reached_bound = True
@@ -156,13 +170,28 @@ def _walk_rows(
         if len(page.candles) < PAGE_SIZE:
             break
         cursor = oldest
-    incomplete = bool(
+    page_cap_hit = bool(
         not reached_bound
+        and pages == MAX_PAGES_PER_MARKET
         and page is not None
         and len(page.candles) >= PAGE_SIZE
-        and len(by_time) > 0
     )
-    return _PageWalk([by_time[key] for key in sorted(by_time)], incomplete)
+    pending_gap = None
+    if page_cap_hit and page is not None:
+        oldest_unread_bound = min(row.time_utc for row in page.candles)
+        gap_start = (
+            checkpoint + timedelta(minutes=1) if checkpoint is not None else lower_bound
+        )
+        gap_end = oldest_unread_bound - timedelta(minutes=1)
+        if gap_start <= gap_end:
+            pending_gap = (gap_start, gap_end)
+    return _PageWalk(
+        [by_time[key] for key in sorted(by_time)],
+        pages,
+        reached_bound,
+        pending_gap,
+        page_cap_hit,
+    )
 
 
 def _rows_for_current_day(
@@ -262,7 +291,7 @@ async def collect_upbit_minute_candles(
             walk = _walk_rows(data, market, current, after=latest_at)
             rows = walk.rows
             new_rows = 0 if repo is not None else None
-            if repo is not None and rows:
+            if repo is not None and rows and not walk.incomplete:
                 if instrument_id is None:
                     raise RuntimeError(
                         "instrument id unavailable for Upbit candle write"
@@ -295,6 +324,9 @@ async def collect_upbit_minute_candles(
                     f"page_limit_{MAX_PAGES_PER_MARKET}_gap"
                     if walk.incomplete
                     else None,
+                    pages=walk.pages,
+                    reached_boundary=walk.reached_boundary,
+                    pending_gap=walk.pending_gap,
                 )
             )
         except Exception as exc:
