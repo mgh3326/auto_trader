@@ -151,13 +151,12 @@ async def test_commit_refuses_when_readiness_or_required_coverage_is_incomplete(
         async def load(self, session_date: date) -> dict[str, Any]:
             result = await super().load(session_date)
             result["_commit_readiness"]["data_settled"] = False
-            result["market_breadth"] = Evidence(
-                None,
-                "fixture:krx_daily_bars",
-                AS_OF,
-                "session_bar_coverage_incomplete",
-                {"covered_symbols": 1, "universe_symbols": 100},
-            ).to_dict()
+            result["market_breadth"] = {
+                "value": None,
+                "source": "fixture:krx_daily_bars",
+                "as_of": AS_OF,
+                "reason": "session_bar_coverage_incomplete",
+            }
             return result
 
     with pytest.raises(ValueError, match="summary_not_ready_to_commit"):
@@ -205,15 +204,13 @@ def test_confirmed_flows_count_symbol_directions_without_adding_share_units() ->
                 "individual_net": -200,
                 "collected_at": datetime(2026, 11, 25, 10, tzinfo=UTC),
             },
-        ],
-        universe_count=2,
+        ]
     )
 
     assert evidence["value"]["foreign_net_buy_symbols"] == 1
     assert evidence["value"]["foreign_net_sell_symbols"] == 1
     assert evidence["value"]["quantity_unit"].startswith("shares per symbol")
-    assert evidence["reason"] is None
-    assert evidence["coverage"]["covered_symbols"] == 2
+    assert evidence["reason"] == "confirmed_flow_coverage_incomplete"
 
 
 def test_breadth_is_null_with_coverage_counts_below_threshold() -> None:
