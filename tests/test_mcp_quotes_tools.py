@@ -519,6 +519,39 @@ async def test_apply_nxt_quote_overlay_after_hours_session_state(monkeypatch):
 
     monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
     monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_fetch_krx_regular_close",
+        AsyncMock(return_value=(70000.0, "2026-11-26T15:30:00+09:00")),
+    )
+    monkeypatch.setattr(
+        market_data_quotes, "_fetch_quote_session_ohlcv", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        market_data_quotes, "_fetch_venue_last_trade", AsyncMock(return_value=None)
+    )
+
+    import app.services.market_data as market_data_service
+
+    krx_book = market_data_service.OrderbookSnapshot(
+        symbol="005930",
+        instrument_type="equity_kr",
+        source="kis",
+        asks=[market_data_service.OrderbookLevel(price=68510, quantity=4)],
+        bids=[market_data_service.OrderbookLevel(price=68500, quantity=3)],
+        total_ask_qty=4,
+        total_bid_qty=3,
+        bid_ask_ratio=0.75,
+        as_of=dt.datetime(
+            2026, 11, 26, 18, 16, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+        venue="krx",
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(return_value=krx_book),
+    )
 
     quote = {"symbol": "005930", "price": 70000.0, "source": "kis"}
     applied = await market_data_quotes._apply_nxt_quote_overlay(
@@ -528,6 +561,9 @@ async def test_apply_nxt_quote_overlay_after_hours_session_state(monkeypatch):
     assert applied is True
     assert quote["session_state"] == "nxt_after"
     assert quote["krx_prev_close"] == 70000.0
+    assert quote["krx_prev_close_source"] == "kis_krx_1530_closing_bar"
+    assert quote["krx_prev_close_as_of"] == "2026-11-26T15:30:00+09:00"
+    assert quote["venues"]["krx"]["best_bid"] == 68500.0
     assert quote["change_pct"] == pytest.approx(-2.14, abs=0.01)
 
 
@@ -799,7 +835,10 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
 
     result = await tools["get_quote"]("005930")
 
-    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
+    assert get_orderbook_mock.await_args_list == [
+        (("005930", "kr"), {"venue": "nxt"}),
+        (("005930", "kr"), {"venue": "krx"}),
+    ]
     # hk 6498: NXT post is continuous; an expected-only book is not the price.
     assert result["price"] is None
     assert result["expected_price"] == 113900
@@ -813,8 +852,8 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_quote_korean_equity_after_hours_routes_to_nxt_at_1535(monkeypatch):
-    """ROB-536: NXT after starts at 15:30 KST, not 16:00."""
+async def test_get_quote_korean_equity_does_not_route_to_nxt_at_1535(monkeypatch):
+    """15:30-16:00 is outside both after-market quote sessions."""
     from app.mcp_server.tooling import market_data_quotes
 
     tools = build_tools()
@@ -851,9 +890,8 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt_at_1535(monkeyp
 
     result = await tools["get_quote"]("005930")
 
-    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
-    assert result["session"] == "nxt_after"
-    assert result["data_state"] == "fresh"
+    get_orderbook_mock.assert_not_awaited()
+    assert "session" not in result
 
 
 @pytest.mark.asyncio
@@ -940,6 +978,14 @@ async def test_get_quote_korean_equity_regular_session_skips_nxt_orderbook(
     assert result["price"] == pytest.approx(105.0)
     assert result["previous_close"] == pytest.approx(100.0)
     assert result["data_state"] == "fresh"
+    assert (result["open"], result["high"], result["low"], result["volume"]) == (
+        100.0,
+        110.0,
+        99.0,
+        1000,
+    )
+    assert "session_ohlcv" not in result
+    assert "krx_prev_close" not in result
     assert "regular_session_data_state" not in result
     assert "session" not in result
 
@@ -1874,6 +1920,60 @@ def _krx_after_capability(**overrides):
     }
     fields.update(overrides)
     return KrxAfterTradability(**fields)
+
+
+def test_kr_quote_after_fixture_uses_krx_close_and_splits_sessions(monkeypatch):
+    """Replay the supplied 278470 evidence, including the 15:30 close bar."""
+    from app.mcp_server.tooling import market_data_quotes as quotes
+    from app.services.research_candles import session_segment
+
+    monkeypatch.setattr(session_segment, "is_trading_session", lambda *_: True)
+    session_segment._kr_session_day.cache_clear()
+    fixture_date = dt.date(2026, 11, 26)
+    krx_fixture = pd.DataFrame(
+        [
+            {
+                "datetime": dt.datetime(2026, 11, 26, 15, 30),
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": 298500,
+                "volume": 10623,
+            },
+            {
+                "datetime": dt.datetime(2026, 11, 26, 17, 8),
+                "open": None,
+                "high": 343000,
+                "low": None,
+                "close": None,
+                "volume": None,
+            },
+        ]
+    )
+    nxt_fixture = pd.DataFrame(
+        [
+            {
+                "datetime": dt.datetime(2026, 11, 26, 16, 1),
+                "open": 328000,
+                "high": 330000,
+                "low": 327000,
+                "close": 329000,
+                "volume": 25,
+            }
+        ]
+    )
+
+    assert quotes._krx_regular_close_from_frame(
+        krx_fixture, session_date=fixture_date
+    ) == (298500.0, "2026-11-26T15:30:00+09:00")
+    session_ohlcv = quotes._quote_session_ohlcv_from_frame(krx_fixture, venue="krx")
+    session_ohlcv.update(
+        quotes._quote_session_ohlcv_from_frame(nxt_fixture, venue="nxt")
+    )
+    assert session_ohlcv["regular"]["close"] == 298500
+    assert session_ohlcv["regular"]["volume"] == 10623
+    assert session_ohlcv["krx_after"]["high"] == 343000
+    assert session_ohlcv["nxt_post"]["close"] == 329000
 
 
 @pytest.mark.asyncio

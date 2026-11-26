@@ -884,6 +884,16 @@ KR `get_quote`의 대표가(`price`)는 `price_kind`로 어떤 근거인지 밝�
 - KRX 동시호가 구간(08:30–09:00, 15:20–15:30 KST, 거래일)에는 `get_quote`가 KRX 호가를 한 번 더 읽어 `price_session: auction`으로 판정한다. 이때 예상체결가가 있으면 `price_kind: expected`이고 주문 근거가 아니다. 호가 읽기가 실패하면 기존 기본 경로를 그대로 둔다.
 - 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. 시장 개장 사실(동시호가 시각, NXT 경계)은 이 PR 에서 거래소 공지로 확인하지 않았다. 장후 NX 분봉의 시장 코드와 봉 시각 의미는 `[unverified]`이며 운영자 스모크로 확인한다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
 
+### KR get_quote 장후 시세 기준 (hk 6756)
+
+KRX 애프터마켓 중 `krx_prev_close`는 현재 quote의 `price`나 혼합 일봉 OHLCV에서 가져오지 않는다. KIS J 분봉의 당일 15:30 종가매매 봉에서 `close`를 읽고 `krx_prev_close_source="kis_krx_1530_closing_bar"`와 `krx_prev_close_as_of`(봉 시각)를 함께 낸다. 해당 증거를 얻지 못하면 두 provenance 필드와 `krx_prev_close`는 null이고, 현재 애프터 가격으로 대체하지 않는다. `change_pct`는 이 KRX 종가를 분모로 계산한다.
+
+장후 quote는 `session_ohlcv`에 `regular`, `krx_after`, `nxt_post` 별 `open`/`high`/`low`/`close`/`volume`/`source`/`as_of`를 제공한다. 세션은 `session_segment_of`의 KRX J/NXT NX 분봉 분류를 따른다. KRX 15:30 종가매매 봉은 research 저장용 라벨에서는 `UNKNOWN`이지만, quote의 정규장 종가 및 정규 세션 집계에는 포함한다. 이 값은 상위의 기존 OHLCV 키를 제거하거나 정규장 응답을 바꾸지 않는다.
+
+NXT 애프터 중 `venues`는 NXT와 KRX 각각의 best bid/ask, 관측 시각, 예상체결가, 제공된 경우 세션 내 마지막 체결을 담는다. KRX 호가 조회 실패는 quote 전체 실패가 아니다. quote 시간 분류와 research `session_segment_of`는 `live_order_expiry`의 공유 경계를 쓴다: KRX/NXT 애프터는 16:00 이상 20:00 미만이며 15:30–16:00은 애프터 세션이 아니다. 정규장 quote 결과와 필드는 바이트 동일하게 유지한다.
+
+ROB-888 주석도 같은 근거를 설명한다: 장후 KRX 종가는 overlay 전 `price`를 보존해 얻지 않고 15:30 J 분봉에서 얻는다.
+
 ## 유지 규약
 
 새 기능·안전 경계·계약을 추가하거나 변경할 때에는 관련 분야 계약을 같은 PR에서 갱신하고, 필요하면 루트 `AGENTS.md`의 최소 하드룰과 명시적 필독 목록도 함께 갱신한다.

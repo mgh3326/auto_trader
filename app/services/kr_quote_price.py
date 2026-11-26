@@ -19,6 +19,16 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.services.brokers.kis.live_order_expiry import (
+    KR_PREMARKET_CLOSE_KST,
+    KR_PREMARKET_OPEN_KST,
+    KR_REGULAR_CLOSE_KST,
+    KR_REGULAR_OPEN_KST,
+    KRX_AFTER_CLOSE_KST,
+    KRX_AFTER_OPEN_KST,
+    NXT_CLOSE_KST,
+)
+
 KST = ZoneInfo("Asia/Seoul")
 
 PRICE_KIND_LAST_TRADE = "last_trade"
@@ -39,14 +49,12 @@ REASON_NO_TRADE_ONE_SIDED = "no_trade_and_one_sided_book"
 REASON_NO_TRADE_NO_BOOK = "no_trade_and_no_book"
 REASON_SESSION_UNKNOWN = "session_unknown"
 
-# Boundaries of the NXT windows. The start of NXT post matches the NXT overlay
-# gate (market_data_quotes._NXT_AFTER_OPEN). app/services/brokers/kis/
-# live_order_expiry.py uses 16:00 for the same window; the two disagree and
-# this module does not resolve it.
-NXT_PRE_START = dt.time(8, 0)
-NXT_PRE_END = dt.time(8, 50)
-NXT_POST_START = dt.time(15, 30)
-NXT_POST_END = dt.time(20, 0)
+# Session boundaries come from the same source as research-candle labels.
+NXT_PRE_START = KR_PREMARKET_OPEN_KST
+NXT_PRE_END = KR_PREMARKET_CLOSE_KST
+KRX_REGULAR_START = KR_REGULAR_OPEN_KST
+NXT_POST_START = KRX_AFTER_OPEN_KST
+NXT_POST_END = NXT_CLOSE_KST
 
 # A last trade counts only when it is at most this old, the same bound as the
 # orderbook freshness gate. An older trade is not a live price; the firm mid of a
@@ -59,6 +67,28 @@ KRX_AUCTION_WINDOWS: tuple[tuple[dt.time, dt.time], ...] = (
     (dt.time(8, 30), dt.time(9, 0)),
     (dt.time(15, 20), dt.time(15, 30)),
 )
+
+
+def quote_session_at(now: dt.datetime, venue: str) -> str | None:
+    """Return the quote session for a venue at an aware instant, or ``None``.
+
+    The caller establishes that the KST date is a trading session. These time
+    windows intentionally share their boundaries with research minute labels.
+    """
+    if not _is_aware(now):
+        return None
+    local = now.astimezone(KST).time().replace(tzinfo=None)
+    if venue == "krx":
+        if KR_REGULAR_OPEN_KST <= local < KR_REGULAR_CLOSE_KST:
+            return PRICE_SESSION_REGULAR
+        if KRX_AFTER_OPEN_KST <= local < KRX_AFTER_CLOSE_KST:
+            return PRICE_SESSION_KRX_AFTER
+    elif venue == "nxt":
+        if NXT_PRE_START <= local < NXT_PRE_END:
+            return PRICE_SESSION_NXT_PRE
+        if NXT_POST_START <= local < NXT_POST_END:
+            return PRICE_SESSION_NXT_POST
+    return None
 
 
 @dataclass(frozen=True, slots=True)
