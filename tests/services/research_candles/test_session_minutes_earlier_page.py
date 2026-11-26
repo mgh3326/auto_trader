@@ -60,7 +60,9 @@ class Writer:
     def __init__(self):
         self.bars: list[sc.MinuteBar] = []
 
-    async def insert(self, bars, *, batch_id, retrieved_at):
+    async def insert(
+        self, bars, *, batch_id, retrieved_at, auction_observed_before=None
+    ):
         self.bars.extend(bars)
         return len(bars), 0
 
