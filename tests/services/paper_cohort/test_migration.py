@@ -311,6 +311,14 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # hk 6503 KR trading flags table is later than the boundary; create_all
             # built it, so drop it or the migration collides with it.
             await connection.execute(text("DROP TABLE kr_symbol_trading_flags"))
+            # hk 6786 KR market-wide daily tables are later than the boundary and
+            # in Base.metadata; drop them so the migration creates them.
+            for table in (
+                "kr_market_breadth",
+                "kr_market_investor_net",
+                "kr_market_deposit_credit",
+            ):
+                await connection.execute(text(f"DROP TABLE public.{table}"))
             await connection.execute(
                 text("DROP TABLE review.order_proposal_approval_events")
             )

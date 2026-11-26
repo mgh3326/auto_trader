@@ -118,6 +118,10 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.daily_plan_heads",
     # hk 6503 KR trading flags (public schema, not review.*) is later than the parent.
     "kr_symbol_trading_flags",
+    # hk 6786 KR market-wide daily tables (public schema).
+    "kr_market_breadth",
+    "kr_market_investor_net",
+    "kr_market_deposit_credit",
     "review.kis_us_inference_expiry_events",
     "review.account_external_flows",
     "review.account_value_snapshots",
