@@ -24,7 +24,7 @@ FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "fixtures"
     / "krx_official_daily"
-    / "stk_bydd_trd_spec_derived.json"
+    / "stk_bydd_trd_captured_20261125.json"
 )
 
 
@@ -35,7 +35,7 @@ def _unique_session() -> date:
 def _rows(session_date: date, symbol_a: str, symbol_b: str) -> list[dict]:
     payload = json.loads(FIXTURE.read_text())
     stamped = json.loads(
-        json.dumps(payload).replace("20261126", session_date.strftime("%Y%m%d"))
+        json.dumps(payload).replace("20261125", session_date.strftime("%Y%m%d"))
     )
     stamped["OutBlock_1"][0]["ISU_CD"] = symbol_a
     stamped["OutBlock_1"][1]["ISU_CD"] = symbol_b

@@ -329,6 +329,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "kr_market_breadth",
                 "kr_market_investor_net",
                 "kr_market_deposit_credit",
+                "krx_official_daily",
             )
             for table in kr_market_daily_tables:
                 for suffix in ("insert_only", "no_truncate"):

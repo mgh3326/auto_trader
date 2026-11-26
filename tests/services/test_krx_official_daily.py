@@ -43,7 +43,7 @@ from app.services.krx_official_daily.store import insert_official_daily
 pytestmark = pytest.mark.unit
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "krx_official_daily"
-SESSION = date(2026, 11, 26)
+SESSION = date(2026, 11, 25)
 SENTINEL = "SENTINEL-KEY-do-not-leak-0001"
 
 
@@ -90,36 +90,61 @@ def respond(
 # ---- parsing -------------------------------------------------------------
 
 
-def test_fixture_parse_keeps_exact_decimals_and_nulls_carry_reasons() -> None:
+def test_captured_kospi_rows_keep_exact_decimals_and_reported_zeros() -> None:
     parsed = parse_daily_payload(
-        fixture("stk_bydd_trd_spec_derived.json"), market="kospi", session_date=SESSION
+        fixture("stk_bydd_trd_captured_20261125.json"),
+        market="kospi",
+        session_date=SESSION,
     )
-    good, dashes = parsed.rows
-    assert str(good["close_price"]) == "80000"
-    assert str(good["volume"]) == "12345678"
-    assert str(good["trade_value"]) == "987654321000"
-    assert good["field_reasons"] == {}
-    assert good["full_day_zero_volume"] is False
+    traded, zero_day, _zero_day_2 = parsed.rows
+    assert traded["symbol"] == "005930"
+    assert str(traded["close_price"]) == "170700"
+    assert str(traded["volume"]) == "22046619"
+    assert str(traded["trade_value"]) == "3810252743750"
+    assert traded["field_reasons"] == {}
+    assert traded["full_day_zero_volume"] is False
 
-    assert dashes["symbol"] == "000080"
-    assert dashes["close_price"] is None
-    assert dashes["field_reasons"]["close_price"] == "empty"
-    assert dashes["field_reasons"]["market_cap"] == "empty"
-    assert dashes["volume"] == Decimal("0")
-    assert dashes["full_day_zero_volume"] is True
-    assert dashes["trade_value"] == Decimal("0")  # a real zero is not a missing value
-    assert str(dashes["listed_shares"]) == "1234"
+    # Captured zero-volume day: the exchange reports OHLC as 0 with a real close.
+    # The zero volume is evidence only; the 0 prices are stored as reported.
+    assert zero_day["symbol"] == "000300"
+    assert zero_day["full_day_zero_volume"] is True
+    assert zero_day["volume"] == Decimal("0")
+    assert zero_day["open_price"] == Decimal("0")
+    assert str(zero_day["close_price"]) == "4200"
+    assert zero_day["field_reasons"] == {}
     assert parsed.rejected == Counter()
 
 
-def test_kosdaq_fixture_parses_under_its_market() -> None:
+def test_captured_kosdaq_rows_parse_under_their_market() -> None:
     parsed = parse_daily_payload(
-        fixture("ksq_bydd_trd_spec_derived.json"), market="kosdaq", session_date=SESSION
+        fixture("ksq_bydd_trd_captured_20261125.json"),
+        market="kosdaq",
+        session_date=SESSION,
     )
-    (row,) = parsed.rows
-    assert row["market"] == "kosdaq"
-    assert str(row["close_price"]) == "250500"
-    assert str(row["volume"]) == "456789"
+    first = parsed.rows[0]
+    assert first["market"] == "kosdaq"
+    assert str(first["close_price"]) == "1075"
+    assert str(first["volume"]) == "65986"
+    assert first["full_day_zero_volume"] is False
+    assert parsed.rows[1]["full_day_zero_volume"] is True
+
+
+def test_dash_and_blank_fields_become_null_with_reason() -> None:
+    payload = {
+        "OutBlock_1": [
+            {
+                "BAS_DD": "20261125",
+                "ISU_CD": "005930",
+                "TDD_CLSPRC": "-",
+                "TDD_OPNPRC": "",
+                "ACC_TRDVOL": "7",
+                "MKTCAP": "1,000",
+            }
+        ]
+    }
+    (row,) = parse_daily_payload(payload, market="kospi", session_date=SESSION).rows
+    assert row["close_price"] is None and row["field_reasons"]["close_price"] == "empty"
+    assert row["open_price"] is None and row["field_reasons"]["open_price"] == "empty"
     assert row["full_day_zero_volume"] is False
 
 
@@ -150,7 +175,7 @@ def test_decimal_parser_is_exact_and_never_defaults_to_zero(
 
 def test_negative_volume_is_null_not_zero() -> None:
     payload = {
-        "OutBlock_1": [{"BAS_DD": "20261126", "ISU_CD": "005930", "ACC_TRDVOL": "-3"}]
+        "OutBlock_1": [{"BAS_DD": "20261125", "ISU_CD": "005930", "ACC_TRDVOL": "-3"}]
     }
     (row,) = parse_daily_payload(payload, market="kospi", session_date=SESSION).rows
     assert row["volume"] is None
@@ -162,13 +187,13 @@ def test_rows_for_another_day_bad_symbols_and_duplicates_are_counted_not_stored(
     None
 ):
     def row(**overrides: str) -> dict[str, str]:
-        base = {"BAS_DD": "20261126", "ISU_CD": "005930", "ACC_TRDVOL": "1"}
+        base = {"BAS_DD": "20261125", "ISU_CD": "005930", "ACC_TRDVOL": "1"}
         return {**base, **overrides}
 
     payload = {
         "OutBlock_1": [
             row(),
-            row(BAS_DD="20261125", ISU_CD="000660"),
+            row(BAS_DD="20261124", ISU_CD="000660"),
             row(ISU_CD="000660", BAS_DD=""),
             row(ISU_CD="KR7000660001"),
             row(ISU_CD="00593"),
@@ -251,7 +276,7 @@ async def test_request_carries_key_only_in_header_and_never_follows_redirects() 
     assert payload == {"OutBlock_1": []}
     assert http.constructed[0]["follow_redirects"] is False
     (request,) = http.requests
-    assert str(request.url) == f"{BASE_URL}sto/ksq_bydd_trd?basDd=20261126"
+    assert str(request.url) == f"{BASE_URL}sto/ksq_bydd_trd?basDd=20261125"
     assert request.headers["AUTH_KEY"] == SENTINEL
     assert SENTINEL not in str(request.url)
 
@@ -400,7 +425,7 @@ async def test_a_failed_market_writes_nothing_for_the_whole_run() -> None:
     session = FakeSession()
     api = FakeApi(
         {
-            "kospi": fixture("stk_bydd_trd_spec_derived.json"),
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
             "kosdaq": KrxServiceNotApprovedError(),
         }
     )
@@ -415,19 +440,38 @@ async def test_a_failed_market_writes_nothing_for_the_whole_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_empty_market_is_a_no_data_day_not_a_failure() -> None:
+async def test_an_empty_list_is_not_published_yet_and_writes_nothing() -> None:
+    session = FakeSession()
     api = FakeApi(
         {
-            "kospi": fixture("stk_bydd_trd_spec_derived.json"),
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
             "kosdaq": {"OutBlock_1": []},
+        }
+    )
+    result = await collect_official_daily(
+        session_date=SESSION, client=api, session=session
+    )
+    assert result["status"] == "not_published_yet"
+    assert result["error_code"] == "not_published_yet"
+    assert result["exit_code"] == 4
+    assert result["markets"]["kosdaq"]["status"] == "not_published_yet"
+    assert result["markets"]["kospi"]["status"] == "ok"
+    assert result["inserted"] is None
+    assert session.executed == [] and session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_an_all_published_run_is_ok_with_exit_zero() -> None:
+    api = FakeApi(
+        {
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
+            "kosdaq": fixture("ksq_bydd_trd_captured_20261125.json"),
         }
     )
     result = await collect_official_daily(session_date=SESSION, client=api)
     assert result["status"] == "ok"
     assert result["exit_code"] == 0
-    assert result["markets"]["kosdaq"] == {"status": "empty", "rows": 0, "rejected": {}}
-    assert result["markets"]["kospi"]["status"] == "ok"
-    assert len(result["rows"]) == 2  # dry-run (no session) lists the rows
+    assert result["markets"]["kospi"] == {"status": "ok", "rows": 3, "rejected": {}}
 
 
 @pytest.mark.asyncio
@@ -444,8 +488,8 @@ async def test_commit_inserts_once_with_our_clock_and_commits(monkeypatch) -> No
     received = datetime(2026, 11, 27, 8, 30, tzinfo=UTC)
     api = FakeApi(
         {
-            "kospi": fixture("stk_bydd_trd_spec_derived.json"),
-            "kosdaq": fixture("ksq_bydd_trd_spec_derived.json"),
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
+            "kosdaq": fixture("ksq_bydd_trd_captured_20261125.json"),
         }
     )
     result = await collect_official_daily(
@@ -453,8 +497,8 @@ async def test_commit_inserts_once_with_our_clock_and_commits(monkeypatch) -> No
     )
     assert api.calls == ["kospi", "kosdaq"]
     assert captured["first_received_at"] == received
-    assert len(captured["rows"]) == 3
-    assert result["inserted"] == 3
+    assert len(captured["rows"]) == 6
+    assert result["inserted"] == 6
     assert session.commits == 1
     assert result["first_received_at"] == received.isoformat()
 
@@ -467,14 +511,14 @@ async def test_dry_run_never_touches_the_writer(monkeypatch) -> None:
     monkeypatch.setattr(collector_module, "insert_official_daily", boom)
     api = FakeApi(
         {
-            "kospi": fixture("stk_bydd_trd_spec_derived.json"),
-            "kosdaq": {"OutBlock_1": []},
+            "kospi": fixture("stk_bydd_trd_captured_20261125.json"),
+            "kosdaq": fixture("ksq_bydd_trd_captured_20261125.json"),
         }
     )
     result = await collect_official_daily(session_date=SESSION, client=api)
     assert result["inserted"] is None
-    assert len(result["rows"]) == 2
-    assert result["rows"][0]["close_price"] == "80000"
+    assert len(result["rows"]) == 6
+    assert result["rows"][0]["close_price"] == "170700"
 
 
 @pytest.mark.parametrize(
@@ -546,7 +590,7 @@ async def test_reader_states_and_dates_the_zero_volume_fact() -> None:
         FakeReadSession(_stored()), symbol="000080", session_date=SESSION
     )
     assert zero["state"] == "full_day_zero_volume"
-    assert zero["session_date"] == "2026-11-26"
+    assert zero["session_date"] == "2026-11-25"
     assert zero["is_halt_confirmation"] is False
 
     traded = await read_zero_volume_fact(

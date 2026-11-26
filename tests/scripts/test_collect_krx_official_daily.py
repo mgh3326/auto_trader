@@ -24,7 +24,7 @@ FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "fixtures"
     / "krx_official_daily"
-    / "stk_bydd_trd_spec_derived.json"
+    / "stk_bydd_trd_captured_20261125.json"
 )
 
 
@@ -88,13 +88,13 @@ def test_dry_run_never_opens_a_database_session_and_never_prints_the_key(
 
     monkeypatch.setattr(db, "AsyncSessionLocal", refuse_session)
     monkeypatch.setenv(cli.KEY_ENV, SENTINEL)
-    assert _run(["--date", "2026-11-26"], monkeypatch) == 0
+    assert _run(["--date", "2026-11-25"], monkeypatch) == 0
     out, err = capsys.readouterr()
     assert FakeClient.constructed == [SENTINEL]
     payload = json.loads(out)
     assert payload["status"] == "ok"
     assert payload["inserted"] is None
-    assert payload["markets"]["kospi"]["rows"] == 2
+    assert payload["markets"]["kospi"]["rows"] == 3
     assert SENTINEL not in out and SENTINEL not in err
 
 
@@ -115,6 +115,43 @@ def test_typed_failures_map_to_distinct_exit_codes_without_the_key(
     out, err = capsys.readouterr()
     assert json.loads(out)["error_code"] == code
     assert SENTINEL not in out and SENTINEL not in err
+
+
+def test_an_unpublished_session_exits_4_and_writes_nothing(
+    monkeypatch, capsys, caplog
+) -> None:
+    import app.core.db as db
+
+    written: list[Any] = []
+
+    class RecordingSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, statement):
+            written.append(statement)
+
+        async def commit(self):
+            written.append("commit")
+
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: RecordingSession())
+    monkeypatch.setenv(cli.KEY_ENV, SENTINEL)
+
+    class EmptyClient(FakeClient):
+        async def fetch_daily(self, market: str, session_date: Any) -> Any:
+            return {"OutBlock_1": []}
+
+    monkeypatch.setattr(cli, "KrxOpenApiClient", EmptyClient)
+    assert _run(["--date", "2026-11-25", "--commit"], monkeypatch) == 4
+    out, err = capsys.readouterr()
+    payload = json.loads(out)
+    assert payload["status"] == "not_published_yet"
+    assert payload["inserted"] is None
+    assert written == []
+    assert SENTINEL not in out and SENTINEL not in err + caplog.text
 
 
 def test_commit_passes_one_session_to_the_collector(monkeypatch, capsys) -> None:

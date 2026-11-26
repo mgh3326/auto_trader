@@ -3,8 +3,9 @@
 
 Dry-run is the default and never opens a database session. ``--commit`` inserts
 new rows only; existing (symbol, session_date) rows are never overwritten.
-Exit codes: 0 ok (an empty market is a no-data day), 1 fetch/parse failure,
-2 missing or rejected auth key, 3 service not approved.
+Exit codes: 0 ok, 1 fetch/parse failure, 2 missing or rejected auth key,
+3 service not approved, 4 not published yet (HTTP 200 with an empty OutBlock_1;
+nothing is written and it is never read as zero trades).
 The key is read from ``KRX_OPENAPI_AUTH_KEY`` and is never printed.
 """
 
@@ -90,6 +91,9 @@ async def run(args: argparse.Namespace) -> int:
         logger.error("KRX official daily collection failed: %s", type(exc).__name__)
         return 1
     print(json.dumps(result, ensure_ascii=False, default=_json_default))
+    if result["status"] == "not_published_yet":
+        logger.warning("KRX official daily not published yet for %s", args.date)
+        return int(result["exit_code"])
     if result["status"] != "ok":
         logger.error("KRX official daily collection failed: %s", result["error_code"])
         return int(result["exit_code"])

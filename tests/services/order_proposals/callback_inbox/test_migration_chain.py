@@ -122,6 +122,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "public.kr_market_breadth",
     "public.kr_market_investor_net",
     "public.kr_market_deposit_credit",
+    # hk 6586 KRX official daily table is migration-owned and also later than the parent.
+    "public.krx_official_daily",
     "review.kis_us_inference_expiry_events",
     "review.account_external_flows",
     "review.account_value_snapshots",
@@ -325,6 +327,7 @@ async def scratch_database() -> AsyncIterator[str]:
                     "kr_market_breadth",
                     "kr_market_investor_net",
                     "kr_market_deposit_credit",
+                    "krx_official_daily",
                 ):
                     for suffix in ("insert_only", "no_truncate"):
                         await connection.execute(

@@ -58,13 +58,15 @@
 `scripts/collect_krx_official_daily.py --date YYYY-MM-DD [--market kospi|kosdaq] [--dry-run|--commit]`는 KRX Open API의 KOSPI(`sto/stk_bydd_trd`)와 KOSDAQ(`sto/ksq_bydd_trd`) 일별 매매 자료를 읽어 `public.krx_official_daily`에 저장하는 수동 수집기다. 기본은 드라이런이며 드라이런은 DB 세션을 열지 않는다. 🔴 읽기 전용이다. 주문·계좌·원장·승인 경로를 import하지 않는다(정적 테스트 `tests/services/test_krx_official_daily_static_guard.py`가 전이 import 폐쇄로 고정한다). 기존 `app/services/krx.py`(data.krx.co.kr 회원 로그인 스크레이퍼)는 바꾸지 않는다.
 
 - **출처와 시각**: 호스트는 `data-dbg.krx.co.kr` 하나뿐이고 https만 허용하며 리다이렉트는 따르지 않는다. 허용 여부는 소켓을 열기 전에 검사한다. 인증 키는 `AUTH_KEY` 헤더로만 보내고 `KRX_OPENAPI_AUTH_KEY` 환경 변수에서 읽는다. 키 값은 로그·출력·오류 문자열에 나가지 않는다. `session_date`는 응답 `BAS_DD`와 같아야 한다. `first_received_at`은 응답을 받은 뒤의 우리 시계다. 재실행은 기존 행을 바꾸지 않는다.
-- **응답 해석 [unverified]**: 성공 본문 `{"OutBlock_1": [...]}`와 필드명(`ISU_CD`, `TDD_CLSPRC`, `ACC_TRDVOL` 등)은 공개 명세에서 옮겼고 아직 라이브 성공 응답으로 확인하지 않았다(지금 키에는 서비스 승인이 없다). 승인 뒤 설계 세션의 첫 실호출이 이 픽스처를 대체한다. 픽스처는 `tests/fixtures/krx_official_daily/`에 있으며 명세 파생임을 표시한다. `symbol`은 `ISU_CD`가 6자리 단축코드일 때만 쓰며, 12자리 ISIN 등은 추측하지 않고 `symbol_not_short_code`로 거부한다.
+- **응답 해석**: 성공 본문 `{"OutBlock_1": [...]}`와 필드명(`ISU_CD`, `TDD_CLSPRC`, `ACC_TRDVOL` 등)은 2026-11-27 운영자가 승인된 키로 받은 실제 응답에서 확인했다(픽스처 `tests/fixtures/krx_official_daily/*_captured_20261125.json`은 실제 행을 줄인 것이다; 출처 `handoffkeep reference/2026-11-27/krx-openapi-real-fixture`). `ISU_CD`는 실제 응답에서 6자리 단축코드(예: 005930, 060310)다. 6자리가 아니면 `symbol_not_short_code`로 거부하고 추측하지 않는다. `session_date`는 응답 `BAS_DD`와 같아야 한다.
+- **아직 공개되지 않은 날**: HTTP 200에 `OutBlock_1`이 빈 배열이면 `not_published_yet`이다(예: 2026-11-27 06:40 KST에 basDd 20261126을 요청했을 때). 거래 없음이 아니다. 그 실행은 아무것도 쓰지 않고 종료 코드 4를 낸다. 시장 하나라도 빈 목록이면 실행 전체가 쓰지 않는다.
+- **0거래일 행은 정상 데이터다**: 2026-11-25에 KOSPI 935행 중 26행, KOSDAQ 1837행 중 87행이 `ACC_TRDVOL = 0`이었다. 그 행의 `TDD_OPNPRC`·`TDD_HGPRC`·`TDD_LWPRC`는 거래소가 보고한 0이고 `TDD_CLSPRC`는 전일 종가다. 0 거래량은 증거일 뿐 거래정지가 아니다.
 - **숫자와 NULL**: 쉼표를 제거한 정확한 `Decimal` 문자열만 쓴다. 필드가 없으면 `missing`, 빈 값·`-`이면 `empty`, 해석 불가이면 `unparsable`, 음수이면 `negative`로 NULL을 두고 `field_reasons`에 사유를 남긴다. 0으로 채우지 않는다. 행 수준 거부(`bas_dd_missing`·`bas_dd_mismatch`·`symbol_not_short_code`·`duplicate_symbol`)는 건수만 보고하고 저장하지 않는다.
 - **거래 없음 사실 (증거이지 거래정지 확인이 아니다)**: `full_day_zero_volume`은 `ACC_TRDVOL == 0`일 때 참이고, 거래량이 NULL이면 NULL이다. `read_zero_volume_fact(session, symbol=, session_date=)`는 상태(`full_day_zero_volume`·`traded`·`unknown`), 기준 날짜, 출처, 최초 수신 시각을 돌려주며 `is_halt_confirmation`은 항상 false다. 행이 없으면 `unknown`이다. `halted_suspect`(ROB-1236)의 판정, 스크리너, 일봉 동기화는 이 테이블을 읽지 않으며 바뀌지 않았다.
 - **쓰기 규율**: 유일한 writer는 `app/services/krx_official_daily/store.py`이고 `ON CONFLICT (symbol, session_date) DO NOTHING`만 쓴다. 테이블은 UPDATE·DELETE·TRUNCATE를 모든 역할에서 거부하는 트리거가 있다(하드룰 18: `at_app`에는 조건부 `SELECT, INSERT`). downgrade는 행이 하나라도 있으면 거부한다.
-- **종료 코드**: 0 = 성공(한 시장이 `empty`여도 성공이며 거래일이 아니거나 아직 공개되지 않은 날일 수 있다), 1 = 조회·해석 실패(네트워크·리다이렉트·형식 오류 포함), 2 = 키 없음 또는 `Unauthorized Key`(401), 3 = `Unauthorized API Call`(401, 키는 유효하나 서비스 미승인). 한 시장이라도 실패하면 그 실행은 아무것도 쓰지 않는다.
+- **종료 코드**: 0 = 성공, 1 = 조회·해석 실패(네트워크·리다이렉트·형식 오류 포함), 2 = 키 없음 또는 `Unauthorized Key`(401), 3 = `Unauthorized API Call`(401, 키는 유효하나 서비스 미승인), 4 = 아직 공개되지 않음(빈 `OutBlock_1`, 쓰기 없음). 한 시장이라도 실패하거나 빈 목록이면 그 실행은 아무것도 쓰지 않는다.
 - **DAG 사본**: `deploy/dagu/at-krx-official-daily/`는 화–토 08:30 KST에 전날 날짜로 수집하는 사본이며 등록하지 않는다. 화–토 실행은 월–금 세션을 각각 다음 날 아침에 덮는다. 등록은 승인된 설계 세션이 하고, 키는 운영자가 pi의 env 파일에 둔다. 저장소가 키를 만들거나 기록하지 않는다.
-- **범위 밖**: ETF·지수·파생 등 다른 KRX 서비스, 기본 정보, 과거 백필, 스케줄러 등록, `halted_suspect`·스크리너·일봉 동기화 변경.
+- **범위 밖**: 지수(`idx/*`)를 포함한 다른 KRX 서비스(ETF·파생·기본 정보 등 — 지수는 운영자가 승인했지만 이 PR 범위 밖), 과거 백필, 스케줄러 등록, `halted_suspect`·스크리너·일봉 동기화 변경.
 
 ### KR/US Category Normalization & Lazy Fill (ROB-512)
 
