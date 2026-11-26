@@ -232,6 +232,7 @@ tests/services/mandate/test_projection_db.py
 tests/services/mandate/test_store_db.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/market_events/test_kis_ksd_dividends.py
+tests/services/market_events/test_kis_ksd_events.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py
