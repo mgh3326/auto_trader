@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,7 @@ def _sample_report_dict(*, dedup_key: str = "abc-1") -> dict:
         "category": "기업분석",
         "analyst": "김분석",
         "published_at_text": "2026-05-07 09:00",
+        "published_date": None,
         "published_at": datetime(2026, 5, 7, 0, 0, tzinfo=UTC),
         "summary_text": "단기 약세, 장기 강세",
         "detail_url": "https://example.com/d/1",
@@ -40,6 +42,41 @@ def _sample_report_dict(*, dedup_key: str = "abc-1") -> dict:
         "attribution_full_text_exported": False,
         "attribution_pdf_body_exported": False,
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reingest_preserves_first_receipt_and_marks_only_changed_content():
+    from types import SimpleNamespace
+
+    from app.services.research_reports.repository import ResearchReportsRepository
+
+    first_received = datetime(2026, 5, 7, 1, tzinfo=UTC)
+    prior_revision = datetime(2026, 5, 7, 2, tzinfo=UTC)
+    row = SimpleNamespace(
+        **_sample_report_dict(),
+        first_received_at=first_received,
+        revised_at=prior_revision,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return row
+
+    db = SimpleNamespace(execute=AsyncMock(return_value=Result()), flush=AsyncMock())
+    repo = ResearchReportsRepository(db)
+    unchanged = _sample_report_dict()
+
+    assert await repo.upsert_report(unchanged) is False
+    assert row.first_received_at == first_received
+    assert row.revised_at == prior_revision
+
+    changed = _sample_report_dict()
+    changed["title"] = "Revised title"
+    assert await repo.upsert_report(changed) is False
+    assert row.first_received_at == first_received
+    assert row.title == "Revised title"
+    assert row.revised_at > prior_revision
 
 
 @pytest.mark.integration

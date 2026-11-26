@@ -9,7 +9,9 @@ No ORM models or DB sessions are imported here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.timezone import now_kst_naive, to_kst_naive
 
@@ -24,6 +26,47 @@ _URL_METADATA_PREFIXES = (
     "url:",
     "fingerprint:",
 )
+_SOURCE_DOCUMENT_ID_KEYS = {
+    "rcept_no",
+    "document_id",
+    "document_ids",
+    "filing_id",
+    "ir_id",
+    "krx_id",
+    "kis_id",
+    "dart_id",
+    "source_document_id",
+    "source_document_ids",
+}
+
+
+def extract_source_document_ids(raw: Any) -> dict[str, list[str]] | None:
+    """Keep cited public-document identifiers, grouped by their source field."""
+    if not isinstance(raw, dict):
+        return None
+    found: dict[str, list[str]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized_key = str(key).strip().lower()
+                if normalized_key in _SOURCE_DOCUMENT_ID_KEYS:
+                    values = item if isinstance(item, list) else [item]
+                    ids = [
+                        str(entry).strip()
+                        for entry in values
+                        if entry not in (None, "")
+                    ]
+                    if ids:
+                        found[normalized_key] = list(dict.fromkeys(ids))
+                elif isinstance(item, (dict, list)):
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(raw)
+    return found or None
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +75,52 @@ _URL_METADATA_PREFIXES = (
 
 
 def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
+    published = article_data.published_at
+    raw = getattr(article_data, "raw", None)
+    source_time = None
+    if isinstance(raw, dict):
+        for key in ("published_at_raw", "datetime_raw", "published_time_raw"):
+            if isinstance(raw.get(key), str):
+                source_time = raw[key]
+                break
+        if source_time is None and isinstance(raw.get("published_at"), str):
+            source_time = raw["published_at"]
+    published_raw = getattr(article_data, "published_at_raw", None) or source_time
+    published_offset = getattr(article_data, "published_offset", None)
+    if published_offset is None and published is not None:
+        raw_offset = published.strftime("%z")
+        if raw_offset:
+            published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
+    if published_offset is None and source_time:
+        try:
+            raw_datetime = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            raw_offset = raw_datetime.strftime("%z")
+            if raw_offset:
+                published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
+    raw_precision = getattr(article_data, "published_precision", None)
+    if raw_precision is None and source_time:
+        raw_precision = "date" if len(source_time.strip()) == 10 else "second"
+    if published is not None and published.utcoffset() is None:
+        if (
+            isinstance(published_offset, str)
+            and len(published_offset) == 6
+            and published_offset[0] in "+-"
+        ):
+            sign = 1 if published_offset[0] == "+" else -1
+            try:
+                hours, minutes = map(int, published_offset[1:].split(":"))
+                source_tz = timezone(sign * timedelta(hours=hours, minutes=minutes))
+            except ValueError:
+                source_tz = None
+            if source_tz is not None:
+                published = published.replace(tzinfo=source_tz)
+        if published.utcoffset() is None:
+            published = published.replace(
+                tzinfo=ZoneInfo("Asia/Seoul") if article_data.market == "kr" else UTC
+            )
     return {
         "url": article_data.url.strip(),
         "title": article_data.title.strip(),
@@ -44,6 +133,14 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
         "article_published_at": to_kst_naive(article_data.published_at)
         if article_data.published_at
         else None,
+        "published_at_raw": published_raw,
+        "published_at": published,
+        "published_offset": published_offset,
+        "published_precision": raw_precision
+        or ("second" if published is not None else None),
+        "provider_article_id": getattr(article_data, "provider_article_id", None),
+        "source_document_ids": extract_source_document_ids(raw),
+        "first_received_at": datetime.now(UTC),
         "market": article_data.market,
         "feed_source": article_data.feed_source,
         "keywords": article_data.keywords,
@@ -249,6 +346,14 @@ def _related_symbol_row_from_candidate(
     )
     if symbol is None:
         return None
+    relation_type = candidate.get("relation_type", candidate.get("relation"))
+    if relation_type is None:
+        # Candidate arrays are provider-supplied assertions, not lexical
+        # matches. Preserve that distinction in evidence while keeping the
+        # external judgment state pending.
+        relation_type = "direct"
+    if relation_type not in {"direct", "sector", "market"}:
+        return None
     display_name = _candidate_field(
         candidate,
         "display_name",
@@ -275,6 +380,16 @@ def _related_symbol_row_from_candidate(
             _candidate_field(candidate, "rank", "order"), ordinal
         ),
         "raw": dict(candidate),
+        "relation_type": relation_type,
+        "relation_evidence": {
+            "kind": "provider_candidate",
+            "judgment_state": "pending",
+            "source": str(candidate.get("source") or "candidate_metadata"),
+            "matched_term": str(matched_term).strip()[:120]
+            if matched_term is not None
+            else None,
+            "candidate": dict(candidate),
+        },
         "created_at": now_kst_naive(),
     }
 
@@ -303,6 +418,11 @@ def _kr_universe_related_symbol_row(
         "score": None,
         "rank": None,
         "raw": {"matcher": "kr_symbol_universe_name"},
+        "relation_type": "direct",
+        "relation_evidence": {
+            "kind": "title_or_summary_name_match",
+            "matched_term": matched_term.strip()[:120],
+        },
         "created_at": now_kst_naive(),
     }
 

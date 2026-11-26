@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import cast, func, select
+from sqlalchemy import case, cast, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -312,15 +312,58 @@ async def ingest_news_ingestor_bulk(
             _article_values_from_ingestor_payload(article_data)
             for article_data in request.articles
         ]
-        article_stmt = (
-            pg_insert(NewsArticle)
-            .values(article_values)
-            .on_conflict_do_nothing(index_elements=[NewsArticle.url])
-            .returning(NewsArticle.id, NewsArticle.url)
+        article_insert = pg_insert(NewsArticle).values(article_values)
+        excluded = article_insert.excluded
+        article_content_fields = (
+            "title",
+            "source",
+            "author",
+            "article_content",
+            "summary",
+            "stock_symbol",
+            "stock_name",
+            "article_published_at",
+            "market",
+            "feed_source",
+            "keywords",
+            "published_at_raw",
+            "published_offset",
+            "published_at",
+            "published_precision",
+            "published_at_reason",
+            "provider_article_id",
+            "source_document_ids",
+        )
+        changed_fields = [
+            getattr(NewsArticle, name).is_distinct_from(getattr(excluded, name))
+            for name in article_content_fields
+        ]
+        article_stmt = article_insert.on_conflict_do_update(
+            index_elements=[NewsArticle.url],
+            set_={
+                **{name: getattr(excluded, name) for name in article_content_fields},
+                "first_received_at": func.coalesce(
+                    NewsArticle.first_received_at, excluded.first_received_at
+                ),
+                "revised_at": case(
+                    (or_(*changed_fields), func.now()), else_=NewsArticle.revised_at
+                ),
+                "updated_at": case(
+                    (or_(*changed_fields), func.now()), else_=NewsArticle.updated_at
+                ),
+            },
+            where=or_(*changed_fields, NewsArticle.first_received_at.is_(None)),
+        ).returning(
+            NewsArticle.id,
+            NewsArticle.url,
+            literal_column("xmax = 0").label("inserted"),
         )
         article_result = await db.execute(article_stmt)
-        inserted_rows = article_result.all()
-        inserted_url_to_id = {url: article_id for article_id, url in inserted_rows}
+        affected_rows = article_result.all()
+        article_url_to_id = {url: article_id for article_id, url, _ in affected_rows}
+        inserted_url_to_id = {
+            url: article_id for article_id, url, inserted in affected_rows if inserted
+        }
         inserted_urls = set(inserted_url_to_id)
 
         consumed_inserted_urls: set[str] = set()
@@ -335,7 +378,7 @@ async def ingest_news_ingestor_bulk(
         related_symbol_values: list[dict[str, Any]] = []
         related_symbols_by_article: dict[int, set[str]] = {}
         for article_data in request.articles:
-            article_id = inserted_url_to_id.get(article_data.url.strip())
+            article_id = article_url_to_id.get(article_data.url.strip())
             if article_id is None:
                 continue
             rows = _related_symbol_values_from_ingestor_payload(
@@ -370,7 +413,7 @@ async def ingest_news_ingestor_bulk(
                         != "kr"
                     ):
                         continue
-                    article_id = inserted_url_to_id.get(article_data.url.strip())
+                    article_id = article_url_to_id.get(article_data.url.strip())
                     if article_id is None:
                         continue
                     already = related_symbols_by_article.setdefault(article_id, set())

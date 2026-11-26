@@ -423,6 +423,11 @@ class TestArticleValuesFromIngestorPayload:
             stock_symbol="005930",
             stock_name="삼성전자",
             published_at=datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC),
+            published_at_raw="2026-05-09T10:00:00+00:00",
+            published_offset="+00:00",
+            published_precision="second",
+            provider_article_id="provider-1",
+            raw={"rcept_no": "20260509000001", "ir_id": ["ir-2", "ir-3"]},
             market="kr",
             feed_source="browser_naver_mainnews",
             keywords=["fingerprint:fp-1"],
@@ -436,6 +441,15 @@ class TestArticleValuesFromIngestorPayload:
         assert values["feed_source"] == "browser_naver_mainnews"
         assert values["article_content"] == "body text"
         assert values["source"] == "연합뉴스"
+        assert values["published_at_raw"] == "2026-05-09T10:00:00+00:00"
+        assert values["published_offset"] == "+00:00"
+        assert values["published_precision"] == "second"
+        assert values["provider_article_id"] == "provider-1"
+        assert values["source_document_ids"] == {
+            "rcept_no": ["20260509000001"],
+            "ir_id": ["ir-2", "ir-3"],
+        }
+        assert values["first_received_at"].tzinfo is UTC
 
     def test_none_published_at_produces_none(self):
         from app.services.news_payload_normalizer import (

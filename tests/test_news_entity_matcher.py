@@ -77,14 +77,25 @@ def test_us_word_boundary_no_false_positive_for_amd_in_amid():
 
 
 @pytest.mark.unit
-def test_match_for_article_uses_title_summary_keywords():
+def test_match_for_article_uses_title_summary():
     matches = match_symbols_for_article(
-        title="실적발표",
+        title="삼성전자 실적발표",
         summary=None,
-        keywords=["삼성전자", "반도체"],
+        keywords=["네이버", "플랫폼"],
         market="kr",
     )
     assert any(m.symbol == "005930" for m in matches)
+
+
+@pytest.mark.unit
+def test_match_for_article_does_not_attach_keyword_only_symbol():
+    matches = match_symbols_for_article(
+        title="시장 동향과 반도체 업황",
+        summary="주요 업종 흐름을 정리한 자료",
+        keywords=["네이버", "035420"],
+        market="kr",
+    )
+    assert not any(m.symbol == "035420" for m in matches)
 
 
 @pytest.mark.unit

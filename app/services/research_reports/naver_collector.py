@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import uuid4
@@ -67,6 +67,7 @@ def map_report(
     if date_text:
         # Validate the calendar date while preserving date-only precision.
         datetime.strptime(date_text, "%Y-%m-%d")
+    published_date = date.fromisoformat(date_text) if date_text else None
 
     target_value = detail.get("goalPrice")
     if target_value in (None, ""):
@@ -125,6 +126,7 @@ def map_report(
         "category": category,
         "analyst": broker,
         "published_at_text": date_text,
+        "published_date": published_date,
         "published_at": None,
         "summary_text": summary,
         "detail": {"title": opinion, "subtitle": note, "excerpt": excerpt},

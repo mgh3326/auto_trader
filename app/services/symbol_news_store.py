@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,9 @@ class FeedArticleInput:
     published_at_raw: str | None = None
     published_precision: str | None = None
     published_at_reason: str | None = None
+    published_offset: str | None = None
+    provider_article_id: str | None = None
+    source_document_ids: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,12 @@ class StoredSymbolNews:
     # insert-only for the URL-conflict path, so it preserves the first
     # trustworthy fetch instant instead of the time of a later failed retry.
     fetched_at: datetime | None = None
+    published_at_raw: str | None = None
+    published_offset: str | None = None
+    first_received_at: datetime | None = None
+    revised_at: datetime | None = None
+    provider_article_id: str | None = None
+    source_document_ids: dict[str, list[str]] | None = None
 
 
 def _utcnow() -> datetime:
@@ -93,7 +102,7 @@ async def upsert_feed_articles(
     *,
     feed_source: str,
 ) -> int:
-    """Set-difference upsert: new urls insert, known urls no-op (idempotent).
+    """Upsert provider articles and keep first receipt immutable.
 
     Returns the number of *newly created* pending links (ROB-506 enqueue
     trigger). 0 when every (article, symbol) pair already existed.
@@ -155,17 +164,48 @@ async def _upsert_feed_articles(
                 NewsArticle.published_at_raw,
                 NewsArticle.published_at,
                 NewsArticle.published_precision,
+                NewsArticle.published_offset,
+                NewsArticle.provider_article_id,
+                NewsArticle.source_document_ids,
+                NewsArticle.title,
+                NewsArticle.source,
+                NewsArticle.summary,
             ).where(or_(*lookup_conditions))
         )
-        existing_by_key: dict[
-            str, tuple[int, str | None, datetime | None, str | None]
-        ] = {}
-        for article_id, url, raw, published_at, precision in prior_rows.all():
+        existing_by_key: dict[str, dict[str, Any]] = {}
+        for row in prior_rows.all():
+            (
+                article_id,
+                url,
+                raw,
+                published_at,
+                precision,
+                offset,
+                provider_id,
+                source_document_ids,
+                title,
+                source,
+                summary,
+            ) = row
             try:
                 key = canonicalize_naver_news_url(url)
             except ValueError:
                 continue
-            existing_by_key.setdefault(key, (article_id, raw, published_at, precision))
+            existing_by_key.setdefault(
+                key,
+                {
+                    "id": article_id,
+                    "published_at_raw": raw,
+                    "published_at": published_at,
+                    "published_precision": precision,
+                    "published_offset": offset,
+                    "provider_article_id": provider_id,
+                    "source_document_ids": source_document_ids,
+                    "title": title,
+                    "source": source,
+                    "summary": summary,
+                },
+            )
         # A canonical URL can already be stored under a provider URL from an
         # older collector. Enrich that row in place without changing its URL
         # key or first receipt time.
@@ -173,9 +213,10 @@ async def _upsert_feed_articles(
             existing = existing_by_key.get(key)
             if existing is None:
                 continue
-            article_id, existing_raw, existing_published_at, existing_precision = (
-                existing
-            )
+            article_id = existing["id"]
+            existing_raw = existing["published_at_raw"]
+            existing_published_at = existing["published_at"]
+            existing_precision = existing["published_precision"]
             incoming_published_at = item.published_at
             if (
                 incoming_published_at is not None
@@ -198,6 +239,8 @@ async def _upsert_feed_articles(
                     values["published_precision"] = item.published_precision
                 if item.published_at_reason is not None:
                     values["published_at_reason"] = item.published_at_reason
+                if item.published_offset is not None:
+                    values["published_offset"] = item.published_offset
             else:
                 if existing_raw is None and item.published_at_raw is not None:
                     values["published_at_raw"] = item.published_at_raw
@@ -205,11 +248,29 @@ async def _upsert_feed_articles(
                     values["published_at"] = incoming_published_at
                 if existing_precision is None and item.published_precision is not None:
                     values["published_precision"] = item.published_precision
-            if values:
+                if item.published_offset is not None:
+                    values["published_offset"] = item.published_offset
+            if item.provider_article_id is not None:
+                values["provider_article_id"] = item.provider_article_id
+            if item.source_document_ids:
+                values["source_document_ids"] = item.source_document_ids
+            changed_values = {
+                name: value
+                for name, value in values.items()
+                if value != existing.get(name)
+            }
+            if item.title != existing["title"]:
+                changed_values["title"] = item.title
+            if item.source != existing["source"]:
+                changed_values["source"] = item.source
+            if item.summary != existing["summary"]:
+                changed_values["summary"] = item.summary
+            if changed_values:
+                changed_values["revised_at"] = datetime.now(tz=UTC)
                 await db.execute(
                     update(NewsArticle)
                     .where(NewsArticle.id == article_id)
-                    .values(**values)
+                    .values(**changed_values)
                 )
         items = [
             item
@@ -250,9 +311,12 @@ async def _upsert_feed_articles(
             if item.published_at
             else None,
             "published_at_raw": item.published_at_raw,
+            "published_offset": item.published_offset,
             "published_at": published_at,
             "published_precision": item.published_precision,
             "published_at_reason": item.published_at_reason,
+            "provider_article_id": item.provider_article_id,
+            "source_document_ids": item.source_document_ids,
             "first_received_at": now_aware,
             "is_analyzed": False,
             "scraped_at": now,
@@ -263,13 +327,43 @@ async def _upsert_feed_articles(
     ]
     new_articles = 0
     if article_values:
-        inserted_rows = await db.execute(
-            pg_insert(NewsArticle)
-            .values(article_values)
-            .on_conflict_do_nothing(index_elements=[NewsArticle.url])
-            .returning(NewsArticle.id)
+        statement = pg_insert(NewsArticle).values(article_values)
+        excluded = statement.excluded
+        content_fields = (
+            "title",
+            "source",
+            "summary",
+            "article_published_at",
+            "published_at_raw",
+            "published_offset",
+            "published_at",
+            "published_precision",
+            "published_at_reason",
+            "provider_article_id",
+            "source_document_ids",
         )
-        new_articles = len(inserted_rows.all())
+        changed = [
+            getattr(NewsArticle, name).is_distinct_from(getattr(excluded, name))
+            for name in content_fields
+        ]
+        update_values = {name: getattr(excluded, name) for name in content_fields}
+        update_values.update(
+            first_received_at=func.coalesce(
+                NewsArticle.first_received_at, excluded.first_received_at
+            ),
+            revised_at=case((or_(*changed), now_aware), else_=NewsArticle.revised_at),
+            updated_at=case((or_(*changed), now), else_=NewsArticle.updated_at),
+        )
+        inserted_rows = await db.execute(
+            statement.on_conflict_do_update(
+                index_elements=[NewsArticle.url],
+                set_=update_values,
+                where=or_(*changed, NewsArticle.first_received_at.is_(None)),
+            ).returning(NewsArticle.id, literal_column("xmax = 0").label("inserted"))
+        )
+        new_articles = sum(
+            1 for _article_id, inserted in inserted_rows.all() if inserted
+        )
     if canonical_dedupe and market == "kr":
         candidate_urls.update(item.url for item in items)
         lookup_conditions = [NewsArticle.url.in_(candidate_urls)]
@@ -389,6 +483,21 @@ async def upsert_related_symbols(
     """
     if not rows:
         return 0
+    for row in rows:
+        relation_type = row.get("relation_type")
+        if relation_type is None:
+            relation_type = "direct"
+            row["relation_type"] = relation_type
+        if relation_type not in {"direct", "sector", "market"}:
+            raise ValueError("invalid_news_symbol_relation")
+        evidence = row.get("relation_evidence")
+        if not isinstance(evidence, dict) or not evidence:
+            row["relation_evidence"] = {
+                "kind": "legacy_candidate",
+                "source": row.get("source"),
+                "matched_term": row.get("matched_term"),
+                "candidate": row.get("raw") or {},
+            }
     result = await db.execute(
         pg_insert(NewsArticleRelatedSymbol)
         .values(rows)
@@ -439,7 +548,9 @@ async def list_pending(
             "title": article.title,
             "source": article.source,
             "published_at": (
-                article.article_published_at.isoformat()
+                article.published_at.isoformat()
+                if article.published_at
+                else article.article_published_at.isoformat()
                 if article.article_published_at
                 else None
             ),
@@ -522,10 +633,21 @@ async def load_symbol_news(
             url=article.url,
             title=article.title,
             source=article.source,
-            published_at=article.article_published_at,
+            published_at=article.published_at
+            or (
+                article.article_published_at.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+                if article.article_published_at
+                else None
+            ),
             relevance=_relevance_block(link),
             summary=article.summary,
             fetched_at=article.scraped_at,
+            published_at_raw=article.published_at_raw,
+            published_offset=article.published_offset,
+            first_received_at=article.first_received_at,
+            revised_at=article.revised_at,
+            provider_article_id=article.provider_article_id,
+            source_document_ids=article.source_document_ids,
         )
         for article, link in rows.all()
     ]

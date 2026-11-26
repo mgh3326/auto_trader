@@ -35,6 +35,7 @@ def _payload_to_row(
         "category": report.category,
         "analyst": report.analyst,
         "published_at_text": report.published_at_text,
+        "published_date": report.published_date,
         "published_at": report.published_at,
         "summary_text": report.summary_text,
         "detail_url": detail.url if detail else None,

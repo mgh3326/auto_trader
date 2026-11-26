@@ -16,6 +16,12 @@ class NewsArticleCreate(BaseModel):
     stock_symbol: str | None = Field(None, max_length=20, description="관련 종목 코드")
     stock_name: str | None = Field(None, max_length=100, description="관련 종목명")
     published_at: datetime | None = Field(None, description="기사 발행일시")
+    published_at_raw: str | None = Field(None, description="제공자 발행 시각 원문")
+    published_offset: str | None = Field(
+        None, description="제공자 발행 시각 UTC 오프셋"
+    )
+    published_precision: str | None = Field(None, description="제공자 발행 시각 정밀도")
+    provider_article_id: str | None = Field(None, description="제공자 원문 기사 ID")
     market: str = Field("kr", min_length=1, max_length=20, description="시장 구분")
     feed_source: str | None = Field(
         None,

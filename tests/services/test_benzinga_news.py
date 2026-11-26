@@ -66,6 +66,11 @@ def test_normalize_record_preserves_raw_and_uses_injected_clock() -> None:
     assert record["updated_raw"] == "Tue, 25 Nov 2025 10:15:00 -0400"
     assert record["created_basis"] == "provider_rfc2822"
     assert record["created_utc"] == "2025-11-25T13:30:00+00:00"
+    assert record["published_at_raw"] == record["created_raw"]
+    assert record["published_at"] == "2025-11-25T13:30:00+00:00"
+    assert record["published_offset"] == "-04:00"
+    assert record["published_precision"] == "second"
+    assert record["revised_at"] is None
     assert record["updated_utc"] == "2025-11-25T14:15:00+00:00"
     assert record["first_received_at"] == "2025-11-25T14:00:00+00:00"
     assert record["symbols"] == ["AAPL", "NVDA"]

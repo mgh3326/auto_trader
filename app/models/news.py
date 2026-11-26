@@ -96,6 +96,9 @@ class NewsArticle(Base):
     published_at_raw: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="제공자 발행 시각 원문"
     )
+    published_offset: Mapped[str | None] = mapped_column(
+        String(6), nullable=True, comment="제공자 발행 시각의 원래 UTC 오프셋"
+    )
     published_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True, comment="시간대가 보존된 발행 시각"
     )
@@ -107,6 +110,15 @@ class NewsArticle(Base):
     )
     first_received_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True, comment="최초 수신 시각"
+    )
+    revised_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True, comment="내용 변경을 수신한 UTC 시각"
+    )
+    provider_article_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="제공자 원문 기사 ID"
+    )
+    source_document_ids: Mapped[dict | list | None] = mapped_column(
+        JSONB, nullable=True, comment="기사에서 인용한 원문 공시·IR·거래소 문서 ID"
     )
     scraped_at: Mapped[datetime] = mapped_column(
         nullable=False, comment="스크래핑 수집일시"
@@ -146,6 +158,14 @@ class NewsArticleRelatedSymbol(Base):
             "market IN ('kr', 'us', 'crypto')",
             name="market",
         ),
+        CheckConstraint(
+            "relation_type IS NULL OR relation_type IN ('direct', 'sector', 'market')",
+            name="relation_type",
+        ),
+        CheckConstraint(
+            "relation_evidence IS NOT NULL AND relation_evidence <> '{}'::jsonb",
+            name="relation_evidence",
+        ),
         UniqueConstraint(
             "article_id",
             "market",
@@ -177,6 +197,8 @@ class NewsArticleRelatedSymbol(Base):
     score: Mapped[float | None] = mapped_column(nullable=True)
     rank: Mapped[int | None] = mapped_column(nullable=True)
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    relation_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    relation_evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False)
 
     article: Mapped["NewsArticle"] = relationship(back_populates="related_symbols")

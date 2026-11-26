@@ -8,7 +8,7 @@ Hard guardrails:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -110,6 +110,7 @@ class ResearchReportPayloadV1(BaseModel):
     category: str | None = None
     analyst: str | None = None
     published_at_text: str | None = None
+    published_date: date | None = None
     published_at: datetime | None = None
     summary_text: str | None = None
 
@@ -187,6 +188,7 @@ class ResearchReportCitation(BaseModel):
     title: str | None = None
     analyst: str | None = None
     published_at_text: str | None = None
+    published_date: date | None = None
     published_at: datetime | None = None
     category: str | None = None
     detail_url: str | None = None

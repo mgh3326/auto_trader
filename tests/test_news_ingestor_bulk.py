@@ -347,6 +347,10 @@ def test_news_article_related_symbol_model_contract():
     assert "uq_news_article_related_symbols_article_market_symbol_source" in constraints
     assert "ix_news_article_related_symbols_article_rank" in indexes
     assert "ix_news_article_related_symbols_market_symbol_article" in indexes
+    assert "ck_news_article_related_symbols_relation_type" in constraints
+    assert "ck_news_article_related_symbols_relation_evidence" in constraints
+    assert not NewsArticleRelatedSymbol.relation_type.property.columns[0].nullable
+    assert not NewsArticleRelatedSymbol.relation_evidence.property.columns[0].nullable
 
 
 def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candidates():
@@ -390,6 +394,28 @@ def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candida
     assert rows[1]["matched_term"] == "삼전"
     assert rows[1]["score"] == pytest.approx(0.91)
     assert rows[1]["source"] == "candidate_metadata"
+    assert rows[1]["relation_type"] == "direct"
+    assert rows[1]["relation_evidence"]["kind"] == "provider_candidate"
+    assert rows[1]["relation_evidence"]["judgment_state"] == "pending"
+
+
+def test_related_symbol_values_from_ingestor_payload_rejects_open_relation_values():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {
+        "stock_candidates": [
+            {"symbol": "005930", "market": "kr", "relation_type": "competitor"}
+        ]
+    }
+    request = NewsBulkIngestRequest.model_validate(payload)
+    rows = _related_symbol_values_from_ingestor_payload(
+        article_id=1, article_data=request.articles[0]
+    )
+    assert rows == []
 
 
 def test_related_symbol_values_from_ingestor_payload_drops_invalid_and_url_metadata():

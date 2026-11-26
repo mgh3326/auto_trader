@@ -1119,10 +1119,30 @@ def summarize_saveticker(
                 continue
             merged_symbols = _record_symbols(prior) | _record_symbols(record)
             prior_seen, current_seen = _first_received(prior), _first_received(record)
+            content_fields = (
+                "title",
+                "teaser",
+                "url",
+                "created_raw",
+                "created_utc",
+                "updated_raw",
+                "updated_utc",
+                "published_at_raw",
+                "published_at",
+            )
+            changed = any(
+                prior.get(name) != record.get(name) for name in content_fields
+            )
+            if changed:
+                prior["revised_at"] = (
+                    current_seen.astimezone(UTC).isoformat() if current_seen else None
+                )
             if current_seen is not None and (
                 prior_seen is None or current_seen < prior_seen
             ):
+                revised_at = prior.get("revised_at")
                 prior = {**record, "symbols": sorted(merged_symbols)}
+                prior["revised_at"] = revised_at
                 by_id[raw_id] = prior
             else:
                 prior["symbols"] = sorted(merged_symbols)
