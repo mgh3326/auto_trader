@@ -445,19 +445,10 @@ def test_dart_migration_is_single_head_and_guards_existing_values():
     assert rev.down_revision == "20261125_hk6579_benzinga_pro"
     heads = script.get_heads()
     assert len(heads) == 1
-    pending = list(heads)
-    ancestry: set[str] = set()
-    while pending:
-        revision = script.get_revision(pending.pop())
-        if revision is None or revision.revision in ancestry:
-            continue
-        ancestry.add(revision.revision)
-        down_revision = revision.down_revision
-        if isinstance(down_revision, str):
-            pending.append(down_revision)
-        elif down_revision:
-            pending.extend(down_revision)
-    assert rev.revision in ancestry
+    head = heads[0]
+    assert rev.revision in {
+        migration.revision for migration in script.iterate_revisions(head, "base")
+    }
     output = StringIO()
     ctx = MigrationContext.configure(
         dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}

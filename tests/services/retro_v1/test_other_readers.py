@@ -521,8 +521,9 @@ async def test_data_gaps_reports_existing_staleness_signals() -> None:
         "negative_class_recording.us",
         "negative_class_recording.crypto",
     }
-    # The 5 existing rows plus crypto_insight.aggregate_oi, which is disabled
-    # by design and therefore always a row. Every other new source is fresh here.
+    # The push source is disabled in this pull-only fixture, so it adds no row.
+    assert "market_events.benzinga_pro.breaking_news.us" not in by_dataset
+    # The 5 existing rows plus crypto_insight.aggregate_oi, disabled by design.
     assert response["total"] == 6
 
 
