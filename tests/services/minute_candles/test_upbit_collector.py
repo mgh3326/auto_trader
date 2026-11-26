@@ -307,7 +307,7 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
 
     first_run = FakeData(
         {
-            "KRW-BTC": [page(1), page(2)],
+            "KRW-BTC": [page(2), page(3)],
             "KRW-ETH": [CandlePage((), now)],
             "KRW-XRP": [CandlePage((), now)],
         }
@@ -327,7 +327,7 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
     assert first_btc.reached_boundary is False
     assert first_btc.pending_gap == (
         checkpoint + timedelta(minutes=1),
-        now - timedelta(minutes=3),
+        now - timedelta(minutes=4),
     )
 
     monkeypatch.setattr(
@@ -335,7 +335,7 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
     )
     normal_run = FakeData(
         {
-            "KRW-BTC": [page(1), page(2), page(3), page(4), page(5)],
+            "KRW-BTC": [page(2), page(3), page(4), page(5), page(6)],
             "KRW-ETH": [CandlePage((), now)],
             "KRW-XRP": [CandlePage((), now)],
         }
@@ -351,13 +351,12 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
 
     assert session.rows == {
         ("KRW-BTC", checkpoint),
-        ("KRW-BTC", now - timedelta(minutes=1)),
         ("KRW-BTC", now - timedelta(minutes=2)),
         ("KRW-BTC", now - timedelta(minutes=3)),
         ("KRW-BTC", now - timedelta(minutes=4)),
     }
     second_btc = next(row for row in second.markets if row.market == "KRW-BTC")
-    assert second_btc.pages == 5
+    assert second_btc.pages == 4
     assert second_btc.reached_boundary is True
     assert second_btc.pending_gap is None
 
