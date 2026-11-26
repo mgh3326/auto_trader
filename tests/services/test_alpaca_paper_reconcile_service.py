@@ -997,3 +997,60 @@ async def test_fee_evidence_write_rejects_a_fill_snapshot_that_lost_its_cas():
     predicates = " ".join(map(str, session.update_statement._where_criteria))
     assert "broker_order_id" in predicates
     assert "filled_qty" in predicates
+
+
+@pytest.mark.asyncio
+async def test_status_fill_change_invalidates_prior_crypto_fee_evidence():
+    from sqlalchemy.sql.dml import Update
+
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = SimpleNamespace(
+        id=1,
+        account_mode="alpaca_paper_crypto",
+        record_kind="execution",
+        side="buy",
+        filled_qty=Decimal("0.0007"),
+        order_status="partially_filled",
+        lifecycle_state="submitted",
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return row
+
+    class Session:
+        updates = []
+
+        async def execute(self, statement):
+            if isinstance(statement, Update):
+                self.updates.append(statement)
+                return SimpleNamespace(rowcount=1)
+            return Result()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _row):
+            return None
+
+    session = Session()
+    await AlpacaPaperLedgerService(
+        session, account_mode="alpaca_paper_crypto"
+    ).record_status(
+        "client-buy",
+        {
+            "status": "filled",
+            "filled_qty": "0.0008",
+            "filled_avg_price": "60630.38",
+            "id": "alpaca-buy-1",
+        },
+        return_write_result=True,
+    )
+
+    assert len(session.updates) == 2
+    invalidation_values = {
+        key.key: value for key, value in session.updates[1]._values.items()
+    }
+    assert getattr(invalidation_values["fee_amount"], "value", None) is None
+    assert getattr(invalidation_values["net_received_qty"], "value", None) is None
