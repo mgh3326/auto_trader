@@ -9,7 +9,7 @@
 | App include order and global wiring | `app/main.py` | Router registration, middleware, exception handling |
 | Health and smoke checks | `app/routers/health.py`, `app/routers/test.py` | Lightweight operational endpoints |
 | Invest web/API surface | `app/routers/invest_*.py` | Invest SPA and its read/action APIs (fills, open orders, watches, forecasts, buy plan) |
-| Token-authed ingest | `app/routers/execution_ledger_ingest.py`, `app/routers/investment_hermes_http.py`, `app/routers/news_relevance.py` | Machine ingest endpoints behind `AuthMiddleware` token branches |
+| Token-authed ingest | `app/routers/execution_ledger_ingest.py`, `app/routers/news_relevance.py` | Machine ingest endpoints behind `AuthMiddleware` token branches |
 | News and symbols | `app/routers/news_analysis.py`, `app/routers/symbol_settings.py`, `app/routers/kospi200.py` | Enrichment and configuration routes |
 | Websocket endpoint adapter | `app/routers/websocket.py` | Runtime streaming endpoint and client management |
 | Auth-specific endpoints | `app/auth/router.py`, `app/auth/web_router.py`, `app/auth/admin_router.py` | Auth/admin web flows (outside `app/routers/`) |

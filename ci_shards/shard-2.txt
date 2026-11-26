@@ -92,7 +92,6 @@ tests/routers/test_invest_open_orders_router.py
 tests/routers/test_invest_order_proposal_approvals.py
 tests/routers/test_invest_protected_positions.py
 tests/routers/test_investment_reports_snapshot_evidence_router.py
-tests/routers/test_investment_symbol_reports_http.py
 tests/routers/test_news_relevance_ingest.py
 tests/routers/test_pagination.py
 tests/routers/test_portfolio_actions.py
@@ -131,7 +130,6 @@ tests/scripts/test_dagu_terminal_reconcile_dag.py
 tests/scripts/test_dagu_toss_fill_poll_dag.py
 tests/scripts/test_daily_candle_and_night_sweep_clis.py
 tests/scripts/test_deploy_ci_gate_anonymous.py
-tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_list_recent_watch_events_cli.py
 tests/scripts/test_mcp_tool_usage_audit.py
 tests/scripts/test_mock_data_refresh.py

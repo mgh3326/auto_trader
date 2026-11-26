@@ -1,5 +1,13 @@
 # Hermes report-generation activation (ROB-287)
 
+> **hk 6933 — HTTP transport removed.** The HTTP routes under
+> `/trading/api/investment-reports/hermes/`, their AuthMiddleware token
+> branch, the ingest-token settings and the round-trip smoke CLI were
+> deleted (the operator retired the external Hermes session). Every HTTP
+> step below is kept only as a record and is marked **removed**. The MCP
+> tools and `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` remain the operative
+> surface until a later PR removes them.
+
 This runbook covers turning the Hermes pull-driven `/invest/reports`
 report-generation cycle on in non-production, then in production. The
 code shipped in PRs #898 / #901 / #905 / #907 already gives Hermes
@@ -18,8 +26,7 @@ flipping the gates.
 | Surface | Role | Lives in |
 |---|---|---|
 | MCP tools (`investment_report_prepare_bundle` / `..._get_hermes_context` / `..._create_from_hermes_composition` / `investment_stage_artifacts_ingest_from_hermes`) | Hermes pulls context + posts artifacts/composition back over MCP. | `app/mcp_server/tooling/investment_hermes_handlers.py` |
-| HTTP routes (`/trading/api/investment-reports/hermes/{prepare-bundle, context, stage-artifacts, composition}`) | Same surface as MCP, exposed over HTTP for Hermes if it prefers HTTP transport. | `app/routers/investment_hermes_http.py` |
-| AuthMiddleware token branch | Shared-secret auth for the HTTP family (prefix-match). | `app/middleware/auth.py` |
+| ~~HTTP routes~~ and ~~AuthMiddleware token branch~~ | **Removed in hk 6933.** | — |
 | `HermesContextExporter` / `HermesCompositionIngestService` / `HermesStageArtifactsIngestService` | Service layer the MCP + HTTP routes both call. | `app/services/investment_stages/hermes_context.py` / `hermes_ingest.py` |
 
 > **ROB-986 update**: the `hermes_bundle_preparation_flow` Prefect flow (bundle-preparation cadence) was removed — it was never deployed (no `robin-prefect-automations` registration, zero invocation history). Bundle freshness for a Hermes pull is now produced ad hoc via `investment_report_prepare_bundle` (MCP) / HTTP `prepare-bundle` (§1) at pull time; there is no scheduled cadence.
@@ -31,14 +38,12 @@ flipping the gates.
 | Var | Default | Set on | Notes |
 |---|---|---|---|
 | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` | `false` | auto_trader app + MCP server | Must be `true` for any Hermes endpoint to do real work. Same gate as the legacy `investment_report_generate_from_bundle` MCP tool. |
-| `HERMES_INGEST_TOKEN` | empty | auto_trader app (HTTP route only) | Shared secret for the HTTP family. Token unset → all four HTTP endpoints respond `403 "Hermes ingest token not configured"`. **Do NOT commit a real value to this repo** — operator places it in the deployment secret store. |
-| `HERMES_INGEST_TOKEN_HEADER` | `X-Hermes-Ingest-Token` | auto_trader app + Hermes side | Header name Hermes must use. Default rarely needs changing. |
+| ~~`retired-hermes-ingest-token` / `retired-hermes-ingest-token-header`~~ | — | — | **Removed in hk 6933** with the HTTP transport. Remove them from the deployment secret store. |
 
-The vars are independent gates:
+The remaining gate for the MCP tools:
 
 ```
-HTTP endpoint reachable  ← token configured + correct header
-HTTP endpoint produces  ← generator flag on
+MCP tool produces  ← generator flag on
 ```
 
 ---
@@ -52,17 +57,9 @@ Order matters: confirm each step before moving on.
    investment_report_prepare_bundle(market="kr", account_scope="kis_live")
    ```
    Expected: `{"success": true, "bundle_uuid": "...", ...}`. If it returns `success=false / error=snapshot_backed_report_generator_disabled`, the env var did not propagate to the running process.
-2. **HTTP token (auto_trader side)**: place a non-trivial secret in `HERMES_INGEST_TOKEN` on the auto_trader app server. Default header `X-Hermes-Ingest-Token` is fine unless you have a reason to change it.
-3. **HTTP token (Hermes side)**: configure Hermes with the *same* secret. Smoke-test:
-   ```
-   curl -sSf \
-     -H "X-Hermes-Ingest-Token: <secret>" \
-     -H "Content-Type: application/json" \
-     -d '{"snapshot_bundle_uuid": "<bundle-uuid>"}' \
-     https://<auto_trader>/trading/api/investment-reports/hermes/context
-   ```
-   Expected: 200 with the frozen Hermes context payload. 401 → header/value mismatch. 403 → token not configured on the server side. 503 → generator flag is off.
-4. **End-to-end smoke**: ask Hermes to drive a single cycle against the non-prod auto_trader instance. Expected timeline:
+2. ~~**HTTP token steps**~~ — **removed in hk 6933** (no HTTP transport, no `retired-hermes-ingest-token*`). Hermes uses the MCP tools only.
+3. ~~**HTTP curl smoke**~~ — removed in hk 6933.
+4. **End-to-end smoke** (MCP-only after hk 6933; the HTTP route names in parentheses are retired): ask Hermes to drive a single cycle against the non-prod auto_trader instance. Expected timeline:
    1. Hermes calls `POST /prepare-bundle` (or polls existing bundles).
    2. Hermes calls `POST /context` with a `snapshot_bundle_uuid`.
    3. Hermes ingests stage artifacts as it computes them (`POST /stage-artifacts`).
@@ -78,12 +75,9 @@ If any of those steps surfaces an error envelope or non-2xx status, stop and ins
 [ ] Backup the prod DB (logical or vendor equivalent).
 [ ] Confirm SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true is staged in
     the production secret manager (NOT committed to this repo).
-[ ] Confirm HERMES_INGEST_TOKEN is staged in the production secret
-    manager with a fresh value (NOT committed to this repo).
-[ ] Confirm HERMES_INGEST_TOKEN_HEADER agrees with Hermes' production
-    configuration.
-[ ] Run the smoke CLI / curl checks from §3 against the prod
-    auto_trader hostname. This verifies the HTTP surface.
+[ ] ~~Confirm the ingest token is staged~~ — removed in hk 6933.
+[ ] ~~Run the smoke CLI / curl checks~~ — removed in hk 6933; verify the
+    MCP tool with the §3 step 1 call instead.
 [ ] Ask Hermes to perform a single end-to-end cycle. Inspect:
        - One investment_stage_run row with status='completed'.
        - One investment_report row referencing the same snapshot bundle.
@@ -102,7 +96,7 @@ the round-trip + a clean session.
 Every gate has an off-switch:
 
 * Hermes producing bad reports → flip `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=false`. All four HTTP endpoints return 503/disabled in one round trip.
-* HTTP surface specifically misbehaving → flip `HERMES_INGEST_TOKEN` to empty. The middleware returns 403 to every call; Hermes will fail fast.
+* ~~HTTP surface misbehaving → flip the ingest token~~ — removed in hk 6933 (no HTTP surface).
 
 Rolling back any of these is a config-only change; no auto_trader
 redeploy is required.
@@ -113,32 +107,32 @@ redeploy is required.
 
 | Symptom | Likely cause | Quick check |
 |---|---|---|
-| HTTP `403 "Hermes ingest token not configured"` | `HERMES_INGEST_TOKEN` empty on server. | Check the running process env, not the deployment manifest. |
-| HTTP `401 "Invalid Hermes ingest token"` | Hermes is sending a stale or wrong-shape header. | Compare `HERMES_INGEST_TOKEN_HEADER` on both sides. |
 | HTTP `503` with `snapshot_backed_report_generator_disabled` | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` is false on the auto_trader app server. | Restart the process if the env was changed without restart. |
 | HTTP `409` with `artifact_content_conflict` | Hermes re-ingested the same `(run_uuid, stage_type)` with a different payload. | Hermes-side bug — auto_trader's append-only contract is doing its job. |
 | HTTP `409` with `run_envelope_mismatch` | A second ingest under the same `run_uuid` carries different `market/account_scope/policy_version`. | Hermes-side bug — fix the envelope. |
 | Hermes never sees a fresh bundle | No bundle has been prepared for this identity tuple yet. | Manually call `investment_report_prepare_bundle` (MCP) / HTTP `prepare-bundle` and check `created=true` in the return. |
 
-The middleware token branches are at `app/middleware/auth.py`. The service layer that all four endpoints share is at `app/services/investment_stages/hermes_context.py` + `hermes_ingest.py`.
+The service layer behind the MCP tools is at `app/services/investment_stages/hermes_context.py` + `hermes_ingest.py`. The HTTP middleware token branch was removed in hk 6933.
 
 ---
 
-## 7. Phase C smoke — operator round-trip verification (ROB-287)
+## 7. Phase C smoke — operator round-trip verification (ROB-287) — **retired in hk 6933**
+
+The round-trip smoke CLI and the HTTP routes it drove were deleted in hk 6933. The text below is historical.
 
 After the activation steps in §3 / §4 land but **before** flipping ROB-287 to Done, the operator drives a single Hermes-shaped round-trip to confirm the wire contract end-to-end. The fixtures + CLI for this live in this repo and are pinned in lock-step with the contract tests so the smoke does not double as fixture-syntax validation.
 
 ### 7.1 Pre-conditions
 
 - `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` on the target auto_trader app.
-- `HERMES_INGEST_TOKEN` configured on the target app, value known to the operator.
+- `retired-hermes-ingest-token` configured on the target app, value known to the operator.
 - One existing `InvestmentSnapshotBundle` row (call `investment_report_prepare_bundle` once or seed manually). The smoke does NOT call `/prepare-bundle` — that's a separate concern.
 
 ### 7.2 CLI usage
 
 ```bash
-HERMES_INGEST_TOKEN="<value>" \
-uv run python -m scripts.hermes_roundtrip_smoke \
+retired-hermes-ingest-token="<value>" \
+uv run python -m scripts.retired-roundtrip-smoke \
   --base-url https://<auto_trader-host> \
   --bundle-uuid <existing-bundle-uuid>
 ```
@@ -225,7 +219,9 @@ Until those are signed off, ROB-287 stays In Progress.
 
 ---
 
-## 8. US narrow smoke (ROB-287 follow-up)
+## 8. US narrow smoke (ROB-287 follow-up) — **retired in hk 6933**
+
+Historical only: it drove the HTTP round-trip CLI removed in hk 6933.
 
 A narrow, **non-prod** verification that the Hermes-first contract
 (four endpoints in §1) accepts a `market="us"` snapshot bundle and
@@ -270,15 +266,15 @@ Same as §7.1 plus:
   `investment_snapshots_refresh_flow` once after the env var flip
   in §3 — `purpose` field is opaque to the Hermes path).
 - Hermes will reach the endpoints from a host that has connectivity
-  to the non-prod auto_trader and a valid `HERMES_INGEST_TOKEN`
+  to the non-prod auto_trader and a valid `retired-hermes-ingest-token`
   header. **Do not stage production tokens into a non-prod
   environment.**
 
 ### 8.3 CLI invocation (operator runs)
 
 ```bash
-HERMES_INGEST_TOKEN="<value-from-non-prod-secret-manager>" \
-uv run python -m scripts.hermes_roundtrip_smoke \
+retired-hermes-ingest-token="<value-from-non-prod-secret-manager>" \
+uv run python -m scripts.retired-roundtrip-smoke \
   --base-url https://<non-prod-auto_trader-host> \
   --bundle-uuid <existing-us-bundle-uuid> \
   --fixture-set us
@@ -366,7 +362,7 @@ separately whether to:
 The two report-generation entrypoints now inject `production_collector_registry(session)` and accept a `user_id`:
 
 - MCP `investment_report_prepare_bundle` (`user_id` is an optional tool arg)
-- HTTP `POST /trading/api/investment-reports/hermes/prepare-bundle` (`user_id` is an optional body field)
+- ~~HTTP `POST /trading/api/investment-reports/hermes/prepare-bundle`~~ (removed hk 6933; `user_id` was an optional body field)
 
 Because these paths are token-authed (HTTP) or have no user context (MCP), `user_id`
 must be supplied explicitly by the caller — it is never derived from an authenticated
@@ -386,11 +382,7 @@ broker rate-limit sensitivity.
 ```bash
 # Gate must be on for the endpoint to do anything.
 export SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true
-# HTTP transport (token-authed):
-curl -sS -X POST "$HOST/trading/api/investment-reports/hermes/prepare-bundle" \
-  -H "X-Hermes-Ingest-Token: $HERMES_INGEST_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"market":"kr","account_scope":"kis_live","symbols":["<HELD_SYMBOL>","<CANDIDATE>"],"user_id":<USER_ID>}'
+# (HTTP curl call removed in hk 6933; call the investment_report_prepare_bundle MCP tool)
 ```
 
 Inspect `coverage_summary` / `missing_sources` in the response to confirm portfolio,
@@ -401,7 +393,6 @@ market, journal, and watch coverage.
 | Symptom | Likely cause | Operator action |
 |---|---|---|
 | 503 `snapshot_backed_report_generator_disabled` | feature flag off | set `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` |
-| 403 / 401 on HTTP | token misconfig / wrong token | check `HERMES_INGEST_TOKEN[_HEADER]` |
 | portfolio `unavailable` but holdings exist | `user_id` not supplied to this entrypoint | pass `user_id` in the request |
 | all required sources `unavailable` | wrong/empty collector registry (regression) | confirm this entrypoint injects `production_collector_registry` |
 | specific source `unavailable` w/ credentials absent | missing live read precondition | provision read creds for that broker/source |

@@ -52,7 +52,6 @@ from app.routers import (
     invest_watches,
     invest_web_spa,
     investment_dimension_reports,
-    investment_hermes_http,
     investment_reports,
     investment_snapshots,
     investment_stage_runs,
@@ -206,7 +205,6 @@ def create_app() -> FastAPI:
     app.include_router(order_estimation.router)
     app.include_router(order_previews.router)
     app.include_router(investment_reports.router)
-    app.include_router(investment_hermes_http.router)
     app.include_router(retro_v1.router)
     app.include_router(news_relevance.router)
     app.include_router(investment_stage_runs.router)

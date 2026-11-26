@@ -25,7 +25,7 @@
 
 **Modify (implementation):**
 - `app/mcp_server/tooling/investment_hermes_handlers.py` — `investment_report_prepare_bundle_impl`: add `user_id` param, inject production registry. (~lines 39-49 imports, 103-140 impl)
-- `app/routers/investment_hermes_http.py` — `_PrepareBundleBody`: add `user_id` field; `prepare_bundle` route: pass `user_id`, inject production registry. (~lines 44-48 imports, 106-116 body, 155-185 route)
+- `app/routers/retired-investment-hermes-http.py` — `_PrepareBundleBody`: add `user_id` field; `prepare_bundle` route: pass `user_id`, inject production registry. (~lines 44-48 imports, 106-116 body, 155-185 route)
 - `app/flows/hermes_bundle_preparation_flow.py` — `run_hermes_bundle_preparation` + `hermes_bundle_preparation_task` + `hermes_bundle_preparation_flow`: add `user_id` param, inject production registry. (~lines 61-66 imports, 85-184)
 
 **Modify (deferred-decision documentation):**
@@ -37,7 +37,7 @@
 
 **Modify (tests):**
 - `tests/mcp_server/test_investment_hermes_tools.py` — new injection/user_id test + patch registry in existing happy-path test.
-- `tests/routers/test_investment_hermes_http.py` — new injection/user_id test + patch registry in existing happy-path test.
+- `tests/routers/test_retired-investment-hermes-http.py` — new injection/user_id test + patch registry in existing happy-path test.
 - `tests/test_hermes_bundle_preparation_flow.py` — new injection/user_id test + patch registry in existing gate-on test.
 
 **Modify (docs):**
@@ -195,12 +195,12 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ## Task 2: HTTP `/hermes/prepare-bundle` — inject production registry + user_id
 
 **Files:**
-- Modify: `app/routers/investment_hermes_http.py`
-- Test: `tests/routers/test_investment_hermes_http.py`
+- Modify: `app/routers/retired-investment-hermes-http.py`
+- Test: `tests/routers/test_retired-investment-hermes-http.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/routers/test_investment_hermes_http.py` (uses the existing `_build_app` helper):
+Add to `tests/routers/test_retired-investment-hermes-http.py` (uses the existing `_build_app` helper):
 
 ```python
 @pytest.mark.asyncio
@@ -224,11 +224,11 @@ async def test_prepare_bundle_injects_production_registry_and_user_id(
     app = _build_app()
     with (
         patch(
-            "app.routers.investment_hermes_http.production_collector_registry",
+            "app.routers.retired-investment-hermes-http.production_collector_registry",
             return_value=sentinel_registry,
         ) as mock_registry,
         patch(
-            "app.routers.investment_hermes_http.SnapshotBundleEnsureService",
+            "app.routers.retired-investment-hermes-http.SnapshotBundleEnsureService",
             return_value=ensure_svc,
         ) as mock_cls,
     ):
@@ -256,12 +256,12 @@ async def test_prepare_bundle_injects_production_registry_and_user_id(
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/routers/test_investment_hermes_http.py::test_prepare_bundle_injects_production_registry_and_user_id -v`
+Run: `uv run pytest tests/routers/test_retired-investment-hermes-http.py::test_prepare_bundle_injects_production_registry_and_user_id -v`
 Expected: FAIL — `production_collector_registry` not importable from the router module, and `_PrepareBundleBody` rejects `user_id` (extra="forbid" → 400).
 
 - [ ] **Step 3: Add the import**
 
-In `app/routers/investment_hermes_http.py`, add after the existing `from app.services.action_report.common.snapshot_bundle import (SnapshotBundleEnsureService,)` (lines 46-48):
+In `app/routers/retired-investment-hermes-http.py`, add after the existing `from app.services.action_report.common.snapshot_bundle import (SnapshotBundleEnsureService,)` (lines 46-48):
 
 ```python
 from app.services.action_report.snapshot_backed.collectors.registry import (
@@ -321,7 +321,7 @@ In the `prepare_bundle` route, add `user_id=body.user_id,` to the `EnsureBundleR
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `uv run pytest tests/routers/test_investment_hermes_http.py::test_prepare_bundle_injects_production_registry_and_user_id -v`
+Run: `uv run pytest tests/routers/test_retired-investment-hermes-http.py::test_prepare_bundle_injects_production_registry_and_user_id -v`
 Expected: PASS
 
 - [ ] **Step 7: Keep the existing happy-path test hermetic**
@@ -332,11 +332,11 @@ In the existing `test_prepare_bundle_routes_through_ensure_service`, replace the
     app = _build_app()
     with (
         patch(
-            "app.routers.investment_hermes_http.production_collector_registry",
+            "app.routers.retired-investment-hermes-http.production_collector_registry",
             return_value=object(),
         ),
         patch(
-            "app.routers.investment_hermes_http.SnapshotBundleEnsureService",
+            "app.routers.retired-investment-hermes-http.SnapshotBundleEnsureService",
             return_value=ensure_svc,
         ),
     ):
@@ -351,13 +351,13 @@ In the existing `test_prepare_bundle_routes_through_ensure_service`, replace the
 
 - [ ] **Step 8: Run the full HTTP test module**
 
-Run: `uv run pytest tests/routers/test_investment_hermes_http.py -v`
+Run: `uv run pytest tests/routers/test_retired-investment-hermes-http.py -v`
 Expected: PASS (gate-off, routing, error-mapping cases all green).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add app/routers/investment_hermes_http.py tests/routers/test_investment_hermes_http.py
+git add app/routers/retired-investment-hermes-http.py tests/routers/test_retired-investment-hermes-http.py
 git commit -m "feat(rob-314): Hermes HTTP prepare-bundle injects production collectors + user_id
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
@@ -680,7 +680,7 @@ broker rate-limit sensitivity.
 export SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true
 # HTTP transport (token-authed):
 curl -sS -X POST "$HOST/trading/api/investment-reports/hermes/prepare-bundle" \
-  -H "X-Hermes-Ingest-Token: $HERMES_INGEST_TOKEN" \
+  -H "X-Hermes-Ingest-Token: $retired-hermes-ingest-token" \
   -H "Content-Type: application/json" \
   -d '{"market":"kr","account_scope":"kis_live","symbols":["<HELD_SYMBOL>","<CANDIDATE>"],"user_id":<USER_ID>}'
 ```
@@ -693,7 +693,7 @@ market, journal, and watch coverage.
 | Symptom | Likely cause | Operator action |
 |---|---|---|
 | 503 `snapshot_backed_report_generator_disabled` | feature flag off | set `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` |
-| 403 / 401 on HTTP | token misconfig / wrong token | check `HERMES_INGEST_TOKEN[_HEADER]` |
+| 403 / 401 on HTTP | token misconfig / wrong token | check `retired-hermes-ingest-token[_HEADER]` |
 | portfolio `unavailable` but holdings exist | `user_id` not supplied to this entrypoint | pass `user_id` in the request |
 | all required sources `unavailable` | wrong/empty collector registry (regression) | confirm this entrypoint injects `production_collector_registry` |
 | specific source `unavailable` w/ credentials absent | missing live read precondition | provision read creds for that broker/source |
@@ -727,8 +727,8 @@ Run:
 ```bash
 uv run pytest \
   tests/mcp_server/test_investment_hermes_tools.py \
-  tests/routers/test_investment_hermes_http.py \
-  tests/routers/test_investment_hermes_http_auth.py \
+  tests/routers/test_retired-investment-hermes-http.py \
+  tests/routers/test_retired-investment-hermes-http_auth.py \
   tests/test_hermes_bundle_preparation_flow.py \
   tests/test_rob314_deferred_call_sites.py \
   -v
@@ -737,7 +737,7 @@ Expected: all PASS.
 
 - [ ] **Step 2: Run the ROB-309 Hermes round-trip smoke (acceptance criterion)**
 
-Run: `uv run pytest tests/test_hermes_roundtrip_smoke.py -v`
+Run: `uv run pytest tests/test_retired-roundtrip-smoke.py -v`
 Expected: PASS — the entrypoint changes must not break the contract round-trip.
 
 - [ ] **Step 3: Run the in-process-LLM import guard (must stay green)**
@@ -780,7 +780,7 @@ Per the issue's non-goals, the following are explicitly deferred to an operator 
 - PR URL: _(after `gh pr create`)_
 - Tests run: Task 6 commands + outputs.
 - Migrations: none.
-- Feature flags/config: `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` (MCP/HTTP), `HERMES_BUNDLE_PREPARATION_ENABLED` (flow), `HERMES_INGEST_TOKEN[_HEADER]` (HTTP transport). All default-off / unchanged defaults.
+- Feature flags/config: `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` (MCP/HTTP), `HERMES_BUNDLE_PREPARATION_ENABLED` (flow), `retired-hermes-ingest-token[_HEADER]` (HTTP transport). All default-off / unchanged defaults.
 - Smoke command shape: runbook ROB-314 section (placeholders only).
 - Remaining operator-gated steps: live smoke, Prefect activation (above).
 

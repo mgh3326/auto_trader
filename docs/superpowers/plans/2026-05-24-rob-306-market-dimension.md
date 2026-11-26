@@ -11,7 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-05-24-invest-reports-market-dimension-design.md`
 **Linear:** ROB-306 · **Branch:** `rob-306`
 
-**Conventions:** `uv run pytest ... -v`; commit trailer `Co-Authored-By: Paperclip <noreply@paperclip.ing>`. Templates mirrored: `app/models/investment_symbol_intermediate_reports.py`, `app/services/investment_stages/symbol_report_ingest.py`, `app/schemas/investment_symbol_reports.py`, `app/routers/investment_hermes_http.py` (`/symbol-reports`).
+**Conventions:** `uv run pytest ... -v`; commit trailer `Co-Authored-By: Paperclip <noreply@paperclip.ing>`. Templates mirrored: `app/models/investment_symbol_intermediate_reports.py`, `app/services/investment_stages/symbol_report_ingest.py`, `app/schemas/investment_symbol_reports.py`, `app/routers/retired-investment-hermes-http.py` (`/symbol-reports`).
 
 ---
 
@@ -29,7 +29,7 @@
 - Tests under `tests/services/investment_dimensions/` + `tests/test_investment_dimension_reports_model.py`.
 
 **PR2 — Hermes contract + read surface:**
-- Modify `app/routers/investment_hermes_http.py` — add `POST /dimension-reports`.
+- Modify `app/routers/retired-investment-hermes-http.py` — add `POST /dimension-reports`.
 - Modify `app/services/investment_stages/hermes_context.py` — attach Market evidence bundle.
 - Create `app/routers/investment_dimension_reports.py` — `GET .../runs/{run_uuid}/dimension-reports`.
 - Create `app/services/invest_view_model/dimension_report_view.py` — Korean view-model.
@@ -986,17 +986,17 @@ Co-Authored-By: Paperclip <noreply@paperclip.ing>"
 ## Task 8: Hermes `POST /dimension-reports` route
 
 **Files:**
-- Modify: `app/routers/investment_hermes_http.py`
-- Test: `tests/test_investment_hermes_http_dimension_reports.py` (mirror the existing symbol-reports route test — find it via `grep -rl "symbol-reports" tests/`)
+- Modify: `app/routers/retired-investment-hermes-http.py`
+- Test: `tests/test_retired-investment-hermes-http_dimension_reports.py` (mirror the existing symbol-reports route test — find it via `grep -rl "symbol-reports" tests/`)
 
 - [ ] **Step 1: Write the failing test** — mirror the existing `/symbol-reports` route test: assert (a) 403 when ingest token unset, (b) happy-path 200 with a seeded run + valid `HermesDimensionReportsIngestRequest` body returns `{"success": True, "dimension_reports": [...]}`. (Copy the auth/setup harness from the symbol-reports test file verbatim, swapping the body + endpoint.)
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `uv run pytest tests/test_investment_hermes_http_dimension_reports.py -v`
+Run: `uv run pytest tests/test_retired-investment-hermes-http_dimension_reports.py -v`
 Expected: FAIL — 404 (route not defined).
 
-- [ ] **Step 3: Implement** — add to `app/routers/investment_hermes_http.py` (mirror `/symbol-reports`, lines 318-365). Add imports for `HermesDimensionReportsIngestRequest`, `DimensionReportIngestService`, `DimensionReportIngestError`, and extend `_INGEST_ERROR_HTTP_STATUS` with `"stage_run_not_found": 404, "run_envelope_mismatch": 409`:
+- [ ] **Step 3: Implement** — add to `app/routers/retired-investment-hermes-http.py` (mirror `/symbol-reports`, lines 318-365). Add imports for `HermesDimensionReportsIngestRequest`, `DimensionReportIngestService`, `DimensionReportIngestError`, and extend `_INGEST_ERROR_HTTP_STATUS` with `"stage_run_not_found": 404, "run_envelope_mismatch": 409`:
 
 ```python
 @router.post("/dimension-reports")
@@ -1045,13 +1045,13 @@ async def dimension_reports_ingest(
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `uv run pytest tests/test_investment_hermes_http_dimension_reports.py -v`
+Run: `uv run pytest tests/test_retired-investment-hermes-http_dimension_reports.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/routers/investment_hermes_http.py tests/test_investment_hermes_http_dimension_reports.py
+git add app/routers/retired-investment-hermes-http.py tests/test_retired-investment-hermes-http_dimension_reports.py
 git commit -m "feat(rob-306): Hermes POST /dimension-reports ingest route
 
 Co-Authored-By: Paperclip <noreply@paperclip.ing>"
