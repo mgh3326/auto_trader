@@ -104,6 +104,39 @@ async def test_a_closed_episode_is_one_mock_chain_with_pnl() -> None:
 
 
 @pytest.mark.asyncio
+async def test_closed_episode_reports_broker_exit_fill_time_and_broker_side() -> None:
+    filled_at = datetime(2026, 1, 5, 14, 40, tzinfo=UTC)
+    observed_at = datetime(2026, 1, 5, 14, 49, tzinfo=UTC)
+    episode = closed_episode()
+    episode[0].closed_at = observed_at
+    episode[1].meta = {
+        "filled_at": filled_at.isoformat(),
+        "fill_time_basis": "broker_filled_at",
+    }
+    response = await read_mock_round_trips(FakeSession({ROUTE: episode}))
+    validate(response, "MockRoundTripsResponse")
+    (row,) = response["data"]
+    assert row["state"] == "closed"
+    assert row["fill_time"] == filled_at.isoformat()
+    assert row["fill_time_basis"] == "broker_filled_at"
+    assert row["closed_at"] == "2026-01-05T14:49:00Z"
+    assert [leg["broker_side"] for leg in row["legs"]] == ["buy", "sell"]
+
+
+@pytest.mark.asyncio
+async def test_closed_episode_without_exit_time_does_not_reuse_entry_time() -> None:
+    episode = closed_episode()
+    episode[0].meta = {
+        "filled_at": OPENED.isoformat(),
+        "fill_time_basis": "broker_filled_at",
+    }
+    episode[1].meta = {}
+    response = await read_mock_round_trips(FakeSession({ROUTE: episode}))
+    assert response["data"][0]["fill_time"] is None
+    assert response["data"][0]["fill_time_basis"] is None
+
+
+@pytest.mark.asyncio
 async def test_an_uncertain_leg_shows_a_reason_not_a_zero() -> None:
     episode = [
         order(
