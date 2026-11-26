@@ -30,6 +30,23 @@ _MARKET_DATA_THROTTLE_BACKOFF_RANGES = ((0.2, 0.4), (0.4, 0.8))
 logger = logging.getLogger(__name__)
 
 
+def news_title_rows(response: Any, key: str) -> list[dict[str, Any]]:
+    """Return the record list of a KIS news-title response (hk 6661).
+
+    A missing key or a non-object row is a malformed payload and raises, so
+    the caller records an error instead of an empty (= "no news") result. An
+    empty list is a real empty answer.
+    """
+    if not isinstance(response, dict) or key not in response:
+        raise RuntimeError(f"Malformed KIS news title response: missing {key}")
+    rows = response[key]
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError(f"Malformed KIS news title response: bad {key}")
+    return rows
+
+
 def _empty_minute_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=_MINUTE_FRAME_COLUMNS)
 

@@ -116,6 +116,17 @@ OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 OVERSEAS_UPDOWN_RATE_URL = "/uapi/overseas-stock/v1/ranking/updown-rate"
 OVERSEAS_UPDOWN_RATE_TR = "HHDFS76290000"
 
+# News headlines (hk 6661 news shadow, read-only). Official samples read
+# 2026-11-26: examples_llm/overseas_stock/brknews_title (FHKST01011801),
+# examples_llm/overseas_stock/news_title (HHPSTH60100C1),
+# examples_llm/domestic_stock/news_title (FHKST01011800).
+OVERSEAS_BRKNEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/brknews-title"
+OVERSEAS_BRKNEWS_TITLE_TR = "FHKST01011801"
+OVERSEAS_NEWS_TITLE_URL = "/uapi/overseas-price/v1/quotations/news-title"
+OVERSEAS_NEWS_TITLE_TR = "HHPSTH60100C1"
+DOMESTIC_NEWS_TITLE_URL = "/uapi/domestic-stock/v1/quotations/news-title"
+DOMESTIC_NEWS_TITLE_TR = "FHKST01011800"
+
 # Overseas Stock - Balance & Orders
 OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"
 OVERSEAS_BALANCE_TR = "TTTS3012R"  # 실전투자 해외주식 잔고조회
