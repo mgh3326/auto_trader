@@ -77,8 +77,6 @@ def _row(
         "filled_avg_price": None,
         "fee_amount": None,
         "fee_currency": None,
-        "fee_evidence_reason": None,
-        "net_received_qty": None,
         "qty_delta": None,
         "position_snapshot": None,
         "reconcile_status": None,
@@ -248,44 +246,6 @@ async def test_build_report_by_correlation_returns_complete_read_only_report():
     assert report.safety.broker_mutation_performed is False
     assert report.ledger_rows is None
     db.commit.assert_not_called()
-
-
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_crypto_roundtrip_net_pnl_requires_both_known_fees():
-    rows = _complete_roundtrip_rows()
-    for row in rows:
-        row.account_mode = "alpaca_paper_crypto"
-        row.execution_symbol = "BTC/USD"
-        if row.side == "buy" and row.filled_qty is not None:
-            row.fee_amount = Decimal("0.00000175")
-            row.fee_currency = "BTC"
-            row.net_received_qty = Decimal("0.00099825")
-        if row.side == "sell" and row.filled_qty is not None:
-            row.fee_amount = Decimal("0.08")
-            row.fee_currency = "USD"
-    svc, _db = _service_with_rows(rows)
-    report = await svc.build_report(
-        lifecycle_correlation_id="corr-rob92", include_ledger_rows=False, now=_ts(30)
-    )
-    assert report.pnl.gross_pnl == Decimal("1.000")
-    assert report.pnl.net_pnl == Decimal("0.83250000")
-
-    next(
-        row for row in rows if row.side == "sell" and row.filled_qty is not None
-    ).fee_amount = None
-    report_without_sell_fee = svc._build_report_from_rows(
-        rows=rows,
-        lookup_key=report.lookup_key,
-        open_orders=[],
-        positions=[],
-        stale_after_minutes=30,
-        include_ledger_rows=False,
-        now=_ts(30),
-    )
-    assert report_without_sell_fee.pnl.gross_pnl == Decimal("1.000")
-    assert report_without_sell_fee.pnl.net_pnl is None
-    assert report_without_sell_fee.pnl.reason == "fee_evidence_missing"
 
 
 @pytest.mark.asyncio

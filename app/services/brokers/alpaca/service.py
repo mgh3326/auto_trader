@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -19,7 +19,6 @@ from app.services.brokers.alpaca.schemas import (
     AccountSnapshot,
     Asset,
     CashBalance,
-    CryptoFeeActivity,
     Fill,
     MarketClock,
     Order,
@@ -280,8 +279,6 @@ class AlpacaPaperBrokerService:
     async def list_fills(
         self,
         *,
-        order_id: str | None = None,
-        date: date | None = None,
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -290,10 +287,6 @@ class AlpacaPaperBrokerService:
         direction: str | None = None,
     ) -> list[Fill]:
         params: dict[str, str | int] = {}
-        if order_id is not None:
-            params["order_id"] = order_id
-        if date is not None:
-            params["date"] = date.isoformat()
         if after is not None:
             params["after"] = after.isoformat()
         if until is not None:
@@ -309,86 +302,3 @@ class AlpacaPaperBrokerService:
         if not data:
             return []
         return [Fill.model_validate(item) for item in data]
-
-    async def list_order_fills(self, *, order_id: str) -> list[Fill]:
-        """Read every fill returned by Alpaca's order-filtered activity endpoint."""
-        collected: dict[str, Fill] = {}
-        page_token: str | None = None
-        for _ in range(20):
-            page = await self.list_fills(
-                order_id=order_id,
-                page_token=page_token,
-                page_size=100,
-                direction="asc",
-            )
-            if any(fill.order_id != order_id for fill in page):
-                raise ValueError("alpaca_order_fill_identity_mismatch")
-            for fill in page:
-                collected.setdefault(fill.id, fill)
-            if len(page) < 100:
-                return list(collected.values())
-            next_token = page[-1].id
-            if not next_token or next_token == page_token:
-                raise ValueError("alpaca_order_fill_pagination_invalid")
-            page_token = next_token
-        raise ValueError("alpaca_order_fill_pagination_limit_exceeded")
-
-    async def list_fills_for_date(self, *, date: date) -> list[Fill]:
-        """Read every FILL activity for one UTC activity date."""
-        collected: dict[str, Fill] = {}
-        page_token: str | None = None
-        for _ in range(20):
-            page = await self.list_fills(
-                date=date,
-                page_token=page_token,
-                page_size=100,
-                direction="asc",
-            )
-            for fill in page:
-                if not fill.id or not fill.order_id:
-                    raise ValueError("alpaca_daily_fill_identity_missing")
-                collected.setdefault(fill.id, fill)
-            if len(page) < 100:
-                return list(collected.values())
-            next_token = page[-1].id
-            if not next_token or next_token == page_token:
-                raise ValueError("alpaca_daily_fill_pagination_invalid")
-            page_token = next_token
-        raise ValueError("alpaca_daily_fill_pagination_limit_exceeded")
-
-    async def list_crypto_fee_activities(
-        self, *, order_id: str
-    ) -> list[CryptoFeeActivity]:
-        """Read the crypto CFEE and USD FEE activities linked to an order."""
-        results: dict[str, CryptoFeeActivity] = {}
-        for activity_type in ("CFEE", "FEE"):
-            page_token: str | None = None
-            for _page_no in range(20):
-                params: dict[str, str | int] = {
-                    "order_id": order_id,
-                    "direction": "desc",
-                    "page_size": 100,
-                }
-                if page_token is not None:
-                    params["page_token"] = page_token
-                data = await self._request(
-                    "GET", f"/v2/account/activities/{activity_type}", params=params
-                )
-                if not data:
-                    break
-                if not isinstance(data, list):
-                    raise ValueError("crypto_fee_activity_shape_invalid")
-                page = [CryptoFeeActivity.model_validate(item) for item in data]
-                for activity in page:
-                    if activity.activity_type != activity_type:
-                        raise ValueError("crypto_fee_activity_type_mismatch")
-                    results.setdefault(activity.id, activity)
-                if len(page) < 100:
-                    break
-                next_token = page[-1].id
-                if not next_token or next_token == page_token:
-                    raise ValueError("crypto_fee_activity_pagination_invalid")
-                page_token = next_token
-            else:
-                raise ValueError("crypto_fee_activity_pagination_limit_exceeded")
-        return list(results.values())

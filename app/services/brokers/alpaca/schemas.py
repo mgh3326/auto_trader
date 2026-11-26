@@ -1,4 +1,3 @@
-from datetime import date as Date
 from datetime import datetime
 from decimal import Decimal
 
@@ -100,16 +99,3 @@ class Fill(BaseModel):
     cum_qty: Decimal | None = None
     leaves_qty: Decimal | None = None
     order_status: str | None = None
-
-
-class CryptoFeeActivity(BaseModel):
-    id: str
-    activity_type: str
-    date: Date | None = None
-    order_id: str | None = None
-    symbol: str | None = None
-    qty: Decimal | None = None
-    price: Decimal | None = None
-    net_amount: Decimal | None = None
-    currency: str | None = None
-    status: str | None = None

@@ -1,6 +1,6 @@
 """Record exact Alpaca paper crypto fees and net received quantity.
 
-Revision ID: 20261126_hk6784_alpaca_crypto_fees
+Revision ID: hk6784_crypto_fee
 Revises: 6f28395ebfc2
 Create Date: 2026-11-26
 """

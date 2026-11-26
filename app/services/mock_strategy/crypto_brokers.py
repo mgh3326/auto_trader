@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from app.services.alpaca_paper_crypto_fee_evidence import (
-    activity_posting_date,
-    count_filled_legs_for_day,
-    filled_order_dates,
-    resolve_crypto_fee_evidence,
-)
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.brokers.binance.demo.quantity import venue_order_quantity
@@ -26,7 +20,6 @@ from app.services.brokers.binance.spot_demo.execution_client import (
 from app.services.mock_strategy.crypto_orders import (
     MarketRules,
     binance_rules,
-    crypto_pair_currencies,
     positive,
 )
 
@@ -50,9 +43,6 @@ class FillEvidence:
     price: Decimal | None
     terminal: bool
     held_qty: Decimal | None = None
-    fee_amount: Decimal | None = None
-    fee_currency: str | None = None
-    fee_evidence_reason: str | None = None
 
 
 class CryptoBroker(Protocol):
@@ -323,8 +313,6 @@ class BinanceCryptoDemo:
             evidence.price,
             evidence.terminal,
             total - base_fee,
-            base_fee if base_fee else None,
-            order.symbol.removesuffix("USDT") if base_fee else None,
         )
 
     async def evidence(self, order: Any) -> FillEvidence:
@@ -401,8 +389,9 @@ class AlpacaCryptoPaper:
 
     @staticmethod
     def execution_symbol(symbol: str) -> str:
-        base, _ = crypto_pair_currencies(symbol, "alpaca_paper_crypto")
-        return base + "/USD"
+        if not symbol.endswith("USDT"):
+            raise ValueError("expected Binance USDT symbol")
+        return symbol.removesuffix("USDT") + "/USD"
 
     async def rules(self, symbol: str) -> MarketRules:
         execution = self.execution_symbol(symbol)
@@ -426,29 +415,28 @@ class AlpacaCryptoPaper:
     async def price(self, symbol: str) -> Decimal:
         return await self.pricing.price(symbol)
 
-    async def closeable(self, order: Any, qty: Decimal) -> None:
-        available = await self.available_qty(order)
-        if available < qty:
-            raise ValueError("paper crypto quantity unavailable")
-
     async def available_qty(self, order: Any) -> Decimal:
         position = await self.client.get_position(
-            crypto_pair_currencies(order.symbol, "alpaca_paper_crypto")[0] + "USD"
+            order.symbol.removesuffix("USDT") + "USD"
         )
-        if position is None or position.qty_available is None:
-            raise ValueError("paper crypto quantity unavailable")
-        if not position.qty_available.is_finite() or position.qty_available < 0:
+        if (
+            position is None
+            or position.qty_available is None
+            or not position.qty_available.is_finite()
+            or position.qty_available < 0
+        ):
             raise ValueError("paper crypto quantity unavailable")
         return position.qty_available
+
+    async def closeable(self, order: Any, qty: Decimal) -> None:
+        if await self.available_qty(order) < qty:
+            raise ValueError("paper crypto quantity unavailable")
 
     def _evidence(self, response: Any, order: Any) -> FillEvidence:
         execution = self.execution_symbol(order.symbol)
         if (
             response.symbol
-            not in {
-                execution,
-                crypto_pair_currencies(order.symbol, "alpaca_paper_crypto")[0] + "USD",
-            }
+            not in {execution, order.symbol.removesuffix("USDT") + "USD"}
             or response.side != order.side
             or response.client_order_id != order.client_order_id
             or response.qty != order.qty
@@ -468,79 +456,6 @@ class AlpacaCryptoPaper:
             filled,
             positive(response.filled_avg_price) if filled else None,
             response.status in {"filled", "canceled", "expired", "rejected"},
-        )
-
-    async def _evidence_with_fees(self, response: Any, order: Any) -> FillEvidence:
-        evidence = self._evidence(response, order)
-        if evidence.filled_qty <= 0:
-            return evidence
-        if evidence.status.lower() != "filled":
-            return FillEvidence(
-                **{
-                    **evidence.__dict__,
-                    "fee_evidence_reason": "fee_pending_eod",
-                }
-            )
-        try:
-            fills = await self.client.list_order_fills(
-                order_id=evidence.broker_order_id
-            )
-            total_fill_qty = sum((fill.qty for fill in fills), Decimal("0"))
-            if not fills or total_fill_qty != evidence.filled_qty:
-                raise ValueError("incomplete order fill activity set")
-            activities = await self.client.list_crypto_fee_activities(
-                order_id=evidence.broker_order_id
-            )
-            posting_date = (
-                activity_posting_date(activities[0]) if activities else None
-            ) or next(
-                (
-                    fill.transaction_time.date()
-                    for fill in reversed(fills)
-                    if fill.transaction_time is not None
-                ),
-                datetime.now(UTC).date(),
-            )
-            if activities and all(
-                activity_posting_date(activity) == posting_date
-                for activity in activities
-            ):
-                day_fills = await self.client.list_fills_for_date(date=posting_date)
-                filled_leg_count = count_filled_legs_for_day(
-                    fills=day_fills,
-                    symbol=self.execution_symbol(order.symbol),
-                    posting_date=posting_date,
-                    expected_order_id=evidence.broker_order_id,
-                )
-            else:
-                filled_leg_count = 0
-        except Exception:
-            return FillEvidence(
-                **{
-                    **evidence.__dict__,
-                    "fee_evidence_reason": "fee_fill_set_incomplete",
-                }
-            )
-        fee_evidence = resolve_crypto_fee_evidence(
-            symbol=self.execution_symbol(order.symbol),
-            side=order.side,
-            filled_qty=evidence.filled_qty,
-            activities=activities,
-            posting_date=posting_date,
-            filled_leg_count=filled_leg_count,
-            filled_dates=filled_order_dates(
-                fills=fills, order_id=evidence.broker_order_id
-            ),
-            terminal_filled=True,
-        )
-        return FillEvidence(
-            **{
-                **evidence.__dict__,
-                "held_qty": fee_evidence.net_received_qty,
-                "fee_amount": fee_evidence.amount,
-                "fee_currency": fee_evidence.currency,
-                "fee_evidence_reason": fee_evidence.reason,
-            }
         )
 
     async def preflight(self, order: Any, *, confirm: bool) -> None:
@@ -569,13 +484,13 @@ class AlpacaCryptoPaper:
                 client_order_id=order.client_order_id,
             )
         )
-        return await self._evidence_with_fees(response, order)
+        return self._evidence(response, order)
 
     async def evidence(self, order: Any) -> FillEvidence:
         response = await self.client.get_order_by_client_order_id(order.client_order_id)
         if response is None:
             raise ValueError("paper order evidence unavailable; no resend")
-        return await self._evidence_with_fees(response, order)
+        return self._evidence(response, order)
 
     async def aclose(self) -> None:
         await self.pricing.aclose()

@@ -8,22 +8,6 @@ from decimal import ROUND_DOWN, Decimal
 from math import lcm
 
 
-def crypto_pair_currencies(symbol: str, venue: str) -> tuple[str, str]:
-    """Return the base and quote assets for a supported crypto venue symbol."""
-    normalized = symbol.upper()
-    if venue == "alpaca_paper_crypto":
-        pair = normalized.split("/")
-        if len(pair) == 2 and all(pair):
-            return pair[0], pair[1]
-        if normalized.endswith("USDT") and len(normalized) > 4:
-            return normalized[:-4], "USD"
-    elif venue in {"binance_spot_demo", "binance_futures_demo"}:
-        for quote in ("USDT", "USDC", "BTC", "ETH", "BNB", "USD"):
-            if normalized.endswith(quote) and len(normalized) > len(quote):
-                return normalized[: -len(quote)], quote
-    raise ValueError(f"unsupported {venue} crypto symbol: {symbol}")
-
-
 def positive(value: object) -> Decimal:
     if isinstance(value, (bool, float)):
         raise ValueError("use exact decimal text")

@@ -1,7 +1,7 @@
 """Unit tests for AlpacaPaperBrokerService methods with mocked transport (ROB-57)."""
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock
@@ -356,55 +356,6 @@ async def test_list_fills_uses_activities_executions_endpoint():
     assert "limit" not in params
     assert len(fills) == 1
     assert fills[0].symbol == "AAPL"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_order_filtered_fill_and_fee_activities_preserve_link_context():
-    fee_activity = {
-        "id": "fee-001",
-        "activity_type": "CFEE",
-        "symbol": "BTCUSD",
-        "qty": "-0.00000175",
-        "price": "60630.38",
-        "status": "executed",
-    }
-    transport = AsyncMock()
-    transport.request = AsyncMock(
-        side_effect=[
-            _make_response(FILL_DATA),
-            _make_response([fee_activity]),
-            _make_response([]),
-        ]
-    )
-    svc = _make_service(transport)
-
-    fills = await svc.list_order_fills(order_id="order-001")
-    fees = await svc.list_crypto_fee_activities(order_id="order-001")
-
-    assert len(fills) == 1 and fills[0].order_id == "order-001"
-    assert len(fees) == 1 and fees[0].order_id is None
-    calls = transport.request.call_args_list
-    assert [call.kwargs["params"]["order_id"] for call in calls] == [
-        "order-001",
-        "order-001",
-        "order-001",
-    ]
-    assert calls[1].args[1] == "/v2/account/activities/CFEE"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_daily_fill_read_is_paginated_by_activity_date():
-    transport = AsyncMock()
-    transport.request = AsyncMock(return_value=_make_response(FILL_DATA))
-    svc = _make_service(transport)
-
-    fills = await svc.list_fills_for_date(date=date(2024, 1, 1))
-
-    assert len(fills) == 1
-    assert fills[0].order_id == "order-001"
-    assert transport.request.call_args.kwargs["params"]["date"] == "2024-01-01"
 
 
 @pytest.mark.unit

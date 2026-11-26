@@ -29,8 +29,6 @@ class AlpacaPaperOrderLedgerRead(BaseModel):
     confirm_flag: bool | None = None
     fee_amount: Decimal | None = None
     fee_currency: str | None = None
-    fee_evidence_reason: str | None = None
-    net_received_qty: Decimal | None = None
     settlement_status: str | None = None
     settlement_at: datetime | None = None
     qty_delta: Decimal | None = None

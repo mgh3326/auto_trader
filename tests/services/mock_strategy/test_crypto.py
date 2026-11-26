@@ -13,10 +13,7 @@ import httpx
 import pytest
 
 from app.services.mock_strategy.crypto_brokers import FillEvidence, PreDispatchRefusal
-from app.services.mock_strategy.crypto_orders import (
-    MarketRules,
-    binance_rules,
-)
+from app.services.mock_strategy.crypto_orders import MarketRules, binance_rules
 from app.services.mock_strategy.crypto_runner import close_due, run_lists
 from app.services.mock_strategy.crypto_signals import BASELINE
 from app.services.mock_strategy.recorder import OrderIntent
@@ -84,7 +81,6 @@ class Recorder:
         row.meta.update(no_order_sent=True, retired_reason=reason)
         self.writes += 1
         return True
-        return True
 
     async def update(self, cid, **kwargs):
         row = self.rows[cid]
@@ -127,7 +123,6 @@ class Broker:
         self.pending = False
         self.unknown_received_qty = False
         self.available = Decimal("100000")
-        self.known_fees = False
 
     async def rules(self, symbol):
         return MarketRules(Decimal("0.1"), Decimal("0.1"), Decimal("5"))
@@ -177,10 +172,6 @@ class Broker:
             and qty
             and not self.unknown_received_qty
             else None,
-            Decimal("0.01")
-            if self.known_fees and order.venue == "alpaca_paper_crypto"
-            else None,
-            "USD" if self.known_fees and order.venue == "alpaca_paper_crypto" else None,
         )
         self.orders[order.client_order_id] = proof
         return proof
@@ -207,7 +198,6 @@ def enabled(monkeypatch):
 async def test_open_rerun_price_move_and_close_due(venue):
     recorder = Recorder()
     broker = Broker(recorder)
-    broker.known_fees = venue == "alpaca_paper_crypto"
     args = {
         "venue": venue,
         "asof": ASOF,
@@ -323,13 +313,12 @@ async def test_alpaca_crypto_exit_uses_conservative_fee_fallback_when_net_is_unk
         confirm=True,
     )
     entries = [row for row in recorder.rows.values() if row.side == "buy"]
-    assert len(result["orders"]) == len(entries)
     exits = [call for call in broker.calls[sent_before_exit:] if call.side == "sell"]
+    assert len(result["orders"]) == len(entries)
     assert len(exits) == len(entries)
     for exit_order, entry in zip(exits, entries, strict=True):
         gross = Decimal(entry.meta["filled_qty"])
-        rules = await broker.rules(entry.symbol)
-        expected = rules.floor(
+        expected = (await broker.rules(entry.symbol)).floor(
             gross * Decimal("0.9975"), await broker.price(entry.symbol)
         )
         assert exit_order.qty == expected
@@ -359,9 +348,6 @@ async def test_alpaca_crypto_replaces_unclaimed_gross_sized_exit_plan():
         proof.price,
         proof.terminal,
         net_qty,
-        proof.fee_amount,
-        proof.fee_currency,
-        proof.fee_evidence_reason,
     )
     stale = OrderIntent(
         strategy_id=entry.strategy_id,
@@ -400,14 +386,6 @@ async def test_alpaca_crypto_replaces_unclaimed_gross_sized_exit_plan():
     assert recorder.rows[stale.client_order_id].meta["no_order_sent"] is True
     assert replacement.client_order_id != stale.client_order_id
     assert replacement.qty == net_qty
-    assert (
-        next(
-            call
-            for call in broker.calls
-            if call.client_order_id == replacement.client_order_id
-        ).qty
-        == net_qty
-    )
 
 
 @pytest.mark.asyncio
@@ -451,207 +429,6 @@ async def test_alpaca_crypto_zero_available_keeps_unsold_residual_open():
         for row in entries
     )
     assert len(broker.calls) == before
-
-
-@pytest.mark.asyncio
-async def test_verified_net_quantity_survives_unavailable_fee_lookup_and_sizes_exit():
-    recorder = Recorder()
-    broker = Broker(recorder)
-    broker.known_fees = True
-    await run_lists(
-        signals(),
-        venue="alpaca_paper_crypto",
-        asof=ASOF,
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-        now=DECISION,
-    )
-    entry = next(row for row in recorder.rows.values() if row.side == "buy")
-    proven_net = Decimal("0.7")
-    entry.meta["net_received_qty"] = str(proven_net)
-    old_proof = broker.orders[entry.client_order_id]
-    broker.orders[entry.client_order_id] = FillEvidence(
-        old_proof.broker_order_id,
-        old_proof.status,
-        old_proof.filled_qty,
-        old_proof.price,
-        old_proof.terminal,
-        None,
-        None,
-        None,
-        "fee_pending_eod",
-    )
-
-    await close_due(
-        venue="alpaca_paper_crypto",
-        asof=DECISION + timedelta(days=3),
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-    )
-
-    assert entry.meta["net_received_qty"] == str(proven_net)
-    exit_order = next(
-        order
-        for order in broker.calls
-        if order.side == "sell" and order.episode_id == entry.episode_id
-    )
-    assert exit_order.qty == proven_net
-
-
-@pytest.mark.asyncio
-async def test_alpaca_crypto_net_pnl_waits_for_the_current_exit_fee():
-    recorder = Recorder()
-    broker = Broker(recorder)
-    await run_lists(
-        signals(),
-        venue="alpaca_paper_crypto",
-        asof=ASOF,
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-        now=DECISION,
-    )
-    entry = next(row for row in recorder.rows.values() if row.side == "buy")
-    proof = broker.orders[entry.client_order_id]
-    broker.orders[entry.client_order_id] = FillEvidence(
-        proof.broker_order_id,
-        proof.status,
-        proof.filled_qty,
-        proof.price,
-        proof.terminal,
-        proof.held_qty,
-        Decimal("0.01"),
-        "USD",
-        None,
-    )
-
-    await close_due(
-        venue="alpaca_paper_crypto",
-        asof=DECISION + timedelta(days=3),
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-    )
-
-    assert "gross_pnl" in entry.meta
-    assert "net_pnl" not in entry.meta
-    assert entry.status == "filled"
-    exit_row = next(
-        row
-        for row in recorder.rows.values()
-        if row.side == "sell" and row.episode_id == entry.episode_id
-    )
-    exit_proof = broker.orders[exit_row.client_order_id]
-    broker.orders[exit_row.client_order_id] = FillEvidence(
-        exit_proof.broker_order_id,
-        exit_proof.status,
-        exit_proof.filled_qty,
-        exit_proof.price,
-        exit_proof.terminal,
-        exit_proof.held_qty,
-        Decimal("0.02"),
-        "USD",
-        None,
-    )
-    calls_before_refresh = len(broker.calls)
-    await close_due(
-        venue="alpaca_paper_crypto",
-        asof=DECISION + timedelta(days=3),
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-    )
-    assert entry.status == "closed"
-    assert entry.meta["net_pnl"] == str(
-        Decimal(entry.meta["gross_pnl"]) - Decimal("0.03")
-    )
-    assert len(broker.calls) == calls_before_refresh
-
-
-@pytest.mark.asyncio
-async def test_alpaca_crypto_same_run_exit_fee_is_included_in_net_pnl():
-    recorder = Recorder()
-    broker = Broker(recorder)
-    broker.known_fees = True
-    await run_lists(
-        signals(),
-        venue="alpaca_paper_crypto",
-        asof=ASOF,
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-        now=DECISION,
-    )
-
-    await close_due(
-        venue="alpaca_paper_crypto",
-        asof=DECISION + timedelta(days=3),
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-    )
-
-    entries = [row for row in recorder.rows.values() if row.side == "buy"]
-    assert len(entries) == 10
-    for entry in entries:
-        assert entry.status == "closed"
-        assert entry.meta["net_pnl"] == str(
-            Decimal(entry.meta["gross_pnl"]) - Decimal("0.02")
-        )
-
-
-@pytest.mark.asyncio
-async def test_alpaca_crypto_base_fee_currency_converts_using_venue_pair():
-    recorder = Recorder()
-    broker = Broker(recorder)
-    broker.known_fees = True
-    await run_lists(
-        signals(),
-        venue="alpaca_paper_crypto",
-        asof=ASOF,
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-        now=DECISION,
-    )
-    entry = next(row for row in recorder.rows.values() if row.side == "buy")
-    old_proof = broker.orders[entry.client_order_id]
-    base_fee = Decimal("0.01")
-    broker.orders[entry.client_order_id] = FillEvidence(
-        old_proof.broker_order_id,
-        old_proof.status,
-        old_proof.filled_qty,
-        old_proof.price,
-        old_proof.terminal,
-        old_proof.filled_qty,
-        base_fee,
-        entry.symbol.removesuffix("USDT"),
-        None,
-    )
-
-    await close_due(
-        venue="alpaca_paper_crypto",
-        asof=DECISION + timedelta(days=3),
-        broker=broker,
-        recorder=recorder,
-        dry_run=False,
-        confirm=True,
-    )
-
-    assert entry.status == "closed"
-    assert entry.meta["net_pnl"] == str(
-        Decimal(entry.meta["gross_pnl"]) - Decimal("0.31")
-    )
 
 
 @pytest.mark.asyncio

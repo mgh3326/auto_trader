@@ -21,7 +21,6 @@ from app.services.mock_strategy.crypto_brokers import (
 from app.services.mock_strategy.crypto_orders import (
     BelowVenueMinimum,
     client_id,
-    crypto_pair_currencies,
     positive,
     strategy_id,
 )
@@ -39,19 +38,6 @@ def _entry_status(evidence: FillEvidence) -> str:
 
 
 async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
-    meta = {
-        "filled_qty": str(evidence.filled_qty),
-        "fee_amount": (
-            str(evidence.fee_amount) if evidence.fee_amount is not None else None
-        ),
-        "fee_currency": evidence.fee_currency,
-        "fee_evidence_reason": evidence.fee_evidence_reason,
-        "entry_terminal": evidence.terminal,
-        "broker_status": evidence.status,
-    }
-    # A missing fee lookup is not a revocation of an earlier positive net proof.
-    if evidence.held_qty is not None:
-        meta["net_received_qty"] = str(evidence.held_qty)
     await recorder.update(
         order.client_order_id,
         status=_entry_status(evidence),
@@ -62,7 +48,11 @@ async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
             if evidence.filled_qty and getattr(order, "opened_at", None) is None
             else None
         ),
-        meta=meta,
+        meta={
+            "filled_qty": str(evidence.filled_qty),
+            "entry_terminal": evidence.terminal,
+            "broker_status": evidence.status,
+        },
     )
 
 
@@ -533,7 +523,6 @@ async def close_due(
                 if r.episode_id == entry.episode_id and r.side in {"sell", "cover"}
             ]
             sold, proceeds, pending = Decimal("0"), Decimal("0"), None
-            exit_fee_evidence = []
             in_flight = []
             planned_count = 0
             for leg in legs:
@@ -566,7 +555,6 @@ async def close_due(
                 sold += proof.filled_qty
                 if proof.filled_qty:
                     proceeds += proof.filled_qty * positive(proof.price)
-                    exit_fee_evidence.append(proof)
                 if not proof.terminal:
                     in_flight.append(leg)
             if planned_count > 1:
@@ -575,18 +563,13 @@ async def close_due(
                 await broker.rules(entry.symbol),
                 await broker.price(entry.symbol),
             )
-            recorded_net = entry.meta.get("net_received_qty")
-            try:
-                recorded_net_qty = (
-                    Decimal(str(recorded_net)) if recorded_net is not None else None
-                )
-            except Exception:
-                recorded_net_qty = None
-            held = evidence.held_qty or recorded_net_qty
-            if venue == "alpaca_paper_crypto" and held is None:
+            held = (
+                evidence.held_qty
+                if evidence.held_qty is not None
+                else evidence.filled_qty
+            )
+            if venue == "alpaca_paper_crypto" and evidence.held_qty is None:
                 held = rules.floor(evidence.filled_qty * Decimal("0.9975"), price)
-            if held is None:
-                held = evidence.filled_qty
             remaining = held - sold
             if remaining < 0:
                 raise ValueError("close fills exceed attributed entry")
@@ -599,8 +582,6 @@ async def close_due(
                 )
                 continue
             sellable_remaining = remaining
-            position_limited = False
-            dust_remaining = False
             if venue == "alpaca_paper_crypto" and remaining:
                 available = await broker.available_qty(entry)
                 if available < remaining:
@@ -614,15 +595,13 @@ async def close_due(
                     )
                     continue
                 sellable_remaining = min(remaining, available)
-                position_limited = sellable_remaining < remaining
             qty = None
             if sellable_remaining:
                 try:
                     qty = rules.floor(sellable_remaining, price)
                 except BelowVenueMinimum:
-                    if position_limited:
-                        qty = None
-                    elif not sold:
+                    # Only an actual residual after at least one proven exit is dust.
+                    if not sold:
                         raise
             if qty is not None:
                 await broker.closeable(entry, qty)
@@ -692,13 +671,12 @@ async def close_due(
                 sold += proof.filled_qty
                 if proof.filled_qty:
                     proceeds += proof.filled_qty * positive(proof.price)
-                    exit_fee_evidence.append(proof)
                 remaining = held - sold
                 try:
                     if remaining:
                         rules.floor(remaining, price)
                 except BelowVenueMinimum:
-                    dust_remaining = True
+                    pass  # unsellable, step/min-notional residual is reported below
                 else:
                     if remaining:
                         results.append(
@@ -708,75 +686,27 @@ async def close_due(
                             }
                         )
                         continue
-            fee_values = [evidence, *exit_fee_evidence]
-            fee_evidence_pending = venue == "alpaca_paper_crypto" and not all(
-                item.fee_amount is not None
-                and item.fee_currency is not None
-                and item.fee_evidence_reason is None
-                for item in fee_values
-            )
             if not dry_run and sold:
                 pnl = proceeds - positive(evidence.price) * sold
                 if entry.side == "short":
                     pnl = -pnl
-                pnl_meta: dict[str, Any] = {
-                    "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
-                    "gross_pnl": str(pnl),
-                    "residual_qty": str(remaining),
-                }
-                if venue == "alpaca_paper_crypto":
-                    if not fee_evidence_pending:
-                        fees_usd = Decimal("0")
-                        known = True
-                        for item in fee_values:
-                            if item.fee_currency == "USD":
-                                fees_usd += item.fee_amount or Decimal("0")
-                            elif (
-                                item.fee_currency
-                                == crypto_pair_currencies(entry.symbol, venue)[0]
-                            ):
-                                reference_price = item.price
-                                if reference_price is None:
-                                    known = False
-                                    break
-                                fees_usd += (
-                                    item.fee_amount or Decimal("0")
-                                ) * reference_price
-                            elif item.fee_amount != 0:
-                                known = False
-                                break
-                        if known:
-                            pnl_meta["net_pnl"] = str(pnl - fees_usd)
-                            pnl_meta["fee_total_usd"] = str(fees_usd)
-                        else:
-                            pnl_meta["net_pnl_reason"] = "fee_currency_unconvertible"
-                    else:
-                        pnl_meta["net_pnl_reason"] = "fee_evidence_missing"
-                        pnl_meta["fee_evidence_pending"] = True
                 await recorder.update(
                     entry.client_order_id,
-                    status=(
-                        "filled" if remaining or fee_evidence_pending else "closed"
-                    ),
-                    closed_at=(
-                        None if remaining or fee_evidence_pending else datetime.now(UTC)
-                    ),
+                    status="filled" if remaining else "closed",
+                    closed_at=None if remaining else datetime.now(UTC),
                     exit_price=proceeds / sold,
                     realized_pnl=pnl,
-                    meta=pnl_meta,
+                    meta={
+                        "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
+                        "residual_qty": str(remaining),
+                    },
                 )
             results.append(
                 {
                     "client_order_id": entry.client_order_id,
                     "status": ("would_close" if dry_run else "closed")
-                    if not remaining and not fee_evidence_pending
-                    else "awaiting_fee_evidence"
-                    if not remaining and fee_evidence_pending
-                    else "waiting_for_position_availability"
-                    if position_limited and qty is None
-                    else "dust_remaining"
-                    if dust_remaining
-                    else "close_partial",
+                    if not remaining
+                    else "dust_remaining",
                     "residual_qty": str(remaining),
                 }
             )

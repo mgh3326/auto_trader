@@ -73,12 +73,7 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
-**Alpaca paper crypto 수수료·순수령 수량 (hk 6784; 2026-11-26 설계 재범위)**: `alpaca_paper_crypto`의 `CFEE`/`FEE` 응답에는 `order_id`가 없을 수 있다. 수수료는 P&L 용도의 최선 노력 증거다. 활동의 `symbol`과 UTC `date`를 사용하되, 그 종목에 해당 UTC 날짜의 체결 leg가 정확히 하나 있고 그 주문 상태가 terminal-filled일 때만 귀속한다. 날짜/종목 후보가 모호하면 `fee_activity_unattributable`, 아직 활동이 게시되지 않았으면 `fee_pending_eod`로 두고 수수료 필드와 `net_received_qty`는 NULL로 남긴다. 부분 체결 또는 nonterminal 주문에는 완전한 fee evidence를 기록하지 않는다. `fee_amount`는 최대 18자리 소수 정밀도를 보존하며, `fee_currency`와 닫힌 `fee_evidence_reason`을 `AlpacaPaperLedgerService`만 기록한다.
-
-**교체된 기존 규칙 (hk 6784)**: 주문 ID 조회 필터를 증거로 삼는 규칙은 대체됐다. exit에서 수수료 증거가 없으면 청산을 거부한다는 규칙도 대체됐다. Alpaca paper crypto 진입 청산의 wanted 수량은 입금 확인된 `net_received_qty`가 있으면 그것을, 없으면 `floor_to_increment(gross_filled_qty * (1 - 0.0025))`를 쓴다. `qty_available < wanted`이면 그 실행에서는 주문을 보내지 않고 episode 잔량을 유지하며 `broker_qty_unavailable`을 보고한다. episode의 귀속 잔량은 계좌 가용량으로 덮어쓰지 않고, proven sell fills만 차감한다.
-
-수동 복구 CLI `python -m scripts.reconcile_alpaca_paper_crypto_fees`는 기본 미리보기이고,
-`--commit`만 서비스 레이어에 기록한다. `--client-order-id`는 오래된 미해결 행을 건너뛰어 특정 행을 조회한다. 이 단계는 읽기 전용 Alpaca paper client로 계좌 활동을 가져오며 주문을 제출하지 않는다. 기존 gross P&L은 유지하고, 양쪽 leg의 fee evidence가 모두 완전할 때만 fill price로 통화 변환한 net P&L을 mock 전략 기록과 Alpaca roundtrip 보고에 추가한다. 이번 실행에서 생성되거나 재개한 leg도 fee/P&L 계산에 포함한다. 수수료가 빠진 보고는 gross P&L을 유지하고 net P&L은 NULL이다. 근거: [Alpaca crypto trading](https://docs.alpaca.markets/us/v1.1/docs/crypto-trading), [Account Activities](https://docs.alpaca.markets/us/reference/getaccountactivitiesbyactivitytype-1).
+**Alpaca paper crypto 청산 수량 (hk 6784; 2026-11-27 범위)**: 청산 크기는 proven `net_received_qty`가 있으면 사용하고, 없으면 `floor_to_increment(gross_filled_qty * (1 - 0.0025))`로 보수적으로 계산한다. `qty_available`은 주문 전송 상한이다. 가용량이 wanted 수량보다 작으면 그 실행에서는 주문을 보내지 않고 `broker_qty_unavailable`을 보고한다. episode 잔량은 계좌 가용량으로 덮어쓰지 않으며, proven sell fills만 잔량에서 차감한다. 같은 실행에서 생성되거나 재개한 leg도 기존 처리 규칙을 따른다. 수수료 귀속·ledger fee writes/backfill과 fee-derived net P&L은 hk 6890으로 이관됐다.
 
 **Alpaca paper 프리·애프터 모의 제출 — `extended_hours` (hk 6497)**: `alpaca_paper_preview_order`와
 `alpaca_paper_submit_order`는 선택 인자 `extended_hours: bool = False`를 받는다. 기본값은 기존 요청 본문·

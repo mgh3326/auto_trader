@@ -1,9 +1,6 @@
 """Fake broker wires preserve isolated 1x, reduceOnly, account and fill proof."""
 
-import json
-from datetime import UTC, date, datetime
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,10 +20,6 @@ from app.services.mock_strategy.crypto_brokers import (
 )
 
 pytestmark = pytest.mark.unit
-
-FEE_ACTIVITY_FIXTURE = json.loads(
-    Path("tests/fixtures/alpaca_paper_crypto_fee_activities.json").read_text()
-)
 
 
 def intent(side="short"):
@@ -276,157 +269,6 @@ async def test_alpaca_crypto_buy_and_sell_above_fifty_dollars(monkeypatch):
     assert bought.filled_qty == sold.filled_qty == 2
     assert [r.side for r in client.calls] == ["buy", "sell"]
     assert all(r.symbol == "BTC/USD" and r.time_in_force == "gtc" for r in client.calls)
-
-
-def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
-    from app.services.alpaca_paper_crypto_fee_evidence import (
-        resolve_crypto_fee_evidence,
-    )
-
-    buy = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("0.0007"),
-        activities=FEE_ACTIVITY_FIXTURE["buy_base_fee"],
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert buy.amount == Decimal("0.00000175")
-    assert buy.currency == "BTC"
-    assert buy.net_received_qty == Decimal("0.00069825")
-
-    sell = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="sell",
-        filled_qty=Decimal("0.00069825"),
-        activities=FEE_ACTIVITY_FIXTURE["sell_usd_fee"],
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert sell.amount == Decimal("0.08")
-    assert sell.currency == "USD"
-    assert sell.net_received_qty is None
-
-    missing = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("1"),
-        activities=FEE_ACTIVITY_FIXTURE["missing"],
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert (missing.amount, missing.currency, missing.net_received_qty) == (
-        None,
-        None,
-        None,
-    )
-    assert missing.reason == "fee_pending_eod"
-
-
-def test_crypto_fee_evidence_requires_unique_filled_leg_and_terminal_order():
-    from app.services.alpaca_paper_crypto_fee_evidence import (
-        resolve_crypto_fee_evidence,
-    )
-
-    activity = FEE_ACTIVITY_FIXTURE["buy_base_fee"]
-    matched = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("0.0007"),
-        activities=activity,
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert matched.amount == Decimal("0.00000175")
-    assert matched.net_received_qty == Decimal("0.00069825")
-
-    ambiguous = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("0.0007"),
-        activities=activity,
-        posting_date="2026-11-26",
-        filled_leg_count=2,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert ambiguous.net_received_qty is None
-    assert ambiguous.reason == "fee_activity_unattributable"
-
-    partial_posting = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("0.0007"),
-        activities=activity,
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 25), date(2026, 11, 26)},
-        terminal_filled=True,
-    )
-    assert partial_posting.amount is None
-    assert partial_posting.reason == "fee_activity_unattributable"
-
-    nonterminal = resolve_crypto_fee_evidence(
-        symbol="BTC/USD",
-        side="buy",
-        filled_qty=Decimal("0.0007"),
-        activities=activity,
-        posting_date="2026-11-26",
-        filled_leg_count=1,
-        filled_dates={date(2026, 11, 26)},
-        terminal_filled=False,
-    )
-    assert nonterminal.amount is None
-    assert nonterminal.reason == "fee_activity_unattributable"
-
-
-def test_crypto_pair_currencies_support_alpaca_and_binance_symbols():
-    from app.services.mock_strategy.crypto_orders import crypto_pair_currencies
-
-    assert crypto_pair_currencies("BTC/USD", "alpaca_paper_crypto") == (
-        "BTC",
-        "USD",
-    )
-    assert crypto_pair_currencies("BTCUSDT", "binance_spot_demo") == (
-        "BTC",
-        "USDT",
-    )
-    assert crypto_pair_currencies("BTCUSDT", "alpaca_paper_crypto") == (
-        "BTC",
-        "USD",
-    )
-
-
-def test_crypto_fee_day_match_counts_distinct_same_symbol_orders():
-    from app.services.alpaca_paper_crypto_fee_evidence import (
-        count_filled_legs_for_day,
-    )
-
-    fills = [
-        SimpleNamespace(
-            order_id=order_id,
-            symbol="BTCUSD",
-            transaction_time=datetime(2026, 11, 26, hour, tzinfo=UTC),
-        )
-        for order_id, hour in (("order-1", 9), ("order-1", 10), ("order-2", 11))
-    ]
-    assert (
-        count_filled_legs_for_day(
-            fills=fills,
-            symbol="BTC/USD",
-            posting_date=date(2026, 11, 26),
-            expected_order_id="order-1",
-        )
-        == 2
-    )
 
 
 @pytest.mark.asyncio
