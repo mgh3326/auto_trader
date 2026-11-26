@@ -12,7 +12,7 @@ class KISFlowResponseContractError(ValueError):
     """A KIS flow/event response did not match its documented wire shape."""
 
 
-_DECIMAL_FIELD = re.compile(r"_(?:vol|qty|pbmn|prpr|rate|ctrt|val|amt|price)\d*$")
+_DECIMAL_FIELD = re.compile(r"_(?:vol|qty|pbmn|tr_pbmn|prpr|rate|ctrt|val|amt|price)\d*$")
 
 
 def _decimal(value: Any, field: str) -> Decimal:
@@ -71,14 +71,15 @@ def parse_member_summary(raw: Any) -> dict[str, list[dict[str, Any]]]:
     buyers: list[dict[str, Any]] = []
     sellers: list[dict[str, Any]] = []
     for rank in range(1, 6):
-        for side, target, member_field, name_field, volume_field in (
-            ("buyer", buyers, f"shnu_mbcr_no{rank}", f"shnu_mbcr_name{rank}", f"shnu_vol{rank}"),
-            ("seller", sellers, f"seln_mbcr_no{rank}", f"seln_mbcr_name{rank}", f"seln_vol{rank}"),
+        for side, target, member_field, name_field, volume_field, amount_field in (
+            ("buyer", buyers, f"shnu_mbcr_no{rank}", f"shnu_mbcr_name{rank}", f"shnu_vol{rank}", f"shnu_tr_pbmn{rank}"),
+            ("seller", sellers, f"seln_mbcr_no{rank}", f"seln_mbcr_name{rank}", f"seln_vol{rank}", f"seln_tr_pbmn{rank}"),
         ):
             name = normalized.get(name_field)
             code = normalized.get(member_field)
             volume = normalized.get(volume_field)
-            if name in (None, "") and code in (None, "") and volume in (None, ""):
+            amount = normalized.get(amount_field)
+            if name in (None, "") and code in (None, "") and volume in (None, "") and amount in (None, ""):
                 continue
             if not isinstance(name, str) or not name or not isinstance(code, str) or not code:
                 raise KISFlowResponseContractError(
@@ -88,5 +89,9 @@ def parse_member_summary(raw: Any) -> dict[str, list[dict[str, Any]]]:
                 raise KISFlowResponseContractError(
                     f"member {side} rank {rank} volume is invalid"
                 )
-            target.append({"rank": rank, "member_code": code, "member_name": name, "volume": volume})
+            if not isinstance(amount, Decimal):
+                raise KISFlowResponseContractError(
+                    f"member {side} rank {rank} amount is invalid"
+                )
+            target.append({"rank": rank, "member_code": code, "member_name": name, "volume": volume, "trading_amount": amount})
     return {"buyers": buyers, "sellers": sellers}

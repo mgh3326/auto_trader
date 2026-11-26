@@ -233,6 +233,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `last_confirmed_session_date`: most recent confirmed session (Naver-recent when available, else the previous XKRX session).
   - `confirmed`: embedded confirmed multi-day series (source `naver`) carrying `foreign_ownership_pct` (외인소진율), `foreign_ownership_trend` (up/down/flat), `foreign_ownership_rate_change` (pp), and `history` (last 5 confirmed days of foreign/institution/individual net-buy + close). Best-effort: on Naver failure the KIS block stays intact and `confirmed.error` is set.
   - This is not a confirmed daily close figure and should not be mixed with `get_investor_trends` day/week/month history.
+- `get_kr_flow_signals(symbol, days=20)`
+  - DEFAULT 프로필 전용 KR 읽기 도구. 토스 공매도·대차·신용·프로그램매매와 KIS VI·거래원 매수/매도 상위를 소스별 `status`/`as_of`로 반환하며, 한 소스 오류가 나머지 블록을 막지 않습니다. `days`는 1~100입니다.
+- `get_kr_investor_rankings(investor="foreign", side="buy", limit=20)`
+  - DEFAULT 프로필 전용. 국내 외국인·기관·개인 순매수 또는 순매도 랭킹과 제공자 관측 시각(`as_of`)을 반환합니다. `limit`은 1~100이며, 금액 단위는 KRW입니다.
 - `get_toss_buy_balance(symbol)`
   - Toss orderbook balance rate (buyBalanceRate/sellBalanceRate) and foreigner holding ratio — NOT user buy ratio. Live per-call, operator-gated. Disabled by default (returns `status='disabled'` unless `TOSS_CONSUMER_SIGNALS_ENABLED=true` is set). Korean stocks only.
 - `get_toss_ai_signal(symbol)`

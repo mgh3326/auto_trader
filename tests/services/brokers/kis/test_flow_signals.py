@@ -31,6 +31,7 @@ def test_kis_member_fixture_parses_top_brokers():
     parsed = parse_member_summary(fixture("kis_member.json"))
     assert parsed["buyers"][0]["member_name"] == "미래에셋증권"
     assert parsed["buyers"][0]["volume"] == Decimal("150000")
+    assert parsed["buyers"][0]["trading_amount"] == Decimal("10500000000")
     assert parsed["sellers"][0]["volume"] == Decimal("120000")
 
 

@@ -1055,3 +1055,11 @@ KIS 토큰 인증 클라이언트만 사용한다. 공식 query 필드 `CTS`, `G
 작업은 스케줄러 등록을 추가하지 않는다. US 배당과 주문·계좌 API 는 범위 밖이다.
 공식 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
 [KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+### KR 수급·이벤트 신호 조회 (hk 6664)
+
+`TossReadClient`는 `STOCK_TRADING_TREND` 그룹(10 TPS)의 공매도·대차·신용·프로그램매매 endpoint와 `RANKING` 그룹(5 TPS)의 투자자 랭킹 endpoint를 strict DTO로 읽는다. 문자열 decimal은 `Decimal`, `date`는 `date`, `updatedAt`/`rankedAt`은 timezone-aware datetime으로 바꾸며 malformed row는 `TossResponseContractError`다. 신용 endpoint의 null `marginLoan`/`stockLoan`은 null로 유지한다. 프로그램매매는 KRX 거래량만 포함하고 거래대금이나 NXT 거래를 덧붙이지 않는다. `investor_trading_rankings`는 외국인·기관·개인 모두의 net-buy/net-sell 행을 받아 호출자가 요청한 investor/side로 투영한다. 공식 명세·예시: [Toss Open API v1.2.28](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json).
+
+`KISClient.inquire_vi_status`는 국내 VI TR `FHPST01390000`과 요청 종목·당일 KST 날짜를 사용하고, `inquire_member`는 국내 회원사 TR `FHKST01010600`의 현재 종목별 매도/매수 회원사 상위 요약을 읽는다. KIS 숫자는 float 없이 Decimal로, 날짜는 date로 엄격 정규화한다. malformed 행과 요청 심볼 불일치는 `KISFlowResponseContractError`다. 두 호출은 기존 KIS 토큰 인증 transport만 이용하며 주문·계좌 표면에 닿지 않는다. 공식 샘플: [국내주식 함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py) 및 [국내주식 호출 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
+
+MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `days` 1..100을 받고 여섯 소스 블록 각각에 `status`·`as_of`를 돌려준다. `get_kr_investor_rankings`는 투자자·side·limit을 검증하고 제공자 `rankedAt`을 보존한다. 소스 실패는 해당 블록의 `error_class`에 한정되며 빈 결과는 `empty`이지 0값 행이 아니다. 수집·저장·정책·주문 경로는 추가하지 않는다.

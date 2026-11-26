@@ -29,10 +29,21 @@ async def test_flow_tool_isolates_one_source_failure(monkeypatch):
 
     class FakeKis:
         async def inquire_vi_status(self, symbol, session_date):
-            return [{"stck_shrn_iscd": symbol, "vi_prpr": "100"}]
+            return [{"stck_shrn_iscd": symbol, "vi_prpr": Decimal("100")}]
 
         async def inquire_member(self, symbol):
-            return {"shnu_mbcr_no1": "1", "shnu_mbcr_name1": "buyer", "shnu_vol1": "4"}
+            return {
+                "buyers": [
+                    {
+                        "rank": 1,
+                        "member_code": "1",
+                        "member_name": "buyer",
+                        "volume": Decimal("4"),
+                        "trading_amount": Decimal("400"),
+                    }
+                ],
+                "sellers": [],
+            }
 
         async def aclose(self):
             return None

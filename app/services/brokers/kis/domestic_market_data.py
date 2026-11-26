@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from app.core.timezone import now_kst, today_kst
 
 from . import constants
+from .flow_signals import parse_member_summary, parse_vi_status_rows
 from ._base_market_data import (
     MarketDataBase,
     _aggregate_minute_candles_frame,
@@ -470,7 +471,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         rows = js.get("output")
         if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
             raise RuntimeError("Malformed KIS VI status payload: expected output list")
-        return rows
+        return parse_vi_status_rows(rows, symbol=code)
 
     async def inquire_member(self, code: str) -> dict[str, Any]:
         """Read current broker/member buy-sell summary (FHKST01010600)."""
@@ -488,7 +489,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         output = js.get("output")
         if not isinstance(output, dict):
             raise RuntimeError("Malformed KIS member payload: expected output object")
-        return output
+        return parse_member_summary(output)
 
     async def inquire_investor(
         self,

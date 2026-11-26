@@ -742,6 +742,31 @@ def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
                 if key in {"date", "updatedAt"}:
                     continue
                 normalized[key] = _flow_decimal_tree(value, key)
+            required: dict[str, tuple[str, ...]] = {
+                "short-selling": ("shortSellingVolume", "shortSellingAmount"),
+                "securities-lending": (
+                    "executionQuantity", "repaymentQuantity", "balanceQuantity", "balanceAmount",
+                ),
+                "credit-trades": ("marginLoan", "stockLoan"),
+                "program-trades": ("arbitrage", "nonArbitrage"),
+            }
+            for field in required[endpoint]:
+                if field not in normalized or normalized[field] is None:
+                    raise TossResponseContractError(f"'{field}' is required")
+            nested_required = {
+                "credit-trades": {
+                    "marginLoan": ("newQuantity", "returnQuantity", "balanceQuantity", "balanceRate", "tradingRate"),
+                    "stockLoan": ("newQuantity", "returnQuantity", "balanceQuantity", "balanceRate", "tradingRate"),
+                },
+                "program-trades": {
+                    "arbitrage": ("buyVolume", "sellVolume", "netBuyVolume"),
+                    "nonArbitrage": ("buyVolume", "sellVolume", "netBuyVolume"),
+                },
+            }.get(endpoint, {})
+            for field, nested_fields in nested_required.items():
+                nested = normalized[field]
+                if not isinstance(nested, dict) or any(name not in nested for name in nested_fields):
+                    raise TossResponseContractError(f"'{field}' is incomplete")
             records.append(normalized)
         next_until = _opt_str(result.get("nextUntil"), "nextUntil")
         return TossTradingTrendPage(

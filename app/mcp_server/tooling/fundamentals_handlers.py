@@ -382,9 +382,9 @@ def _register_fundamentals_tools_impl(
         @mcp.tool(
             name="get_kr_flow_signals",
             description=(
-                "Read Korean stock short selling, securities lending, credit trades, "
-                "program trades, KIS VI status, and broker buy/sell summary. Each "
-                "source reports its own status and observation time. Read-only."
+                "국내 종목의 공매도·대차·신용·프로그램매매, KIS VI 현황과 거래원 "
+                "매수·매도 상위를 조회합니다. 각 소스의 상태와 관측 시각을 따로 "
+                "반환하는 읽기 전용 도구입니다."
             ),
         )
         async def get_kr_flow_signals(
@@ -396,9 +396,8 @@ def _register_fundamentals_tools_impl(
         @mcp.tool(
             name="get_kr_investor_rankings",
             description=(
-                "Read the latest Toss Korean stock net-buy or net-sell ranking for "
-                "foreign, institution, or individual investors. Amounts are KRW; "
-                "the source observation time is returned. Read-only."
+                "토스 국내 종목의 외국인·기관·개인 순매수 또는 순매도 랭킹을 "
+                "조회합니다. 금액은 KRW이며 제공자 관측 시각을 함께 반환합니다."
             ),
         )
         async def get_kr_investor_rankings(

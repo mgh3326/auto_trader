@@ -64,10 +64,6 @@ def _source_result(awaitable: Awaitable[Any], normalize: Callable[[Any], Any]) -
 
 async def handle_get_kr_flow_signals(symbol: str, days: int = 20) -> dict[str, Any]:
     from app.services.brokers.kis.client import KISClient
-    from app.services.brokers.kis.flow_signals import (
-        parse_member_summary,
-        parse_vi_status_rows,
-    )
     from app.services.brokers.toss.client import TossReadClient
 
     symbol = (symbol or "").strip()
@@ -96,14 +92,14 @@ async def handle_get_kr_flow_signals(symbol: str, days: int = 20) -> dict[str, A
             kis.inquire_vi_status(symbol, session_date),
             lambda rows: {
                 "as_of": session_date,
-                "data": parse_vi_status_rows(rows, symbol=symbol),
+                "data": rows,
             },
         ),
         "kis_broker_window": _source_result(
             kis.inquire_member(symbol),
             lambda raw: {
                 "observed_at": dt.datetime.now(dt.UTC),
-                "data": parse_member_summary(raw),
+                "data": raw,
             },
         ),
     }

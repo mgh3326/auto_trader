@@ -41,11 +41,20 @@ def test_toss_flow_fixtures_keep_exact_dates_and_decimals(name, parser, field, e
     assert value == expected
 
 
-def test_toss_flow_malformed_decimal_is_typed_error():
-    raw = fixture("toss_short_selling.json")
-    raw["records"][0]["shortSellingAmount"] = "not-a-number"
+@pytest.mark.parametrize(
+    ("name", "parser", "field"),
+    [
+        ("toss_short_selling.json", parse_short_selling_page, "shortSellingAmount"),
+        ("toss_securities_lending.json", parse_securities_lending_page, "balanceAmount"),
+        ("toss_credit_trades.json", parse_credit_trades_page, "marginLoan"),
+        ("toss_program_trades.json", parse_program_trades_page, "arbitrage"),
+    ],
+)
+def test_toss_flow_malformed_decimal_is_typed_error(name, parser, field):
+    raw = fixture(name)
+    raw["records"][0][field] = {"newQuantity": "bad"} if field == "marginLoan" else "bad"
     with pytest.raises(TossResponseContractError):
-        parse_short_selling_page(raw)
+        parser(raw)
 
 
 def test_toss_rankings_parse_exact_amount_and_asof():
