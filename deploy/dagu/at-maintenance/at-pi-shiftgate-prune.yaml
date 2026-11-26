@@ -1,0 +1,28 @@
+# Decision 530 A / 532 A (operator A451, A457; hk 6425): `shiftgate prune` on the pi, daily 05:45 KST, 15 minutes after
+# at-pi-created-gc (05:30) has removed never-started job containers older than 1 h (operator 2026-11-26: daily, not hourly).
+# shiftgate keep rule as-is (active, previous, pending, colour containers, newest keep_digests=3, union across services
+# sharing the repo), no force: an image any container still uses is refused by docker and kept. Needs shiftgate >= v0.2.0.
+# 이 파일은 OCI Dagu 등록본의 사본이며 저장소가 등록하지 않는다.
+description: "Daily shiftgate prune of unused auto_trader images on the pi (decisions 530 A, 532 A)"
+schedule: "CRON_TZ=Asia/Seoul 45 5 * * *"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: prune
+    script: |
+      rc=0
+      df -h / | tail -1
+      /usr/local/bin/shiftgate --config /etc/shiftgate/services.yaml prune || rc=$?
+      df -h / | tail -1
+      exit "$rc"
+    timeout_sec: 900
+    continue_on:
+      exit_code: [75]
+      mark_success: true
+handler_on:
+  success:
+    command: 'logger -t at-dagu-maintenance "dag=at-pi-shiftgate-prune status=success"'
+  failure:
+    command: 'logger -t at-dagu-maintenance "dag=at-pi-shiftgate-prune status=failure"'
