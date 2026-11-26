@@ -878,11 +878,21 @@ KR `get_quote`의 대표가(`price`)는 `price_kind`로 어떤 근거인지 밝�
 
 - 예상체결가는 항상 `expected_price`(와 `expected_price_venue`) 필드에 따로 남는다. 같은 값이 `price`로 복사되는 것은 `price_kind=expected`(동시호가)뿐이다.
 - `venues`는 읽은 시장마다 `best_bid`·`best_ask`·`observed_at`(호가 시각)·`expected_price`와, 체결이 있으면 `last_trade_price`·`last_trade_at`을 싣는다. 현재 `get_quote`는 NXT 호가만 읽으므로 `venues`에는 `nxt`만 나온다.
-- 체결은 KIS 분봉(`inquire_minute_chart`, NX, 1분)의 거래량이 있는 가장 최근 봉에서 읽는다. 봉 종가가 체결가, 봉 시작 시각이 체결 시각(분 단위)이다. `inquire-price`(FHKST01010100)는 체결 시각을 주지 않으므로 쓰지 않는다. 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:30 KST) 이후이면서 현재 시각 이전이고, 현재 시각보다 5분(`TRADE_MAX_AGE`, 호가 신선도 기준과 같음) 이내여야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다. 읽기 실패도 체결 없음이다.
+- 체결은 KIS 분봉(`inquire_minute_chart`, NX, 1분)의 거래량이 있는 가장 최근 봉에서 읽는다. 봉 종가가 체결가, 봉 시작 시각이 체결 시각(분 단위)이다. `inquire-price`(FHKST01010100)는 체결 시각을 주지 않으므로 쓰지 않는다. 체결 시각은 세션 시작(`nxt_pre` 08:00, `nxt_post` 15:40 KST) 이후이면서 현재 시각 이전이고, 현재 시각보다 5분(`TRADE_MAX_AGE`, 호가 신선도 기준과 같음) 이내여야 세션 안 체결로 친다. 그 밖이면 `mid`로 내려간다. 읽기 실패도 체결 없음이다.
 - `price_kind`가 `expected`이면 `is_stale_price: true`, `price_freshness: "unavailable"`, `price_usable: false`, `price_unavailable_reason: "expected_price_not_order_basis"`다. 주문 근거로 쓰지 않는다. `order_preflight`(키움 모의 `fetch_kr_quote_for_preflight`)와 `auto_approve_price_fallback`(`classify_kis_quote`)은 이 값을 거부한다.
 - 정규장 KRX 기본 경로(`data_state: fresh`, NXT 오버레이 없음)는 `price_kind: "last_trade"`, `price_session: "regular"`를 더한다. 그 밖의 기본 경로(장전·장마감)는 `price_kind: "unavailable"`과 사유 `premarket_unavailable` 또는 `krx_market_closed`를 더한다. 다른 키의 값과 형태는 그대로다.
 - KRX 동시호가 구간(08:30–09:00, 15:20–15:30 KST, 거래일)에는 `get_quote`가 KRX 호가를 한 번 더 읽어 `price_session: auction`으로 판정한다. 이때 예상체결가가 있으면 `price_kind: expected`이고 주문 근거가 아니다. 호가 읽기가 실패하면 기존 기본 경로를 그대로 둔다.
 - 순수 선택 규칙은 `app/services/kr_quote_price.py`, 테스트는 `tests/services/test_kr_quote_price.py`·`tests/mcp_server/test_kr_quote_price_kind.py`다. 시장 개장 사실(동시호가 시각, NXT 경계)은 이 PR 에서 거래소 공지로 확인하지 않았다. 장후 NX 분봉의 시장 코드와 봉 시각 의미는 `[unverified]`이며 운영자 스모크로 확인한다. US 시세, Go 수집기, 주문 도구 자체는 이 계약의 범위 밖이다. 주문 가격 계산(`order_validation._premarket_nxt_price_for_kr`)은 아직 `expected_price`를 쓰며 별도 결정이 필요하다.
+
+### KR get_quote 장후 시세 기준 (hk 6756)
+
+KRX 애프터마켓 중 `krx_prev_close`는 현재 quote의 `price`나 혼합 일봉 OHLCV에서 가져오지 않는다. KIS J 분봉의 당일 15:30 종가매매 봉에서 `close`를 읽고 `krx_prev_close_source="kis_krx_1530_closing_bar"`와 `krx_prev_close_as_of`(봉 시각)를 함께 낸다. 해당 증거를 얻지 못하면 두 provenance 필드와 `krx_prev_close`는 null이고, 현재 애프터 가격으로 대체하지 않는다. `change_pct`는 이 KRX 종가를 분모로 계산한다.
+
+장후 quote는 `session_ohlcv`에 `regular`, `krx_after`, `nxt_post` 별 `open`/`high`/`low`/`close`/`volume`/`source`/`as_of`를 제공한다. 세션은 `session_segment_of`의 KRX J/NXT NX 분봉 분류를 따른다. KRX 15:30 종가매매 봉은 research 저장용 라벨에서는 `UNKNOWN`이지만, quote의 정규장 종가 및 정규 세션 집계에는 포함한다. 이 값은 상위의 기존 OHLCV 키를 제거하거나 정규장 응답을 바꾸지 않는다.
+
+NXT 애프터 중 `venues`는 NXT와 KRX 각각의 best bid/ask, 관측 시각, 예상체결가, 제공된 경우 세션 내 마지막 체결을 담는다. KRX venue의 마지막 체결은 KST 당일 16:00 이상, 현재 시각 이하인 경우에만 낸다. KRX 호가 조회 실패는 quote 전체 실패가 아니다. quote 시간 분류는 KRX 애프터 16:00–20:00, NXT 연속 애프터 15:40–20:00이다. research `session_segment_of`의 NXT 분봉 라벨은 KIS 분봉에서 15:40–16:00 KRX 종가매매와 구별할 수 없어 16:00부터 시작한다. 정규장 quote 결과와 필드는 바이트 동일하게 유지한다. 세션 OHLCV는 독립 `get_quote` 호출에서만 가져오고, 각 venue의 분봉 조회는 해당 세션 창과 페이지 상한으로 제한되며 총 읽기 시간도 제한한다.
+
+ROB-888 주석도 같은 근거를 설명한다: 장후 KRX 종가는 overlay 전 `price`를 보존해 얻지 않고 15:30 J 분봉에서 얻는다.
 
 ## 유지 규약
 
@@ -1107,12 +1117,13 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 
 `app/services/minute_candles/upbit_collector.py`와 수동 CLI `scripts.collect_upbit_minute_candles`는 Upbit 공개 REST 분 캔들(`GET /v1/candles/minutes/1`)을 읽어 `MinuteCandlesRepository.insert_rows`로 `public.crypto_candles_1m`에 삽입한다. 대상은 보유 KRW 마켓 ∪ KRW-BTC/XRP/ETH ∪ 24시간 거래대금 상위 N개이며 N은 `UPBIT_MINUTE_CANDLE_TOP_N`(기본 20, 최대 100)이다. 대상 합집합과 N은 결과에 함께 보고한다.
 
-- **완결성과 페이지**: `candle_date_time_utc + 70초 <= request_time`인 봉만 저장한다. Upbit은 해당 분에 체결이 있을 때만 캔들을 반환하므로 결손 구간을 보간하지 않는다. 수집기 source 행이 없는 마켓의 현재 KST 날짜를 페이지당 최대 200봉, 최대 8페이지로 따라잡으며 한도를 채워 날짜 시작 전까지 닿지 못하면 해당 마켓은 오류로 보고한다. 이후에는 마지막 수집기 source 봉 이후만 조회한다.
-- **삽입과 시각**: 자연키 `(instrument_id, time)` 충돌은 `DO NOTHING`이다. 같은 source의 기존 행도 덮어쓰지 않는다. `source=upbit_rest_1m`, `source_event_at`은 해당 페이지를 처음 받은 시각, `ingested_at`은 DB 기록 시각이다. 결과는 마켓별 `rows`(가져온 마감 봉 수)·`new`(DB 신규 삽입 수, 드라이런에서는 null)·`error`를 낸다. 오류 시장은 `rows=null`로 보고되며 정상 시장 처리는 계속한다.
-- **공개 API·요청 속도**: 키 없이 조회 전용으로 `/v1/market/all`, `/v1/ticker`, `/v1/candles/minutes/1`만 허용하고 리다이렉트를 따르지 않는다. 요청 간격은 0.15초이며 429/5xx는 지수 대기 후 제한 횟수만 재시도한다. Upbit 공식 문서는 분 캔들 그룹 한도를 IP당 초당 10회, 한 응답 최대 200개로 규정한다([분 캔들 조회](https://docs.upbit.com/kr/reference/list-candles-minutes)).
+- **완결성과 페이지**: `candle_date_time_utc + 62초 <= request_time`인 봉만 저장한다(분 마감 60초 + 2초 여유). 매분 `:02` 실행에서 직전 분 봉을 저장하면서 현재 형성 중인 봉은 제외한다. Upbit은 해당 분에 체결이 있을 때만 캔들을 반환하므로 결손 구간을 보간하지 않는다. 수집기 source 행이 없는 마켓의 현재 KST 날짜를 페이지당 최대 200봉, 최대 8페이지로 따라잡으며 한도를 채워 날짜 시작 전까지 닿지 못하면 해당 마켓은 오류로 보고한다. 이후에는 마지막 수집기 source 봉 이후만 조회하며, 마지막 source 봉이 현재 저장 가능한 최신 분 이상이면 그 마켓의 candle 요청을 건너뛴다.
+- **삽입과 시각**: 자연키 `(instrument_id, time)` 충돌은 `DO NOTHING`이다. 같은 source의 기존 행도 덮어쓰지 않는다. `time`은 응답의 `candle_date_time_utc`에서 온 거래소 UTC 봉 시작 시각, `source_event_at`은 그 페이지를 처음 받은 로컬 시각, `ingested_at`은 DB 기록 시각이다. 응답의 `timestamp`는 마지막 체결 시각이며 별도 컬럼에 저장하지 않는다. 세 시각을 서로 바꿔 쓰지 않는다. 결과는 마켓별 `rows`(가져온 마감 봉 수)·`new`(DB 신규 삽입 수, 드라이런에서는 null)·`error`를 낸다. 오류 시장은 `rows=null`로 보고되며 정상 시장 처리는 계속한다.
+- **공개 API·요청 속도**: 키 없이 조회 전용으로 `/v1/market/all`, `/v1/ticker`, `/v1/candles/minutes/1`만 허용하고 리다이렉트를 따르지 않는다. 요청 시작은 전체 작업에서 0.15초 간격을 유지하고(마켓 수집은 최대 4개 동시 대기), 429/5xx는 지수 대기 후 제한 횟수만 재시도한다. Upbit 공식 문서는 분 캔들 그룹 한도를 IP당 초당 10회, 한 응답 최대 200개로 규정한다([분 캔들 조회](https://docs.upbit.com/kr/reference/list-candles-minutes)).
 - **실행·스케줄**: CLI는 기본 드라이런이고 `--dry-run`은 DB 세션을 열지 않는다. `--commit`만 writer를 호출한다. `deploy/dagu/at-upbit-1m/`은 매분 24/7 실행을 기술한 미등록 사본이며 Dagu 등록은 없다. WebSocket 집계와 Binance는 범위 밖이다.
 - **retro/v1 참고**: `app/services/retro_v1/daily_bars.py::get_bars`는 저장된 `crypto_candles_1m` 행을 계속 읽는다. 이 수집기는 해당 reader의 쿼리·출력 계약을 변경하지 않는다.
-- **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, 완결 시각, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
+- **마켓별 저장**: fetch 작업은 최대 4개까지 겹치지만, 각 마켓은 fetch가 끝나는 즉시 별도 insert/commit을 한다. 한 마켓의 느린 fetch가 다른 마켓의 이미 닫힌 봉 저장을 막지 않는다.
+- **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, `:02` 완결 시각, 형성 중 봉 제외, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
 
 ## Benzinga Pro 캡처 수신 (hk 6579)
 
