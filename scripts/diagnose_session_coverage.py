@@ -54,12 +54,14 @@ from app.services.research_candles.session_minutes_collector import (
 )
 
 _SELECT_KR = text(
-    "SELECT symbol, venue, session_segment, time_utc, retrieved_at, "
-    "(value IS NULL) AS value_is_null "
-    "FROM research.kr_candles_1m "
-    "WHERE session_date_kst = :session_date "
-    "AND (CAST(:symbols AS text[]) IS NULL OR symbol = ANY(CAST(:symbols AS text[]))) "
-    "AND batch_id NOT LIKE :backfill_a AND batch_id NOT LIKE :backfill_b"
+    "SELECT b.symbol, b.venue, b.session_segment, b.time_utc, b.retrieved_at, "
+    "(CASE WHEN r.revised_at IS NULL THEN b.value ELSE r.value END IS NULL) AS value_is_null, "
+    "r.revised_at "
+    "FROM research.kr_candles_1m AS b "
+    "LEFT JOIN research.kr_auction_minute_revisions AS r USING (time_utc, symbol, venue) "
+    "WHERE b.session_date_kst = :session_date "
+    "AND (CAST(:symbols AS text[]) IS NULL OR b.symbol = ANY(CAST(:symbols AS text[]))) "
+    "AND b.batch_id NOT LIKE :backfill_a AND b.batch_id NOT LIKE :backfill_b"
 )
 _SELECT_FUTURES = text(
     "SELECT symbol, 'KRX' AS venue, session_segment, time_utc, retrieved_at, "
@@ -193,6 +195,7 @@ async def run(
                     time_utc=row.time_utc,
                     retrieved_at=row.retrieved_at,
                     value_is_null=bool(row.value_is_null),
+                    revised_at=getattr(row, "revised_at", None),
                 )
                 for row in result
             ]

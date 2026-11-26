@@ -99,7 +99,7 @@ async def test_kr_krx_and_ntx_bars_at_one_minute_are_two_rows_with_their_own_fie
     issued = [s for s in session.statements if "candles_1m" in s]
     assert all("research.kr_candles_1m" in s for s in issued)
     assert not any("public.kr_candles_1m" in s for s in session.statements)
-    assert "ORDER BY symbol, time_utc, venue" in issued[0]
+    assert "ORDER BY b.symbol, b.time_utc, b.venue" in issued[0]
 
 
 @pytest.mark.asyncio
@@ -266,3 +266,43 @@ async def test_data_gaps_minute_freshness_reads_the_research_tables() -> None:
 class _Latest:
     def __init__(self, latest: Any) -> None:
         self.latest = latest
+
+
+@pytest.mark.asyncio
+async def test_get_bars_prefers_kis_closing_auction_revision() -> None:
+    at = datetime(2026, 11, 26, 6, 30, tzinfo=UTC)
+    first = at + timedelta(minutes=13, seconds=23)
+    revised = at + timedelta(minutes=15)
+
+    def route(sql: str) -> list[Any]:
+        if "MIN(time_utc)" in sql:
+            return [{"earliest": EARLIEST}]
+        assert "LEFT JOIN research.kr_auction_minute_revisions" in sql
+        assert "USING (time_utc, symbol, venue)" in sql
+        assert "COALESCE(r.close, b.close)" in sql
+        assert "COALESCE(r.volume, b.volume)" in sql
+        assert "CASE WHEN r.revised_at IS NULL THEN b.value ELSE r.value END" in sql
+        return [
+            minute(
+                "005930",
+                at,
+                "171300",
+                volume="1137019",
+                venue="KRX",
+                session_segment="UNKNOWN",
+                retrieved_at=first,
+                revised_at=revised,
+                krx_official_close="171300",
+            )
+        ]
+
+    session = FakeSession({"FROM research.kr_candles_1m": route})
+    response = await read_get_bars(
+        session, symbol="005930", tf="1m", from_=at.date(), to=at.date()
+    )
+    validate(response, "GetBarsResponse")
+    (row,) = response["data"]
+    assert row["close_price"] == row["krx_official_close"] == "171300"
+    assert row["quantity"] == "1137019"
+    assert datetime.fromisoformat(row["first_received_at"]) == first
+    assert datetime.fromisoformat(row["revised_at"]) == revised
