@@ -65,6 +65,7 @@ def test_parser_uses_documented_response_shape_and_keeps_decimal_values() -> Non
     assert len(page.candles) == 1
     assert str(page.candles[0].quote_volume) == "4022470467.03403"
     assert page.candles[0].time_utc == datetime(2025, 7, 1, 12, 0, tzinfo=UTC)
+    assert page.received_at == now
 
 
 def test_default_fetcher_allows_exact_collector_paths_without_network(
@@ -160,9 +161,10 @@ def candle(market: str, stamp: datetime) -> Candle:
 
 
 def test_forming_minute_is_excluded_and_closed_bar_is_returned_once() -> None:
-    now = datetime(2026, 11, 26, 15, 2, tzinfo=UTC)
+    now = datetime(2026, 11, 26, 15, 2, 8, tzinfo=UTC)
     page = CandlePage(
         (
+            candle("KRW-BTC", datetime(2026, 11, 26, 15, 2, tzinfo=UTC)),
             candle("KRW-BTC", datetime(2026, 11, 26, 15, 1, tzinfo=UTC)),
             candle("KRW-BTC", datetime(2026, 11, 26, 15, 0, tzinfo=UTC)),
         ),
@@ -170,8 +172,66 @@ def test_forming_minute_is_excluded_and_closed_bar_is_returned_once() -> None:
     )
     rows = _rows_for_current_day(FakeData({"KRW-BTC": [page]}), "KRW-BTC", now)
     assert [row.time_utc for row, _ in rows] == [
+        datetime(2026, 11, 26, 15, 1, tzinfo=UTC),
         datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
     ]
+
+
+@pytest.mark.asyncio
+async def test_collector_stores_exchange_bar_time_separately_from_receive_time(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 26, 15, 2, 8, tzinfo=UTC)
+    received_at = now - timedelta(seconds=2)
+    bar_at = datetime(2026, 11, 26, 15, 1, tzinfo=UTC)
+    page = CandlePage((candle("KRW-BTC", bar_at),), received_at)
+    data = FakeData(
+        {
+            market: [page if market == "KRW-BTC" else CandlePage((), received_at)]
+            for market in ("KRW-BTC", "KRW-XRP", "KRW-ETH")
+        }
+    )
+
+    class Session:
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            return type("Result", (), {"scalar_one_or_none": lambda _self: None})()
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    class CapturingRepository:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def insert_rows(self, *, rows):
+            captured.extend(rows)
+            return len(rows)
+
+    captured: list[MinuteCandleRow] = []
+    monkeypatch.setattr(
+        "app.services.minute_candles.upbit_collector.MinuteCandlesRepository",
+        CapturingRepository,
+    )
+    await collect_upbit_minute_candles(
+        session=Session(),
+        data=data,
+        held_markets_loader=lambda: _resolved(set()),
+        now=now,
+        top_n=0,
+        dry_run=False,
+    )
+
+    btc_row = next(row for row in captured if row.time_utc == bar_at)
+    assert btc_row.time_utc == bar_at
+    assert btc_row.source_event_at == received_at
 
 
 def test_existing_latest_bar_limits_repeat_fetch_to_newer_rows() -> None:
