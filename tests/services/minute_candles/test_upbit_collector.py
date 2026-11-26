@@ -327,6 +327,9 @@ async def test_insert_only_repository_reports_zero_for_replayed_rows() -> None:
 async def test_insert_only_repository_counts_multirow_insert_without_rowcount():
     class Session:
         async def execute(self, statement, payload):
+            if isinstance(payload, list):
+                # SQLAlchemy asyncpg executemany leaves rowcount at -1.
+                return type("Result", (), {"rowcount": -1})()
             assert "RETURNING time" in str(statement)
             assert isinstance(payload, dict)
             values = [1, 2]
