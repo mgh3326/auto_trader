@@ -864,11 +864,20 @@ async def test_quote_session_ohlcv_reuses_krx_frame_for_regular_close(monkeypatc
     assert session_ohlcv["nxt_post"]["close"] == 299500
 
 
+# NXT pre-market, before the KRX auction window (08:30-09:00 KST). The quote code reads
+# the wall clock, so these premarket tests pin it; unpinned they fail between 08:30 and 09:00.
+_NXT_PREMARKET_KST = dt.datetime(
+    2026, 11, 27, 8, 20, tzinfo=dt.timezone(dt.timedelta(hours=9))
+)
+
+
 def _patch_nxt_eligible(monkeypatch, market_data_quotes) -> None:
     """hk 6300: premarket NXT overlay is gated on NXT tradability (now True)."""
     import datetime as dt
 
     from app.services.nxt_preflight import NxtTradability
+
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: _NXT_PREMARKET_KST)
 
     async def eligible(symbols, db=None):
         return {
@@ -1004,6 +1013,7 @@ async def test_get_quote_korean_equity_premarket_empty_nxt_book_keeps_stale_flag
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: _NXT_PREMARKET_KST)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         market_data_quotes,
