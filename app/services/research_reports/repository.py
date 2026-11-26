@@ -39,6 +39,16 @@ class ResearchReportsRepository:
         await self.db.flush()
         return True
 
+    async def known_source_ids(self, *, source: str) -> set[str]:
+        """Return provider IDs already stored for one source."""
+        result = await self.db.execute(
+            select(ResearchReport.source_report_id).where(
+                ResearchReport.source == source,
+                ResearchReport.source_report_id.is_not(None),
+            )
+        )
+        return {str(value) for value in result.scalars().all()}
+
     async def get_or_create_ingestion_run(
         self,
         *,

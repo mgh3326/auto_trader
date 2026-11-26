@@ -1,0 +1,13 @@
+# 네이버 리서치 메타데이터 수동 수집 DAG 복사본. 등록되지 않으며 레포가 스케줄러를 연결하지 않는다.
+description: "Naver research metadata collection (unregistered copy)"
+schedule:
+  - "CRON_TZ=Asia/Seoul */30 7-19 * * *"
+  - "CRON_TZ=Asia/Seoul 0 20 * * *"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_naver_research --commit
+    timeout_sec: 900

@@ -1,0 +1,39 @@
+{
+  "researchContent": {
+    "nid": "98500",
+    "brokerName": "신한투자증권",
+    "brokerCode": "21",
+    "title": "PER 2배, 물러설 곳이 없다",
+    "content": "<p><strong>3분기 환율영향 있었지만 그래도 너무 싸다</strong></p><p>&nbsp;</p><p>주로 차량용 메모리를 국내 전장에 공급하는 유통사. 2Q26 영업이익 385억원(OPM 11.3%) 정점 뒤 3Q26 환율 급락으로 85억원(OPM 2.9%)까지 감소, 주가 저평가 원인. 2027년 매출총이익률 10%(vs. 2Q26 14.5%) 가정한 영업이익 820억원 전망, PER 2배로 할인은 과도하다고 판단</p>",
+    "readCount": "237",
+    "writeDate": "2026-11-26",
+    "attachUrl": "https://stock.pstatic.net/stock-research/company/21/20261126_company_12112000.pdf",
+    "attachName": "bbs_1795646369548.pdf",
+    "itemCode": "142210",
+    "itemName": "유니트론텍",
+    "opinionText": "없음",
+    "opinionType": "neutral",
+    "goalPrice": null,
+    "prevGoalPrice": null,
+    "priceAtWriteDate": "4850"
+  },
+  "researchSummaries": {
+    "prev": [
+      {
+        "nid": "98499",
+        "title": "기대하던 혁신은 2028년으로",
+        "content": "<p><strong>스테이블 코인은 유통에 그치고, 자본 배분은 증권으로</strong></p><p>&nbsp;</p><p>조정 순현금 및 스테이블 코인 비즈니스 축소 적용 시 2027F~2028F 적정주가는 22,000원~27,000원으로 업사이드 제한적. 투자의견 ‘중립’ 유지</p>",
+        "brokerName": "신한투자증권",
+        "brokerCode": "21",
+        "writeDate": "2026-11-26",
+        "readCount": "236",
+        "itemCode": "377300",
+        "itemName": "카카오페이",
+        "goalPrice": null,
+        "opinionText": "중립",
+        "opinionType": "neutral"
+      }
+    ],
+    "next": []
+  }
+}
