@@ -326,7 +326,14 @@ async def _store_items(
             for item in items
         ]
         result = await symbol_news_store.upsert_kr_collector_articles_with_ids(
-            db, symbol, inputs, feed_source=feed_source, commit=False
+            db,
+            symbol,
+            inputs,
+            feed_source=feed_source,
+            promote_feed_source_on_precision_upgrade=(
+                feed_source == MAINNEWS_FEED_SOURCE
+            ),
+            commit=False,
         )
         new_articles += result.new_articles
         new_links += result.new_links
@@ -411,6 +418,7 @@ async def collect_kr_news(
                             None,
                             inputs,
                             feed_source=MAINNEWS_FEED_SOURCE,
+                            promote_feed_source_on_precision_upgrade=True,
                             commit=False,
                         )
                     )

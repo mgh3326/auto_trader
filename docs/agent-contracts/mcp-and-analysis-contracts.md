@@ -293,7 +293,9 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - `news_articles.published_at_raw`는 제공자 시각 문자열 원문이고 `published_at`은 시간대가 있는 UTC 시각,
   `published_precision`은 `second`/`minute`/`date`다. Naver의 시간대 없는 값은 KST로 해석한다.
   spike attribution은 `http_naver_mstock_mainnews` 중 `published_precision=second`만 KR exact로
-  인정하며 minute 정밀도 행은 시각 미확정으로 처리한다. 기존 aggregate source 행은 과거 clock 계약으로 읽는다.
+  인정하며 minute 정밀도 행은 시각 미확정으로 처리한다. 종목 feed에서 먼저 저장된 같은 기사가
+  더 높은 정밀도의 mainnews 시각으로 갱신되면 행의 `feed_source`도 mainnews source로 승격한다.
+  기존 aggregate source 행은 과거 clock 계약으로 읽는다.
   해석 실패는 parsed 시각·정밀도 NULL과 `published_at_reason`으로 남긴다. `first_received_at`은 최초
   INSERT 시각으로 URL 재수집에서 바뀌지 않는다. `article_published_at`은 기존 읽기 경로 호환을 위해
   유지한다. 신규 열은 기존 행을 backfill하지 않는다.

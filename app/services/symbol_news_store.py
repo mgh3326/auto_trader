@@ -176,6 +176,7 @@ async def _upsert_feed_articles(
     *,
     feed_source: str,
     canonical_dedupe: bool = False,
+    promote_feed_source_on_precision_upgrade: bool = False,
     commit: bool = True,
 ) -> FeedArticleUpsertResult:
     if not items:
@@ -296,6 +297,12 @@ async def _upsert_feed_articles(
                     values["published_at_reason"] = item.published_at_reason
                 if item.published_offset is not None:
                     values["published_offset"] = item.published_offset
+                if (
+                    promote_feed_source_on_precision_upgrade
+                    and item.published_precision == "second"
+                    and incoming_published_at is not None
+                ):
+                    values["feed_source"] = feed_source
             else:
                 if existing_raw is None and item.published_at_raw is not None:
                     values["published_at_raw"] = item.published_at_raw
@@ -555,6 +562,7 @@ async def upsert_kr_collector_articles_with_ids(
     items: list[FeedArticleInput],
     *,
     feed_source: str,
+    promote_feed_source_on_precision_upgrade: bool = False,
     commit: bool = True,
 ) -> FeedArticleUpsertResult:
     """Store collector articles and return IDs resolved by canonical identity."""
@@ -565,6 +573,7 @@ async def upsert_kr_collector_articles_with_ids(
         items,
         feed_source=feed_source,
         canonical_dedupe=True,
+        promote_feed_source_on_precision_upgrade=promote_feed_source_on_precision_upgrade,
         commit=commit,
     )
 

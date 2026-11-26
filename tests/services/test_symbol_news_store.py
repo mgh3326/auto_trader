@@ -210,6 +210,64 @@ async def test_collector_enriches_legacy_provider_url_row_publication_fields() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_mainnews_precision_upgrade_promotes_feed_source() -> None:
+    existing_url = "https://n.news.naver.com/article/001/0001234"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0001234"
+    updates: list[dict[str, object]] = []
+
+    class Result:
+        rowcount = 0
+
+        def all(self):
+            return [
+                (
+                    88,
+                    existing_url,
+                    "2026-11-25 10:00",
+                    datetime(2026, 11, 25, 1, 0, tzinfo=UTC),
+                    "minute",
+                    "+09:00",
+                    None,
+                    None,
+                    "삼성전자 기사",
+                    "연합뉴스",
+                    None,
+                )
+            ]
+
+    class Session:
+        async def execute(self, statement):
+            if isinstance(statement, Update):
+                updates.append(statement.compile(dialect=postgresql.dialect()).params)
+            return Result()
+
+        async def commit(self):
+            return None
+
+    await symbol_news_store.upsert_kr_collector_articles_with_ids(
+        Session(),
+        "005930",
+        [
+            FeedArticleInput(
+                url=incoming_url,
+                title="삼성전자 기사",
+                source="연합뉴스",
+                published_at=datetime(2026, 11, 25, 1, 0, 12, tzinfo=UTC),
+                published_at_raw="20261125100012",
+                published_precision="second",
+            )
+        ],
+        feed_source="http_naver_mstock_mainnews",
+        promote_feed_source_on_precision_upgrade=True,
+    )
+
+    assert len(updates) == 1
+    assert updates[0]["published_precision"] == "second"
+    assert updates[0]["feed_source"] == "http_naver_mstock_mainnews"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_collector_metadata_enrichment_keeps_publication_tuple_and_revision() -> (
     None
 ):
