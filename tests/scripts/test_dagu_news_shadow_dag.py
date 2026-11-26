@@ -59,6 +59,8 @@ def test_saveticker_dag_is_separate_and_does_not_poll_other_sources() -> None:
     (step,) = doc["steps"]
     script = step["script"]
     assert "--saveticker --saveticker-pages 3" in script
+    # Search is capped in the client; the flag would also cut the news source.
+    assert "--saveticker-page-size" not in script
     assert "--skip-benzinga --skip-finnhub --skip-kis" in script
     assert "/root/at-run/saveticker-shadow:/out" in script
     assert "--env-file /root/at-secrets/.env.benzinga" not in script

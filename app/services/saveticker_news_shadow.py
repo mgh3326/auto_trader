@@ -16,6 +16,9 @@ USER_AGENT = "auto_trader-news-shadow/1.0 (read-only; contact: operator)"
 MIN_REQUEST_INTERVAL_S = 0.5
 MAX_PAGES = 10
 DEFAULT_PAGE_SIZE = 50
+# Save+ /api/search rejects page_size > 20 with HTTP 422 (live check 2026-11-27);
+# /api/news accepts 50. Search requests are capped separately.
+SEARCH_MAX_PAGE_SIZE = 20
 _US_TICKER_TAG = re.compile(r"\$([A-Z][A-Z0-9.\-]{0,14})\Z")
 
 
@@ -85,6 +88,10 @@ class SaveTickerClient:
             if media_type != "application/json":
                 raise SaveTickerError("InvalidContentType")
             payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise SaveTickerError(
+                f"HTTPStatusError:{exc.response.status_code}"
+            ) from None
         except (httpx.HTTPError, ValueError) as exc:
             raise SaveTickerError(type(exc).__name__) from None
         if not isinstance(payload, dict):
@@ -104,7 +111,11 @@ class SaveTickerClient:
     ) -> dict[str, Any]:
         return await self._get(
             "/api/search",
-            {"search": search, "page": page, "page_size": page_size},
+            {
+                "search": search,
+                "page": page,
+                "page_size": effective_search_page_size(page_size),
+            },
         )
 
     async def top_stories(self) -> dict[str, Any]:
@@ -114,6 +125,11 @@ class SaveTickerClient:
         if self._owns_client and self._client is not None:
             await self._client.aclose()
             self._client = None
+
+
+def effective_search_page_size(page_size: int) -> int:
+    """Page size actually sent to /api/search (callers must paginate with it)."""
+    return min(page_size, SEARCH_MAX_PAGE_SIZE)
 
 
 def _in_loop() -> bool:
@@ -296,6 +312,8 @@ def summary_key_title(record: dict[str, Any]) -> str | None:
 __all__ = [
     "BASE_URL",
     "DEFAULT_PAGE_SIZE",
+    "SEARCH_MAX_PAGE_SIZE",
+    "effective_search_page_size",
     "MAX_PAGES",
     "MIN_REQUEST_INTERVAL_S",
     "SaveTickerClient",

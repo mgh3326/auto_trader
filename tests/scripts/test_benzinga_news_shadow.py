@@ -734,6 +734,54 @@ async def test_saveticker_client_uses_search_and_view_count_sort_parameters() ->
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_saveticker_search_caps_page_size_but_news_keeps_it() -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"news_list": [], "total_count": 0, "page": 1, "page_size": 20},
+        )
+
+    http_client = httpx.AsyncClient(
+        base_url=st.BASE_URL, transport=httpx.MockTransport(handler)
+    )
+    async with st.SaveTickerClient(client=http_client, min_interval_s=0) as client:
+        await client.search_page("NVDA", 1, 50)
+        await client.news_page(1, 50)
+    assert requests[0].url.path == "/api/search"
+    assert requests[0].url.params["page_size"] == "20"
+    assert requests[1].url.path == "/api/news"
+    assert requests[1].url.params["page_size"] == "50"
+    assert st.effective_search_page_size(50) == 20
+    assert st.effective_search_page_size(5) == 5
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_saveticker_http_error_message_carries_status_only() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            headers={"content-type": "application/json"},
+            json={"detail": [{"msg": "secret body text", "loc": ["query"]}]},
+        )
+
+    http_client = httpx.AsyncClient(
+        base_url=st.BASE_URL, transport=httpx.MockTransport(handler)
+    )
+    client = st.SaveTickerClient(client=http_client, min_interval_s=0)
+    with pytest.raises(st.SaveTickerError) as excinfo:
+        async with client:
+            await client.search_page("NVDA", 1, 20)
+    assert str(excinfo.value) == "HTTPStatusError:422"
+    assert "secret body text" not in str(excinfo.value)
+    await http_client.aclose()
+
+
 def test_saveticker_attention_row_is_once_per_provider_item() -> None:
     item = st.normalize_item(
         {
