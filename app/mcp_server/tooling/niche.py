@@ -100,23 +100,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         ),
     ),
     (
-        frozenset(
-            {
-                "db-paper",
-                "default",
-                "kiwoom_kr",
-                "us-paper",
-                "hermes-paper-kis",
-                "crypto",
-            }
-        ),
-        frozenset(
-            {
-                "investment_report_get_hermes_context",
-            }
-        ),
-    ),
-    (
         frozenset({"shadow-replay"}),
         frozenset(
             {
@@ -179,11 +162,9 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "get_valuation",
                 "investment_report_create",
                 "investment_report_generate_from_bundle",
-                "investment_report_prepare_bundle",
                 "investment_snapshot_bundle_get",
                 "investment_snapshot_bundle_list",
                 "investment_snapshot_list",
-                "investment_stage_artifacts_ingest_from_hermes",
                 "modify_journal_entry",
                 "research_session_get",
                 "research_session_list_recent",

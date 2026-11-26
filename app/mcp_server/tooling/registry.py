@@ -116,9 +116,6 @@ from app.mcp_server.tooling.fill_watch_context_registration import (
 )
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
-from app.mcp_server.tooling.investment_hermes_handlers import (
-    register_investment_hermes_tools,
-)
 from app.mcp_server.tooling.investment_reports_handlers import (
     register_investment_report_tools,
 )
@@ -340,16 +337,13 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         include_kr_flow=profile is McpProfile.DEFAULT,
     )
     register_analysis_tools(mcp)
-    # ROB-488 — snapshot-backed report generation/Hermes tools are default-off
-    # by physical registration, matching the investment_snapshot gate. The
+    # ROB-488 — the snapshot-backed report generator tool is default-off by
+    # physical registration, matching the investment_snapshot gate. The
     # implementation functions keep their disabled checks for direct/internal
     # callers and HTTP routes.
-    snapshot_report_generator_enabled = (
-        settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED
-    )
     register_investment_report_tools(
         mcp,
-        include_snapshot_generator=snapshot_report_generator_enabled,
+        include_snapshot_generator=settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED,
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
@@ -365,8 +359,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # ROB-649 — advisory lane router; always registered (read-only, no order
     # surface). Intersects lane tool sequences with the live-registered surface.
     register_route_request_tools(mcp)
-    if snapshot_report_generator_enabled:
-        register_investment_hermes_tools(mcp)
     # ROB-447: register_market_report_tools removed — its get_market_reports /
     # get_latest_market_brief were silently shadowed by register_market_brief_tools
     # (registered later, default on_duplicate="warn" = last wins). The brief판

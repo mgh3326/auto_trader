@@ -75,8 +75,7 @@ class ReportGenerationRequest(BaseModel):
 
     # ROB-287 — fail-closed legacy field. The ROB-279 in-process LLM
     # composition path (Gemini-backed FinalComposer + LLM reducer stages)
-    # was removed; LLM reasoning/composition now belongs to Hermes via the
-    # `investment_report_get_hermes_context` / Hermes-result-ingest contract.
+    # was removed. External LLM composition (hk 6930) has since been retired.
     # ``True`` is rejected at validation time so callers cannot accidentally
     # re-enable an in-process LLM path.
     auto_compose: bool = False

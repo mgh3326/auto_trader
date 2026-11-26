@@ -15,9 +15,6 @@ import pytest
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
 from app.mcp_server.tooling import kiwoom_kr_registration, registry
-from app.mcp_server.tooling.investment_hermes_handlers import (
-    INVESTMENT_HERMES_TOOL_NAMES,
-)
 from app.mcp_server.tooling.investment_snapshots_registration import (
     INVESTMENT_SNAPSHOTS_TOOL_NAMES,
 )
@@ -186,8 +183,7 @@ class TestWholeProfileClosedWorld:
         [
             (
                 "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED",
-                INVESTMENT_HERMES_TOOL_NAMES
-                | {"investment_report_generate_from_bundle"},
+                {"investment_report_generate_from_bundle"},
             ),
             (
                 "INVESTMENT_SNAPSHOTS_MCP_ENABLED",

@@ -3,14 +3,13 @@
 This runbook covers the "A′ shadow replay" harness: replaying past
 bundle-backed report-item decisions through a headless `claude -p`
 process to measure self-consistency and (when a reference decision
-exists) fidelity to what was actually decided. M1 builds the read-only
-corpus-selection layer only (`app/services/shadow_replay/`); the replay
-driver itself is a later task.
+exists) fidelity to what was actually decided. Only the read-only
+corpus-selection and scoring layer (`app/services/shadow_replay/`) remains;
+the replay driver and probe were retired in hk 6950 (see the end of this
+document).
 
 > **Boundary**: this harness is read-only analysis tooling. No writes,
-> no broker/order/watch mutation, no in-process LLM (ROB-501). The
-> `claude -p` driver (later task) is an out-of-process subprocess, not
-> an in-process provider.
+> no broker/order/watch mutation, no in-process LLM (ROB-501).
 
 ---
 
@@ -127,168 +126,15 @@ pure-predicate tests (`_non_autoemit`, `_covers_kinds`) are
 
 ---
 
-## P1 probe (operator)
+## P1 probe and headless driver — retired (hk 6950)
 
-**Why this exists:** A′ replay is only meaningful if the same bundle
-yields the same decision-bearing context across calls. `get_hermes_
-context` emits no verbatim timestamp; `stage_inputs` + `cited_snapshots`
-+ `policy_version` + `market` + `market_session` + `coverage_summary`
-are frozen from the persisted bundle. `dimension_evidence` /
-`dimension_reports` read LIVE tables and can drift between calls even
-for the same bundle.
+The `scripts/shadow_replay_probe.py` reproducibility probe, the headless
+`claude -p` driver `scripts/shadow_replay.py` and its
+`scripts/shadow_replay_mcp.json` config were deleted. Both depended on the
+frozen-context MCP read tool that hk 6950 removed; the driver already could not
+run, because the `shadow-replay` MCP profile serves only the seven B0X
+observation/replay tools. See git history for the earlier procedure.
 
-`scripts/shadow_replay_probe.py` calls
-`investment_report_get_hermes_context_impl` twice for one
-`bundle_uuid` and diffs the result:
-
-- `compare_frozen(a, b) -> dict` — pure function (dict in, dict out,
-  no I/O). Compares the frozen keys via
-  `json.dumps(..., sort_keys=True)` equality and lists which of
-  `dimension_evidence` / `dimension_reports` differ. Unit-tested in
-  `tests/test_shadow_replay_probe_cli.py` with no DB.
-- `probe(bundle_uuid) -> int` — the async two-call round trip. Requires
-  a live DB, a real `bundle_uuid` (from the Task 0 corpus), and
-  `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` on the process. Not
-  exercised by the test suite — run it manually as an operator step.
-
-Read-only: no stage_run / artifact rows are persisted, no broker /
-order / watch / order-intent mutation, no in-process LLM provider
-(ROB-501).
-
-### Run it
-
-```bash
-SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true \
-    uv run python -m scripts.shadow_replay_probe <bundle_uuid>
-```
-
-Expected for two calls seconds apart:
-
-```json
-{"frozen_identical": true, "live_section_drift": []}
-```
-
-Exit code `0` means the frozen sections matched; `1` means they
-drifted (investigate before trusting the K-replay batch, Task 4); `2`
-means the first call itself failed (`success=False` — bad
-`bundle_uuid`, or the feature flag isn't set).
-
-If `live_section_drift` is non-empty, record it here — it means the
-K-replay batch (Task 4) must run tight in time, and the decision
-prompt (Task 4) must instruct the agent to base its call on
-`stage_inputs` / `cited_snapshots` (the frozen sections), not on
-`dimension_evidence` / `dimension_reports`.
-
-**Status:** not yet run. Requires a real `bundle_uuid` from the P0
-corpus census above; run once that census has produced a usable
-corpus source.
-
----
-
-## Headless `claude -p` driver (M1, implemented)
-
-`scripts/shadow_replay.py` ties the corpus selector (Task 0) and the
-scorer (Task 1) together into the actual A' batch: for each corpus
-item it spawns a headless `claude -p` subprocess `k` times (via
-`scripts/shadow_replay_mcp.json`, a stdio MCP config restricted to the
-`shadow-replay` profile — frozen-context read + policy + lane router
-only, nothing else reachable), scores each reply against the item's
-`reference_decision`, and writes a markdown report.
-
-- `_to_item_shape(raw) -> dict` — **shape adapter, load-bearing.** The
-  replay prompt instructs the agent to emit `trade_setup` at the TOP
-  level (a flatter contract for the agent to follow), but
-  `extract_decision` (Task 1) reads a *nested*
-  `evidence_snapshot.trade_setup` — the shape of a persisted
-  `InvestmentReportItem`. Calling `extract_decision` directly on a raw
-  claude reply would silently read `ev.get("trade_setup")` off `{}`
-  and drop entry/stop/target on every single replay. `run_batch` always
-  routes raw replies through this adapter before scoring; unit-tested
-  directly, including a round-trip (`raw.trade_setup.headline.entry` →
-  `_to_item_shape` → `extract_decision` recovers a non-None `entry`).
-- `_one_run(uuid, model) -> dict | None` — the only place `claude` is
-  invoked. Best-effort + defensive: ANY subprocess failure (missing
-  binary, timeout), non-zero exit, an MCP-reset stderr marker
-  (`get_hermes_context` / `connection error` / `tool not found`), or a
-  JSON-parse failure returns `None` — a **discarded** sample, not a
-  data point. The exact `claude -p --output-format json` envelope
-  shape is only verified at operator run-time (Step 6 below); the test
-  suite never spawns a real subprocess — `tests/test_shadow_replay_cli.py`
-  always monkeypatches `_one_run`.
-- `run_batch(corpus, *, k, model, tick) -> list[dict]` — one result row
-  per corpus item: `{item_uuid, item_kind, source, model, discarded,
-  summary}`. `discarded` counts `_one_run` calls that returned `None`
-  out of `k`; `summary` (`summarize(...)`, Task 1) is computed only
-  over the successfully-parsed decisions.
-- `write_report(results, path) -> str` — markdown table, one row per
-  corpus item: `side_rate / size_band_rate / limit_rate /
-  same_decision_rate / no_action_rate / discarded`, plus a header with
-  the corpus `source` and the pinned `model` (for longitudinal
-  comparison across runs).
-- `build_parser()` / `main()` — `--confirm` gate: without `--confirm`,
-  `main()` never spawns a `claude -p` subprocess. It only prints a dry
-  plan (`{source, corpus_size, would_run_claude_p_calls, model}`) and
-  exits 0. Only `--confirm` proceeds to `run_batch` + `write_report`.
-  `--model` defaults to a **pinned exact id**
-  (`claude-opus-4-8`, never a `-latest` alias) so replay fidelity stays
-  comparable across re-runs months apart — the model id is stamped
-  into every result row and the report header.
-- `all_samples_discarded(results) -> bool` — pure predicate: true iff at
-  least one sample was attempted and every attempted sample was
-  discarded. `_amain` checks this right after `write_report` and, if
-  true, prints a loud `WARNING:` to stderr and returns exit `3` instead
-  of `0` — see "Exit codes" in Step 6 below for why this is a distinct
-  signal from ordinary per-sample discards.
-
-Tests: `tests/test_shadow_replay_cli.py` (`@pytest.mark.unit`, no DB,
-no real subprocess — `_one_run` is always monkeypatched; `_amain` is
-unit-tested too, with `AsyncSessionLocal` and `select_replay_corpus`
-monkeypatched at their source-module attribute so no real DB is
-touched).
-
-Read-only / ROB-501: `scripts/shadow_replay.py` lives in `scripts/`,
-not `app/`. It shells out to the external `claude` binary via
-`subprocess.run` (an out-of-process CLI call, not an in-process LLM
-SDK import). M1 writes nothing — no orders, no watch mutation, no
-report persistence; the replayed agent returns JSON on stdout and this
-driver only scores + reports it (the markdown file is a local report
-artifact, not a DB write).
-
-### Step 6 — one real end-to-end batch (operator, not CI)
-
-Requires: a live DB with a usable corpus (see the P0 census above), the
-`claude` CLI on `PATH`, and `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED`
-reachable by the MCP subprocess (already set in
-`scripts/shadow_replay_mcp.json`'s `env`).
-
-```bash
-# Dry plan only — always safe, spawns nothing:
-uv run python -m scripts.shadow_replay --k 5 --model claude-opus-4-8
-
-# Real batch (spawns k x corpus-size `claude -p` subprocesses):
-uv run python -m scripts.shadow_replay --k 5 --model claude-opus-4-8 --confirm
-```
-
-Expected: a markdown report (default `shadow_replay_report.md`, override
-with `--report`) with per-corpus-item `side_rate / size_band_rate /
-limit_rate / same_decision_rate` + `no_action_rate` + discard counts.
-This is the M1 deliverable number.
-
-**Exit codes:** `0` = ran (dry plan, or a real batch with at least one
-scored sample). `2` = `CorpusUnavailable` (see the P0 census above). `3`
-= **all replay samples were discarded** — `all_samples_discarded(results)`
-is true iff at least one sample was attempted and every single one came
-back `None` from `_one_run` across every corpus item. This is a distinct
-failure mode from ordinary per-sample discards (MCP reset / flaky
-subprocess): if literally everything discarded, the far more likely
-explanation is that the `claude -p --output-format json` envelope
-assumption in `_one_run` is wrong (Step 6 is the first time that
-assumption is exercised against a real `claude` binary), not that the
-model coincidentally failed every single call. On exit 3 the driver still
-writes the (all-`discarded`) report and prints `"step": "done"`, but also
-prints a loud `WARNING:` to stderr — **do not read a `"step": "done"`
-report as a clean run without checking the exit code first**; treat exit
-3 as "fix the harness, then re-run" rather than "fidelity is just bad."
-
-**Status:** not yet run. Requires the P0 census to have produced a
-usable corpus first (see above).
+What remains is the read-only corpus selection and the pure scorer described
+above (`app/services/shadow_replay/{corpus,scoring}.py`), which no CLI calls
+now. The B0X `shadow-replay` profile is unaffected.

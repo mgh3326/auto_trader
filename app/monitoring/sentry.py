@@ -1000,9 +1000,6 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
             "get_quote",
             "get_sector_peers",
             "get_top_stocks",
-            "investment_report_get_hermes_context",
-            "investment_report_prepare_bundle",
-            "investment_report_prepare_intraday_context",
             "market_quote_snapshot_ensure",
             "market_quote_snapshot_latest",
             "screen_stocks",
@@ -1017,7 +1014,6 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
             "investment_report_activate_watch",
             "investment_report_add_items",
             "investment_report_create",
-            "investment_report_create_from_hermes_composition",
             "investment_report_decide_item",
             "investment_report_generate_from_bundle",
             "investment_report_set_status",
@@ -1026,7 +1022,6 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
     "artifact": frozenset(
         {
             "analysis_artifact_save",
-            "investment_stage_artifacts_ingest_from_hermes",
         }
     ),
     "proposal": frozenset({"order_proposal_create"}),

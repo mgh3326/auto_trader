@@ -132,18 +132,16 @@ async def test_invalidation_triggers_applies_to_watch_and_risk_items_too(
     assert snap["invalidation_triggers"] == ["변동성 지수 급등"]
 
 
-def test_hermes_composition_result_items_accept_invalidation_triggers() -> None:
-    """Hermes ingest wiring — HermesCompositionResult.items is
-    list[IngestReportItem] (app/schemas/hermes_composition.py), so the field
-    auto-plumbs with no edits to hermes_composition.py/hermes_ingest.py. This
-    test only proves the additive contract at the schema boundary Hermes
-    actually calls through; the DB round-trip above already covers
-    persistence."""
+def test_report_composition_result_items_accept_invalidation_triggers() -> None:
+    """ReportCompositionResult.items is list[IngestReportItem]
+    (app/schemas/investment_report_composition.py), so the field auto-plumbs.
+    This test only proves the additive contract at the schema boundary; the DB
+    round-trip above already covers persistence."""
     import uuid
 
-    from app.schemas.hermes_composition import HermesCompositionResult
+    from app.schemas.investment_report_composition import ReportCompositionResult
 
-    result = HermesCompositionResult(
+    result = ReportCompositionResult(
         snapshot_bundle_uuid=uuid.uuid4(),
         hermes_run_id="run-1",
         title="t",

@@ -51,12 +51,8 @@ DEFAULT_TOOL_TIMEOUT_S = DEFAULT_MCP_TOOL_TIMEOUT_S
 # "exempt" (no timeout).
 ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     "analysis_bundle_create": 240.0,
-    # Report generation (snapshot collectors + Hermes composition) — heaviest.
+    # Report generation (snapshot collectors) — heaviest.
     "investment_report_generate_from_bundle": 240.0,
-    "investment_report_prepare_bundle": 240.0,
-    "investment_report_create_from_hermes_composition": 240.0,
-    "investment_report_prepare_intraday_context": 180.0,
-    "investment_report_get_hermes_context": 180.0,
     # Batch analysis / screeners (multi-symbol fan-out).
     "analyze_stock_batch": 120.0,
     "analyze_portfolio": 120.0,

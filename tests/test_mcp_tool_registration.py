@@ -105,14 +105,7 @@ async def test_snapshot_report_generator_tools_are_flag_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ROB-488: disabled generator tools should be absent, not registered no-ops."""
-    gated = {
-        "investment_report_generate_from_bundle",
-        "investment_report_prepare_bundle",
-        "investment_report_get_hermes_context",
-        "investment_report_create_from_hermes_composition",
-        "investment_stage_artifacts_ingest_from_hermes",
-        "investment_report_prepare_intraday_context",
-    }
+    gated = {"investment_report_generate_from_bundle"}
 
     monkeypatch.setattr(
         settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", False, raising=False

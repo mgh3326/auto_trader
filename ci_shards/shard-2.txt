@@ -251,9 +251,6 @@ tests/services/investment_snapshots/test_mcp_dtos.py
 tests/services/investment_stages/stages/test_candidate_universe.py
 tests/services/investment_stages/stages/test_market.py
 tests/services/investment_stages/test_candidate_universe_stage_evidence.py
-tests/services/investment_stages/test_hermes_context_market_dimension.py
-tests/services/investment_stages/test_hermes_context_sentiment_dimension.py
-tests/services/investment_stages/test_hermes_snapshot_projection.py
 tests/services/kis_mock_runner/test_runner.py
 tests/services/kis_mock_runner/test_session.py
 tests/services/kis_websocket/test_approval_key_single_flight.py
@@ -446,7 +443,6 @@ tests/test_invest_screener_snapshots_freshness.py
 tests/test_invest_screener_snapshots_job.py
 tests/test_invest_screener_week_change_filter.py
 tests/test_invest_view_model_safety.py
-tests/test_investment_dimension_reports_schema.py
 tests/test_investment_report_invalidation_triggers.py
 tests/test_investment_reports_bundle_loop_maps.py
 tests/test_investment_reports_ingestion.py
@@ -548,7 +544,6 @@ tests/test_sentry_pii_docs_default_off.py
 tests/test_sentry_process_config_seam.py
 tests/test_services_upbit.py
 tests/test_services_yahoo.py
-tests/test_shadow_replay_cli.py
 tests/test_snapshot_commit_guard.py
 tests/test_snapshot_schedulers_rob438.py
 tests/test_stock_detail_candles.py

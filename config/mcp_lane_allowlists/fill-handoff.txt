@@ -28,7 +28,6 @@ get_toss_ai_signal	prompt
 get_toss_buy_balance	prompt
 get_trading_policy	prompt
 investment_report_create	prompt
-investment_report_create_from_hermes_composition	prompt
 investment_report_generate_from_bundle	prompt
 kis_live_place_order	prompt
 kis_mock_get_order_history	prompt

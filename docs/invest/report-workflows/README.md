@@ -1,5 +1,10 @@
 # /invest report workflow contracts
 
+> **hk 6930**: external (Hermes) report composition and its MCP tools are
+> retired — see [`../../runbooks/hermes-report-generation.md`](../../runbooks/hermes-report-generation.md).
+> The canonical flow and composer template below describe that retired path; the
+> stage vocabulary, lineage contract and public-safety rules still apply.
+
 This directory contains public-safe contracts and prompt templates for staged
 `/invest/reports` generation. These documents describe what the application
 contract should guarantee; private operator workspaces may wrap these contracts
@@ -18,20 +23,12 @@ with local MCP routing, credentials, browser sessions, and generated reports.
 
 ## Boundary
 
-`auto_trader` owns deterministic data preparation, bundle freezing, context
-export, ingest, persistence, and UI contracts. Hermes or an external agent owns
-LLM reasoning and composition. The application must not import or call an LLM
+`auto_trader` owns deterministic data preparation, bundle freezing,
+persistence, and UI contracts. The application must not import or call an LLM
 provider in-process to compose investment advice.
 
-Canonical flow:
-
-```text
-investment_report_prepare_bundle
-  -> investment_report_get_hermes_context
-  -> Hermes compose stage artifacts + final composition
-  -> investment_stage_artifacts_ingest_from_hermes
-  -> investment_report_create_from_hermes_composition
-```
+Stored reports are created with `investment_report_create` or the gated
+`investment_report_generate_from_bundle`.
 
 Direct read-only MCP calls are useful for diagnosis and gap discovery. Once a
 piece of direct-tool evidence is repeatedly required for a report, it should be

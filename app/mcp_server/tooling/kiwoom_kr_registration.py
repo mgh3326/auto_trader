@@ -32,9 +32,6 @@ from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
 from app.mcp_server.tooling.allowlist_proxy import AllowlistedMCP
-from app.mcp_server.tooling.investment_hermes_handlers import (
-    INVESTMENT_HERMES_TOOL_NAMES,
-)
 from app.mcp_server.tooling.investment_snapshots_registration import (
     INVESTMENT_SNAPSHOTS_TOOL_NAMES,
 )
@@ -219,7 +216,6 @@ def kiwoom_kr_profile_tool_names() -> set[str]:
     names = set(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES)
     if settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
         names.update(_SNAPSHOT_GENERATOR_TOOL_NAMES)
-        names.update(INVESTMENT_HERMES_TOOL_NAMES)
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
         names.update(INVESTMENT_SNAPSHOTS_TOOL_NAMES)
     if settings.ORDER_PROPOSALS_ENABLED:

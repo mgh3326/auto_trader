@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from app.schemas.hermes_composition import HermesNewsCitation
+from app.schemas.investment_report_composition import ReportNewsCitation
 
 _SUMMARY_MAX = 1000
 
@@ -44,7 +44,7 @@ def _truncate(text: str | None) -> str | None:
 def build_news_persistence(
     *,
     news_payloads: list[dict[str, Any]],
-    citations: list[HermesNewsCitation],
+    citations: list[ReportNewsCitation],
     item_uuid_by_client_key: dict[str, UUID],
     instrument_type: str,
 ) -> NewsPersistencePlan:

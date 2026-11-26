@@ -27,9 +27,8 @@ def _build_app() -> FastAPI:
 
 @pytest.mark.unit
 def test_hermes_token_branch_and_settings_are_gone() -> None:
-    assert not any(name.startswith("HERMES_INGEST") for name in vars(AuthMiddleware))
-    assert not any(name.startswith("HERMES_INGEST") for name in Settings.model_fields)
-    assert not any(name.startswith("HERMES_INGEST") for name in vars(settings))
+    for names in (vars(AuthMiddleware), Settings.model_fields, vars(settings)):
+        assert not [n for n in names if n.startswith("HERMES_") and "INGEST" in n]
 
 
 @pytest.mark.unit

@@ -57,7 +57,7 @@ async def test_unsupported_account_scope_fails_closed(_enabled):
     assert res["success"] is False
     assert res["error"] == "unsupported_account_scope"
     assert "kis_live" in str(res["supported_pairs"])
-    assert "hermes" in res["hint"].lower()
+    assert "investment_report_create" in res["hint"]
 
 
 @pytest.mark.asyncio
