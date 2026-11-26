@@ -446,12 +446,14 @@ def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, caps
         "make_public_fetch",
         lambda **_: FakeSources(missing=frozenset({"BTCUSDT", "ETHUSDT"})),
     )
+    monkeypatch.setattr(cli, "code_commit", lambda _: "fixture-commit")
     monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
     monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
     _FrozenDatetime.frozen = evening("crypto", day)
     code = cli.main(["collect", "--root", str(tmp_path), "--market", "crypto"])
     out = capsys.readouterr()
     assert code == 2
+    assert "runner_commit fixture-commit" in out.out
     assert (
         "dataset_outcome universe crypto 2026-10-30 status=written reason=none"
     ) in out.out
@@ -477,6 +479,51 @@ class _FrozenDatetime:
         return cls.frozen
 
     fromisoformat = _dt.fromisoformat
+
+
+@pytest.mark.unit
+def test_cli_refuses_us_collection_from_runner_before_universe_fix(
+    tmp_path, monkeypatch, capsys
+):
+    from research.data_plane import cli
+    from research.data_plane import collect as collect_module
+
+    day = date(2026, 11, 25)
+    fetch_calls = []
+    monkeypatch.setattr(
+        cli,
+        "make_public_fetch",
+        lambda **_: fetch_calls.append(True) or FakeSources(),
+    )
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(collect_module, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(cli, "code_commit", lambda _: "b4ddb1f", raising=False)
+    monkeypatch.setattr(
+        cli, "_runner_has_minimum_commit", lambda _: False, raising=False
+    )
+    _FrozenDatetime.frozen = evening("us", day)
+
+    code = cli.main(
+        [
+            "collect",
+            "--root",
+            str(tmp_path),
+            "--market",
+            "us",
+        ]
+    )
+    out = capsys.readouterr()
+
+    assert code == 2
+    assert "runner_commit b4ddb1f" in out.out
+    for dataset in market_datasets("us"):
+        assert (
+            f"dataset_outcome {dataset} us 2026-11-25 "
+            "status=not_collected reason=runner_stale"
+        ) in out.out
+    assert "runner_stale" in out.err
+    assert fetch_calls == []
+    assert not partition_path(tmp_path, DATASET_UNIVERSE, "us", day).exists()
 
 
 @pytest.mark.unit

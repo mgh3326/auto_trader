@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+from research.us_universe.store import code_commit
 
 from .bar_sources import (
     BAR_SOURCES,
@@ -56,6 +59,31 @@ from .health import (
 )
 from .public_http import make_public_fetch
 from .store import partition_path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MINIMUM_US_UNIVERSE_COMMIT = "d485b40d9bdea65fcb3b25637e7ae1d23f676c80"
+
+
+def _runner_has_minimum_commit(repo_root: Path) -> bool:
+    """Require the deployed source tree to contain the reviewed US venue fix."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "merge-base",
+                "--is-ancestor",
+                MINIMUM_US_UNIVERSE_COMMIT,
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _iso_now(value: str) -> datetime:
@@ -237,6 +265,20 @@ def main(argv: list[str] | None = None) -> int:
         now = datetime.now(UTC)
         day = args.date or local_today(args.market, now)
         datasets = args.datasets
+        runner_commit = code_commit(REPO_ROOT)
+        print(f"runner_commit {runner_commit}")
+        if args.market == "us" and not _runner_has_minimum_commit(REPO_ROOT):
+            for dataset in datasets or market_datasets(args.market):
+                print(
+                    f"dataset_outcome {dataset} {args.market} {day} "
+                    "status=not_collected reason=runner_stale"
+                )
+            print(
+                "not collected: runner_stale "
+                f"minimum_commit={MINIMUM_US_UNIVERSE_COMMIT}",
+                file=sys.stderr,
+            )
+            return 2
         symbols = (
             [x for x in (s.strip() for s in args.symbols.split(",")) if x]
             if args.symbols is not None
@@ -292,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                 symbols=symbols,
                 min_coverage=args.min_coverage,
                 max_universe_drop=args.max_universe_drop,
+                commit=runner_commit,
                 **broker_kwargs,
             )
         except (RefusedRowError, CollectError) as exc:
