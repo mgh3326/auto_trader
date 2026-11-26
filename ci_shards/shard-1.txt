@@ -207,6 +207,7 @@ tests/services/daily_candles/test_sync_service.py
 tests/services/daily_candles/test_us_daily_lanes.py
 tests/services/daily_plan/test_allocation.py
 tests/services/daily_plan/test_bundle.py
+tests/services/daily_plan/test_bundle_builder.py
 tests/services/daily_plan/test_publish.py
 tests/services/decision_evidence/test_migration_db.py
 tests/services/decision_evidence/test_order_attempt_db.py

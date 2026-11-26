@@ -545,7 +545,10 @@ recommendation/holdings와 provider 기반 earnings는 quick에서 실행하지 
 
 ROB-1382 — RSI-14 단일 원천·단일 산식: 모든 MCP 표면의 RSI-14는
 `market_data_indicators._calculate_rsi_series`(Wilder ewm `alpha=1/14`,
-`min_periods=14`, `adjust=False`) 하나만 사용한다. quick는 `daily_candles`
+`min_periods=14`, `adjust=False`) 하나만 사용한다. 정의는 브로커를 import 하지
+않는 `app/services/technical_math.py` 에 있고(hk 6902, 지지·저항 계산 포함)
+`market_data_indicators` 는 같은 함수를 기존 이름으로 다시 내보낸다 — 두 번째 구현을
+만들지 마라. quick는 `daily_candles`
 최신 250봉(`QUICK_CANDLE_COUNT`) 위에서 계산하고 `rsi_source="daily_candles_db"`,
 `bars_used=<사용 봉 수>`를 담는다. `get_ohlcv(period="day", include_indicators=True)`는
 같은 `daily_candles` 창(`fetch_recent_batch`, 같은 market/partition/count)을 읽어
@@ -1354,8 +1357,8 @@ SELECT v.seq, v.metadata -> 'allocation_comparison'
 `{account_ref, currency, cash, parking}` 목록이며 `cash`는
 `{value, event_at, first_observed_at}`, `parking` 항목은 `symbol`·`quantity`·
 `price`·`sell_cost_bps`·`event_at`·`first_observed_at`이다. 금액·수량은 십진
-문자열이다. 레포에는 아직 번들을 조립해 `store_input_bundle`을 부르는 코드가
-없으므로, 조립기가 이 키를 채우기 전의 블록은 `unknown`뿐이다.
+문자열이다. 번들은 아래 「일일 계획 입력 번들 조립」의 CLI 가 만든다. 번들을 참조하지
+않은 발행의 블록은 `unknown`뿐이다.
 
 **순위.** A는 가격·유동성·장부(`dist_to_support_pct`·`rsi_14`·
 `daily_turnover`·`pbr`), B는 A에 `foreign_net`·`news`·`disclosures`를 더한다.
@@ -1386,3 +1389,58 @@ trigger는 `unknown`이다. 미충족·미상 상위 후보의 금액과 한도 
 없다. 가정 매도가 붙은 배분은 `precondition=
 buy_must_not_proceed_until_broker_orderable_cash_has_increased`를 싣는다. 이
 문자열을 강제하거나 매도를 실행하는 경로는 없다.
+
+### 일일 계획 입력 번들 조립 (hk 6902, 설계 §9 T2 첫 조각)
+
+`app/services/daily_plan/bundle_builder.py`(순수) + `bundle_reader.py`(SELECT 전용) +
+수동 CLI `scripts/build_daily_plan_bundle.py --date D [--cutoff HH:MM] [--dry-run|--commit]`.
+DB 만 읽고 `store_input_bundle` 로만 저장한다. 브로커 호출, 계획 버전 쓰기, 주문·제안·감시·위임장
+경로, 스케줄러 등록은 없다(mandate 패키지에서는 CLI 가 순수 참조 함수 `derive_account_ref` 하나만 쓴다).
+
+**CLI.** 기본은 드라이런이고 `REPEATABLE READ READ ONLY` 트랜잭션(statement timeout 60초) 하나로
+읽은 뒤 후보 수·sha256·입력별 present/unknown 계수(저장 비교가 읽는 그대로)를 출력한다.
+`--commit` 은 두 번째 트랜잭션에서 저장 writer 를 한 번 부른다. `bundle_closed_at` 은 D 의 `--cutoff`
+(기본 08:20, 최대 08:30 KST)다. 그 시각 전 실행은 `cutoff_not_reached`, 오늘이 아닌 날의 `--commit` 은
+`commit_date_not_today`(소급 없음), 비거래일은 `skipped`(종료 0), 거부는 종료 2 다. 입력이 그대로인
+재실행은 같은 바이트·같은 `bundle_id` 이고, 판정에 영향을 주는 행이 바뀌면 새 번들이다.
+
+**후보 규칙** `daily-plan-candidates/v1`(번들에 본문·`candidate_rule_sha256`·`candidate_set_sha256` 저장).
+KR 6자리 숫자 코드만, 주차 종목 제외(제외 수 기록).
+- 스크리너: `invest_screener_snapshots` 의 직전 세션 파티션 중 `updated_at`·`created_at` 이 마감 이하인 행.
+  거래대금 상위 40, 등락률 상위 20, 연속 상승 3일 이상 상위 20, 지지선 거리 하위 20
+  (동점은 거래대금 내림차순 → symbol).
+- 후보 로그: `review.screener_pick_log` `admitted`, 직전 세션일 00:00 KST ~ 마감. 최신순, source 당 20,
+  합계 60. `candidate_call_ids` 에 call id 를 남긴다.
+- 보유: KIS·Toss 의 `account_value_snapshots`(`market='account'`) 계좌별 마감까지의 최신 행, 상한 없음.
+비어 있거나 낡은 소스는 `candidate_sources` 에 상태·사유를 남기고, 스크리너를 못 쓰면
+`gap_reason="candidate_source_unavailable"` 이다(후보 0건으로 말하지 않는다).
+
+**입력 출처.** 모든 입력은 값과 `event_at`·`first_observed_at`·`source_name`·`revision_id`, 또는
+`{"unavailable": <닫힌 사유>}` 다(0·중립값·키 생략 없음, 금액은 정확한 decimal 문자열).
+
+| 입력 | 출처와 값 |
+|---|---|
+| `last_close`·`sources.price`·`rsi_14` | `public.kr_candles_1d` KRX, 직전 세션까지 최대 250봉, RSI 는 `technical_math` 단일 산식 |
+| `dist_to_support_pct` | 같은 마지막 60봉의 quick 분석과 같은 지지선 중 가장 가까운 것까지 `(종가−지지)/종가×100`; 아래 지지선이 없으면 `input_missing` |
+| `daily_turnover` | `invest_screener_snapshots` 의 직전 세션 이하 최신 행 |
+| `pbr` | `market_valuation_snapshots` `naver_finance`, 양수만 |
+| `foreign_net` | `investor_flow_snapshots` `naver_finance` 의 직전 세션까지 확정 5세션 합, 단위 `shares`(close 는 읽지 않는다, hk 6317) |
+| `news` | `news_articles` + `symbol_news_relevance`; 마감 전에 판정된 `excluded` 만 뺀다. 분·초 정밀도 발행 시각만 `event_at` |
+| `disclosures` | `market_events` `dart`·`naver_disclosure`; 발행 시각·제공자 시각·DART 접수 시계가 없으면 시각 미증명 |
+| `accounts` | 계좌 가치 스냅샷의 KRW 현금(읽은 0 은 `{"value":"0",…}`)과 주차 보유 |
+
+- **시각 규칙**: 마감 뒤에 생긴 행은 `observed_after_cutoff`, `updated_at` 이 `created_at` 보다 늦거나
+  기사·공시에 `revised_at` 이 있으면 `observed_time_unproven`, 직전 세션 마감보다 오래되면
+  `input_stale`, 세션이 끝나기 전에 본 값과 비정상 값·`halted_suspect` 일봉은 `input_invalid` 다.
+- 일봉에는 `created_at` 이 없어 `ingested_at`(현재 값의 마지막 쓰기)을 최초 관측의 상한으로 쓴다.
+  마감 뒤 재작성은 `observed_after_cutoff` 이고, 그 시각보다 이른 관측을 주장하지 않는다.
+- **방향 없음**: 어떤 원천도 뉴스·공시 방향을 저장하지 않으므로 항목에 `direction` 을 넣지 않는다.
+  비교는 `direction_unclassified` 로 읽는다. 키워드 추정을 만들지 마라(하드룰 1).
+- **계좌 참조**: 설정된 KIS·Toss 계좌의 스냅샷 시리즈만 `derive_account_ref` 로 묶고
+  (`routable_account_modes` 에도 같은 참조), 그 밖은 `accounts_unidentified` 다.
+- **주차 매도 비용**: 저장된 원천이 없어 `sell_cost_bps` 는 `{"unavailable":"input_missing"}` 이고
+  비교는 주차 자산을 쓰지 않는다.
+- 이 조각에 없는 것: `c_rank`·`E_t`·`J_t`, 브로커 보유 스냅샷과 계좌별 보유 행, 읽기 전용 위험
+  평가기와 −8% 추가매수 불가 행, 지표 외 §7.1 번들 항목. MCP 도구도 없다.
+- 미등록 Dagu 사본: `deploy/dagu/at-daily-plan-bundle/`(평일 08:20 KST).
+

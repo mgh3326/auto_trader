@@ -1,0 +1,20 @@
+# KR 일일 계획 입력 번들(hk 6902). 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 평일 08:20 KST. 번들 마감(--cutoff 기본 08:20)에 맞춘 시각이고, 계획 cutoff 08:30 전이다.
+# DB 만 읽고 review.daily_plan_input_bundles 에 한 번 저장한다. 브로커·주문 호출은 없다.
+# XKRX 비거래일은 CLI 가 skipped 로 끝난다. 같은 입력의 재실행은 같은 bundle_id 를 돌려준다.
+# 등록·기동은 운영자만 수행한다.
+description: "KR daily plan premarket input bundle (DB read, one bundle write)"
+schedule: "CRON_TZ=Asia/Seoul 20 8 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: build
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.build_daily_plan_bundle --date $(TZ=Asia/Seoul date +%F) --commit
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-batch "dag=at-daily-plan-bundle status=success"'
+  failure:
+    command: 'logger -t at-dagu-batch "dag=at-daily-plan-bundle status=failure"'
