@@ -9,6 +9,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Add a separate table with checks on the venue and corrected volume.
+    # expand-contract: contract-step 6757
     op.execute("""
         CREATE TABLE research.kr_auction_minute_revisions (
             time_utc TIMESTAMPTZ NOT NULL,
@@ -24,6 +26,8 @@ def upgrade() -> None:
             PRIMARY KEY (time_utc, symbol, venue)
         )
     """)
+    # Grant app access only on databases where the app role already exists.
+    # expand-contract: contract-step 6757
     op.execute("""
         DO $$
         BEGIN
