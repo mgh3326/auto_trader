@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from app.models.kr_market_daily import KRMarketBreadth
 from app.services.kr_market_daily.client import (
     BreadthFetchError,
     NaverMarketDailyClient,
@@ -53,6 +54,16 @@ def test_deposit_fixture_confirms_hundred_million_krw_unit() -> None:
     assert row["bizdate"] == date(2026, 11, 24)
     assert row["amount_unit"] == "억원"
     assert row["customer_deposit"] == Decimal("62500.25")
+
+
+def test_breadth_key_keeps_intraday_and_after_close_observations() -> None:
+    assert [
+        column.name for column in KRMarketBreadth.__table__.primary_key.columns
+    ] == [
+        "market",
+        "trade_date",
+        "observed_at",
+    ]
 
 
 @pytest.mark.asyncio

@@ -16,9 +16,9 @@ class KRMarketBreadth(Base):
 
     market: Mapped[str] = mapped_column(String(10), primary_key=True)
     trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    session_label: Mapped[str] = mapped_column(String(20), primary_key=True)
+    session_label: Mapped[str] = mapped_column(String(20), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False
+        TIMESTAMP(timezone=True), primary_key=True
     )
     up_count: Mapped[int] = mapped_column(Integer, nullable=False)
     down_count: Mapped[int] = mapped_column(Integer, nullable=False)

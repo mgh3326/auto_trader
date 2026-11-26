@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.Column("complete", sa.Boolean(), nullable=False),
         sa.Column("source", sa.String(30), nullable=False),
         sa.Column("first_received_at", sa.TIMESTAMP(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("market", "trade_date", "session_label"),
+        sa.PrimaryKeyConstraint("market", "trade_date", "observed_at"),
         sa.CheckConstraint("market IN ('KOSPI','KOSDAQ')", name="market"),
         sa.CheckConstraint(
             "session_label IN ('intraday','after_close')", name="session_label"
