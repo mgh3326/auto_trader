@@ -164,6 +164,17 @@ async def handle_get_news(
         item = dict(source_item) if isinstance(source_item, dict) else {}
         if relevance := article.provider_metadata.get("relevance"):
             item["relevance"] = relevance
+        for field in (
+            "published_at_raw",
+            "published_offset",
+            "first_received_at",
+            "revised_at",
+            "provider_article_id",
+            "source_document_ids",
+        ):
+            value = article.provider_metadata.get(field)
+            if value is not None:
+                item[field] = value
         news.append(item)
     payload: dict[str, Any] = {
         "symbol": symbol,

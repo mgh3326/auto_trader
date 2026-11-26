@@ -249,16 +249,30 @@ async def scratch_database() -> AsyncIterator[str]:
                 # hk 6674 publication fields are later than this reconstructed
                 # parent boundary; current metadata already contains them.
                 for column in (
+                    "published_offset",
                     "published_at_raw",
                     "published_at",
                     "published_precision",
                     "published_at_reason",
                     "first_received_at",
+                    "revised_at",
+                    "provider_article_id",
+                    "source_document_ids",
                 ):
                     await connection.execute(
                         text(
                             f"ALTER TABLE news_articles DROP COLUMN IF EXISTS {column}"
                         )
+                    )
+                for table, column in (
+                    ("news_article_related_symbols", "relation_type"),
+                    ("news_article_related_symbols", "relation_evidence"),
+                    ("research_reports", "first_received_at"),
+                    ("research_reports", "published_date"),
+                    ("research_reports", "revised_at"),
+                ):
+                    await connection.execute(
+                        text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}")
                     )
                 # hk 4178's detail column is after this parent boundary.
                 await connection.execute(
@@ -1204,6 +1218,38 @@ async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bo
         await connection.close()
 
 
+async def _assert_hk6302_legacy_writer_compatibility(database_url: str) -> None:
+    """Old writers may omit relation additions; report receipt gets a DB default."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        article_id = await connection.fetchval(
+            "INSERT INTO news_articles (url, title, scraped_at, created_at) "
+            "VALUES ($1, $2, now(), now()) RETURNING id",
+            f"https://example.test/{uuid.uuid4()}",
+            "migration compatibility",
+        )
+        await connection.execute(
+            "INSERT INTO news_article_related_symbols "
+            "(article_id, market, symbol, source, created_at) "
+            "VALUES ($1, 'kr', '005930', 'legacy_writer', now())",
+            article_id,
+        )
+        first_received_at = await connection.fetchval(
+            "INSERT INTO research_reports (dedup_key, report_type, source) "
+            "VALUES ($1, 'equity_research', 'legacy_writer') "
+            "RETURNING first_received_at",
+            f"legacy-{uuid.uuid4()}",
+        )
+        assert first_received_at is not None
+    finally:
+        await connection.close()
+
+
 async def _outcome_constraint_matrix(
     database_url: str,
 ) -> tuple[tuple[str, bool, bool], ...]:
@@ -1397,6 +1443,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     # -- upgrade -------------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
     await _check_head_state()
+    await _assert_hk6302_legacy_writer_compatibility(scratch_database)
     handoff_entry = await _insert_fill_handoff_context(scratch_database)
     assert (
         await _context_created_by(scratch_database, handoff_entry)

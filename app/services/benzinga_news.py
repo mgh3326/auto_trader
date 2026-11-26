@@ -151,6 +151,17 @@ def parse_provider_time(raw: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _provider_offset(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    try:
+        parsed = parsedate_to_datetime(raw.strip())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    offset = parsed.strftime("%z")
+    return f"{offset[:3]}:{offset[3:]}" if offset else None
+
+
 def _names(value: Any) -> list[str]:
     """Benzinga ``stocks``/``channels``/``tags`` entries: str or {name: ...}."""
     if not isinstance(value, list):
@@ -191,6 +202,11 @@ def normalize_record(
         "query_symbol": None,
         "channels": _names(item.get("channels")),
         "created_raw": created_raw,
+        "published_at_raw": created_raw,
+        "published_at": created_utc.isoformat() if created_utc else None,
+        "published_offset": _provider_offset(created_raw),
+        "published_precision": "second" if created_utc else None,
+        "revised_at": None,
         "updated_raw": updated_raw,
         "created_basis": "provider_rfc2822" if created_utc else None,
         "updated_basis": "provider_rfc2822" if updated_utc else None,
@@ -237,13 +253,20 @@ def normalize_finnhub_record(
 ) -> dict[str, Any]:
     """Project one ``fetch_news_finnhub`` item onto the shadow record shape."""
     created_raw = (
-        item.get("datetime") if isinstance(item.get("datetime"), str) else None
+        item.get("datetime_raw")
+        if isinstance(item.get("datetime_raw"), str)
+        else item.get("datetime")
+        if isinstance(item.get("datetime"), str)
+        else None
     )
     created_utc, created_basis = _finnhub_created_utc(item.get("datetime"))
+    provider_id = item.get("id")
     return {
         "record_type": "article",
         "source": "finnhub",
-        "provider_id": item.get("url") or item.get("title"),
+        "provider_id": str(provider_id)
+        if provider_id is not None
+        else item.get("url") or item.get("title"),
         "url": item.get("url"),
         "title": item.get("title"),
         "teaser": item.get("summary"),
@@ -251,6 +274,11 @@ def normalize_finnhub_record(
         "query_symbol": None,
         "channels": [item["source"]] if isinstance(item.get("source"), str) else [],
         "created_raw": created_raw,
+        "published_at_raw": created_raw,
+        "published_at": created_utc,
+        "published_offset": "+00:00" if created_utc else None,
+        "published_precision": "second" if created_utc else None,
+        "revised_at": None,
         "updated_raw": None,
         "created_basis": created_basis,
         "updated_basis": None,

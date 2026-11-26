@@ -423,6 +423,11 @@ class TestArticleValuesFromIngestorPayload:
             stock_symbol="005930",
             stock_name="삼성전자",
             published_at=datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC),
+            published_at_raw="2026-05-09T10:00:00+00:00",
+            published_offset="+00:00",
+            published_precision="second",
+            provider_article_id="provider-1",
+            raw={"rcept_no": "20260509000001", "ir_id": ["ir-2", "ir-3"]},
             market="kr",
             feed_source="browser_naver_mainnews",
             keywords=["fingerprint:fp-1"],
@@ -436,6 +441,81 @@ class TestArticleValuesFromIngestorPayload:
         assert values["feed_source"] == "browser_naver_mainnews"
         assert values["article_content"] == "body text"
         assert values["source"] == "연합뉴스"
+        assert values["published_at_raw"] == "2026-05-09T10:00:00+00:00"
+        assert values["published_offset"] == "+00:00"
+        assert values["published_precision"] == "second"
+        assert values["provider_article_id"] == "provider-1"
+        assert values["source_document_ids"] == {
+            "rcept_no": ["20260509000001"],
+            "ir_id": ["ir-2", "ir-3"],
+        }
+        assert values["first_received_at"].tzinfo is UTC
+
+    def test_legacy_publication_time_uses_normalized_utc_and_raw_precision(self):
+        from datetime import datetime
+
+        from app.services.news_payload_normalizer import (
+            _article_values_from_ingestor_payload,
+        )
+
+        article_data = SimpleNamespace(
+            url="https://example.com/date-only",
+            title="Title",
+            content=None,
+            summary=None,
+            source=None,
+            author=None,
+            stock_symbol=None,
+            stock_name=None,
+            published_at=datetime(2026, 11, 26, tzinfo=UTC),
+            published_at_raw="2026-11-26",
+            published_offset=None,
+            published_precision=None,
+            provider_article_id=None,
+            raw={},
+            market="us",
+            feed_source="test",
+            keywords=None,
+        )
+
+        values = _article_values_from_ingestor_payload(article_data)
+
+        assert values["published_at_raw"] == "2026-11-26"
+        assert values["published_precision"] == "date"
+        assert values["article_published_at"] == datetime(2026, 11, 26, 9, 0)
+
+    def test_legacy_publication_time_matches_normalized_provider_offset(self):
+        from datetime import datetime
+
+        from app.services.news_payload_normalizer import (
+            _article_values_from_ingestor_payload,
+        )
+
+        article_data = SimpleNamespace(
+            url="https://example.com/offset",
+            title="Title",
+            content=None,
+            summary=None,
+            source=None,
+            author=None,
+            stock_symbol=None,
+            stock_name=None,
+            published_at=datetime(2026, 11, 26, 10),
+            published_at_raw="2026-11-26T10:00:00-05:00",
+            published_precision="second",
+            provider_article_id=None,
+            raw={},
+            market="us",
+            feed_source="test",
+            keywords=None,
+        )
+
+        values = _article_values_from_ingestor_payload(article_data)
+
+        assert values["published_at"].astimezone(UTC).isoformat() == (
+            "2026-11-26T15:00:00+00:00"
+        )
+        assert values["article_published_at"] == datetime(2026, 11, 27, 0, 0)
 
     def test_none_published_at_produces_none(self):
         from app.services.news_payload_normalizer import (

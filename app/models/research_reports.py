@@ -6,12 +6,13 @@ stored. All writes must go through ResearchReportsRepository.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
     Boolean,
+    Date,
     ForeignKey,
     Index,
     Integer,
@@ -81,7 +82,15 @@ class ResearchReport(Base):
     category: Mapped[str | None] = mapped_column(Text)
     analyst: Mapped[str | None] = mapped_column(Text)
     published_at_text: Mapped[str | None] = mapped_column(Text)
+    published_date: Mapped[date | None] = mapped_column(Date)
     published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    first_received_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+        default=func.now(),
+        server_default=func.now(),
+    )
+    revised_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     summary_text: Mapped[str | None] = mapped_column(Text)
     detail_url: Mapped[str | None] = mapped_column(Text)
     detail_title: Mapped[str | None] = mapped_column(Text)

@@ -50,6 +50,50 @@ def _sample_payload() -> dict:
     }
 
 
+@pytest.mark.unit
+def test_duplicate_article_values_keep_later_content_and_revision_time():
+    from app.services.llm_news_service import _merge_batch_article_values
+
+    first_received = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
+    later_received = datetime(2026, 11, 26, 1, 1, tzinfo=UTC)
+    first = {
+        "title": "Initial title",
+        "source": None,
+        "author": None,
+        "article_content": None,
+        "summary": None,
+        "stock_symbol": None,
+        "stock_name": None,
+        "keywords": ["fingerprint:one"],
+        "provider_article_id": None,
+        "source_document_ids": None,
+        "article_published_at": None,
+        "published_at_raw": None,
+        "published_offset": None,
+        "published_at": None,
+        "published_precision": None,
+        "published_at_reason": None,
+        "first_received_at": first_received,
+        "created_at": first_received,
+    }
+    later = {
+        **first,
+        "title": "Revised title",
+        "article_content": "Later body",
+        "summary": "Later summary",
+        "first_received_at": later_received,
+        "created_at": later_received,
+    }
+
+    merged = _merge_batch_article_values(first, later)
+
+    assert merged["title"] == "Revised title"
+    assert merged["article_content"] == "Later body"
+    assert merged["summary"] == "Later summary"
+    assert merged["first_received_at"] == first_received
+    assert merged["revised_at"] == later_received
+
+
 class TestNewsIngestorSchemas:
     def test_news_ingestor_bulk_schema_maps_payload(self):
         from app.schemas.news import NewsBulkIngestRequest
@@ -347,6 +391,10 @@ def test_news_article_related_symbol_model_contract():
     assert "uq_news_article_related_symbols_article_market_symbol_source" in constraints
     assert "ix_news_article_related_symbols_article_rank" in indexes
     assert "ix_news_article_related_symbols_market_symbol_article" in indexes
+    assert "ck_news_article_related_symbols_relation_type" in constraints
+    assert "ck_news_article_related_symbols_relation_evidence" in constraints
+    assert NewsArticleRelatedSymbol.relation_type.property.columns[0].nullable
+    assert NewsArticleRelatedSymbol.relation_evidence.property.columns[0].nullable
 
 
 def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candidates():
@@ -390,6 +438,28 @@ def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candida
     assert rows[1]["matched_term"] == "삼전"
     assert rows[1]["score"] == pytest.approx(0.91)
     assert rows[1]["source"] == "candidate_metadata"
+    assert rows[1]["relation_type"] == "direct"
+    assert rows[1]["relation_evidence"]["kind"] == "provider_candidate"
+    assert rows[1]["relation_evidence"]["judgment_state"] == "pending"
+
+
+def test_related_symbol_values_from_ingestor_payload_rejects_open_relation_values():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {
+        "stock_candidates": [
+            {"symbol": "005930", "market": "kr", "relation_type": "competitor"}
+        ]
+    }
+    request = NewsBulkIngestRequest.model_validate(payload)
+    rows = _related_symbol_values_from_ingestor_payload(
+        article_id=1, article_data=request.articles[0]
+    )
+    assert rows == []
 
 
 def test_related_symbol_values_from_ingestor_payload_drops_invalid_and_url_metadata():

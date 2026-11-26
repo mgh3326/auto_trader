@@ -177,6 +177,7 @@ async def test_kr_get_news_keeps_mobile_provider_url_and_live_provenance(
         "datetime_raw": "202611250941",
         "officeId": "001",
         "articleId": "0001234",
+        "rcept_no": "20261125000123",
     }
     monkeypatch.setattr(
         symbol_news_service.naver_finance,
@@ -194,6 +195,10 @@ async def test_kr_get_news_keeps_mobile_provider_url_and_live_provenance(
     assert persisted_item.url == raw["url"]
     assert persisted_item.published_at_raw == raw["datetime_raw"]
     assert persisted_item.published_precision == "minute"
+    assert persisted_item.published_offset == "+09:00"
+    assert persisted_item.provider_article_id == "001:0001234"
+    assert persisted_item.source_document_ids == {"rcept_no": ["20261125000123"]}
+    assert persisted_item.published_at.isoformat() == "2026-11-25T00:41:00+00:00"
     assert result.cache_hit is False
     assert result.fallback_source is None
     assert result.provider_provenance[0]["mode"] == "live"

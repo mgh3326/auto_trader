@@ -274,7 +274,7 @@ def _stored_to_article(
         "datetime": row.published_at.isoformat() if row.published_at else None,
         **({"summary": row.summary or ""} if provider == "finnhub" else {}),
     }
-    external_id = (
+    external_id = row.provider_article_id or (
         _naver_external_id(row.url) if provider == "naver" else _url_hash(row.url)
     )
     related = []
@@ -305,6 +305,14 @@ def _stored_to_article(
         provider_metadata={
             "source_item": source_item,
             "relevance": row.relevance,
+            "published_at_raw": row.published_at_raw,
+            "published_offset": row.published_offset,
+            "first_received_at": row.first_received_at.isoformat()
+            if row.first_received_at
+            else None,
+            "revised_at": row.revised_at.isoformat() if row.revised_at else None,
+            "provider_article_id": row.provider_article_id,
+            "source_document_ids": row.source_document_ids,
             **({"sentiment": sentiment} if provider == "finnhub" else {}),
         },
     )
@@ -324,57 +332,47 @@ async def _persist_and_load(
         async with AsyncSessionLocal() as db:
             if fetched:
                 from app.services.kr_news_collector import parse_publish_time
+                from app.services.news_payload_normalizer import (
+                    extract_source_document_ids,
+                )
+
+                def to_feed_input(article: SymbolNewsArticle) -> FeedArticleInput:
+                    source_item = article.provider_metadata.get("source_item") or {}
+                    raw_time = source_item.get(
+                        "datetime_raw", source_item.get("datetime")
+                    )
+                    if market == "kr":
+                        parsed = parse_publish_time(raw_time)
+                        published_raw = parsed.raw
+                        precision = parsed.precision
+                        published_at = parsed.value or article.published_at
+                        published_offset = "+09:00"
+                    else:
+                        published_raw = str(raw_time) if raw_time is not None else None
+                        precision = "second" if article.published_at else None
+                        published_at = article.published_at
+                        published_offset = "+00:00" if published_at else None
+                    return FeedArticleInput(
+                        url=article.canonical_url,
+                        title=article.title,
+                        source=article.source_name,
+                        published_at=published_at,
+                        summary=article.summary,
+                        published_at_raw=published_raw,
+                        published_precision=precision,
+                        published_at_reason=None
+                        if published_at is not None
+                        else "unparseable",
+                        published_offset=published_offset,
+                        provider_article_id=article.external_article_id,
+                        source_document_ids=extract_source_document_ids(source_item),
+                    )
 
                 await symbol_news_store.upsert_feed_articles(
                     db,
                     market,
                     symbol,
-                    [
-                        FeedArticleInput(
-                            url=a.canonical_url,
-                            title=a.title,
-                            source=a.source_name,
-                            published_at=a.published_at,
-                            summary=a.summary,
-                            published_at_raw=(
-                                parse_publish_time(
-                                    (a.provider_metadata.get("source_item") or {}).get(
-                                        "datetime_raw",
-                                        (
-                                            a.provider_metadata.get("source_item") or {}
-                                        ).get("datetime"),
-                                    )
-                                ).raw
-                                if market == "kr"
-                                else None
-                            ),
-                            published_precision=(
-                                parse_publish_time(
-                                    (a.provider_metadata.get("source_item") or {}).get(
-                                        "datetime_raw",
-                                        (
-                                            a.provider_metadata.get("source_item") or {}
-                                        ).get("datetime"),
-                                    )
-                                ).precision
-                                if market == "kr"
-                                else None
-                            ),
-                            published_at_reason=(
-                                parse_publish_time(
-                                    (a.provider_metadata.get("source_item") or {}).get(
-                                        "datetime_raw",
-                                        (
-                                            a.provider_metadata.get("source_item") or {}
-                                        ).get("datetime"),
-                                    )
-                                ).reason
-                                if market == "kr"
-                                else None
-                            ),
-                        )
-                        for a in fetched
-                    ],
+                    [to_feed_input(article) for article in fetched],
                     feed_source=feed_source,
                 )
             stored, excluded_count = await symbol_news_store.load_symbol_news(
@@ -427,7 +425,7 @@ async def _fetch_finnhub(symbol: str, market: str, limit: int) -> _ProviderNewsF
                 provider="finnhub",
                 market=market,
                 symbol=symbol,
-                external_article_id=_url_hash(url),
+                external_article_id=str(raw.get("id") or "") or _url_hash(url),
                 title=title,
                 source_name=raw.get("source") or None,
                 canonical_url=url,

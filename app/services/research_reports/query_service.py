@@ -34,6 +34,7 @@ def _row_to_citation(row: ResearchReport) -> ResearchReportCitation:
         title=row.title or row.detail_title,
         analyst=row.analyst,
         published_at_text=row.published_at_text,
+        published_date=row.published_date,
         published_at=row.published_at,
         category=row.category,
         detail_url=row.detail_url,

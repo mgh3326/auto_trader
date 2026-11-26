@@ -24,39 +24,65 @@ logger = logging.getLogger(__name__)
 def _payload_to_row(
     report: ResearchReportPayloadV1, *, ingestion_run_id: int | None
 ) -> dict:
-    detail = report.detail
-    pdf = report.pdf
-    return {
+    row = {
         "dedup_key": report.dedup_key,
         "report_type": report.report_type,
         "source": report.source,
-        "source_report_id": report.source_report_id,
-        "title": report.title,
-        "category": report.category,
-        "analyst": report.analyst,
-        "published_at_text": report.published_at_text,
-        "published_at": report.published_at,
-        "summary_text": report.summary_text,
-        "detail_url": detail.url if detail else None,
-        "detail_title": detail.title if detail else None,
-        "detail_subtitle": detail.subtitle if detail else None,
-        "detail_excerpt": detail.excerpt if detail else None,
-        "pdf_url": pdf.url if pdf else None,
-        "pdf_filename": pdf.filename if pdf else None,
-        "pdf_sha256": pdf.sha256 if pdf else None,
-        "pdf_size_bytes": pdf.size_bytes if pdf else None,
-        "pdf_page_count": pdf.page_count if pdf else None,
-        "pdf_text_length": pdf.text_length if pdf else None,
-        "symbol_candidates": [sc.model_dump() for sc in report.symbol_candidates]
-        if report.symbol_candidates
-        else None,
-        "raw_text_policy": report.raw_text_policy,
-        "attribution_publisher": report.attribution.publisher,
-        "attribution_copyright_notice": report.attribution.copyright_notice,
-        "attribution_full_text_exported": report.attribution.full_text_exported,
-        "attribution_pdf_body_exported": report.attribution.pdf_body_exported,
         "ingestion_run_id": ingestion_run_id,
     }
+    optional_fields = (
+        "source_report_id",
+        "title",
+        "category",
+        "analyst",
+        "published_at_text",
+        "published_date",
+        "published_at",
+        "summary_text",
+        "raw_text_policy",
+    )
+    for name in optional_fields:
+        if name in report.model_fields_set:
+            row[name] = getattr(report, name)
+
+    for input_name, output_prefix, field_names in (
+        (
+            "detail",
+            "detail",
+            ("url", "title", "subtitle", "excerpt"),
+        ),
+        (
+            "pdf",
+            "pdf",
+            ("url", "filename", "sha256", "size_bytes", "page_count", "text_length"),
+        ),
+    ):
+        if input_name not in report.model_fields_set:
+            continue
+        nested = getattr(report, input_name)
+        for name in field_names:
+            if nested is None or name in nested.model_fields_set:
+                row[f"{output_prefix}_{name}"] = (
+                    getattr(nested, name) if nested is not None else None
+                )
+
+    if "symbol_candidates" in report.model_fields_set:
+        row["symbol_candidates"] = (
+            [candidate.model_dump() for candidate in report.symbol_candidates]
+            if report.symbol_candidates
+            else None
+        )
+    if "attribution" in report.model_fields_set:
+        attribution_fields = {
+            "publisher": "attribution_publisher",
+            "copyright_notice": "attribution_copyright_notice",
+            "full_text_exported": "attribution_full_text_exported",
+            "pdf_body_exported": "attribution_pdf_body_exported",
+        }
+        for input_name, output_name in attribution_fields.items():
+            if input_name in report.attribution.model_fields_set:
+                row[output_name] = getattr(report.attribution, input_name)
+    return row
 
 
 async def ingest_research_reports_v1(

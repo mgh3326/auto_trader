@@ -194,11 +194,6 @@ def _clean_article_text(value: object) -> str:
     )
 
 
-def _clean_keyword_text(keyword: object) -> str:
-    """Drop URL-like keyword metadata so domains do not create entity false positives."""
-    return _clean_article_text(keyword)
-
-
 def match_symbols_for_article(
     *,
     title: str | None,
@@ -214,10 +209,9 @@ def match_symbols_for_article(
     if summary:
         if cleaned_summary := _clean_article_text(summary):
             parts.append(cleaned_summary)
-    if keywords:
-        parts.append(
-            " ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k)))
-        )
+    # Ingested keyword tags may contain broad SEO/market labels and often name
+    # neighboring tickers. They are not article-body evidence, so they must not
+    # create symbol attachments on their own.
     return match_symbols(" \n ".join(parts), market=market)
 
 

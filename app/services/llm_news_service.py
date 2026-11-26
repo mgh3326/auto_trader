@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import cast, func, select
+from sqlalchemy import case, cast, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -53,6 +53,72 @@ _TVSCREENER_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
     "us": ("http_tvscreener_news_us",),
     "crypto": ("http_tvscreener_news_crypto",),
 }
+
+_ARTICLE_MERGE_FIELDS = (
+    "title",
+    "source",
+    "author",
+    "article_content",
+    "summary",
+    "stock_symbol",
+    "stock_name",
+    "keywords",
+    "provider_article_id",
+    "source_document_ids",
+)
+_ARTICLE_PUBLICATION_FIELDS = (
+    "article_published_at",
+    "published_at_raw",
+    "published_offset",
+    "published_at",
+    "published_precision",
+    "published_at_reason",
+)
+_ARTICLE_REVISION_FIELDS = (
+    "title",
+    "source",
+    "author",
+    "article_content",
+    "summary",
+    "stock_symbol",
+    "stock_name",
+    *symbol_news_store.PUBLICATION_CONTENT_FIELDS,
+)
+
+
+def _merge_batch_article_values(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> dict[str, Any]:
+    """Fold one duplicate URL using the same precedence as the SQL upsert."""
+    merged = dict(existing)
+    for name in _ARTICLE_MERGE_FIELDS:
+        value = incoming[name]
+        if name == "title" or value is not None:
+            merged[name] = value
+
+    existing_rank = symbol_news_store.publication_precision_rank(
+        existing.get("published_precision")
+    )
+    incoming_rank = symbol_news_store.publication_precision_rank(
+        incoming.get("published_precision")
+    )
+    if incoming_rank >= existing_rank:
+        for name in _ARTICLE_PUBLICATION_FIELDS:
+            value = incoming.get(name)
+            if value is not None:
+                merged[name] = value
+
+    changed = any(
+        merged.get(name) != existing.get(name) for name in _ARTICLE_MERGE_FIELDS
+    )
+    changed = changed or any(
+        merged.get(name) != existing.get(name) for name in _ARTICLE_PUBLICATION_FIELDS
+    )
+    if changed:
+        merged["updated_at"] = incoming.get("created_at")
+    if any(merged.get(name) != existing.get(name) for name in _ARTICLE_REVISION_FIELDS):
+        merged["revised_at"] = incoming["first_received_at"]
+    return merged
 
 
 async def create_news_article(
@@ -312,15 +378,71 @@ async def ingest_news_ingestor_bulk(
             _article_values_from_ingestor_payload(article_data)
             for article_data in request.articles
         ]
-        article_stmt = (
-            pg_insert(NewsArticle)
-            .values(article_values)
-            .on_conflict_do_nothing(index_elements=[NewsArticle.url])
-            .returning(NewsArticle.id, NewsArticle.url)
+        values_by_url: dict[str, dict[str, Any]] = {}
+        for values in article_values:
+            current = values_by_url.get(values["url"])
+            if current is None:
+                values_by_url[values["url"]] = values
+            else:
+                values_by_url[values["url"]] = _merge_batch_article_values(
+                    current, values
+                )
+        article_values = list(values_by_url.values())
+        for values in article_values:
+            values.setdefault("updated_at", None)
+            values.setdefault("revised_at", None)
+        article_insert = pg_insert(NewsArticle).values(article_values)
+        excluded = article_insert.excluded
+        update_values = {
+            name: getattr(excluded, name)
+            if name == "title"
+            else func.coalesce(getattr(excluded, name), getattr(NewsArticle, name))
+            for name in _ARTICLE_MERGE_FIELDS
+        }
+        update_values.update(symbol_news_store.publication_update_values(excluded))
+        changed_fields = [
+            getattr(NewsArticle, name).is_distinct_from(value)
+            for name, value in update_values.items()
+        ]
+        content_changed_fields = [
+            NewsArticle.title.is_distinct_from(update_values["title"]),
+            *[
+                getattr(NewsArticle, name).is_distinct_from(update_values[name])
+                for name in _ARTICLE_REVISION_FIELDS
+                if name != "title"
+            ],
+        ]
+        article_stmt = article_insert.on_conflict_do_update(
+            index_elements=[NewsArticle.url],
+            set_={
+                **update_values,
+                "revised_at": case(
+                    (or_(*content_changed_fields), func.now()),
+                    else_=NewsArticle.revised_at,
+                ),
+                "updated_at": case(
+                    (or_(*changed_fields), func.now()), else_=NewsArticle.updated_at
+                ),
+            },
+            where=or_(*changed_fields),
+        ).returning(
+            NewsArticle.id,
+            NewsArticle.url,
+            literal_column("xmax = 0").label("inserted"),
         )
         article_result = await db.execute(article_stmt)
-        inserted_rows = article_result.all()
-        inserted_url_to_id = {url: article_id for article_id, url in inserted_rows}
+        affected_rows = article_result.all()
+        article_ids_result = await db.execute(
+            select(NewsArticle.id, NewsArticle.url).where(
+                NewsArticle.url.in_(values_by_url)
+            )
+        )
+        article_url_to_id = {
+            url: article_id for article_id, url in article_ids_result.all()
+        }
+        inserted_url_to_id = {
+            url: article_id for article_id, url, inserted in affected_rows if inserted
+        }
         inserted_urls = set(inserted_url_to_id)
 
         consumed_inserted_urls: set[str] = set()
@@ -335,7 +457,7 @@ async def ingest_news_ingestor_bulk(
         related_symbol_values: list[dict[str, Any]] = []
         related_symbols_by_article: dict[int, set[str]] = {}
         for article_data in request.articles:
-            article_id = inserted_url_to_id.get(article_data.url.strip())
+            article_id = article_url_to_id.get(article_data.url.strip())
             if article_id is None:
                 continue
             rows = _related_symbol_values_from_ingestor_payload(
@@ -370,7 +492,7 @@ async def ingest_news_ingestor_bulk(
                         != "kr"
                     ):
                         continue
-                    article_id = inserted_url_to_id.get(article_data.url.strip())
+                    article_id = article_url_to_id.get(article_data.url.strip())
                     if article_id is None:
                         continue
                     already = related_symbols_by_article.setdefault(article_id, set())

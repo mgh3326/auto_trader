@@ -185,12 +185,40 @@ async def test_news_company_success_maps_payload(monkeypatch):
     assert item["source"] == "Reuters"
     assert (
         item["datetime"]
-        == datetime.datetime.fromtimestamp(_NEWS_ITEM["datetime"]).isoformat()
+        == datetime.datetime.fromtimestamp(
+            _NEWS_ITEM["datetime"], tz=datetime.UTC
+        ).isoformat()
     )
+    assert item["datetime_raw"] == str(_NEWS_ITEM["datetime"])
+    assert item["id"] == str(_NEWS_ITEM["id"])
     assert item["url"] == _NEWS_ITEM["url"]
     assert item["summary"] == _NEWS_ITEM["summary"]
     assert item["sentiment"] == {"score": 0.62}
     assert item["related"] == "AAPL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_company_news_persists_provider_epoch_and_utc_offset(monkeypatch):
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_NEWS_ITEM])
+
+    _install_transport(monkeypatch, handler)
+    upsert, _ = _patch_store(monkeypatch, stored=[])
+
+    await symbol_news_service.fetch_symbol_news("AAPL", "us", limit=10)
+
+    persisted = upsert.await_args.args[3][0]
+    assert persisted.published_at_raw == str(_NEWS_ITEM["datetime"])
+    assert (
+        persisted.published_at.isoformat()
+        == datetime.datetime.fromtimestamp(
+            _NEWS_ITEM["datetime"], tz=datetime.UTC
+        ).isoformat()
+    )
+    assert persisted.published_offset == "+00:00"
+    assert persisted.published_precision == "second"
+    assert persisted.provider_article_id == str(_NEWS_ITEM["id"])
 
 
 @pytest.mark.asyncio

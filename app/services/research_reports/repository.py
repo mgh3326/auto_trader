@@ -9,7 +9,7 @@ Mutation policy: this is the ONLY module allowed to write these tables.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -33,7 +33,47 @@ class ResearchReportsRepository:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            content_fields = (
+                "report_type",
+                "source",
+                "source_report_id",
+                "title",
+                "category",
+                "analyst",
+                "published_at_text",
+                "published_date",
+                "published_at",
+                "summary_text",
+                "detail_url",
+                "detail_title",
+                "detail_subtitle",
+                "detail_excerpt",
+                "pdf_url",
+                "pdf_filename",
+                "pdf_sha256",
+                "pdf_size_bytes",
+                "pdf_page_count",
+                "pdf_text_length",
+                "symbol_candidates",
+                "raw_text_policy",
+                "attribution_publisher",
+                "attribution_copyright_notice",
+                "attribution_full_text_exported",
+                "attribution_pdf_body_exported",
+            )
+            updates = {
+                name: payload[name]
+                for name in content_fields
+                if name in payload and getattr(existing, name) != payload[name]
+            }
+            changed = bool(updates)
+            if changed:
+                for name, value in updates.items():
+                    setattr(existing, name, value)
+                existing.revised_at = datetime.now(UTC)
+                await self.db.flush()
             return False
+        payload.setdefault("first_received_at", datetime.now(UTC))
         row = ResearchReport(**payload)
         self.db.add(row)
         await self.db.flush()

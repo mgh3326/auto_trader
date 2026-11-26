@@ -358,10 +358,14 @@ async def fetch_news_finnhub(
                 "title": item.get("headline", ""),
                 "source": item.get("source", ""),
                 "datetime": datetime.datetime.fromtimestamp(
-                    item.get("datetime", 0)
+                    item.get("datetime", 0), tz=datetime.UTC
                 ).isoformat()
                 if item.get("datetime")
                 else None,
+                "datetime_raw": str(item.get("datetime"))
+                if item.get("datetime") is not None
+                else None,
+                "id": str(item.get("id")) if item.get("id") is not None else None,
                 "url": item.get("url", ""),
                 "summary": item.get("summary", ""),
                 "sentiment": item.get("sentiment"),

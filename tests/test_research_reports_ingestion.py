@@ -53,6 +53,30 @@ def _sample_payload(*, dedup_keys: list[str] | None = None) -> dict:
     }
 
 
+@pytest.mark.unit
+def test_report_mapper_preserves_optional_field_presence_for_reingest() -> None:
+    from app.schemas.research_reports import ResearchReportPayloadV1
+    from app.services.research_reports.ingestion import _payload_to_row
+
+    omitted = ResearchReportPayloadV1.model_validate(
+        {"dedup_key": "omitted", "report_type": "equity_research", "source": "feed"}
+    )
+    explicit_null = ResearchReportPayloadV1.model_validate(
+        {
+            "dedup_key": "null",
+            "report_type": "equity_research",
+            "source": "feed",
+            "summary_text": None,
+        }
+    )
+
+    omitted_row = _payload_to_row(omitted, ingestion_run_id=1)
+    explicit_null_row = _payload_to_row(explicit_null, ingestion_run_id=1)
+
+    assert "summary_text" not in omitted_row
+    assert explicit_null_row["summary_text"] is None
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_ingest_inserts_reports_and_run(db_session):

@@ -466,6 +466,11 @@ async def collect_kr_news(
                                     "score": None,
                                     "rank": None,
                                     "raw": {"matcher": "kr_symbol_universe_name"},
+                                    "relation_type": "direct",
+                                    "relation_evidence": {
+                                        "kind": "title_or_summary_name_match",
+                                        "matched_term": match.matched_term[:120],
+                                    },
                                     "created_at": datetime.now(UTC).replace(
                                         tzinfo=None
                                     ),

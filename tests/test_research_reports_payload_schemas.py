@@ -71,6 +71,22 @@ class TestResearchReportPayloadSchemas:
         assert len(req.reports) == 1
         assert req.reports[0].dedup_key == "naver-research-2026-05-07-AAPL-1"
 
+    def test_date_only_publish_time_keeps_raw_and_parsed_date_without_inventing_time(
+        self,
+    ):
+        from datetime import date
+
+        from app.services.research_reports.naver_collector import map_report
+
+        mapped = map_report(
+            "기업분석",
+            {"nid": "nid-1", "writeDate": "2026-05-07", "itemCode": "005930"},
+            {},
+        )
+        assert mapped["published_at_text"] == "2026-05-07"
+        assert mapped["published_date"] == date(2026, 5, 7)
+        assert mapped["published_at"] is None
+
     def test_rejects_payload_with_full_text_exported_true(self):
         from app.schemas.research_reports import ResearchReportIngestionRequest
 
