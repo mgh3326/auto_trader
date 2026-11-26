@@ -7,10 +7,6 @@ from typing import Any
 
 from app.services.kr_market_daily.client import SOURCE, NaverMarketDailyClient
 from app.services.kr_market_daily.store import insert_market_daily
-from app.services.research_candles.session_segment import (
-    KRX_REGULAR,
-    session_segment_of,
-)
 
 
 async def collect_market_daily(
@@ -25,6 +21,11 @@ async def collect_market_daily(
     received_at = now or datetime.now(UTC)
     breadth: list[dict[str, Any]] = []
     if target_date == today:
+        from app.services.research_candles.session_segment import (
+            KRX_REGULAR,
+            session_segment_of,
+        )
+
         segment = session_segment_of("kr", "KRX", received_at)
         label = "intraday" if segment == KRX_REGULAR else "after_close"
         for market in ("KOSPI", "KOSDAQ"):

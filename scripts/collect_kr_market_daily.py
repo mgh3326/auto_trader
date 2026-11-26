@@ -10,14 +10,19 @@ import logging
 from datetime import date
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from app.core.cli import setup_logging_and_sentry
-from app.core.db import AsyncSessionLocal
-from app.core.timezone import today_kst
 from app.services.kr_market_daily.client import NaverMarketDailyClient
 from app.services.kr_market_daily.collector import collect_market_daily
 
 logger = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _today_kst() -> date:
+    from datetime import datetime
+
+    return datetime.now(KST).date()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -37,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--commit", action="store_true", help="Insert fetched rows into the database."
     )
     args = parser.parse_args(argv)
-    args.target_date = args.date or today_kst()
+    args.target_date = args.date or _today_kst()
     args.dry_run = not args.commit
     return args
 
@@ -54,17 +59,19 @@ async def run(args: argparse.Namespace) -> int:
     try:
         client = NaverMarketDailyClient()
         if args.commit:
+            from app.core.db import AsyncSessionLocal
+
             async with AsyncSessionLocal() as session:
                 result = await collect_market_daily(
                     target_date=args.target_date,
-                    today=today_kst(),
+                    today=_today_kst(),
                     client=client,
                     session=session,
                 )
         else:
             result = await collect_market_daily(
                 target_date=args.target_date,
-                today=today_kst(),
+                today=_today_kst(),
                 client=client,
             )
         print(json.dumps(result, ensure_ascii=False, default=_json_default))
@@ -75,8 +82,11 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    args = parse_args()
+    from app.core.cli import setup_logging_and_sentry
+
     setup_logging_and_sentry()
-    return asyncio.run(run(parse_args()))
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":
