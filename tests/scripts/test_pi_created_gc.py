@@ -39,7 +39,7 @@ def test_script_only_targets_never_started_auto_trader_job_containers() -> None:
 
 def test_dag_runs_daily_on_pi_with_apply() -> None:
     doc = yaml.safe_load(DAG.read_text())
-    assert doc["schedule"] == "CRON_TZ=Asia/Seoul 30 * * * *"
+    assert doc["schedule"] == "CRON_TZ=Asia/Seoul 30 5 * * *"
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
     (step,) = doc["steps"]
