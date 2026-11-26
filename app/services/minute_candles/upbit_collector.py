@@ -208,6 +208,7 @@ async def collect_upbit_minute_candles(
     )
     results: list[MarketResult] = []
     repo = None
+    instrument_id: int | None = None
     if not dry_run:
         if session is None:
             raise ValueError("session is required when dry_run is false")
@@ -262,6 +263,10 @@ async def collect_upbit_minute_candles(
             rows = walk.rows
             new_rows = 0 if repo is not None else None
             if repo is not None and rows:
+                if instrument_id is None:
+                    raise RuntimeError(
+                        "instrument id unavailable for Upbit candle write"
+                    )
                 new_rows = await repo.insert_rows(
                     rows=[
                         MinuteCandleRow(
