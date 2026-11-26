@@ -1,3 +1,4 @@
+from datetime import date as Date
 from datetime import datetime
 from typing import Protocol
 
@@ -44,6 +45,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
         self,
         *,
         order_id: str | None = None,
+        date: Date | None = None,
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -53,6 +55,8 @@ class AlpacaPaperBrokerProtocol(Protocol):
     ) -> list[Fill]: ...
 
     async def list_order_fills(self, *, order_id: str) -> list[Fill]: ...
+
+    async def list_fills_for_date(self, *, date: Date) -> list[Fill]: ...
 
     async def list_crypto_fee_activities(
         self, *, order_id: str
