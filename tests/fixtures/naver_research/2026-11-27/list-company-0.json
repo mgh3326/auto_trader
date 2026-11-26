@@ -1,0 +1,22 @@
+{
+  "hasNext": true,
+  "totalCount": "90526",
+  "items": [
+    {
+      "nid": "98510",
+      "title": "박막 커패시터 필름 모멘텀 숙성중",
+      "content": "<p><strong>투자의견 매수, 목표주가 4,100원</strong></p><p>&nbsp;</p><p>삼영에 대해 투자의견 매수, 목표주가 4,100원으로 커버리지를 개시한다. 목표주가는 2027F EPS 369원에 Target PER 11.2배를 적용했다. Target PER은 글로벌 필름·필름커패시터 Peer 평균 17.1배를 약 35% 할인한 수준으로, 낮은 유동성과 분기 이익 변동성, 높은 자회사 이익 비중을 반영했다. 현재 주가는 2027F PER 8.8배, PBR 1.1배로 5월 고점 대비 76% 하락해 필름 업황 둔화를 상당 부분 반영했다고 판단한다. 주가 반등의 조건은 EV용 박막 필름의 고객사 인증 통과와 PPC 출하 회복이다.</p>",
+      "brokerName": "DS투자증권",
+      "brokerCode": "66",
+      "writeDate": "2026-11-26",
+      "readCount": "3136",
+      "itemCode": "003720",
+      "itemName": "삼영",
+      "goalPrice": "4100",
+      "opinionText": "매수",
+      "opinionType": "buy"
+    }
+  ],
+  "size": "3",
+  "index": "0"
+}
