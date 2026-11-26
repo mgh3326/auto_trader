@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import zipfile
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -18,6 +19,22 @@ _MASTER_URL = (
     "https://new.real.download.dws.co.kr/common/master/fo_idx_code_mts.mst.zip"
 )
 _PREFIX = "/uapi/domestic-futureoption/v1/trading/"
+
+
+class FuturesReadResponseError(RuntimeError):
+    """Expose only bounded protocol codes, never the provider message or body."""
+
+    def __init__(self, message: str, data: dict[str, Any]) -> None:
+        super().__init__(message)
+        rt_cd, msg_cd = data.get("rt_cd"), data.get("msg_cd")
+        self.rt_cd = (
+            rt_cd if isinstance(rt_cd, str) and re.fullmatch(r"[0-9]", rt_cd) else None
+        )
+        self.msg_cd = (
+            msg_cd
+            if isinstance(msg_cd, str) and re.fullmatch(r"[A-Z]{2,5}[0-9]{4,6}", msg_cd)
+            else None
+        )
 
 
 def _enabled() -> None:
@@ -72,7 +89,13 @@ class FuturesRead:
         self._parent = parent
 
     async def _get(
-        self, endpoint: str, tr: str, params: dict[str, str], cont: str = ""
+        self,
+        endpoint: str,
+        tr: str,
+        params: dict[str, str],
+        cont: str = "",
+        *,
+        max_retries_override: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         _enabled()
         if (
@@ -98,9 +121,10 @@ class FuturesRead:
             params=params,
             api_name="futures_read",
             tr_id=tr,
+            max_retries_override=max_retries_override,
         )
         if data.get("rt_cd") != "0":
-            raise RuntimeError("KIS 선물 조회가 거부되었습니다")
+            raise FuturesReadResponseError("KIS 선물 조회가 거부되었습니다", data)
         return data, response_headers
 
     async def balance(self, account: str) -> dict[str, Any]:
@@ -144,9 +168,13 @@ class FuturesRead:
 
     async def deposit(self, account: str) -> dict[str, Any]:
         tr = "VTRP6550R" if self._parent._is_mock_client else "CTRP6550R"
-        data, _ = await self._get("inquire-deposit", tr, _account(account))
+        data, _ = await self._get(
+            "inquire-deposit", tr, _account(account), max_retries_override=0
+        )
         if not isinstance(data.get("output"), dict):
-            raise RuntimeError("KIS 예수금 응답 형식을 읽을 수 없습니다")
+            raise FuturesReadResponseError(
+                "KIS 예수금 응답 형식을 읽을 수 없습니다", data
+            )
         return data["output"]
 
     async def orderable(

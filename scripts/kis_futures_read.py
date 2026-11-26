@@ -70,7 +70,18 @@ async def preview(
                 ("dnca_tota", "brkg_mgna_cash", "add_mgna_tota", "ord_psbl_cash"),
             )
         except Exception as exc:  # noqa: BLE001
-            result["예수금"] = {"value": None, "reason": type(exc).__name__}
+            from app.services.brokers.kis.futures_read import FuturesReadResponseError
+
+            result["예수금"] = {
+                "value": None,
+                "reason": type(exc).__name__,
+                "rt_cd": exc.rt_cd
+                if isinstance(exc, FuturesReadResponseError)
+                else None,
+                "msg_cd": exc.msg_cd
+                if isinstance(exc, FuturesReadResponseError)
+                else None,
+            }
         if symbol:
             try:
                 orderable = await view.futures_orderable(

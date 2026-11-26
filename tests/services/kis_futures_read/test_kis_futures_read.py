@@ -229,7 +229,12 @@ def test_preview_masks_account_and_reports_unavailable(monkeypatch):
     result = run(preview("12345678", None, "02", "1", "01"))
     assert "12345678" not in str(result)
     assert result["잔고"]["cash_mgna"]["value"] == "10.20"
-    assert result["예수금"] == {"value": None, "reason": "RuntimeError"}
+    assert result["예수금"] == {
+        "value": None,
+        "reason": "RuntimeError",
+        "rt_cd": None,
+        "msg_cd": None,
+    }
 
 
 def test_live_trs_and_request_fields(monkeypatch):
@@ -321,3 +326,32 @@ def test_orderable_rejects_unreadable_price_before_network(monkeypatch):
                 )
             )
         assert parent.calls == []
+
+
+def test_preview_deposit_rejection_exposes_only_protocol_codes(monkeypatch):
+    from app.services.brokers.kis.futures_read import FuturesRead
+
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    parent = Parent([({"rt_cd": "1", "msg_cd": "APBK1234", "msg1": "12345678"}, {})])
+    read = FuturesRead(parent)
+
+    class Fake:
+        futures_deposit = read.deposit
+
+        async def futures_balance(self, account):
+            return {"summary": {}, "positions": []}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "scripts.kis_futures_read.open_futures_view", lambda **kwargs: Fake()
+    )
+    result = run(preview("12345678", None, "02", "1", "01"))
+    assert result["예수금"] == {
+        "value": None,
+        "reason": "FuturesReadResponseError",
+        "rt_cd": "1",
+        "msg_cd": "APBK1234",
+    }
+    assert "12345678" not in str(result)
