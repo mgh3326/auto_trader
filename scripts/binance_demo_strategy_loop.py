@@ -204,6 +204,15 @@ def _report_outcome(outcome: Any) -> None:
             }
         ),
         "blocked_reason": outcome.blocked_reason,
+        "symbol_decisions": [
+            {
+                "symbol": item.symbol,
+                "reason": item.reason,
+                "missing_buckets": list(item.missing_buckets),
+                "error_class": item.error_class,
+            }
+            for item in outcome.symbol_decisions
+        ],
         "round_trip": (
             None
             if outcome.round_trip is None

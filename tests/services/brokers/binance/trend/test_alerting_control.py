@@ -146,6 +146,34 @@ def test_a_non_event_object_is_ignored():
     assert control.tick_failures((SimpleNamespace(event=object()),)) == ()
 
 
+def test_data_quality_alert_requires_two_consecutive_ticks_per_symbol():
+    episodes = control.DataFailureEpisodes()
+    missing = event("data_missing_bars", "1730000000000")
+    assert episodes.update((event("signal_none"),)) == ()
+    assert (
+        episodes.update(
+            (
+                SimpleNamespace(
+                    symbol="BTCUSDT", reason="data_missing_bars", detail="1730000000000"
+                ),
+            )
+        )
+        == ()
+    )
+    first_alert = episodes.update((event("data_fetch_failed", "TimeoutError"),))
+    assert first_alert == (
+        TickFailure("data_fetch_failed:TimeoutError", "data_quality:BTCUSDT"),
+    )
+    assert episodes.update((missing,)) == (
+        TickFailure("data_missing_bars:1730000000000", "data_quality:BTCUSDT"),
+    )
+    assert episodes.update(()) == ()
+    assert episodes.update((missing,)) == ()
+    assert episodes.update((missing,)) == (
+        TickFailure("data_missing_bars:1730000000000", "data_quality:BTCUSDT"),
+    )
+
+
 def test_stop_signature_uses_the_class_only():
     assert (
         control.stop_signature(TimeoutError("secret url")) == "exception:TimeoutError"

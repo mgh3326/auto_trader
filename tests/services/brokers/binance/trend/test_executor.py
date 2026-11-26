@@ -626,7 +626,16 @@ async def test_unknown_bars_are_no_signal_and_nothing_is_even_observed(
     rig.bars["BTCUSDT"] = trend_bars("BUY")[:-1]  # decision bar missing
     result = await rig.tick()
     assert rig.client.sends == [] and rig.state.signals == {}
-    assert result.events == ()
+    assert any(item.reason == "data_missing_bars" for item in result.decisions)
+
+
+@pytest.mark.asyncio
+async def test_complete_flat_bars_emit_signal_none(rig: Rig) -> None:
+    for symbol in LOCKED_LIMITS.universe:
+        rig.bars[symbol] = flat_bars()
+    result = await rig.tick()
+    assert rig.client.sends == [] and rig.state.signals == {}
+    assert {item.reason for item in result.decisions} == {"signal_none"}
 
 
 # ------------------------------------------------- restart / unresolved
@@ -822,6 +831,17 @@ async def test_a_failed_1m_fetch_falls_back_to_the_4h_decision_only(rig: Rig) ->
     result = await rig.tick()
     assert rig.minute_calls == 1
     assert rig.client.sends == [] and result.events == ()
+    assert any(item.reason == "data_fetch_failed" for item in result.decisions)
+
+
+@pytest.mark.asyncio
+async def test_a_gap_in_hard_stop_minutes_is_reported_separately(rig: Rig) -> None:
+    hold(rig)
+    rig.bars["BTCUSDT"] = flat_bars()
+    rig.minutes["BTCUSDT"] = executor_module.TrendKlineGap("minute gap")
+    result = await rig.tick()
+    assert rig.client.sends == []
+    assert any(item.reason == "data_incomplete_minutes" for item in result.decisions)
 
 
 @pytest.mark.asyncio

@@ -94,6 +94,34 @@ class TickFailure:
     bucket: str
 
 
+class DataFailureEpisodes:
+    """Expose data-quality alerts only after two consecutive ticks per symbol."""
+
+    def __init__(self) -> None:
+        self._previous: dict[str, tuple[int, str]] = {}
+
+    def update(self, events: Iterable[object]) -> tuple[TickFailure, ...]:
+        current: dict[str, tuple[int, str]] = {}
+        for event in events:
+            name = getattr(event, "reason", getattr(event, "event", None))
+            symbol = getattr(event, "symbol", None)
+            if name not in {"data_missing_bars", "data_fetch_failed"} or not isinstance(
+                symbol, str
+            ):
+                continue
+            bucket = f"data_quality:{symbol}"
+            detail = getattr(event, "detail", None)
+            signature = f"{name}:{detail}" if detail else name
+            previous_count, _ = self._previous.get(bucket, (0, ""))
+            current[bucket] = (previous_count + 1, signature)
+        self._previous = current
+        return tuple(
+            TickFailure(signature, bucket)
+            for bucket, (count, signature) in current.items()
+            if count >= 2
+        )
+
+
 def _split(event: str) -> tuple[str, str]:
     name, _, detail = str(event).partition(":")
     return name, detail

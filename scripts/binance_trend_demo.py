@@ -47,6 +47,7 @@ from app.services.brokers.binance.trend.constants import (
     SEAL_LOOKBACK_DAYS,
 )
 from app.services.brokers.binance.trend.control import (
+    DataFailureEpisodes,
     LivenessOpen,
     RunnerHeartbeat,
     TickFailure,
@@ -172,6 +173,7 @@ async def _run_ticks(
     heartbeat: RunnerHeartbeat | None,
 ) -> int:
     once = not args.loop
+    data_failure_episodes = DataFailureEpisodes()
     try:
         while True:
             async with _AsyncSessionLocal() as db:
@@ -189,9 +191,12 @@ async def _run_ticks(
                         manage_only=args.manage_only,
                     )
                     payload: dict[str, Any] = _payload(result)
-                    failures = tick_failures(result.events)
+                    failures = tick_failures(
+                        result.events
+                    ) + data_failure_episodes.update(result.decisions)
                 except Exception as exc:
                     payload = {"event": "blocked", "error_class": type(exc).__name__}
+                    data_failure_episodes.update(())
                     failures = (
                         TickFailure(f"blocked:{type(exc).__name__}", "blocked"),
                     )
