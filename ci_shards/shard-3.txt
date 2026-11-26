@@ -86,6 +86,7 @@ tests/research/test_screener_bakeoff_withdrawal.py
 tests/research/toss_phase2/test_adaptive_pacing.py
 tests/research/toss_phase2/test_migration.py
 tests/research/trade_retro/test_report_public.py
+tests/research/trade_scorecard/test_scorecard.py
 tests/research/us_stage_b/test_registry_and_contracts.py
 tests/research/us_stage_b/test_signals.py
 tests/routers/test_dependencies.py

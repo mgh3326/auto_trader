@@ -107,6 +107,7 @@ class Cleaning:
     totals: bool = True
     proven_partials: bool = True
     order_only: bool = True
+    preserve_fill_time: bool = False
 
 
 @dataclass
@@ -420,7 +421,8 @@ def build_canon(export: Export, cleaning: Cleaning | None = None) -> Canon:
             if near is not None:
                 key, day_fallback = near, day_fallback + 1
                 # The order's own day is the one the runbook says to trust.
-                fill_stamps[position] = created_by_key[near]
+                if not cleaning.preserve_fill_time:
+                    fill_stamps[position] = created_by_key[near]
         fill_keys.append(key)
     fills["key"] = fill_keys
     fills["ts"] = fill_stamps

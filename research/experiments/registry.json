@@ -253,6 +253,21 @@
           "report_sha256": "19a37d0c1ec8fde4ab4b76b43364bba9e7808012242a5efb3def948af0b33908"
         }
       ]
+    },
+    {
+      "id": "HK-6762",
+      "title": "국내주식 저평가 후보의 공시 기반 재평가 계기",
+      "tracker": "hk 6762",
+      "markets": [
+        "kr"
+      ],
+      "status": "draft",
+      "registered_at": "2026-11-26",
+      "manifest": "research/experiments/manifests/hk-6762-cheap-rerating.json",
+      "manifest_sha256": "ced392f6e6adc5f820f82713aa70922f8243fb1f2bf23afd5774a77efed0c71d",
+      "previous_manifest_sha256": [],
+      "k": 0,
+      "test_looks": []
     }
   ]
 }

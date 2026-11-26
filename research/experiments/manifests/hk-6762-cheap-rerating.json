@@ -1,0 +1,97 @@
+{
+  "manifest_format": "experiment-manifest/v1",
+  "hypothesis_id": "HK-6762",
+  "version": 1,
+  "title": "국내주식 저평가 후보의 공시 기반 재평가 계기",
+  "status": "draft",
+  "question": "저평가 후보 중 결정 당시 확인할 수 있었던 실적 개선 공시가 있는 후보의 20거래일 지수 초과수익률이 공시 조건을 충족하지 않는 저평가 후보보다 높은가?",
+  "markets": [
+    "kr"
+  ],
+  "hashes": {
+    "dataset_manifest": {
+      "pending": "전향 후보 원본, 공시 관측 시각, XKRX 달력과 가격 스냅샷 해시를 평가 전에 봉인한다."
+    }
+  },
+  "features": [
+    {
+      "name": "pbr",
+      "available_at": "결정 시각까지 관측된 최신 값",
+      "source": "후보 스냅샷의 PBR. 0 < PBR ≤ 1이면 저평가."
+    },
+    {
+      "name": "quarterly_operating_profit_trigger",
+      "available_at": "결정 직전 30일 안에 원문이 공개되고 결정 시각까지 관측된 공시",
+      "source": "DART 분기 실적 공시 원문의 접수번호·공개시각·당분기 및 전년 동분기 영업이익. 동일 연결/별도 기준에서 당분기 영업이익이 양수이고 전년 동분기 대비 20% 이상 증가(전년 양수 기준)하거나 전년 적자에서 흑자 전환하면 충족. 공시 검색 범위가 확인되지 않거나 비교값이 없으면 결측."
+    }
+  ],
+  "labels": [
+    {
+      "name": "excess_return_20",
+      "definition": "결정 후 첫 XKRX 정규장 시가에서 20번째 정규장 종가까지의 분할 조정 가격수익률에서 같은 시가·종가의 KOSPI 수익률을 뺀다. 가격 결손은 제외하고 양팔별 보고한다.",
+      "horizon_sessions": 20
+    }
+  ],
+  "calendar": {
+    "kr": "XKRX"
+  },
+  "splits": {
+    "scheme": "과거 회고는 탐색 전용. 봉인 후 신규 후보만 전향 시험에 포함한다. 종목별 최초 후보 한 건만 채택한다.",
+    "rules_doc": "docs/research/experiment-split-leakage-rules.md",
+    "purge_sessions": 20,
+    "gap_sessions": 20,
+    "folds": [],
+    "test": {
+      "kind": "prospective_seal",
+      "period": {
+        "pending": "목표 등록 기간 2026-12-01~2027-02-26, 평가 예상일 2027-04-09. 시작 전 입력을 봉인하지 못하면 수집을 시작하지 않는다."
+      },
+      "exposure_audit": "과거 거래와 후보는 시험 및 k 산정에서 제외한다.",
+      "seal_rule": "수집 개시 전에 기간과 후보 원천을 봉인하고 이후 연장하지 않는다."
+    }
+  },
+  "candidate_policies": [
+    {
+      "id": "trigger",
+      "description": "저평가이며 공시 조건을 충족한다."
+    },
+    {
+      "id": "cheap-only",
+      "description": "같은 후보 원천에서 저평가이며 공시 조건 미충족이 확인되었다."
+    }
+  ],
+  "costs_fills": {
+    "cost_table": "가격 초과수익률 비교이므로 비용 차감 없음.",
+    "fill_models": [
+      "양팔 동일한 첫 정규장 시가 진입 가정."
+    ]
+  },
+  "tuning_budget": {
+    "max_configurations": 0,
+    "search": "없음",
+    "notes": "시험 중간 채점이나 기준 변경 없이 마지막 후보 성숙 후 1회 평가."
+  },
+  "seeds": [
+    0
+  ],
+  "metrics": {
+    "primary": "trigger 평균 excess_return_20 − cheap-only 평균 excess_return_20",
+    "secondary": [
+      "팔별 유효 종목 수와 결측률"
+    ],
+    "family": [
+      "HK-6762 단일 서술 비교"
+    ],
+    "alpha": "0.05",
+    "delta_min": "0.01"
+  },
+  "stopping_rules": [
+    "양팔 각각 성숙한 고유 종목이 30개 미만이면 INSUFFICIENT_SAMPLE로 종료.",
+    "양팔 표본 충족 시 평균 차이가 1%p 이상이면 가설 방향을 지지하는 서술 결과로 기록한다.",
+    "확정된 시험 결과를 처음 읽을 때만 registry에 look을 추가한다."
+  ],
+  "cumulative_k": {
+    "prior_k": 0,
+    "source": "registry"
+  }
+}
