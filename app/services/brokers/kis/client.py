@@ -246,6 +246,87 @@ class KISClient(BaseKISClient):
             from_date, to_date, symbol=symbol, high_gb=high_gb
         )
 
+    async def news_titles_overseas_brknews(self) -> list[dict[str, Any]]:
+        """해외속보(제목) FHKST01011801 market-wide, read-only (hk 6661)."""
+        return await self._market_data.news_titles_overseas_brknews()
+
+    async def news_titles_overseas(
+        self, symbol: str, *, nation_cd: str = "US"
+    ) -> list[dict[str, Any]]:
+        """해외뉴스종합(제목) HHPSTH60100C1 by symbol, read-only (hk 6661)."""
+        return await self._market_data.news_titles_overseas(symbol, nation_cd=nation_cd)
+
+    async def news_titles_domestic(self, symbol: str) -> list[dict[str, Any]]:
+        """종합 시황/공시(제목) FHKST01011800 by symbol, read-only (hk 6661)."""
+        return await self._market_data.news_titles_domestic(symbol)
+
+    async def ksd_paidin_capin(
+        self, from_date: str, to_date: str, *, symbol: str = "", gb1: str = "1"
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_paidin_capin(
+            from_date, to_date, symbol=symbol, gb1=gb1
+        )
+
+    async def ksd_bonus_issue(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_bonus_issue(
+            from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_purreq(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_purreq(from_date, to_date, symbol=symbol)
+
+    async def ksd_merger_split(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_merger_split(
+            from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_rev_split(
+        self, from_date: str, to_date: str, *, symbol: str = "", market_gb: str = "0"
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_rev_split(
+            from_date, to_date, symbol=symbol, market_gb=market_gb
+        )
+
+    async def ksd_cap_dcrs(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_cap_dcrs(from_date, to_date, symbol=symbol)
+
+    async def ksd_list_info(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_list_info(from_date, to_date, symbol=symbol)
+
+    async def ksd_pub_offer(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_pub_offer(from_date, to_date, symbol=symbol)
+
+    async def ksd_forfeit(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_forfeit(from_date, to_date, symbol=symbol)
+
+    async def ksd_mand_deposit(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_mand_deposit(
+            from_date, to_date, symbol=symbol
+        )
+
+    async def ksd_sharehld_meet(
+        self, from_date: str, to_date: str, *, symbol: str = ""
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.ksd_sharehld_meet(
+            from_date, to_date, symbol=symbol
+        )
+
     async def market_cap_rank(
         self, market: str = "J", limit: int = 30
     ) -> list[dict[str, Any]]:
@@ -349,6 +430,14 @@ class KISClient(BaseKISClient):
             end_date,
             market,
         )
+
+    async def inquire_vi_status(
+        self, code: str, session_date: datetime.date
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.inquire_vi_status(code, session_date)
+
+    async def inquire_member(self, code: str) -> dict[str, Any]:
+        return await self._market_data.inquire_member(code)
 
     async def inquire_time_dailychartprice(
         self,

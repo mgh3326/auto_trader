@@ -16,6 +16,7 @@ from app.services.brokers.pre_send_account import PRE_SEND_ACCOUNT
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
+    TossInvestorRanking,
     TossListedStock,
     TossMarketIndicatorPrice,
     TossMarketInvestorTradingPage,
@@ -27,12 +28,15 @@ from app.services.brokers.toss.dto import (
     TossRankings,
     TossStockInvestorTradingPage,
     TossStockInvestorTradingRecord,
+    TossTradingTrendPage,
     TossWarningInfo,
     parse_accounts,
     parse_buying_power,
     parse_candles,
     parse_commissions,
+    parse_credit_trades_page,
     parse_holdings,
+    parse_investor_trading_rankings,
     parse_listed_stocks,
     parse_market_indicator_prices,
     parse_market_investor_trading_page,
@@ -42,8 +46,11 @@ from app.services.brokers.toss.dto import (
     parse_order_placement_result,
     parse_orders,
     parse_prices,
+    parse_program_trades_page,
     parse_rankings,
+    parse_securities_lending_page,
     parse_sellable_quantity,
+    parse_short_selling_page,
     parse_stock_investor_trading_page,
     parse_stocks,
     parse_warnings,
@@ -434,6 +441,79 @@ class TossReadClient:
         raise ValueError(
             f"Toss investor-trading pagination exceeded max_pages={max_pages} "
             f"for {symbol}"
+        )
+
+    async def _stock_trading_trend(
+        self,
+        symbol: str,
+        endpoint: str,
+        parser: Callable[[Any], TossTradingTrendPage],
+        *,
+        count: int = 20,
+        until: str | None = None,
+    ) -> TossTradingTrendPage:
+        self._check_kr_symbol(symbol)
+        self._check_count(count)
+        self._check_until(until)
+        params: dict[str, Any] = {"count": count}
+        if until is not None:
+            params["until"] = until
+        return parser(
+            await self._request(
+                "GET",
+                f"/api/v1/stocks/{symbol}/{endpoint}",
+                group=TossApiGroup.STOCK_TRADING_TREND,
+                params=params,
+            )
+        )
+
+    async def stock_short_selling(
+        self, symbol: str, *, count: int = 20, until: str | None = None
+    ) -> TossTradingTrendPage:
+        return await self._stock_trading_trend(
+            symbol, "short-selling", parse_short_selling_page, count=count, until=until
+        )
+
+    async def stock_securities_lending(
+        self, symbol: str, *, count: int = 20, until: str | None = None
+    ) -> TossTradingTrendPage:
+        return await self._stock_trading_trend(
+            symbol,
+            "securities-lending",
+            parse_securities_lending_page,
+            count=count,
+            until=until,
+        )
+
+    async def stock_credit_trades(
+        self, symbol: str, *, count: int = 20, until: str | None = None
+    ) -> TossTradingTrendPage:
+        return await self._stock_trading_trend(
+            symbol, "credit-trades", parse_credit_trades_page, count=count, until=until
+        )
+
+    async def stock_program_trades(
+        self, symbol: str, *, count: int = 20, until: str | None = None
+    ) -> TossTradingTrendPage:
+        return await self._stock_trading_trend(
+            symbol,
+            "program-trades",
+            parse_program_trades_page,
+            count=count,
+            until=until,
+        )
+
+    async def investor_trading_rankings(
+        self, *, count: int = 20
+    ) -> dict[str, TossInvestorRanking]:
+        self._check_count(count)
+        return parse_investor_trading_rankings(
+            await self._request(
+                "GET",
+                "/api/v1/rankings/investor-trading",
+                group=TossApiGroup.RANKING,
+                params={"count": count},
+            )
         )
 
     async def market_indicator_prices(

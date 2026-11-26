@@ -46,6 +46,45 @@ BENZINGA_NEWS_SHADOW_ENABLED=true BENZINGA_API_KEY=<키> \
 - 어떤 소스라도 실패하면 종료 코드 1(성공 수집처럼 보이지 않게 한다). 게이트
   off·인자 오류·키 없음은 종료 코드 2.
 
+## KIS 뉴스 제목 소스 (hk 6661)
+
+poll 은 Benzinga·Finnhub 과 같은 패스에서 KIS 뉴스 제목을 `source: kis` 행으로
+함께 읽는다. 기본 on. `--skip-kis` 로 끈다(KIS 장애·쿼터 소진 시). `--market kr`
+은 국내 헤드라인만 읽는다(Benzinga·Finnhub 없음, `BENZINGA_API_KEY` 를 읽지
+않는다).
+
+| query_param | TR | 범위 | 공식 샘플 |
+|---|---|---|---|
+| `brknews_title` | FHKST01011801 `/uapi/overseas-price/v1/quotations/brknews-title` | 시장 전체, 패스당 1회 | `examples_llm/overseas_stock/brknews_title` |
+| `overseas_news_title` | HHPSTH60100C1 `/uapi/overseas-price/v1/quotations/news-title` (`SYMB`) | 심볼별 | `examples_llm/overseas_stock/news_title` |
+| `domestic_news_title` | FHKST01011800 `/uapi/domestic-stock/v1/quotations/news-title` (`FID_INPUT_ISCD`) | KR 심볼별 | `examples_llm/domestic_stock/news_title` |
+
+- 응답은 한 번만 읽는다(연속 조회 `tr_cont`/`CTS` 는 읽지 않는다). brknews 샘플은
+  응답당 최대 100건이라고만 적고 연속 조회를 적지 않는다.
+- 호출 속도는 TR 별 2/초로 제한한다(`DEFAULT_KIS_API_RATE_LIMITS`).
+- **매칭 규칙(brknews)**: `iscd1`..`iscd10` 코드를 `app/core/symbol.py` 의
+  `to_db_symbol` 로 DB 형식(`.`)으로 바꿔 polled 심볼과 같으면 매칭한다. 여러
+  심볼에 걸린 기사는 심볼마다 한 행, 어느 심볼에도 걸리지 않은 기사는
+  `query_symbol: null` 로 한 번 남긴다(`symbol_match: unmatched`).
+- **행 식별**: `provider_id = <TR>:<일련번호>` (brknews·국내는 `cntt_usiq_srno`,
+  해외뉴스는 `news_key`). TR 접두어가 있어 소스 안에서 번호 공간이 섞이지 않는다.
+- **시각(확인되지 않음)**: 샘플은 시간대를 적지 않는다. `data_dt`/`data_tm` 을
+  Asia/Seoul 로 읽어 UTC 로 저장하고 `created_basis: kis_kst_unverified` 로 표시한다.
+  해외뉴스 샘플은 이 두 필드를 `조회일자`/`조회시간` 으로 적으므로 기사 시각이
+  아닐 수 있어 `created_basis: kis_label_query_unverified` 로 표시한다. 해석 불가·
+  누락은 `created_utc: null` 과 `created_reason`(`unparsable`/`missing`)이다.
+- **원문 보존**: 제목·`dorg`(자료원)·원본 날짜/시각 문자열(`created_raw`)을 남긴다.
+  URL 과 본문 요약은 KIS 응답에 없으므로 null 이다.
+- 실패는 `poll_status` 오류 행이고 Benzinga·Finnhub 는 계속 읽는다. 종료 코드는
+  다른 소스와 같이 1 이다.
+- `summary` 의 `kis` 블록: 심볼별 커버리지(`coverage_by_symbol`, KIS·Benzinga·
+  Finnhub 의 고유 `provider_id` 수, 중복 제거 전), 제목 겹침(`headline_overlap`,
+  정규화 제목만 — KIS 에는 URL 이 없다), 첫 관측 순서(`first_seen_wins`, 두 소스
+  이상에 보인 제목에서 가장 이른 `first_received_at` 의 소스), KIS 측 제외 셀
+  (`unreliable_polls`). KIS 오류는 KIS 셀만 뺀다. Benzinga·Finnhub 의 기존 비교는
+  바뀌지 않는다. 시장 전체 오류는 그 패스의 계획 심볼 전부를 KIS 에서만 unreliable
+  로 표시한다.
+
 ## 비교
 
 ```bash
@@ -81,6 +120,9 @@ summary 는 합집합(중복 제거 뒤)으로 겹침을 재고 `benzinga_by_que
 ## 운영
 
 - 키·구매는 운영자 결정. Dagu 등록은 hk 6395 머지 뒤 설계 세션이 한다.
+- KIS 소스는 DAG 복사본(`deploy/dagu/at-news-shadow/`)을 바꾸지 않아도 기본 on 으로
+  들어간다. 그 DAG 환경(`.env.api`)에 KIS 자격증명과 토큰 캐시(Redis)가 있는지
+  등록 전에 확인하고, 없으면 `--skip-kis` 를 명령에 넣는다(KIS 오류는 종료 코드 1).
 - Dagu 복사본은 게이트를 `docker run -e BENZINGA_NEWS_SHADOW_ENABLED=true`
   로 컨테이너에 직접 넘긴다(DAG `env:` 는 호스트 셸에만 보인다). 출력은
   `-v /root/at-run/benzinga-shadow:/out` 마운트로 호스트에 남긴다. 호스트

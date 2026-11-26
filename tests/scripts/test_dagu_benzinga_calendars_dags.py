@@ -1,4 +1,4 @@
-"""hk 6513: static checks of the Benzinga calendar Dagu DAG copies (not registered)."""
+"""hk 6513: static checks of the Benzinga calendar Dagu copies."""
 
 from __future__ import annotations
 
@@ -67,6 +67,18 @@ def test_every_scheduled_category_is_registered(name: str) -> None:
 def test_short_interest_is_not_scheduled_without_a_symbol_list() -> None:
     for name in DAGS:
         assert "short_interest" not in _step(name)
+
+
+@pytest.mark.parametrize("name", sorted(DAGS))
+def test_dag_uses_both_benzinga_env_files_in_order(name: str) -> None:
+    command = _step(name)
+    text = (ROOT / name).read_text(encoding="utf-8")
+    assert (
+        "--env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga"
+        in command
+    )
+    assert "PROPOSAL" not in text.splitlines()[0]
+    assert "어디에도 등록되어 있지 않다" not in text.splitlines()[0]
 
 
 def test_the_intraday_step_targets_a_single_day_and_the_premarket_a_week() -> None:
