@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql.dml import Insert
+from sqlalchemy.sql.dml import Update
 
 from app.models.news import NewsArticle
 from app.models.symbol_news_relevance import SymbolNewsRelevance
@@ -25,6 +28,150 @@ def _item(url: str, title: str, published: datetime | None = None) -> FeedArticl
 
 def _unique_url(prefix: str) -> str:
     return f"https://x/rob491-{prefix}-{uuid.uuid4()}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_store_keeps_naver_provider_url_as_article_key() -> None:
+    provider_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    inserted_urls: list[str] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, rows=()):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+    class Session:
+        async def execute(self, statement):
+            if isinstance(statement, Insert):
+                if statement.table.name == "news_articles":
+                    params = statement.compile(dialect=postgresql.dialect()).params
+                    url = next(
+                        value for key, value in params.items() if key.startswith("url")
+                    )
+                    inserted_urls.append(url)
+                    return Result([(123,)])
+                return Result()
+            return Result([(123, provider_url)])
+
+        async def commit(self):
+            return None
+
+    await symbol_news_store.upsert_feed_articles(
+        Session(),
+        "kr",
+        "005930",
+        [_item(provider_url, "삼성전자 기사")],
+        feed_source=symbol_news_store.KR_FEED_SOURCE,
+    )
+
+    assert inserted_urls == [provider_url]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -> None:
+    existing_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=102"
+    article_inserts = 0
+    relevance_inserts: list[dict[str, object]] = []
+
+    class Result:
+        rowcount = 0
+
+        def all(self):
+            return [(88, existing_url, None, None, None)]
+
+    class Session:
+        async def execute(self, statement):
+            nonlocal article_inserts
+            if isinstance(statement, Insert):
+                if statement.table.name == "news_articles":
+                    article_inserts += 1
+                    return Result()
+                params = statement.compile(dialect=postgresql.dialect()).params
+                relevance_inserts.append(params)
+                return Result()
+            return Result()
+
+        async def commit(self):
+            return None
+
+    await symbol_news_store.upsert_kr_collector_articles(
+        Session(),
+        "005930",
+        [_item(incoming_url, "삼성전자 기사")],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    assert article_inserts == 0
+    assert len(relevance_inserts) == 1
+    assert 88 in relevance_inserts[0].values()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_enriches_legacy_provider_url_row_publication_fields() -> None:
+    existing_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=102"
+    updates: list[dict[str, object]] = []
+    article_inserts = 0
+
+    class Result:
+        rowcount = 0
+
+        def __init__(self, rows=()):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+    class Session:
+        async def execute(self, statement):
+            nonlocal article_inserts
+            if isinstance(statement, Update):
+                params = statement.compile(dialect=postgresql.dialect()).params
+                updates.append(params)
+                return Result()
+            if isinstance(statement, Insert):
+                if statement.table.name == "news_articles":
+                    article_inserts += 1
+                return Result()
+            if len(statement.selected_columns) == 5:
+                return Result([(88, existing_url, None, None, None)])
+            return Result([(88, existing_url)])
+
+        async def commit(self):
+            return None
+
+    item = FeedArticleInput(
+        url=incoming_url,
+        title="삼성전자 기사",
+        source="네이버뉴스",
+        published_at=datetime(2026, 11, 25, 10, 0),
+        published_at_raw="2026-11-25 10:00",
+        published_precision="minute",
+    )
+    await symbol_news_store.upsert_kr_collector_articles(
+        Session(),
+        "005930",
+        [item],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    assert article_inserts == 0
+    assert len(updates) == 1
+    assert updates[0]["published_at_raw"] == "2026-11-25 10:00"
+    assert updates[0]["published_precision"] == "minute"
+    assert updates[0]["published_at"].astimezone(UTC).isoformat() == (
+        "2026-11-25T01:00:00+00:00"
+    )
+    assert "first_received_at" not in updates[0]
+    assert "url" not in updates[0]
 
 
 @pytest.mark.integration
@@ -72,6 +219,92 @@ async def test_upsert_is_idempotent_set_difference(db_session) -> None:
     by_status = {link.status for link in links}
     assert by_status == {"pending"}
     assert len(links) == 3
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_collector_reingest_keeps_first_received_and_single_article(
+    db_session,
+) -> None:
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    provider_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    first = FeedArticleInput(
+        url=provider_url,
+        title="첫 수신",
+        source="네이버뉴스",
+        published_at=datetime(2026, 11, 25, 0, 0, tzinfo=UTC),
+        published_at_raw="2026-11-25",
+        published_precision="date",
+    )
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session, symbol, [first], feed_source="http_naver_stock_aggregate"
+    )
+    stored = (
+        await db_session.execute(
+            select(NewsArticle).where(NewsArticle.url == provider_url)
+        )
+    ).scalar_one()
+    received_at = stored.first_received_at
+    article_id = stored.id
+    assert (
+        await symbol_news_store.apply_judgment(
+            db_session,
+            article_id=article_id,
+            market="kr",
+            symbol=symbol,
+            relationship="unrelated",
+            relevance="high",
+            price_relevance="none",
+            score=0.0,
+            reason="not_about_symbol",
+            judged_by="test",
+        )
+        == "excluded"
+    )
+
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session,
+        symbol,
+        [
+            FeedArticleInput(
+                url="https://n.news.naver.com/mnews/article/001/0001234?sid=102",
+                title="다시 수신",
+                source="다른 출처",
+                published_at=datetime(2026, 11, 25, 1, 0, tzinfo=UTC),
+                published_at_raw="2026-11-25 10:00",
+                published_precision="minute",
+            )
+        ],
+        feed_source="http_naver_stock_aggregate",
+    )
+    rows = (
+        (
+            await db_session.execute(
+                select(NewsArticle).where(
+                    NewsArticle.url.startswith(provider_url.split("?", 1)[0])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].id == article_id
+    assert rows[0].url == provider_url
+    assert rows[0].first_received_at == received_at
+    assert rows[0].published_at_raw == "2026-11-25 10:00"
+    assert rows[0].published_at == datetime(2026, 11, 25, 1, 0, tzinfo=UTC)
+    assert rows[0].published_precision == "minute"
+    link = (
+        await db_session.execute(
+            select(SymbolNewsRelevance).where(
+                SymbolNewsRelevance.article_id == article_id,
+                SymbolNewsRelevance.market == "kr",
+                SymbolNewsRelevance.symbol == symbol,
+            )
+        )
+    ).scalar_one()
+    assert link.status == "excluded"
 
 
 @pytest.mark.integration

@@ -166,6 +166,43 @@ async def test_kr_persists_then_serves_db_state(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_kr_get_news_keeps_mobile_provider_url_and_live_provenance(
+    monkeypatch,
+) -> None:
+    raw = {
+        "title": "네이버 원문 링크",
+        "url": "https://n.news.naver.com/mnews/article/001/0001234",
+        "source": "연합뉴스",
+        "datetime": "202611250941",
+        "datetime_raw": "202611250941",
+        "officeId": "001",
+        "articleId": "0001234",
+    }
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed([raw])),
+    )
+    upsert, _load = _patch_store(
+        monkeypatch,
+        stored=[_stored(123, raw["url"], raw["title"])],
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("005930", "kr", limit=10)
+
+    persisted_item = upsert.await_args.args[3][0]
+    assert persisted_item.url == raw["url"]
+    assert persisted_item.published_at_raw == raw["datetime_raw"]
+    assert persisted_item.published_precision == "minute"
+    assert result.cache_hit is False
+    assert result.fallback_source is None
+    assert result.provider_provenance[0]["mode"] == "live"
+    assert result.articles[0].fetched_at == result.fetched_at
+    assert result.articles[0].provider_metadata["source_item"] == raw
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_kr_fetched_at_is_stamped_only_after_provider_success(
     monkeypatch,
 ) -> None:
