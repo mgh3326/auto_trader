@@ -320,3 +320,73 @@ async def test_missing_bundle_reference_refuses_publication():
         not isinstance(call.args[0], Insert) or call.args[0].table is not versions
         for call in db.execute.call_args_list
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current", [0, 1])
+async def test_watch_preserves_carry_when_request_omits_origin(monkeypatch, current):
+    origin_id = uuid4()
+    candidate = request()["rows"][0]
+    origin = {
+        **candidate,
+        "id": origin_id,
+        "watch_state": {"next_session": DAY, "carry_count": 5},
+    }
+    monkeypatch.setattr(
+        store,
+        "get_plan",
+        AsyncMock(return_value={"rows": [origin]} if current == 0 else None),
+    )
+    monkeypatch.setattr(
+        store,
+        "_fold",
+        AsyncMock(
+            return_value=[
+                {
+                    **candidate,
+                    "body": {"carry_count": 5, "carried_from_row_id": str(origin_id)},
+                }
+            ]
+        ),
+    )
+    policy = SimpleNamespace(
+        version="v1",
+        daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5),
+    )
+    result = await store.write_version(
+        fake_db(current=current),
+        day=DAY,
+        request=request(expected_prev_seq=current),
+        now=NOW,
+        policy=policy,
+        policy_hash="hash",
+    )
+    [row] = result["rows"]
+    assert row["carry_count"] == 5
+    assert row["carried_from_row_id"] == str(origin_id)
+
+
+@pytest.mark.parametrize("unavailable", ["halted_suspect", "price_stale"])
+def test_unavailable_price_with_proven_timestamps_publishes_watch(unavailable):
+    [candidate] = request()["rows"]
+    result = store.prepare_row(
+        candidate,
+        evidence={
+            "sources": {
+                "price": {
+                    "event_at": NOW.isoformat(),
+                    "first_observed_at": NOW.isoformat(),
+                    "unavailable": unavailable,
+                },
+            },
+        },
+        asof=NOW,
+        session_close=CLOSE,
+        bundle_closed_at=NOW,
+        oldest_accepted_at=NOW,
+        no_add_floor_pct=-8,
+    )
+    assert result["action"] == "watch"
+    assert result["not_executable_reason"] == (
+        "input_stale" if unavailable == "price_stale" else "input_missing"
+    )
