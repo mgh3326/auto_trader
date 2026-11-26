@@ -234,6 +234,20 @@ async def scratch_database() -> AsyncIterator[str]:
                         text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                     )
                 await connection.run_sync(Base.metadata.create_all)
+                # hk 6674 news columns are later than this parent boundary;
+                # current metadata created them, so let their migration add them.
+                for column in (
+                    "published_at_raw",
+                    "published_at",
+                    "published_precision",
+                    "published_at_reason",
+                    "first_received_at",
+                ):
+                    await connection.execute(
+                        text(
+                            f"ALTER TABLE news_articles DROP COLUMN IF EXISTS {column}"
+                        )
+                    )
                 # hk 4178's detail column is after this parent boundary.
                 await connection.execute(
                     text(

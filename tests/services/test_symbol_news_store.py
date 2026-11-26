@@ -291,7 +291,9 @@ async def test_collector_reingest_keeps_first_received_and_single_article(
     assert len(rows) == 1
     assert rows[0].url == provider_url
     assert rows[0].first_received_at == received_at
-    assert rows[0].published_at_raw == "2026-11-25"
+    assert rows[0].published_at_raw == "2026-11-25 10:00"
+    assert rows[0].published_at == datetime(2026, 11, 25, 1, 0, tzinfo=UTC)
+    assert rows[0].published_precision == "minute"
     link = (
         await db_session.execute(
             select(SymbolNewsRelevance).where(
