@@ -526,11 +526,7 @@ class UsPaperStrategy:
             ):
                 return False
             evidence = self._exit_fill(leg)
-            if (
-                leg.qty != qty - filled
-                or evidence is None
-                or evidence[0] > leg.qty
-            ):
+            if leg.qty != qty - filled or evidence is None or evidence[0] > leg.qty:
                 return False
             filled += evidence[0]
             proceeds += evidence[1]

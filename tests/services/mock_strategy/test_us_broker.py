@@ -693,7 +693,11 @@ def _refresh_write_paths(reachable, method_overrides=None):
         }
         if mutation_literals:
             unsafe.append(
-                (class_name, method_name, f"HTTP mutation literals: {mutation_literals}")
+                (
+                    class_name,
+                    method_name,
+                    f"HTTP mutation literals: {mutation_literals}",
+                )
             )
         service_calls = {
             node.func.attr
