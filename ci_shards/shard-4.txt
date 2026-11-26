@@ -233,6 +233,7 @@ tests/services/mandate/test_store_db.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/market_events/test_kis_ksd_dividends.py
 tests/services/market_events/test_kis_ksd_events.py
+tests/services/market_events/test_official_event_format.py
 tests/services/mechanical_loss_cut/test_plans.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py
@@ -419,6 +420,7 @@ tests/test_fundamentals_screener.py
 tests/test_fundamentals_sources_naver.py
 tests/test_hermes_roundtrip_smoke.py
 tests/test_hk6036_upbit_shadow_migration_db.py
+tests/test_hk6406_event_format_migration.py
 tests/test_ingest_validated_run_card_cli.py
 tests/test_invest_api_scalping_router.py
 tests/test_invest_app_spa_router_safety.py

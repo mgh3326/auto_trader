@@ -454,15 +454,30 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 await connection.execute(
                     text(f"ALTER TABLE upbit_symbol_universe DROP COLUMN {column}")
                 )
-            # hk 6513 provider-evidence columns on market_events and the provider
-            # revision log are later than the stamped boundary and already in
-            # Base.metadata; drop them so the migration adds them back.
+            # Drop hk 6406 provenance and the hk 6513 revision log (including
+            # its hk 6406 columns). Dropping the current-row columns also
+            # removes the hk 6406 CHECKs before Alembic recreates them.
+            await connection.execute(text("DROP TABLE market_event_sources"))
             for column in (
                 "provider_created_at",
                 "provider_created_raw",
                 "provider_updated_at",
                 "provider_updated_raw",
                 "first_received_at",
+                "published_at",
+                "published_date",
+                "published_offset",
+                "published_precision",
+                "revised_at",
+                "effective_at",
+                "relevance",
+                "relevance_state",
+                "relevance_basis",
+                "instrument_type",
+                "group_key",
+                "redistributable",
+                "symbols",
+                "backfilled",
             ):
                 await connection.execute(
                     text(f"ALTER TABLE market_events DROP COLUMN {column}")
