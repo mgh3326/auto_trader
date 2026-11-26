@@ -399,7 +399,11 @@ class UsPaperStrategy:
         async with self.recorder.account_lock(venue=VENUE, account_ref=account):
             rows = await self.recorder.list_open(venue=VENUE, account_ref=account)
             results = []
-            changed_episode_ids: set[str] = set()
+            candidate_episode_ids = {
+                row.episode_id
+                for row in rows
+                if row.status in {"accepted", "partially_filled", "filled"}
+            }
             for row in rows:
                 if row.status not in {"accepted", "partially_filled", "filled"}:
                     continue
@@ -426,7 +430,6 @@ class UsPaperStrategy:
                         exit_price=update["exit_price"],
                         meta=update["meta"],
                     )
-                    changed_episode_ids.add(row.episode_id)
                 results.append(
                     {
                         **projection(row),
@@ -453,7 +456,7 @@ class UsPaperStrategy:
                 all_rows = await self.recorder.list_orders(
                     venue=VENUE, account_ref=account
                 )
-                for episode_id in changed_episode_ids:
+                for episode_id in candidate_episode_ids:
                     episode_rows = [
                         item for item in all_rows if item.episode_id == episode_id
                     ]
@@ -470,19 +473,9 @@ class UsPaperStrategy:
                     ]
                     if (
                         entry is None
-                        or entry.status != "filled"
+                        or entry.status not in {"filled", "partially_filled"}
+                        or entry.meta.get("broker_terminal") is not True
                         or not exits
-                        or not all(
-                            item.status
-                            in {
-                                "filled",
-                                "partially_filled",
-                                "closed",
-                                "canceled",
-                                "rejected",
-                            }
-                            for item in exits
-                        )
                     ):
                         continue
                     try:
@@ -533,7 +526,11 @@ class UsPaperStrategy:
             ):
                 return False
             evidence = self._exit_fill(leg)
-            if evidence is None or evidence[0] != qty - filled:
+            if (
+                leg.qty != qty - filled
+                or evidence is None
+                or evidence[0] > leg.qty
+            ):
                 return False
             filled += evidence[0]
             proceeds += evidence[1]

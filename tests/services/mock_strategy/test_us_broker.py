@@ -609,6 +609,7 @@ def _refresh_reachable_methods():
         (alpaca_service, "AlpacaPaperBrokerService", "get_order"),
         (alpaca_service, "AlpacaPaperBrokerService", "get_order_by_client_order_id"),
         (alpaca_service, "AlpacaPaperBrokerService", "list_fills"),
+        (alpaca_service, "AlpacaPaperBrokerService", "_request"),
         (alpaca_service, "AlpacaPaperBrokerService", "_verify_physical_identity"),
     )
 
@@ -652,6 +653,25 @@ def _refresh_write_paths(reachable, method_overrides=None):
             method_overrides.get((class_name, method_name))
             or class_methods[method_name]
         )
+        if (class_name, method_name) == ("AlpacaPaperBrokerService", "_request"):
+            transport_calls = [
+                node
+                for node in ast.walk(method)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "request"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_transport"
+            ]
+            if not transport_calls or any(
+                not node.args
+                or not isinstance(node.args[0], ast.Name)
+                or node.args[0].id != "method"
+                for node in transport_calls
+            ):
+                unsafe.append(
+                    (class_name, method_name, "transport method not forwarded")
+                )
         calls = [
             node
             for node in ast.walk(method)
@@ -666,10 +686,15 @@ def _refresh_write_paths(reachable, method_overrides=None):
             for node in calls
         ):
             unsafe.append((class_name, method_name, "non-GET _request"))
-        assert not any(
-            isinstance(node, ast.Constant) and node.value in {"POST", "DELETE"}
+        mutation_literals = {
+            node.value
             for node in ast.walk(method)
-        ), (class_name, method_name)
+            if isinstance(node, ast.Constant) and node.value in {"POST", "DELETE"}
+        }
+        if mutation_literals:
+            unsafe.append(
+                (class_name, method_name, f"HTTP mutation literals: {mutation_literals}")
+            )
         service_calls = {
             node.func.attr
             for node in ast.walk(method)
@@ -717,6 +742,22 @@ async def test_refresh_guard_follows_fills_for_order_self_submit_call():
         and "submit_order" in reason
         for class_name, method_name, reason in unsafe
     )
+
+
+async def test_refresh_guard_checks_the_http_transport_method_forwarding():
+    mutated = ast.parse(
+        "async def _request(self, method, path, **kwargs):\n"
+        "    return await self._transport.request('POST', path, **kwargs)\n"
+    ).body[0]
+    unsafe = _refresh_write_paths(
+        _refresh_reachable_methods(),
+        method_overrides={("AlpacaPaperBrokerService", "_request"): mutated},
+    )
+    assert (
+        "AlpacaPaperBrokerService",
+        "_request",
+        "transport method not forwarded",
+    ) in unsafe
 
 
 async def test_refresh_reads_order_and_fill_activity_fixtures_by_client_id():
