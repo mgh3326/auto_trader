@@ -727,7 +727,7 @@ async def test_saveticker_old_boundary_still_writes_attention_and_scans_top_stor
 
         async def news_page(self, page, page_size):
             requests.append(("news", page))
-            return {"news_list": [old], "has_older": True}
+            return {"news_list": [new_top, old], "has_older": True}
 
         async def top_stories(self):
             requests.append(("top", None))
@@ -750,6 +750,12 @@ async def test_saveticker_old_boundary_still_writes_attention_and_scans_top_stor
     ]
     assert {row["provider_id"] for row in attention} == {"old-id", "new-top"}
     assert all(row["is_top_story"] for row in attention)
+    new_top_article = next(
+        row
+        for row in rows
+        if row.get("record_type") == "article" and row["provider_id"] == "new-top"
+    )
+    assert new_top_article["is_top_story"] is True
     assert any(
         row.get("record_type") == "article" and row["provider_id"] == "new-top"
         for row in rows
