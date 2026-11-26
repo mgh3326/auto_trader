@@ -43,10 +43,10 @@ def upgrade() -> None:
     # expand-contract: contract-step 6302
     op.execute(
         "UPDATE news_article_related_symbols "
-        "SET relation_type = 'direct', relation_evidence = "
+        "SET relation_evidence = "
         "jsonb_build_object('kind', 'legacy_candidate', 'source', source, "
         "'matched_term', matched_term, 'candidate', COALESCE(raw, '{}'::jsonb)) "
-        "WHERE relation_type IS NULL OR relation_evidence IS NULL"
+        "WHERE relation_evidence IS NULL"
     )
     op.create_check_constraint(
         "ck_news_article_related_symbols_relation_evidence",
@@ -56,11 +56,6 @@ def upgrade() -> None:
     op.add_column(
         "research_reports",
         sa.Column("first_received_at", sa.DateTime(timezone=True)),
-    )
-    # expand-contract: contract-step 6302
-    op.execute(
-        "UPDATE research_reports SET first_received_at = created_at "
-        "WHERE first_received_at IS NULL"
     )
     op.alter_column(
         "research_reports",

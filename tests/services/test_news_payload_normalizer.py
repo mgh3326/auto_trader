@@ -451,6 +451,73 @@ class TestArticleValuesFromIngestorPayload:
         }
         assert values["first_received_at"].tzinfo is UTC
 
+    def test_legacy_publication_time_uses_normalized_utc_and_raw_precision(self):
+        from datetime import datetime
+
+        from app.services.news_payload_normalizer import (
+            _article_values_from_ingestor_payload,
+        )
+
+        article_data = SimpleNamespace(
+            url="https://example.com/date-only",
+            title="Title",
+            content=None,
+            summary=None,
+            source=None,
+            author=None,
+            stock_symbol=None,
+            stock_name=None,
+            published_at=datetime(2026, 11, 26, tzinfo=UTC),
+            published_at_raw="2026-11-26",
+            published_offset=None,
+            published_precision=None,
+            provider_article_id=None,
+            raw={},
+            market="us",
+            feed_source="test",
+            keywords=None,
+        )
+
+        values = _article_values_from_ingestor_payload(article_data)
+
+        assert values["published_at_raw"] == "2026-11-26"
+        assert values["published_precision"] == "date"
+        assert values["article_published_at"] == datetime(2026, 11, 26, 9, 0)
+
+    def test_legacy_publication_time_matches_normalized_provider_offset(self):
+        from datetime import datetime
+
+        from app.services.news_payload_normalizer import (
+            _article_values_from_ingestor_payload,
+        )
+
+        article_data = SimpleNamespace(
+            url="https://example.com/offset",
+            title="Title",
+            content=None,
+            summary=None,
+            source=None,
+            author=None,
+            stock_symbol=None,
+            stock_name=None,
+            published_at=datetime(2026, 11, 26, 10),
+            published_at_raw="2026-11-26T10:00:00-05:00",
+            published_offset="-05:00",
+            published_precision="second",
+            provider_article_id=None,
+            raw={},
+            market="us",
+            feed_source="test",
+            keywords=None,
+        )
+
+        values = _article_values_from_ingestor_payload(article_data)
+
+        assert values["published_at"].astimezone(UTC).isoformat() == (
+            "2026-11-26T15:00:00+00:00"
+        )
+        assert values["article_published_at"] == datetime(2026, 11, 27, 0, 0)
+
     def test_none_published_at_produces_none(self):
         from app.services.news_payload_normalizer import (
             _article_values_from_ingestor_payload,

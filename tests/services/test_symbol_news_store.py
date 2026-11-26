@@ -185,6 +185,7 @@ async def test_collector_enriches_legacy_provider_url_row_publication_fields() -
         published_at=datetime(2026, 11, 25, 10, 0),
         published_at_raw="2026-11-25 10:00",
         published_precision="minute",
+        published_offset="+09:00",
     )
     await symbol_news_store.upsert_kr_collector_articles(
         Session(),
@@ -373,6 +374,7 @@ async def test_collector_reingest_keeps_first_received_and_single_article(
                 published_at=datetime(2026, 11, 25, 1, 0, tzinfo=UTC),
                 published_at_raw="2026-11-25 10:00",
                 published_precision="minute",
+                published_offset="+09:00",
             )
         ],
         feed_source="http_naver_stock_aggregate",
@@ -425,8 +427,8 @@ async def test_noncanonical_reingest_dedupes_and_preserves_existing_metadata(
             summary="stored summary",
             market="kr",
             feed_source="stored feed",
-            scraped_at=first_received,
-            created_at=first_received,
+            scraped_at=first_received.replace(tzinfo=None),
+            created_at=first_received.replace(tzinfo=None),
             first_received_at=first_received,
             published_at=published_at,
             published_at_raw="2026-11-20T09:00:00+09:00",
@@ -485,11 +487,12 @@ async def test_canonical_reingest_keeps_nonempty_content_when_feed_omits_it(
             summary="aggregate summary",
             market="kr",
             feed_source="http_naver_stock_aggregate",
-            scraped_at=first_received,
-            created_at=first_received,
+            scraped_at=first_received.replace(tzinfo=None),
+            created_at=first_received.replace(tzinfo=None),
             first_received_at=first_received,
             published_at=datetime(2026, 11, 20, 0, 0, tzinfo=UTC),
             published_at_raw="2026-11-20T09:00:00+09:00",
+            published_offset="+09:00",
             published_precision="second",
         )
     )
@@ -542,8 +545,8 @@ async def test_canonical_metadata_enrichment_does_not_mark_article_revised(
             summary="unchanged content",
             market="kr",
             feed_source="http_naver_stock_aggregate",
-            scraped_at=first_received,
-            created_at=first_received,
+            scraped_at=first_received.replace(tzinfo=None),
+            created_at=first_received.replace(tzinfo=None),
             first_received_at=first_received,
             published_at=datetime(2026, 11, 20, 0, 0, tzinfo=UTC),
             published_at_raw="2026-11-20T09:00:00+09:00",
@@ -594,8 +597,8 @@ async def test_canonical_publication_time_enrichment_marks_article_revised(
             summary="unchanged content",
             market="kr",
             feed_source="http_naver_stock_aggregate",
-            scraped_at=first_received,
-            created_at=first_received,
+            scraped_at=first_received.replace(tzinfo=None),
+            created_at=first_received.replace(tzinfo=None),
             first_received_at=first_received,
             published_at=datetime(2026, 11, 19, 15, 0, tzinfo=UTC),
             published_at_raw="2026-11-20",
@@ -630,6 +633,46 @@ async def test_canonical_publication_time_enrichment_marks_article_revised(
     assert stored.published_precision == "minute"
     assert stored.published_offset == "+09:00"
     assert stored.revised_at is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_canonical_reingest_truncates_long_title_to_storage_limit(db_session):
+    url = "https://n.news.naver.com/mnews/article/001/0009987?sid=101"
+    first_received = datetime(2026, 11, 20, 1, 2, tzinfo=UTC)
+    db_session.add(
+        NewsArticle(
+            url=url,
+            title="previous title",
+            source="publisher",
+            market="kr",
+            feed_source="http_naver_stock_aggregate",
+            scraped_at=first_received.replace(tzinfo=None),
+            created_at=first_received.replace(tzinfo=None),
+            first_received_at=first_received,
+        )
+    )
+    await db_session.commit()
+
+    long_title = "x" * 501
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session,
+        "005930",
+        [
+            FeedArticleInput(
+                url=url.replace("sid=101", "sid=102"),
+                title=long_title,
+                source="publisher",
+                summary=None,
+            )
+        ],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    stored = (
+        await db_session.execute(select(NewsArticle).where(NewsArticle.url == url))
+    ).scalar_one()
+    assert stored.title == long_title[:500]
 
 
 @pytest.mark.integration

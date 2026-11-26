@@ -293,6 +293,7 @@ async def _upsert_feed_articles(
                 if (
                     existing.get("published_offset") is None
                     and item.published_offset is not None
+                    and incoming_rank == existing_rank
                 ):
                     values["published_offset"] = item.published_offset
             if item.provider_article_id is not None:
@@ -304,8 +305,9 @@ async def _upsert_feed_articles(
                 for name, value in values.items()
                 if value != existing.get(name)
             }
-            if item.title and item.title != existing["title"]:
-                changed_values["title"] = item.title
+            title = item.title[:500] if item.title else None
+            if title and title != existing["title"]:
+                changed_values["title"] = title
             if item.source and item.source != existing["source"]:
                 changed_values["source"] = item.source
             if item.summary and item.summary != existing["summary"]:

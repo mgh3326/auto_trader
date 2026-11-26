@@ -79,6 +79,36 @@ async def test_reingest_preserves_first_receipt_and_marks_only_changed_content()
     assert row.revised_at > prior_revision
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reingest_preserves_omitted_fields_and_applies_explicit_null():
+    from types import SimpleNamespace
+
+    from app.services.research_reports.repository import ResearchReportsRepository
+
+    prior_revision = datetime(2026, 5, 7, 2, tzinfo=UTC)
+    row = SimpleNamespace(
+        **_sample_report_dict(),
+        first_received_at=datetime(2026, 5, 7, 1, tzinfo=UTC),
+        revised_at=prior_revision,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return row
+
+    db = SimpleNamespace(execute=AsyncMock(return_value=Result()), flush=AsyncMock())
+    repo = ResearchReportsRepository(db)
+
+    await repo.upsert_report({"dedup_key": "abc-1", "title": "Partial title"})
+    assert row.title == "Partial title"
+    assert row.summary_text == "단기 약세, 장기 강세"
+
+    await repo.upsert_report({"dedup_key": "abc-1", "summary_text": None})
+    assert row.summary_text is None
+    assert row.revised_at > prior_revision
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upsert_inserts_new_report(db_session):

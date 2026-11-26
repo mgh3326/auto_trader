@@ -38,3 +38,5 @@ def test_research_report_receipt_default_is_expand_only_sql_expression() -> None
     assert "ALTER COLUMN first_received_at SET DEFAULT now()" in sql
     assert "ALTER COLUMN first_received_at SET DEFAULT 'now()'" not in sql
     assert "ALTER COLUMN first_received_at SET NOT NULL" not in sql
+    assert "UPDATE research_reports SET first_received_at" not in sql
+    assert "SET relation_type = 'direct'" not in sql

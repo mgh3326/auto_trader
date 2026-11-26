@@ -101,8 +101,8 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
             if raw_offset:
                 published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
     raw_precision = getattr(article_data, "published_precision", None)
-    if raw_precision is None and source_time:
-        raw_precision = "date" if len(source_time.strip()) == 10 else "second"
+    if raw_precision is None and published_raw:
+        raw_precision = "date" if len(published_raw.strip()) == 10 else "second"
     if published is not None and published.utcoffset() is None:
         if (
             isinstance(published_offset, str)
@@ -130,9 +130,7 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
         "author": article_data.author,
         "stock_symbol": article_data.stock_symbol,
         "stock_name": article_data.stock_name,
-        "article_published_at": to_kst_naive(article_data.published_at)
-        if article_data.published_at
-        else None,
+        "article_published_at": to_kst_naive(published) if published else None,
         "published_at_raw": published_raw,
         "published_at": published,
         "published_offset": published_offset,

@@ -61,12 +61,15 @@ class ResearchReportsRepository:
                 "attribution_full_text_exported",
                 "attribution_pdf_body_exported",
             )
-            changed = any(
-                getattr(existing, name) != payload.get(name) for name in content_fields
-            )
+            updates = {
+                name: payload[name]
+                for name in content_fields
+                if name in payload and getattr(existing, name) != payload[name]
+            }
+            changed = bool(updates)
             if changed:
-                for name in content_fields:
-                    setattr(existing, name, payload.get(name))
+                for name, value in updates.items():
+                    setattr(existing, name, value)
                 existing.revised_at = datetime.now(UTC)
                 await self.db.flush()
             return False
