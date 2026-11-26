@@ -525,6 +525,129 @@ async def test_refresh_finalizes_existing_filled_exit():
     } == {"closed"}
 
 
+async def test_refresh_recovers_entry_closure_after_exit_commit_interruption(
+    monkeypatch,
+):
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    entry.exit_due_at = datetime(2026, 11, 2, tzinfo=UTC)
+    broker.accept_only = True
+    await strategy.close_due(asof=DAY, confirm=True)
+    exit_row = next(row for row in recorder.rows.values() if row.side == "sell")
+    broker.orders[exit_row.client_order_id] = broker.orders[
+        exit_row.client_order_id
+    ].model_copy(
+        update={
+            "status": "filled",
+            "filled_qty": Decimal("100"),
+            "filled_avg_price": Decimal("110"),
+            "filled_at": datetime(2026, 11, 2, 15, tzinfo=UTC),
+        }
+    )
+    update = recorder.update
+
+    async def fail_entry_close(client_order_id, *, status, **kwargs):
+        if client_order_id == entry.client_order_id and status == "closed":
+            raise RuntimeError("fixture interruption after exit commit")
+        return await update(client_order_id, status=status, **kwargs)
+
+    monkeypatch.setattr(recorder, "update", fail_entry_close)
+    with pytest.raises(RuntimeError, match="after exit commit"):
+        await strategy.refresh()
+    assert exit_row.status == "closed"
+    assert entry.status == "filled"
+
+    monkeypatch.setattr(recorder, "update", update)
+    resumed = await strategy.refresh()
+    assert (
+        next(
+            row
+            for row in resumed["orders"]
+            if row["client_order_id"] == entry.client_order_id
+        )["changed"]
+        is False
+    )
+    assert entry.status == "closed"
+    assert entry.realized_pnl == Decimal("1000")
+
+
+async def test_refresh_finalizes_terminal_partial_entry_from_cumulative_exit_fills():
+    recorder, broker = MemoryRecorder(), PaperBroker()
+    strategy = UsPaperStrategy(recorder, broker)
+    broker.accept_only = True
+    await run(strategy)
+    entry = next(row for row in recorder.rows.values() if row.side == "buy")
+    broker.orders[entry.client_order_id] = broker.orders[
+        entry.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("40"),
+            "filled_avg_price": Decimal("100"),
+            "filled_at": datetime(2026, 11, 2, 14, 40, tzinfo=UTC),
+        }
+    )
+    await strategy.refresh()
+    assert entry.status == "partially_filled"
+    entry.exit_due_at = datetime(2026, 11, 2, tzinfo=UTC)
+    await strategy.close_due(asof=DAY, confirm=True)
+    first = next(row for row in recorder.rows.values() if row.side == "sell")
+    assert first.qty == Decimal("40")
+    broker.orders[first.client_order_id] = broker.orders[
+        first.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("0"),
+        }
+    )
+    broker.accept_only = True
+    await strategy.close_due(asof=DAY, confirm=True)
+    second = next(
+        row
+        for row in recorder.rows.values()
+        if row.side == "sell" and row.meta["exit_leg"] == 1
+    )
+    assert second.qty == Decimal("40")
+    broker.orders[second.client_order_id] = broker.orders[
+        second.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("15"),
+            "filled_avg_price": Decimal("105"),
+        }
+    )
+    await strategy.close_due(asof=DAY, confirm=True)
+    residual = next(
+        row
+        for row in recorder.rows.values()
+        if row.side == "sell" and row.meta["exit_leg"] == 2
+    )
+    assert residual.qty == Decimal("25")
+    broker.orders[residual.client_order_id] = broker.orders[
+        residual.client_order_id
+    ].model_copy(
+        update={
+            "status": "canceled",
+            "filled_qty": Decimal("20"),
+            "filled_avg_price": Decimal("110"),
+        }
+    )
+    await strategy.refresh()
+    assert entry.status == "partially_filled"
+    broker.orders[residual.client_order_id] = broker.orders[
+        residual.client_order_id
+    ].model_copy(update={"status": "filled", "filled_qty": Decimal("25")})
+    await strategy.refresh()
+    assert entry.status == "closed"
+    assert first.status == "canceled"
+    assert second.status == residual.status == "closed"
+    assert entry.realized_pnl == Decimal("325")
+
+
 @pytest.mark.parametrize(
     "state",
     [
