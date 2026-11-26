@@ -19,7 +19,6 @@ from app.mcp_server.tooling.shared import is_korean_equity_code
 from app.models.account_value import AccountValueSnapshot
 from app.models.investment_reports import InvestmentWatchAlert
 from app.models.manual_holdings import ManualHolding, MarketType
-from app.models.news import NewsArticle
 from app.models.trade_journal import TradeJournal
 from app.models.trading import Instrument, InstrumentType, UserWatchItem
 from app.services import symbol_news_store
@@ -137,7 +136,8 @@ def normalize_mainnews_item(row: object) -> dict[str, Any] | None:
         "source": str(source).strip() if source is not None else None,
         "summary": str(summary).strip() if summary is not None else None,
         "published": published,
-        "provider_article_id": f"{office_id}+{article_id}",
+        "provider_article_id": f"{office_id}:{article_id}",
+        "provider_raw_ids": {"oid": str(office_id), "aid": str(article_id)},
     }
 
 
@@ -306,9 +306,10 @@ async def _store_items(
     feed_source: str,
     items: list[dict[str, Any]],
     symbols: Sequence[str],
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, int]]:
     new_articles = 0
     new_links = 0
+    article_ids_by_canonical_url: dict[str, int] = {}
     for symbol in symbols:
         inputs = [
             symbol_news_store.FeedArticleInput(
@@ -324,12 +325,13 @@ async def _store_items(
             )
             for item in items
         ]
-        inserted, links = await symbol_news_store.upsert_kr_collector_articles(
+        result = await symbol_news_store.upsert_kr_collector_articles_with_ids(
             db, symbol, inputs, feed_source=feed_source, commit=False
         )
-        new_articles += inserted
-        new_links += links
-    return new_articles, new_links
+        new_articles += result.new_articles
+        new_links += result.new_links
+        article_ids_by_canonical_url.update(result.article_ids_by_canonical_url)
+    return new_articles, new_links, article_ids_by_canonical_url
 
 
 async def collect_kr_news(
@@ -380,8 +382,9 @@ async def collect_kr_news(
                     f"{item['title']}\n{item.get('summary') or ''}", universe
                 )
                 inserted = 0
+                article_ids_by_canonical_url: dict[str, int] = {}
                 if matches:
-                    inserted, _links = await _store_items(
+                    inserted, _links, article_ids_by_canonical_url = await _store_items(
                         db,
                         feed_source=MAINNEWS_FEED_SOURCE,
                         items=[item],
@@ -402,18 +405,20 @@ async def collect_kr_news(
                             provider_article_id=item.get("provider_article_id"),
                         )
                     ]
-                    inserted, _ = await symbol_news_store.upsert_kr_collector_articles(
-                        db,
-                        None,
-                        inputs,
-                        feed_source=MAINNEWS_FEED_SOURCE,
-                        commit=False,
+                    stored = (
+                        await symbol_news_store.upsert_kr_collector_articles_with_ids(
+                            db,
+                            None,
+                            inputs,
+                            feed_source=MAINNEWS_FEED_SOURCE,
+                            commit=False,
+                        )
                     )
+                    inserted = stored.new_articles
+                    article_ids_by_canonical_url = stored.article_ids_by_canonical_url
                     mainnews_report.new += inserted
                 if matches:
-                    article_id = await db.scalar(
-                        select(NewsArticle.id).where(NewsArticle.url == item["url"])
-                    )
+                    article_id = article_ids_by_canonical_url.get(item["dedupe_url"])
                     if article_id is not None:
                         await symbol_news_store.upsert_related_symbols(
                             db,
@@ -476,11 +481,11 @@ async def collect_kr_news(
                 item = {
                     "url": url,
                     "dedupe_url": dedupe_url,
-                    "title": unescape(str(row["title"])),
+                    "title": str(row["title"]),
                     "source": row.get("source"),
                     "summary": None,
                     "published": published,
-                    "provider_article_id": row.get("id"),
+                    "provider_article_id": row.get("provider_article_id"),
                 }
                 normalized.append(item)
             unique: dict[str, dict[str, Any]] = {}
@@ -488,7 +493,7 @@ async def collect_kr_news(
                 unique.setdefault(item["dedupe_url"], item)
             source.fetched = len(normalized)
             if db is not None and unique:
-                inserted, _links = await _store_items(
+                inserted, _links, _article_ids = await _store_items(
                     db,
                     feed_source="naver_item_news",
                     items=list(unique.values()),

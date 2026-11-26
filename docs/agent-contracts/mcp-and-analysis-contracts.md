@@ -284,6 +284,8 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   `https://n.news.naver.com/mnews/article/{oid}/{aid}`이며 Naver의 `dt`는 KST 초 단위다.
   종목별 `datetime`은 KST 분 단위이고 제목 HTML entity를 unescape한다. 기존
   `http_naver_stock_aggregate` 행은 읽기 호환만 유지하며 새 행에는 사용하지 않는다.
+  종목 endpoint 행의 `feed_source`는 `naver_item_news`, 보고서의 source label은
+  `naver_item_news:{symbol}`이다.
   상한 절단 종목은
   JSON `symbol_cut_list`에 출처와 함께 남긴다. 종목별 Naver 뉴스 조회 실패는 해당 source의 error로
   보고하고 다른 source 처리는 계속한다. 보고서의 source별 `fetched`/`new`/`duplicate`/`errors`는

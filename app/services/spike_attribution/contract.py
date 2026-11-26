@@ -89,7 +89,7 @@ class EvidenceItem:
     title: str
     url: str | None
     published_at: dt.datetime | None
-    published_at_precision: str  # "exact" | "date_only" | "unknown"
+    published_at_precision: str  # "exact" | "minute" | "date_only" | "unknown"
     published_at_source: str  # which column/key the timestamp came from
     eligibility: str
     judgment: str  # "judged_relevant" | "unjudged" | "not_applicable"

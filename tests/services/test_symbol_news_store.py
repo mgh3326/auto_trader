@@ -115,7 +115,7 @@ async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -
         async def commit(self):
             return None
 
-    await symbol_news_store.upsert_kr_collector_articles(
+    result = await symbol_news_store.upsert_kr_collector_articles_with_ids(
         Session(),
         "005930",
         [_item(incoming_url, "삼성전자 기사")],
@@ -125,6 +125,9 @@ async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -
     assert article_inserts == 0
     assert len(relevance_inserts) == 1
     assert 88 in relevance_inserts[0].values()
+    assert result.article_ids_by_canonical_url == {
+        "https://n.news.naver.com/article/001/0001234": 88
+    }
 
 
 @pytest.mark.unit

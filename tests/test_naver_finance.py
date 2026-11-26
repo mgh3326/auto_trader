@@ -623,6 +623,7 @@ class TestFetchNews:
         assert first["id"] == "0010001234"
         assert first["officeId"] == "001"
         assert first["articleId"] == "0001234"
+        assert first["provider_article_id"] == "001:0001234"
 
     async def test_fetch_news_compat_returns_items(
         self, monkeypatch: pytest.MonkeyPatch
@@ -639,6 +640,27 @@ class TestFetchNews:
         result = await naver_finance.fetch_stock_news("005930", limit=1)
         assert len(result.items) == 1
         assert result.items[0]["title"] == "삼성전자 & 반도체"
+
+    async def test_title_html_entities_are_unescaped_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = {
+            "total": 1,
+            "items": [
+                {
+                    "officeId": "001",
+                    "articleId": "0001234",
+                    "id": "0010001234",
+                    "officeName": "연합뉴스",
+                    "datetime": "202611262141",
+                    "title": "literal &amp;amp;copy;",
+                    "mobileNewsUrl": "https://n.news.naver.com/mnews/article/001/0001234",
+                }
+            ],
+        }
+        self._patch_json(monkeypatch, payload)
+        result = await naver_finance.fetch_stock_news("005930")
+        assert result.items[0]["title"] == "literal &amp;copy;"
 
     async def test_empty_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_json(monkeypatch, {"total": 0, "items": []})
