@@ -11,7 +11,8 @@ def test_api_image_installs_runtime_dependencies_with_compiled_bytecode():
 
     assert "--no-dev" in sync_line
     assert "--compile-bytecode" in sync_line
-    assert "PYTHONHASHSEED=0 SOURCE_DATE_EPOCH=0" in dockerfile
+    assert "PYTHONHASHSEED=0" in sync_line
+    assert "SOURCE_DATE_EPOCH=0" in sync_line
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     runtime_dependencies = set(project["dependencies"])
