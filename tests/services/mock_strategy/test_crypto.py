@@ -527,6 +527,40 @@ async def test_alpaca_crypto_net_pnl_waits_for_the_current_exit_fee():
 
 
 @pytest.mark.asyncio
+async def test_alpaca_crypto_same_run_exit_fee_is_included_in_net_pnl():
+    recorder = Recorder()
+    broker = Broker(recorder)
+    broker.known_fees = True
+    await run_lists(
+        signals(),
+        venue="alpaca_paper_crypto",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+
+    await close_due(
+        venue="alpaca_paper_crypto",
+        asof=DECISION + timedelta(days=3),
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+    )
+
+    entries = [row for row in recorder.rows.values() if row.side == "buy"]
+    assert len(entries) == 10
+    for entry in entries:
+        assert entry.status == "closed"
+        assert entry.meta["net_pnl"] == str(
+            Decimal(entry.meta["gross_pnl"]) - Decimal("0.02")
+        )
+
+
+@pytest.mark.asyncio
 async def test_terminal_partial_close_gets_new_residual_leg():
     recorder = Recorder()
     broker = Broker(recorder)

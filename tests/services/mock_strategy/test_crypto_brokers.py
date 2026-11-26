@@ -290,6 +290,7 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         activities=FEE_ACTIVITY_FIXTURE["buy_base_fee"],
         posting_date="2026-11-26",
         filled_leg_count=1,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=True,
     )
     assert buy.amount == Decimal("0.00000175")
@@ -303,6 +304,7 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         activities=FEE_ACTIVITY_FIXTURE["sell_usd_fee"],
         posting_date="2026-11-26",
         filled_leg_count=1,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=True,
     )
     assert sell.amount == Decimal("0.08")
@@ -316,6 +318,7 @@ def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
         activities=FEE_ACTIVITY_FIXTURE["missing"],
         posting_date="2026-11-26",
         filled_leg_count=1,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=True,
     )
     assert (missing.amount, missing.currency, missing.net_received_qty) == (
@@ -339,6 +342,7 @@ def test_crypto_fee_evidence_requires_unique_filled_leg_and_terminal_order():
         activities=activity,
         posting_date="2026-11-26",
         filled_leg_count=1,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=True,
     )
     assert matched.amount == Decimal("0.00000175")
@@ -351,10 +355,24 @@ def test_crypto_fee_evidence_requires_unique_filled_leg_and_terminal_order():
         activities=activity,
         posting_date="2026-11-26",
         filled_leg_count=2,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=True,
     )
     assert ambiguous.net_received_qty is None
     assert ambiguous.reason == "fee_activity_unattributable"
+
+    partial_posting = resolve_crypto_fee_evidence(
+        symbol="BTC/USD",
+        side="buy",
+        filled_qty=Decimal("0.0007"),
+        activities=activity,
+        posting_date="2026-11-26",
+        filled_leg_count=1,
+        filled_dates={date(2026, 11, 25), date(2026, 11, 26)},
+        terminal_filled=True,
+    )
+    assert partial_posting.amount is None
+    assert partial_posting.reason == "fee_activity_unattributable"
 
     nonterminal = resolve_crypto_fee_evidence(
         symbol="BTC/USD",
@@ -363,6 +381,7 @@ def test_crypto_fee_evidence_requires_unique_filled_leg_and_terminal_order():
         activities=activity,
         posting_date="2026-11-26",
         filled_leg_count=1,
+        filled_dates={date(2026, 11, 26)},
         terminal_filled=False,
     )
     assert nonterminal.amount is None

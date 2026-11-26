@@ -300,7 +300,14 @@ async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
 
         async def list_order_fills(self, *, order_id):
             assert order_id == "alpaca-buy-1"
-            return [SimpleNamespace(order_id=order_id, qty=Decimal("0.0007"))]
+            return [
+                SimpleNamespace(
+                    order_id=order_id,
+                    qty=Decimal("0.0007"),
+                    symbol="BTCUSD",
+                    transaction_time=datetime(2026, 11, 26, 12, tzinfo=UTC),
+                )
+            ]
 
         async def list_crypto_fee_activities(self, *, order_id):
             assert order_id == "alpaca-buy-1"

@@ -45,6 +45,21 @@ def count_filled_legs_for_day(
     return len(order_ids) if str(expected_order_id) in order_ids else 0
 
 
+def filled_order_dates(*, fills: list[Any], order_id: str) -> set[date]:
+    dates: set[date] = set()
+    for fill in fills:
+        if str(_field(fill, "order_id") or "") != str(order_id):
+            continue
+        fill_time = _field(fill, "transaction_time")
+        if isinstance(fill_time, datetime):
+            dates.add(
+                fill_time.astimezone(UTC).date()
+                if fill_time.tzinfo
+                else fill_time.date()
+            )
+    return dates
+
+
 def activity_posting_date(row: Any) -> date | None:
     raw_date = _field(row, "date")
     if isinstance(raw_date, datetime):
@@ -65,6 +80,7 @@ def resolve_crypto_fee_evidence(
     activities: list[Any],
     posting_date: date | str,
     filled_leg_count: int,
+    filled_dates: set[date],
     terminal_filled: bool,
 ) -> CryptoFeeEvidence:
     """Resolve fees only when symbol/date identifies one terminal-filled leg."""
@@ -83,6 +99,8 @@ def resolve_crypto_fee_evidence(
         if isinstance(posting_date, date)
         else str(posting_date)
     )
+    if filled_dates != {date.fromisoformat(expected_date[:10])}:
+        return CryptoFeeEvidence(None, None, None, "fee_activity_unattributable")
     pair = symbol.upper().split("/")
     if len(pair) != 2:
         return CryptoFeeEvidence(None, None, None, "fee_currency_ambiguous")

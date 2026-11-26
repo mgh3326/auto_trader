@@ -9,6 +9,7 @@ from typing import Any
 from app.services.alpaca_paper_crypto_fee_evidence import (
     activity_posting_date,
     count_filled_legs_for_day,
+    filled_order_dates,
     resolve_crypto_fee_evidence,
 )
 
@@ -65,6 +66,9 @@ class AlpacaPaperCryptoFeeReconcileService:
                             activities=activities,
                             posting_date=posting_date,
                             filled_leg_count=0,
+                            filled_dates=filled_order_dates(
+                                fills=fills, order_id=order_id
+                            ),
                             terminal_filled=False,
                         )
                         reason = evidence.reason
@@ -104,6 +108,9 @@ class AlpacaPaperCryptoFeeReconcileService:
                             activities=activities,
                             posting_date=posting_date,
                             filled_leg_count=filled_leg_count,
+                            filled_dates=filled_order_dates(
+                                fills=fills, order_id=order_id
+                            ),
                             terminal_filled=terminal_filled,
                         )
                         reason = evidence.reason
