@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
+from research.crypto_universe.public_http import FetchResponse
 from research.data_plane.collect import CollectError, collect
 from research.data_plane.contract import (
     DATASET_ACTIONS,
@@ -581,6 +583,60 @@ def test_vendor_relabel_of_a_venue_is_not_a_truncated_source(tmp_path):
     venues = {r["venue"] for r in rows}
     assert "Texas Stock Exchange" in venues
     assert not any(v.startswith("UNKNOWN:") for v in venues)
+
+
+@pytest.mark.unit
+def test_archived_nasdaq_files_replay_without_universe_shrink(tmp_path):
+    fixture_dir = (
+        Path(__file__).parents[2] / "fixtures" / "research" / "data_plane" / "us_nasdaq"
+    )
+    capture_manifest = json.loads(
+        (fixture_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    captures = {item["path"]: item for item in capture_manifest["captures"]}
+
+    def body(name: str) -> bytes:
+        raw = (fixture_dir / name).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == captures[name]["sha256"]
+        return raw
+
+    otherlisted = body("otherlisted-20261024.txt")
+
+    def fetch(nasdaq_name: str):
+        nasdaqlisted = body(nasdaq_name)
+
+        def read(url: str) -> FetchResponse:
+            if url.endswith("nasdaqlisted.txt"):
+                return FetchResponse(200, nasdaqlisted)
+            if url.endswith("otherlisted.txt"):
+                return FetchResponse(200, otherlisted)
+            raise AssertionError(f"unexpected public source URL: {url}")
+
+        return read
+
+    first_day, later_day = date(2026, 11, 1), date(2026, 11, 25)
+    first = collect(
+        tmp_path,
+        market="us",
+        day=first_day,
+        datasets=[DATASET_UNIVERSE],
+        fetch=fetch("nasdaqlisted-20261024.txt"),
+        now=lambda: evening("us", first_day),
+        commit="fixture",
+    )
+    later = collect(
+        tmp_path,
+        market="us",
+        day=later_day,
+        datasets=[DATASET_UNIVERSE],
+        fetch=fetch("nasdaqlisted-20261125.txt"),
+        now=lambda: evening("us", later_day),
+        commit="fixture",
+    )
+
+    assert [r.action for r in first + later] == ["written", "written"]
+    assert first[0].rows == 13262
+    assert later[0].rows == 13245
 
 
 @pytest.mark.unit
