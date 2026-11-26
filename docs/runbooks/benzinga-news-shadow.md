@@ -117,6 +117,44 @@ BENZINGA_NEWS_SHADOW_ENABLED=true \
 summary 는 합집합(중복 제거 뒤)으로 겹침을 재고 `benzinga_by_query_param` 에
 파라미터별 건수를 남긴다.
 
+## Save+ 뉴스 비교 소스·관심도 기록 (hk 6694)
+
+Save+ 는 로그인 없는 앱 백엔드 `api.prod.fivelines.co.kr` 만 읽는다. 이 API 는
+비공식이고 언제든 바뀔 수 있다. `www.saveticker.com` 웹 API(Cloudflare), 인증이
+필요한 호스트·경로, SSE 는 사용하지 않는다. DB ingest 와 `get_news` 연결은 후속
+hk 6695 범위다.
+
+```bash
+BENZINGA_NEWS_SHADOW_ENABLED=true \
+  uv run python -m scripts.benzinga_news_shadow poll \
+    --symbols NVDA,AMD,0256C0.KR --out-dir /tmp/benzinga-shadow \
+    --saveticker --saveticker-pages 3
+```
+
+- `--saveticker` 로 켜고 `--skip-saveticker` 로 끈다. 수집은 기본 off 이며,
+  Save+ 호출이 실패하면 해당 요청의 `poll_status` 에 `status=error` 와 예외 클래스가
+  남고 CLI 는 실패로 끝난다. Benzinga/Finnhub/KIS 는 계속 polling 한다. 실패를 빈
+  피드로 보지 않는다.
+- `/api/news` 최신 페이지와 `/api/news/top-stories` 를 읽는다. 페이지 수 1–10,
+  페이지 크기 1–100, 페이지 사이 최소 0.5초 간격, timeout, redirect 거부를 적용한다.
+  같은 출력 폴더의 이전 ID 를 처음 만나면 해당 뉴스 페이지 탐색을 멈춘다.
+- 제공 `tickers[].symbol` 만 `app/core/symbol.py::to_db_symbol` 로 정규화한다.
+  캡처에는 `NVDA`, `DIS`, `0256C0.KR` 등이 있어 미국 티커는 그대로, 한국 티커는
+  캡처된 `.KR` 접미와 DB `.` 구분자를 유지한다. 매칭된 폴링 심볼마다 기사 행을 쓰며,
+  미일치 항목도 `query_symbol=null` 로 남긴다.
+- 각 항목은 원문 `created_at` 과 파싱된 UTC 시각, 참여 수치와 라벨을 기록한다.
+  알 수 없는 wire 필드는 `raw_item` 에 보존한다. 잘못된 항목은 버리고
+  `malformed_count` 에 기록한다.
+- 한 provider item 마다 poll 당 `record_type=attention` JSONL 행을 하나 써서
+  `observed_at`, `view_count`, `comment_count`, `like_stats`, `vote_stats`,
+  `is_top_story`, labels, tickers 를 남긴다.
+- summary 는 ticker 와 소스별 coverage·첫 관측 순서를 보고한다. 한국어 번역 제목은
+  Save+ 내부에서만 정규화 제목으로 겹침을 비교한다. 다른 소스와는 제목을 대조하지
+  않고 ticker 가 겹치며 provider 생성 시각 차이가 10분 이내일 때 겹침으로 센다.
+
+`deploy/dagu/at-news-shadow/` 는 KST 07:00–23:59 3분 간격 설정을 담은 복사본일 뿐이며
+등록하지 않는다. 실제 운영 등록은 설계 세션/운영자 소관이다.
+
 ## 운영
 
 - 키·구매는 운영자 결정. Dagu 등록은 hk 6395 머지 뒤 설계 세션이 한다.

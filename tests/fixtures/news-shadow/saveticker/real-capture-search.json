@@ -1,0 +1,420 @@
+{
+ "news_list": [
+  {
+   "id": "news_279884",
+   "mongo_id": null,
+   "title": "[2보] 미국 판사, FCC의 디즈니 소유 ABC 방송국 위협을 차단",
+   "content": "판사 “FCC 위원장이 트럼프 대통령의 수사를 실행 지침으로 받아들였다”\n\n\n표현의 자유 옹호자들은 트럼프 대통령을 비판해 왔다\n\n\n이번 판결은...",
+   "thumbnail": null,
+   "source": "reuters",
+   "channel": null,
+   "author_id": -1,
+   "author_name": "알 수 없음",
+   "author_profile_image_url": null,
+   "author_points": -1,
+   "author_role": null,
+   "created_at": "2026-11-26T01:10:16.782298Z",
+   "view_count": 23,
+   "tags": [
+    {
+     "id": 15,
+     "mongo_id": null,
+     "name": "DIS",
+     "is_ticker": true
+    }
+   ],
+   "tag_names": [
+    "$DIS"
+   ],
+   "tickers": [
+    {
+     "id": 15,
+     "symbol": "DIS",
+     "name": "월트 디즈니"
+    }
+   ],
+   "content_labels": [],
+   "comment_count": 0,
+   "like_stats": {
+    "target_id": "news_279884",
+    "like_count": 0,
+    "user_liked": false
+   },
+   "vote_stats": {
+    "target_id": "news_279884",
+    "vote_counts": {},
+    "total_count": 0,
+    "user_vote": null,
+    "vote_setting": null
+   },
+   "is_bookmarked": false,
+   "is_deleted": false,
+   "is_headline_only": false,
+   "is_top_story": false,
+   "hide_comments": false,
+   "translations": {
+    "source_locale": "en_US",
+    "translated": {
+     "en_US": {
+      "title": "UPDATE 1-US judge blocks FCC from threatening Disney-owned ABC stations",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": null
+     },
+     "ko_KR": {
+      "title": "[2보] 미국 판사, FCC의 디즈니 소유 ABC 방송국 위협을 차단",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ]
+     }
+    }
+   },
+   "news_group_id": null,
+   "extra": {
+    "source_created_at": "2026-11-26T01:10:16.782298+00:00"
+   },
+   "similar_count": 0,
+   "group_summary": null,
+   "is_group_top_story": false,
+   "filter_hidden": false
+  },
+  {
+   "id": "news_279881",
+   "mongo_id": null,
+   "title": "[2보] 한국 중앙은행, 0.25%포인트 인상으로 긴축 재개",
+   "content": "신시아 김, 이지훈, 조이스 리 기자\n\n\n서울, 11월 26일 (로이터) - 한국은행은 목요일 기준금리를 0.25%포인트 인상해 3.25%로 올...",
+   "thumbnail": null,
+   "source": "reuters",
+   "channel": null,
+   "author_id": -1,
+   "author_name": "알 수 없음",
+   "author_profile_image_url": null,
+   "author_points": -1,
+   "author_role": null,
+   "created_at": "2026-11-26T01:00:56.269628Z",
+   "view_count": 302,
+   "tags": [],
+   "tag_names": [],
+   "tickers": [],
+   "content_labels": [],
+   "comment_count": 0,
+   "like_stats": {
+    "target_id": "news_279881",
+    "like_count": 0,
+    "user_liked": false
+   },
+   "vote_stats": {
+    "target_id": "news_279881",
+    "vote_counts": {},
+    "total_count": 0,
+    "user_vote": null,
+    "vote_setting": null
+   },
+   "is_bookmarked": false,
+   "is_deleted": false,
+   "is_headline_only": false,
+   "is_top_story": false,
+   "hide_comments": false,
+   "translations": {
+    "source_locale": "en_US",
+    "translated": {
+     "en_US": {
+      "title": "UPDATE 1-South Korea's central bank resumes tightening with quarter-point hike",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": null
+     },
+     "ko_KR": {
+      "title": "[2보] 한국 중앙은행, 0.25%포인트 인상으로 긴축 재개",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ]
+     }
+    }
+   },
+   "news_group_id": null,
+   "extra": {
+    "source_created_at": "2026-11-26T01:00:56.269628+00:00"
+   },
+   "similar_count": 0,
+   "group_summary": null,
+   "is_group_top_story": false,
+   "filter_hidden": false
+  },
+  {
+   "id": "news_279880",
+   "mongo_id": null,
+   "title": "[칼럼] AI 금속 급락, 심각한 실물 공급 압박 가려: 앤디 홈",
+   "content": "수요일 칼럼을 아무런 변경 없이 추가 구독자들에게 다시 전한다. 여기에 표현된 의견은 로이터 칼럼니스트인 필자의 견해다.\n\n\n앤디 홈\n\n\n런던,...",
+   "thumbnail": null,
+   "source": "reuters",
+   "channel": null,
+   "author_id": -1,
+   "author_name": "알 수 없음",
+   "author_profile_image_url": null,
+   "author_points": -1,
+   "author_role": null,
+   "created_at": "2026-11-26T01:00:55.088391Z",
+   "view_count": 118,
+   "tags": [],
+   "tag_names": [],
+   "tickers": [],
+   "content_labels": [],
+   "comment_count": 0,
+   "like_stats": {
+    "target_id": "news_279880",
+    "like_count": 0,
+    "user_liked": false
+   },
+   "vote_stats": {
+    "target_id": "news_279880",
+    "vote_counts": {},
+    "total_count": 0,
+    "user_vote": null,
+    "vote_setting": null
+   },
+   "is_bookmarked": false,
+   "is_deleted": false,
+   "is_headline_only": false,
+   "is_top_story": false,
+   "hide_comments": false,
+   "translations": {
+    "source_locale": "en_US",
+    "translated": {
+     "en_US": {
+      "title": "RPT-ROI-AI metals meltdown masks acute physical squeeze: Andy Home",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": null
+     },
+     "ko_KR": {
+      "title": "[칼럼] AI 금속 급락, 심각한 실물 공급 압박 가려: 앤디 홈",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ]
+     }
+    }
+   },
+   "news_group_id": null,
+   "extra": {
+    "source_created_at": "2026-11-26T01:00:55.088391+00:00"
+   },
+   "similar_count": 0,
+   "group_summary": null,
+   "is_group_top_story": false,
+   "filter_hidden": false
+  },
+  {
+   "id": "news_279879",
+   "mongo_id": null,
+   "title": "인도 농민들, 볏짚을 바이오매스 기업에 판매해 소각 줄여",
+   "content": "오염을 줄이려면 농작물 폐기물 활용을 대폭 늘려야 한다고 분석가들은 말한다\n\n\n인도 폐기물 에너지 전환 부문 성장세지만 여전히 규모에 못 미쳐\n...",
+   "thumbnail": null,
+   "source": "reuters",
+   "channel": null,
+   "author_id": -1,
+   "author_name": "알 수 없음",
+   "author_profile_image_url": null,
+   "author_points": -1,
+   "author_role": null,
+   "created_at": "2026-11-26T01:00:41.939629Z",
+   "view_count": 29,
+   "tags": [],
+   "tag_names": [],
+   "tickers": [],
+   "content_labels": [],
+   "comment_count": 0,
+   "like_stats": {
+    "target_id": "news_279879",
+    "like_count": 0,
+    "user_liked": false
+   },
+   "vote_stats": {
+    "target_id": "news_279879",
+    "vote_counts": {},
+    "total_count": 0,
+    "user_vote": null,
+    "vote_setting": null
+   },
+   "is_bookmarked": false,
+   "is_deleted": false,
+   "is_headline_only": false,
+   "is_top_story": false,
+   "hide_comments": false,
+   "translations": {
+    "source_locale": "en_US",
+    "translated": {
+     "en_US": {
+      "title": "Indian farmers sell paddy stubble to biomass firms, reduce burning",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": null
+     },
+     "ko_KR": {
+      "title": "인도 농민들, 볏짚을 바이오매스 기업에 판매해 소각 줄여",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ]
+     }
+    }
+   },
+   "news_group_id": null,
+   "extra": {
+    "source_created_at": "2026-11-26T01:00:41.939629+00:00"
+   },
+   "similar_count": 0,
+   "group_summary": null,
+   "is_group_top_story": false,
+   "filter_hidden": false
+  },
+  {
+   "id": "news_279878",
+   "mongo_id": null,
+   "title": "[귀금속] 뜨거운 미국 인플레이션에 연준 금리 인상 전망 굳어지며 금값 하락세 지속",
+   "content": "11월 26일 (로이터) - 목요일 금값은 전 거래일에 1년여 만의 최저치로 급락한 뒤 소폭 하락했다. 견조한 미국 인플레이션 지표가 연준이 다...",
+   "thumbnail": null,
+   "source": "reuters",
+   "channel": null,
+   "author_id": -1,
+   "author_name": "알 수 없음",
+   "author_profile_image_url": null,
+   "author_points": -1,
+   "author_role": null,
+   "created_at": "2026-11-26T01:00:40.678847Z",
+   "view_count": 55,
+   "tags": [
+    {
+     "id": 19,
+     "mongo_id": null,
+     "name": "시황/분석",
+     "is_ticker": false
+    }
+   ],
+   "tag_names": [
+    "시황/분석"
+   ],
+   "tickers": [],
+   "content_labels": [
+    {
+     "id": 19,
+     "name": "시황/분석"
+    }
+   ],
+   "comment_count": 0,
+   "like_stats": {
+    "target_id": "news_279878",
+    "like_count": 0,
+    "user_liked": false
+   },
+   "vote_stats": {
+    "target_id": "news_279878",
+    "vote_counts": {},
+    "total_count": 0,
+    "user_vote": null,
+    "vote_setting": null
+   },
+   "is_bookmarked": false,
+   "is_deleted": false,
+   "is_headline_only": false,
+   "is_top_story": false,
+   "hide_comments": false,
+   "translations": {
+    "source_locale": "en_US",
+    "translated": {
+     "en_US": {
+      "title": "PRECIOUS-Gold extends losses as hot US inflation cements Fed hike bets",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": null
+     },
+     "ko_KR": {
+      "title": "[귀금속] 뜨거운 미국 인플레이션에 연준 금리 인상 전망 굳어지며 금값 하락세 지속",
+      "content": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ],
+      "summary": [
+       {
+        "type": "text",
+        "content": ""
+       }
+      ]
+     }
+    }
+   },
+   "news_group_id": null,
+   "extra": {
+    "source_created_at": "2026-11-26T01:00:40.678847+00:00"
+   },
+   "similar_count": 0,
+   "group_summary": null,
+   "is_group_top_story": false,
+   "filter_hidden": false
+  }
+ ],
+ "total_count": 220415,
+ "page": 1,
+ "page_size": 5,
+ "window": null,
+ "next_window": null,
+ "has_older": false,
+ "from_cache": false
+}

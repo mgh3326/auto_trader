@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
+import httpx
 import pytest
 
 import scripts.benzinga_news_shadow as cli
 from app.services import benzinga_news as bz
+from app.services import finnhub_news as fn
+from app.services import saveticker_news_shadow as st
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SAVETICKER_FIXTURES = REPO_ROOT / "tests/fixtures/news-shadow/saveticker"
 
 
 def _enable(monkeypatch: pytest.MonkeyPatch, key: str = "TEST-KEY") -> None:
@@ -597,3 +604,245 @@ def test_summary_reports_killed_poll_as_unreliable(
     assert summary["unreliable_symbol_polls"] == [
         {"poll_id": "p-killed", "symbol": "NVDA"}
     ]
+
+
+def test_saveticker_real_capture_normalizes_engagement_and_symbols() -> None:
+    payload = json.loads((SAVETICKER_FIXTURES / "real-capture-search.json").read_text())
+    rows, malformed = st.normalize_envelope(payload)
+    assert malformed == 0
+    assert rows
+    item = rows[0]
+    assert item["provider_id"] == "news_279884"
+    assert item["source"] == "saveticker"
+    assert item["created_raw"].endswith("Z")
+    assert item["created_utc"].endswith("+00:00")
+    assert item["symbols"] == ["DIS"]
+    assert any(row["labels"] == ["시황/분석"] for row in rows)
+    assert item["view_count"] == 23
+    assert item["comment_count"] == 0
+    assert item["like_count"] == 0
+    assert item["vote_count"] == 0
+    assert item["raw_item"]["translations"]
+
+
+def test_saveticker_capture_keeps_korean_etf_suffix_in_db_symbol_format() -> None:
+    payload = json.loads((SAVETICKER_FIXTURES / "real-capture-top.json").read_text())
+    rows, malformed = st.normalize_envelope({"news_list": payload["items"]})
+    # The saved top-story projection reuses its `tickers` field for tag names
+    # when no ticker is present; strict wire parsing drops those non-object rows.
+    assert malformed == 5
+    assert any("0256C0.KR" in row["symbols"] for row in rows)
+
+
+def test_saveticker_malformed_items_are_counted_and_dropped() -> None:
+    valid = {
+        "id": "n1",
+        "title": "제목",
+        "created_at": "2026-11-26T00:00:00Z",
+        "unknown_provider_field": {"kept": True},
+    }
+    rows, malformed = st.normalize_envelope({"news_list": [valid, {"id": "bad"}, None]})
+    assert malformed == 2
+    assert rows[0]["raw_item"]["unknown_provider_field"] == {"kept": True}
+    malformed_rows, malformed_count = st.normalize_envelope(
+        {"news_list": [{**valid, "view_count": "10"}]}
+    )
+    assert malformed_rows == []
+    assert malformed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_saveticker_client_uses_user_agent_and_refuses_redirects() -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(302, headers={"Location": "/redirected"})
+
+    http_client = httpx.AsyncClient(
+        base_url=st.BASE_URL, transport=httpx.MockTransport(handler)
+    )
+    client = st.SaveTickerClient(client=http_client, min_interval_s=0)
+    with pytest.raises(st.SaveTickerError, match="HTTPStatusError"):
+        async with client:
+            await client.news_page(1, 5)
+    assert len(requests) == 1
+    assert requests[0].headers["user-agent"] == st.USER_AGENT
+    await http_client.aclose()
+
+
+def test_saveticker_attention_row_is_once_per_provider_item() -> None:
+    item = st.normalize_item(
+        {
+            "id": "news-1",
+            "title": "한글 제목",
+            "created_at": "2026-11-26T00:00:00Z",
+            "tickers": [{"symbol": "NVDA"}, {"symbol": "0256C0.KR"}],
+            "content_labels": [{"name": "속보"}],
+            "view_count": 9,
+            "comment_count": 2,
+            "like_stats": {"like_count": 3},
+            "vote_stats": {"total_count": 4},
+        }
+    )
+    observed = datetime(2026, 11, 26, 1, tzinfo=UTC)
+    articles, attention = cli._saveticker_article_rows(
+        [item],
+        poll_id="p-attn",
+        observed_at=observed,
+        polled_symbols=["NVDA", "0256C0.KR"],
+        query_param="news",
+    )
+    assert len(articles) == 2
+    assert len(attention) == 1
+    assert attention[0]["observed_at"] == observed.isoformat()
+    assert attention[0]["tickers"] == ["NVDA", "0256C0.KR"]
+    assert attention[0]["view_count"] == 9
+    assert attention[0]["comment_count"] == 2
+    assert attention[0]["like_count"] == 3
+    assert attention[0]["vote_count"] == 4
+
+
+def test_saveticker_failure_is_recorded_and_does_not_stop_other_sources(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    _enable(monkeypatch)
+    calls = []
+    finnhub_calls = []
+    kis_calls = []
+
+    async def _benzinga(*args, **kwargs):
+        calls.append(kwargs["ticker_param"])
+        return []
+
+    async def _finnhub(*args, **kwargs):
+        finnhub_calls.append(args[0])
+        return {"news": []}
+
+    class _KIS:
+        async def news_titles_overseas_brknews(self):
+            kis_calls.append("brknews")
+            return []
+
+        async def news_titles_overseas(self, symbol):
+            kis_calls.append(symbol)
+            return []
+
+        async def close(self):
+            return None
+
+    class _SaveTickerFailure:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, *_args):
+            raise st.SaveTickerError("HTTPStatusError")
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(bz, "fetch_benzinga_news", _benzinga)
+    monkeypatch.setattr(fn, "fetch_news_finnhub", _finnhub)
+    monkeypatch.setattr(cli, "_open_kis_reader", lambda: _KIS())
+    monkeypatch.setattr(st, "SaveTickerClient", _SaveTickerFailure)
+    code = cli.main(
+        [
+            "poll",
+            "--symbols",
+            "NVDA",
+            "--out-dir",
+            str(tmp_path),
+            "--poll-id",
+            "p-save-failure",
+            "--saveticker",
+        ]
+    )
+    assert code == 1
+    assert calls == ["primaryTickers", "tickers"]
+    assert finnhub_calls == ["NVDA"]
+    assert kis_calls == ["brknews", "NVDA"]
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "p-save-failure.jsonl").read_text().splitlines()
+    ]
+    save_status = [
+        row
+        for row in lines
+        if row.get("record_type") == "poll_status" and row.get("source") == "saveticker"
+    ]
+    assert any(
+        row["status"] == "error" and row["query_param"] == "news" for row in save_status
+    )
+    assert {row.get("source") for row in lines} >= {
+        "benzinga",
+        "finnhub",
+        "kis",
+        "saveticker",
+    }
+    assert "saveticker [news]: SaveTickerError" in capsys.readouterr().err
+
+
+def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    _enable(monkeypatch)
+    path = tmp_path / "shadow.jsonl"
+    save = {
+        "record_type": "article",
+        "source": "saveticker",
+        "provider_id": "save-1",
+        "poll_id": "p-save",
+        "query_symbol": "NVDA",
+        "symbols": ["NVDA"],
+        "title": "엔비디아 실적 전망",
+        "created_utc": "2026-11-26T00:01:00+00:00",
+        "first_received_at": "2026-11-26T00:02:00+00:00",
+    }
+    benzinga = {
+        "record_type": "article",
+        "source": "benzinga",
+        "provider_id": "bz-1",
+        "poll_id": "p-save",
+        "query_symbol": "NVDA",
+        "stocks": ["NVDA"],
+        "title": "Nvidia earnings outlook",
+        "created_utc": "2026-11-26T00:00:00+00:00",
+        "first_received_at": "2026-11-26T00:01:00+00:00",
+    }
+    rows = [
+        save,
+        benzinga,
+        {
+            "record_type": "attention",
+            "source": "saveticker",
+            "provider_id": "save-1",
+            "poll_id": "p-save",
+            "observed_at": "2026-11-26T00:02:00+00:00",
+        },
+        {
+            "record_type": "poll_status",
+            "source": "saveticker",
+            "provider_id": None,
+            "poll_id": "p-save",
+            "query_param": "news",
+            "status": "ok",
+            "count": 1,
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert cli.main(["summary", "--input", str(path)]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    save_summary = summary["saveticker"]
+    assert save_summary["coverage"]["article_count_by_source"]["saveticker"] == 1
+    assert save_summary["coverage"]["attention_rows"] == 1
+    assert {row["source"] for row in save_summary["first_seen_ordering"]} == {
+        "saveticker",
+        "benzinga",
+    }
+    assert (
+        save_summary["headline_overlap"]["cross_source_pairs_by_source"]["benzinga"]
+        == 1
+    )

@@ -1,10 +1,10 @@
 # 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
-# Benzinga 뉴스 그림자 수집: 미국 프리·정규·애프터(04:00–20:00 ET) 중 NVDA·AMD·QQQ·SMH·DELL·URBN을
-# Benzinga와 Finnhub에서 같은 패스로 읽어 호스트 디렉터리에 JSONL로 쌓는다(DB 쓰기 없음).
+# 뉴스 그림자 수집: NVDA·AMD·QQQ·SMH·DELL·URBN 기준 Benzinga·Finnhub·KIS와
+# Save+ 공개 뉴스/관심도를 호스트 디렉터리 JSONL에 쌓는다(DB 쓰기 없음).
 # 키는 /root/at-secrets/.env.benzinga(운영자 결정 decision/2026-11-25/at-benzinga-trial-front-use). 등록은 설계 세션이 한다.
 description: "Benzinga news shadow poll (NVDA AMD QQQ SMH DELL URBN) into host JSONL"
 schedule:
-  - "CRON_TZ=America/New_York */30 4-19 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */3 7-23 * * *"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
@@ -13,7 +13,7 @@ steps:
   - name: poll
     script: |
       rc=0
-      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/benzinga-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH,DELL,URBN --out-dir /out || rc=$?
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.benzinga -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/benzinga-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH,DELL,URBN --out-dir /out --saveticker --saveticker-pages 3 || rc=$?
       exit "$rc"
     timeout_sec: 300
 handler_on:

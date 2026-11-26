@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2] / "deploy" / "dagu" / "at-news-shadow
 
 def test_dag_schedule_entrypoint_and_pattern() -> None:
     doc = yaml.safe_load((ROOT / "at-news-shadow.yaml").read_text())
-    assert doc["schedule"] == ["CRON_TZ=America/New_York */30 4-19 * * 1-5"]
+    assert doc["schedule"] == ["CRON_TZ=Asia/Seoul */3 7-23 * * *"]
     assert doc["max_active_runs"] == 1
     assert doc["worker_selector"] == {"host": "pi"}
     # The gate must reach the container: DAG-level `env:` only sets the host
@@ -23,7 +23,8 @@ def test_dag_schedule_entrypoint_and_pattern() -> None:
     (step,) = doc["steps"]
     script = step["script"]
     assert "-m scripts.benzinga_news_shadow poll" in script
-    assert "--symbols NVDA,AMD,QQQ,SMH" in script
+    assert "--symbols NVDA,AMD,QQQ,SMH,DELL,URBN" in script
+    assert "--saveticker --saveticker-pages 3" in script
     assert "-e BENZINGA_NEWS_SHADOW_ENABLED=true" in script
     # `--rm` discards container paths: output must land on a host mount.
     assert "-v /root/at-run/benzinga-shadow:/out" in script

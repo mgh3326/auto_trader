@@ -53,6 +53,7 @@ from pathlib import Path
 from app.core.cli import setup_logging_and_sentry
 from app.services import benzinga_news as bz
 from app.services import kis_news_shadow as kn
+from app.services import saveticker_news_shadow as st
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--skip-kis",
         action="store_true",
         help="no KIS news-headline source (KIS outage or quota)",
+    )
+    saveticker_group = poll.add_mutually_exclusive_group()
+    saveticker_group.add_argument(
+        "--saveticker",
+        action="store_true",
+        help="Save+ 공개 뉴스와 개인 관심도 스냅샷을 포함",
+    )
+    saveticker_group.add_argument(
+        "--skip-saveticker",
+        action="store_true",
+        help="Save+ 소스를 명시적으로 비활성화",
+    )
+    poll.add_argument(
+        "--saveticker-pages",
+        type=int,
+        default=3,
+        help=f"Save+ 최신 페이지 수 (1..{st.MAX_PAGES})",
+    )
+    poll.add_argument(
+        "--saveticker-page-size",
+        type=int,
+        default=st.DEFAULT_PAGE_SIZE,
+        help="Save+ 페이지 크기 (1..100)",
     )
     poll.add_argument(
         "--market",
@@ -293,8 +317,9 @@ def _status_row(
     error_class: str | None,
     seen_at: datetime,
     query_param: str | None = None,
+    extra: dict | None = None,
 ) -> dict:
-    return {
+    row = {
         "record_type": "poll_status",
         "source": source,
         "query_symbol": symbol,
@@ -305,6 +330,169 @@ def _status_row(
         "error_class": error_class,
         "first_received_at": seen_at.astimezone(UTC).isoformat(),
     }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def _existing_saveticker_ids(out_dir: Path) -> set[str]:
+    """Read prior JSONL observations so page walking stops at the old boundary."""
+    found: set[str] = set()
+    for path in out_dir.glob("*.jsonl"):
+        try:
+            with path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        row.get("record_type") == "article"
+                        and row.get("source") == "saveticker"
+                    ):
+                        provider_id = row.get("provider_id")
+                        if isinstance(provider_id, str):
+                            found.add(provider_id)
+        except OSError:
+            continue
+    return found
+
+
+def _saveticker_article_rows(
+    items: list[dict],
+    *,
+    poll_id: str,
+    observed_at: datetime,
+    polled_symbols: list[str],
+    query_param: str,
+) -> tuple[list[dict], list[dict]]:
+    articles: list[dict] = []
+    attention: list[dict] = []
+    for item in items:
+        record = {
+            **item,
+            "poll_id": poll_id,
+            "query_param": query_param,
+            "first_received_at": observed_at.astimezone(UTC).isoformat(),
+        }
+        symbols = [symbol for symbol in polled_symbols if symbol in item["symbols"]]
+        if symbols:
+            for symbol in symbols:
+                articles.append({**record, "query_symbol": symbol})
+        else:
+            articles.append({**record, "query_symbol": None})
+        attention.append(
+            {
+                "record_type": "attention",
+                "source": "saveticker",
+                "provider_id": item["provider_id"],
+                "poll_id": poll_id,
+                "observed_at": observed_at.astimezone(UTC).isoformat(),
+                "view_count": item["view_count"],
+                "comment_count": item["comment_count"],
+                "like_stats": item["like_stats"],
+                "vote_stats": item["vote_stats"],
+                "like_count": item["like_count"],
+                "vote_count": item["vote_count"],
+                "is_top_story": item["is_top_story"] or query_param == "top_stories",
+                "labels": item["labels"],
+                "tickers": item["tickers"],
+                "title": item["title"],
+            }
+        )
+    return articles, attention
+
+
+async def _saveticker_poll(
+    *,
+    poll_id: str,
+    out_dir: Path,
+    polled_symbols: list[str],
+    pages: int,
+    page_size: int,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Fetch bounded market-wide Save+ pages and top stories, isolating errors."""
+    if not 1 <= pages <= st.MAX_PAGES or not 1 <= page_size <= 100:
+        raise ValueError(f"Save+ 제한: 페이지 수 1..{st.MAX_PAGES}, 페이지 크기 1..100")
+    old_ids = _existing_saveticker_ids(out_dir)
+    run_ids: set[str] = set()
+    records: list[dict] = []
+    attention_rows: list[dict] = []
+    errors: list[str] = []
+    async with st.SaveTickerClient() as client:
+        for source_name in ("news", "top_stories"):
+            raw_items: list[tuple[str, dict, datetime]] = []
+            malformed = 0
+            fetched_count = 0
+            fetch_error: str | None = None
+            try:
+                if source_name == "news":
+                    for page in range(1, pages + 1):
+                        payload = await client.news_page(page, page_size)
+                        seen_at = datetime.now(UTC)
+                        normalized, dropped = st.normalize_envelope(payload)
+                        malformed += dropped
+                        fetched_count += len(normalized)
+                        stop = False
+                        for item in normalized:
+                            provider_id = item["provider_id"]
+                            if provider_id in old_ids:
+                                stop = True
+                                break
+                            if provider_id not in run_ids:
+                                run_ids.add(provider_id)
+                                raw_items.append((source_name, item, seen_at))
+                        if stop or not payload.get("has_older", False):
+                            break
+                else:
+                    payload = await client.top_stories()
+                    seen_at = datetime.now(UTC)
+                    normalized, malformed = st.normalize_envelope(payload)
+                    fetched_count = len(normalized)
+                    for item in normalized[:page_size]:
+                        provider_id = item["provider_id"]
+                        if provider_id in old_ids:
+                            break
+                        if provider_id not in run_ids:
+                            run_ids.add(provider_id)
+                            raw_items.append(
+                                (source_name, {**item, "is_top_story": True}, seen_at)
+                            )
+            except Exception as exc:  # noqa: BLE001 - other feeds continue independently
+                seen_at = datetime.now(UTC)
+                error_class = type(exc).__name__
+                errors.append(f"saveticker [{source_name}]: {error_class}")
+                logger.warning(
+                    "saveticker poll failed [%s]: %s", source_name, error_class
+                )
+                fetch_error = error_class
+            for query_param, item, seen_at in raw_items:
+                article_rows, attention = _saveticker_article_rows(
+                    [item],
+                    poll_id=poll_id,
+                    observed_at=seen_at,
+                    polled_symbols=polled_symbols,
+                    query_param=query_param,
+                )
+                records.extend(article_rows)
+                attention_rows.extend(attention)
+            status_time = datetime.now(UTC)
+            records.append(
+                _status_row(
+                    source="saveticker",
+                    symbol=None,
+                    poll_id=poll_id,
+                    status="error"
+                    if fetch_error
+                    else ("ok" if fetched_count else "empty"),
+                    count=len(raw_items),
+                    error_class=fetch_error,
+                    seen_at=status_time,
+                    query_param=source_name,
+                    extra={"malformed_count": malformed},
+                )
+            )
+    return records, attention_rows, errors
 
 
 async def _kis_poll(
@@ -425,6 +613,15 @@ async def _run_poll(args: argparse.Namespace) -> int:
         except bz.BenzingaApiKeyMissing as exc:
             print(str(exc), file=sys.stderr)
             return 2
+    if args.saveticker and (
+        not 1 <= args.saveticker_pages <= st.MAX_PAGES
+        or not 1 <= args.saveticker_page_size <= 100
+    ):
+        print(
+            f"Save+ 제한: 페이지 수 1..{st.MAX_PAGES}, 페이지 크기 1..100",
+            file=sys.stderr,
+        )
+        return 2
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = (out_dir / f"{poll_id}.jsonl").resolve()
@@ -463,6 +660,40 @@ async def _run_poll(args: argparse.Namespace) -> int:
                 )
                 + "\n"
             )
+            if args.saveticker:
+                try:
+                    (
+                        saveticker_rows,
+                        attention_rows,
+                        saveticker_errors,
+                    ) = await _saveticker_poll(
+                        poll_id=poll_id,
+                        out_dir=out_dir,
+                        polled_symbols=symbols,
+                        pages=args.saveticker_pages,
+                        page_size=args.saveticker_page_size,
+                    )
+                    errors.extend(saveticker_errors)
+                    for record in [*saveticker_rows, *attention_rows]:
+                        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                except Exception as exc:  # noqa: BLE001 - setup errors are source-local too
+                    error_class = type(exc).__name__
+                    seen_at = datetime.now(UTC)
+                    errors.append(f"saveticker: {error_class}")
+                    logger.warning("saveticker client unavailable: %s", error_class)
+                    for query_param in ("news", "top_stories"):
+                        row = _status_row(
+                            source="saveticker",
+                            symbol=None,
+                            poll_id=poll_id,
+                            status="error",
+                            count=0,
+                            error_class=error_class,
+                            seen_at=seen_at,
+                            query_param=query_param,
+                            extra={"malformed_count": 0},
+                        )
+                        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             brk_by_symbol: dict[str, int] = {}
             if kis_on and args.market == "us":
                 brk_rows, brk_errs = await _kis_poll(
@@ -617,6 +848,7 @@ def _run_summary(args: argparse.Namespace) -> int:
         print("no JSONL inputs", file=sys.stderr)
         return 2
     ben, fin, frames, kis = [], [], [], []
+    saveticker = []
     for path in paths:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -637,12 +869,186 @@ def _run_summary(args: argparse.Namespace) -> int:
                     fin.append(record)
                 elif record.get("source") == kn.SOURCE:
                     kis.append(record)
+                elif record.get("source") == "saveticker":
+                    saveticker.append(record)
     summary = bz.summarize_shadow(ben, fin, frames)
     summary["kis"] = kn.summarize_kis(kis, ben, fin, frames)
+    summary["saveticker"] = summarize_saveticker(saveticker, ben, fin, kis)
     summary["poll_id"] = args.poll_id
     summary["inputs"] = [str(p) for p in paths]
     print(json.dumps(summary, sort_keys=True, indent=2))
     return 0
+
+
+def _record_symbols(record: dict) -> set[str]:
+    symbols: set[str] = set()
+    for field in ("symbols", "stocks", "tickers"):
+        values = record.get(field)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str):
+                symbols.add(value.upper())
+            elif isinstance(value, dict):
+                symbol = value.get("symbol")
+                if isinstance(symbol, str):
+                    symbols.add(symbol.upper())
+    query_symbol = record.get("query_symbol")
+    if isinstance(query_symbol, str):
+        symbols.add(query_symbol.upper())
+    return symbols
+
+
+def _record_time(record: dict) -> datetime | None:
+    for field in ("created_utc", "created_at"):
+        raw = record.get(field)
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC)
+    return None
+
+
+def summarize_saveticker(
+    saveticker_records: list[dict],
+    benzinga_records: list[dict],
+    finnhub_records: list[dict],
+    kis_records: list[dict],
+    *,
+    time_window_minutes: int = 10,
+) -> dict:
+    """Compare Save+ observations without matching translated headlines cross-source.
+
+    Normalized Korean titles are compared only within Save+. Across sources,
+    a pair overlaps only when its ticker sets intersect and provider creation
+    times are within the fixed ten-minute window.
+    """
+    articles = [r for r in saveticker_records if r.get("record_type") == "article"]
+    attention = [r for r in saveticker_records if r.get("record_type") == "attention"]
+    statuses = [r for r in saveticker_records if r.get("record_type") == "poll_status"]
+    source_counts: dict[str, set[str]] = {
+        "saveticker": {str(r.get("provider_id")) for r in articles},
+        "benzinga": {
+            str(r.get("provider_id"))
+            for r in benzinga_records
+            if r.get("record_type") == "article"
+        },
+        "finnhub": {
+            str(r.get("provider_id"))
+            for r in finnhub_records
+            if r.get("record_type") == "article"
+        },
+        "kis": {
+            str(r.get("provider_id"))
+            for r in kis_records
+            if r.get("record_type") == "article"
+        },
+    }
+    ticker_coverage: dict[str, dict[str, set[str]]] = {}
+    for source_name, records in (
+        ("saveticker", articles),
+        ("benzinga", benzinga_records),
+        ("finnhub", finnhub_records),
+        ("kis", kis_records),
+    ):
+        for record in records:
+            if record.get("record_type") != "article":
+                continue
+            provider_id = str(record.get("provider_id") or "")
+            for symbol in _record_symbols(record):
+                ticker_coverage.setdefault(symbol, {}).setdefault(
+                    source_name, set()
+                ).add(provider_id)
+    title_groups: dict[str, set[str]] = {}
+    for record in articles:
+        key = st.summary_key_title(record)
+        if key:
+            title_groups.setdefault(key, set()).add(str(record.get("provider_id")))
+    internal_title_overlap = sum(max(0, len(ids) - 1) for ids in title_groups.values())
+    pair_counts = dict.fromkeys(("benzinga", "finnhub", "kis"), 0)
+    first_seen: list[dict] = []
+    all_for_order = {
+        "saveticker": articles,
+        "benzinga": benzinga_records,
+        "finnhub": finnhub_records,
+        "kis": kis_records,
+    }
+    for source_name, records in all_for_order.items():
+        for record in records:
+            if record.get("record_type") != "article":
+                continue
+            for symbol in sorted(_record_symbols(record)):
+                first_seen.append(
+                    {
+                        "poll_id": record.get("poll_id"),
+                        "symbol": symbol,
+                        "source": source_name,
+                        "provider_id": record.get("provider_id"),
+                        "first_received_at": record.get("first_received_at"),
+                    }
+                )
+    other_by_source = {
+        "benzinga": benzinga_records,
+        "finnhub": finnhub_records,
+        "kis": kis_records,
+    }
+    for save_record in articles:
+        save_time = _record_time(save_record)
+        save_symbols = _record_symbols(save_record)
+        for source_name, records in other_by_source.items():
+            for other in records:
+                if other.get("record_type") != "article":
+                    continue
+                other_time = _record_time(other)
+                shared = save_symbols & _record_symbols(other)
+                if not shared or save_time is None or other_time is None:
+                    continue
+                if (
+                    abs((save_time - other_time).total_seconds())
+                    <= time_window_minutes * 60
+                ):
+                    pair_counts[source_name] += 1
+    first_seen.sort(
+        key=lambda r: (
+            str(r.get("first_received_at") or ""),
+            r["symbol"],
+            str(r["provider_id"]),
+        )
+    )
+    return {
+        "coverage": {
+            "article_count_by_source": {
+                source: len(ids) for source, ids in sorted(source_counts.items())
+            },
+            "by_ticker": {
+                symbol: {source: len(ids) for source, ids in sorted(by_source.items())}
+                for symbol, by_source in sorted(ticker_coverage.items())
+            },
+            "poll_status": [
+                {
+                    "poll_id": row.get("poll_id"),
+                    "query_param": row.get("query_param"),
+                    "status": row.get("status"),
+                    "count": row.get("count"),
+                    "malformed_count": row.get("malformed_count", 0),
+                    "error_class": row.get("error_class"),
+                }
+                for row in statuses
+            ],
+            "attention_rows": len(attention),
+        },
+        "first_seen_ordering": first_seen,
+        "headline_overlap": {
+            "saveticker_normalized_title_duplicates": internal_title_overlap,
+            "cross_source_ticker_time_window_minutes": time_window_minutes,
+            "cross_source_pairs_by_source": pair_counts,
+            "cross_source_match_rule": "ticker가 겹치고 제공자 created_at 차이가 지정 창 이내; 번역 제목은 비교하지 않음",
+        },
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
