@@ -1755,10 +1755,12 @@ class AlpacaPaperLedgerService:
                     AlpacaPaperOrderLedger.filled_qty <= filled_qty,
                 )
             )
-            if (
-                getattr(target_row, "account_mode", None) == "alpaca_paper_crypto"
-                and getattr(target_row, "side", None) in {"buy", "sell"}
-            ):
+            if getattr(
+                target_row, "account_mode", None
+            ) == "alpaca_paper_crypto" and getattr(target_row, "side", None) in {
+                "buy",
+                "sell",
+            }:
                 snapshot_changed = AlpacaPaperOrderLedger.filled_qty.is_distinct_from(
                     filled_qty
                 )
@@ -1769,9 +1771,7 @@ class AlpacaPaperLedgerService:
                     "net_received_qty",
                 ):
                     column = getattr(AlpacaPaperOrderLedger, field)
-                    update_vals[field] = case(
-                        (snapshot_changed, None), else_=column
-                    )
+                    update_vals[field] = case((snapshot_changed, None), else_=column)
 
         update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)

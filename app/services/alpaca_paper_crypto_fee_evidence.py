@@ -31,7 +31,11 @@ def count_filled_legs_for_day(
     for fill in fills:
         fill_time = _field(fill, "transaction_time")
         if isinstance(fill_time, datetime):
-            fill_date = fill_time.astimezone(UTC).date() if fill_time.tzinfo else fill_time.date()
+            fill_date = (
+                fill_time.astimezone(UTC).date()
+                if fill_time.tzinfo
+                else fill_time.date()
+            )
         else:
             continue
         fill_symbol = str(_field(fill, "symbol") or "").upper().replace("/", "")
@@ -74,7 +78,11 @@ def resolve_crypto_fee_evidence(
     currency: str | None = None
     seen: set[str] = set()
     normalized_symbol = symbol.upper().replace("/", "")
-    expected_date = posting_date.isoformat() if isinstance(posting_date, date) else str(posting_date)
+    expected_date = (
+        posting_date.isoformat()
+        if isinstance(posting_date, date)
+        else str(posting_date)
+    )
     pair = symbol.upper().split("/")
     if len(pair) != 2:
         return CryptoFeeEvidence(None, None, None, "fee_currency_ambiguous")

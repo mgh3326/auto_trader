@@ -582,9 +582,7 @@ async def close_due(
                 recorded_net_qty = None
             held = evidence.held_qty or recorded_net_qty
             if venue == "alpaca_paper_crypto" and held is None:
-                held = rules.floor(
-                    evidence.filled_qty * Decimal("0.9975"), price
-                )
+                held = rules.floor(evidence.filled_qty * Decimal("0.9975"), price)
             if held is None:
                 held = evidence.filled_qty
             remaining = held - sold

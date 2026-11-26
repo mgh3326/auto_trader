@@ -1078,7 +1078,9 @@ async def test_status_fill_snapshot_clears_fee_evidence_only_on_change(filled_qt
     )
 
     assert len(session.updates) == 1
-    status_values = {key.key: value for key, value in session.updates[0]._values.items()}
+    status_values = {
+        key.key: value for key, value in session.updates[0]._values.items()
+    }
     assert "fee_amount" in status_values
     assert "fee_currency" in status_values
     assert "fee_evidence_reason" in status_values
