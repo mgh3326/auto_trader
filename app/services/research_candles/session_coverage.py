@@ -55,6 +55,7 @@ class StoredMinute:
     time_utc: datetime
     retrieved_at: datetime
     value_is_null: bool = False
+    revised_at: datetime | None = None
 
 
 def _day_minutes(market: str, session_date: date) -> list[datetime]:
@@ -283,6 +284,19 @@ def coverage_report(
         "entries": entries,
         "symbols_without_rows": missing,
     }
+    if market == "kr":
+        report["auction_revisions"] = [
+            {
+                "symbol": row.symbol,
+                "venue": row.venue,
+                "time_utc": row.time_utc.astimezone(UTC).isoformat(),
+                "first_received_at": row.retrieved_at.astimezone(UTC).isoformat(),
+                "revised_at": row.revised_at.astimezone(UTC).isoformat(),
+            }
+            for pair in sorted(by_pair)
+            for row in sorted(by_pair[pair], key=lambda r: r.time_utc)
+            if row.revised_at is not None
+        ]
     if run_evidence is not None:
         report["requested_zero_row"] = {
             symbol: classify_zero_row(symbol, run_evidence) for symbol in missing
