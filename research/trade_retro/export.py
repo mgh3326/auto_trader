@@ -34,16 +34,18 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_manifest(root: Path) -> tuple[dict, str]:
+def verify_manifest(
+    root: Path, *, schema_versions: tuple[str, ...] = SCHEMA_VERSIONS
+) -> tuple[dict, str]:
     """Check every file against the manifest. Raises before any row is read."""
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
         raise ExportIntegrityError(f"no {MANIFEST_NAME} in {root}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") not in SCHEMA_VERSIONS:
+    if manifest.get("schema_version") not in schema_versions:
         raise ExportIntegrityError(
             f"schema_version {manifest.get('schema_version')!r} is not one of "
-            f"{', '.join(SCHEMA_VERSIONS)}"
+            f"{', '.join(schema_versions)}"
         )
     tables = manifest.get("tables")
     if not isinstance(tables, dict) or not tables:
@@ -66,9 +68,11 @@ def verify_manifest(root: Path) -> tuple[dict, str]:
     return manifest, sha256_file(manifest_path)
 
 
-def load_export(root: Path) -> Export:
+def load_export(
+    root: Path, *, schema_versions: tuple[str, ...] = SCHEMA_VERSIONS
+) -> Export:
     root = Path(root).expanduser()
-    manifest, digest = verify_manifest(root)
+    manifest, digest = verify_manifest(root, schema_versions=schema_versions)
     tables: dict[str, pd.DataFrame] = {}
     for name, table in manifest["tables"].items():
         path = root / table["files"]["csv"]["name"]
