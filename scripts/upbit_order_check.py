@@ -31,6 +31,16 @@ def _decimal(value: Any, *, label: str) -> Decimal:
     return result
 
 
+def _fee_rate(value: Any, *, label: str) -> Decimal:
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"{label} 값을 읽을 수 없습니다") from exc
+    if not result.is_finite() or result < 0:
+        raise ValueError(f"{label} 값을 읽을 수 없습니다")
+    return result
+
+
 def _market_currencies(market: str) -> tuple[str, str]:
     parts = market.split("-")
     if len(parts) != 2 or not all(part.isalnum() for part in parts):
@@ -52,8 +62,10 @@ def _local_verdict(
     chance: dict[str, Any], market: str, side: str, price: Decimal, volume: Decimal
 ) -> tuple[list[str], dict[str, str]]:
     quote_currency, base_currency = _market_currencies(market)
+    if quote_currency != "KRW":
+        raise ValueError("현재 CLI는 KRW 마켓만 지원합니다")
     errors: list[str] = []
-    if market.startswith("KRW-") and not is_on_upbit_krw_tick(price):
+    if not is_on_upbit_krw_tick(price):
         errors.append("price_tick_invalid")
     market_info = chance.get("market")
     if not isinstance(market_info, dict):
@@ -65,11 +77,23 @@ def _local_verdict(
     total = price * volume
     if total < minimum:
         errors.append("min_total_not_met")
+    maximum = _decimal(market_info.get("max_total"), label="최대 주문 금액")
+    if total > maximum:
+        errors.append("max_total_exceeded")
+
+    bid_fee = _fee_rate(chance.get("bid_fee"), label="매수 수수료율")
+    maker_bid_fee = _fee_rate(
+        chance.get("maker_bid_fee"), label="메이커 매수 수수료율"
+    )
 
     bid_balance, bid_locked = _account_summary(chance.get("bid_account"))
     ask_balance, ask_locked = _account_summary(chance.get("ask_account"))
     balance = bid_balance if side == "bid" else ask_balance
-    required = total if side == "bid" else volume
+    required = (
+        total * (Decimal("1") + max(bid_fee, maker_bid_fee))
+        if side == "bid"
+        else volume
+    )
     if balance < required:
         errors.append("available_balance_insufficient")
     shown = {
@@ -89,12 +113,21 @@ def _error_name(exc: httpx.HTTPStatusError) -> str | None:
     return name if isinstance(name, str) and name.isidentifier() else None
 
 
+def _is_order_validation_error(exc: httpx.HTTPStatusError) -> bool:
+    name = _error_name(exc)
+    return (exc.response.status_code == 400 and name is not None) or (
+        exc.response.status_code == 403 and name == "market_offline"
+    )
+
+
 async def _run(args: argparse.Namespace) -> int:
     market = args.market.upper()
     try:
         price = _decimal(args.price, label="가격")
         volume = _decimal(args.volume, label="수량")
-        _market_currencies(market)
+        quote_currency, _ = _market_currencies(market)
+        if quote_currency != "KRW":
+            raise ValueError("현재 CLI는 KRW 마켓만 지원합니다")
         if args.side not in {"bid", "ask"}:
             raise ValueError("--side는 bid 또는 ask여야 합니다")
         client = _upbit_client()
@@ -128,7 +161,9 @@ async def _run(args: argparse.Namespace) -> int:
         except httpx.HTTPStatusError as exc:
             name = _error_name(exc)
             result["verdict"] = (
-                f"rejected:{name}" if name else "unavailable:HTTPStatusError"
+                f"rejected:{name}"
+                if name and _is_order_validation_error(exc)
+                else "unavailable:HTTPStatusError"
             )
         except Exception as exc:
             result["verdict"] = f"unavailable:{type(exc).__name__}"

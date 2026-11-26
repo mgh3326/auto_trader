@@ -916,28 +916,26 @@ async def _request_with_auth(
     rate, period = _get_upbit_rate_limit(api_key)
     limiter = await get_limiter("upbit", api_key, rate=rate, period=period)
 
-    payload: dict[str, Any] = {
-        "access_key": settings.upbit_access_key,
-        "nonce": str(uuid.uuid4()),
-    }
-
-    if method.upper() in ["GET", "DELETE"] and query_params:
-        query_string = unquote(urlencode(query_params, doseq=True))
-        payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
-        payload["query_hash_alg"] = "SHA512"
-    elif method.upper() == "POST" and body_params:
-        query_string = unquote(urlencode(body_params, doseq=True))
-        payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
-        payload["query_hash_alg"] = "SHA512"
-
-    jwt_token = jwt.encode(payload, settings.upbit_secret_key)
-    authorize_token = f"Bearer {jwt_token}"
-    headers: dict[str, str] = {"Authorization": authorize_token}
-
-    if method.upper() == "POST":
-        headers["Content-Type"] = "application/json"
-
     async def send() -> httpx.Response:
+        payload: dict[str, Any] = {
+            "access_key": settings.upbit_access_key,
+            "nonce": str(uuid.uuid4()),
+        }
+
+        if method.upper() in ["GET", "DELETE"] and query_params:
+            query_string = unquote(urlencode(query_params, doseq=True))
+            payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
+            payload["query_hash_alg"] = "SHA512"
+        elif method.upper() == "POST" and body_params:
+            query_string = unquote(urlencode(body_params, doseq=True))
+            payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
+            payload["query_hash_alg"] = "SHA512"
+
+        jwt_token = jwt.encode(payload, settings.upbit_secret_key)
+        headers: dict[str, str] = {"Authorization": f"Bearer {jwt_token}"}
+        if method.upper() == "POST":
+            headers["Content-Type"] = "application/json"
+
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as cli:
             if method.upper() == "GET":
                 return await cli.get(url, headers=headers, params=query_params)
