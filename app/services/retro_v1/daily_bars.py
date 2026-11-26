@@ -49,11 +49,20 @@ _CRYPTO_DAILY: Final = """
 # receipt time, so those are selected too. One row per (time, symbol, venue):
 # KRX and NTX bars are never merged.
 _KR_MINUTE: Final = """
-    SELECT time_utc AS time, symbol, venue AS venue, open, high, low, close,
-           volume, source, session_segment, value, retrieved_at, batch_id
-    FROM research.kr_candles_1m
-    WHERE symbol IN :symbols AND time_utc >= :lo AND time_utc < :hi
-    ORDER BY symbol, time_utc, venue
+    SELECT b.time_utc AS time, b.symbol, b.venue,
+           COALESCE(r.open, b.open) AS open, COALESCE(r.high, b.high) AS high,
+           COALESCE(r.low, b.low) AS low, COALESCE(r.close, b.close) AS close,
+           COALESCE(r.volume, b.volume) AS volume,
+           CASE WHEN r.revised_at IS NULL THEN b.source ELSE 'KIS' END AS source,
+           b.session_segment,
+           CASE WHEN r.revised_at IS NULL THEN b.value ELSE r.value END AS value,
+           b.retrieved_at, b.batch_id, r.revised_at,
+           CASE WHEN (b.time_utc AT TIME ZONE 'Asia/Seoul')::time = TIME '15:30'
+                THEN r.close END AS krx_official_close
+    FROM research.kr_candles_1m AS b
+    LEFT JOIN research.kr_auction_minute_revisions AS r USING (time_utc, symbol, venue)
+    WHERE b.symbol IN :symbols AND b.time_utc >= :lo AND b.time_utc < :hi
+    ORDER BY b.symbol, b.time_utc, b.venue
     LIMIT :cap
 """
 _US_MINUTE: Final = """
@@ -127,6 +136,8 @@ class MinuteExtras:
     value: Decimal | None
     #: ``retrieved_at`` only when the row's batch is a first receipt, else None.
     first_received_at: datetime | None
+    revised_at: datetime | None = None
+    krx_official_close: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +208,8 @@ def _minute_extras(row: Any) -> MinuteExtras:
         session_segment=row["session_segment"],
         value=_decimal(row["value"]),
         first_received_at=first,
+        revised_at=row.get("revised_at"),
+        krx_official_close=_decimal(row.get("krx_official_close")),
     )
 
 

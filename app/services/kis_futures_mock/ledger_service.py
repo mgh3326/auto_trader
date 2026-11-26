@@ -29,7 +29,7 @@ from app.services.order_send_intent_service import (
 )
 
 from .constants import ACCOUNT_MODE, BROKER, MINI_KOSPI200, RESERVATION_SCOPE
-from .history import TerminalEvidence, terminal_evidence
+from .history import TerminalEvidence, futures_order_identity, terminal_evidence
 from .rules import DailyLossState
 
 CLIENT_ORDER_ID_PREFIX = "kfm"
@@ -207,16 +207,24 @@ class FuturesMockOrderLedgerService:
     async def get_by_broker_order(
         self, *, trading_day: str, broker_order_id: str
     ) -> KISFuturesMockOrderLedger | None:
-        return (
-            await self._db.execute(
+        identity = futures_order_identity(trading_day, broker_order_id)
+        if identity is None:
+            return None
+        rows = (
+            await self._db.scalars(
                 select(KISFuturesMockOrderLedger).where(
                     KISFuturesMockOrderLedger.account_mode == ACCOUNT_MODE,
                     KISFuturesMockOrderLedger.trading_day == trading_day,
-                    KISFuturesMockOrderLedger.broker_order_id == broker_order_id,
                     KISFuturesMockOrderLedger.operation_kind == "place",
                 )
             )
-        ).scalar_one_or_none()
+        ).all()
+        matches = [
+            row
+            for row in rows
+            if futures_order_identity(row.trading_day, row.broker_order_id) == identity
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     async def reconcile_day(
         self, *, trading_day: str, history: list[dict[str, Any]], commit: bool = False
@@ -234,20 +242,21 @@ class FuturesMockOrderLedgerService:
         if commit:
             query = query.with_for_update()
         orders = (await self._db.scalars(query)).all()
-        history_by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        history_by_id: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for item in history:
-            order_id = item.get("odno")
-            if item.get("ord_dt") == trading_day and isinstance(order_id, str):
-                history_by_id[order_id.strip()].append(item)
+            identity = futures_order_identity(item.get("ord_dt"), item.get("odno"))
+            if identity is not None and identity[0] == trading_day:
+                history_by_id[identity].append(item)
 
         details: dict[int, dict[str, Any]] = {}
         evidence: dict[int, TerminalEvidence] = {}
         fills_by_symbol: dict[str, list[KISFuturesMockOrderLedger]] = defaultdict(list)
-        matched_terminals: set[str] = set()
-        cancelled_by_id: dict[str, KISFuturesMockOrderLedger] = {}
+        matched_terminals: set[tuple[str, str]] = set()
+        cancelled_by_id: dict[tuple[str, str], KISFuturesMockOrderLedger] = {}
         blocked_symbols: set[str] = set()
         for order in orders:
-            rows = history_by_id.get(order.broker_order_id or "", [])
+            identity = futures_order_identity(order.trading_day, order.broker_order_id)
+            rows = history_by_id.get(identity, []) if identity is not None else []
             verdict = details[order.id] = {
                 "ledger_id": order.id,
                 "result": "no_evidence",
@@ -291,10 +300,10 @@ class FuturesMockOrderLedgerService:
                     verdict["result"] = "conflicting_evidence"
                     continue
             evidence[order.id] = proof
-            if order.broker_order_id:
-                matched_terminals.add(order.broker_order_id)
+            if identity is not None:
+                matched_terminals.add(identity)
                 if proof.status == "cancelled":
-                    cancelled_by_id[order.broker_order_id] = order
+                    cancelled_by_id[identity] = order
             if proof.status == "filled":
                 fills_by_symbol[order.broker_symbol].append(order)
 
@@ -308,34 +317,29 @@ class FuturesMockOrderLedgerService:
         # A fill outside our exact joins can consume or establish a position.
         # Disable close attribution on that contract if history cannot rule it out.
         for item in history:
-            day, oid = item.get("ord_dt"), item.get("odno")
-            if (
-                isinstance(day, str)
-                and len(day) == 8
-                and day.isascii()
-                and day.isdigit()
-            ):
-                if day != trading_day:
+            identity = futures_order_identity(item.get("ord_dt"), item.get("odno"))
+            if identity is not None:
+                if identity[0] != trading_day:
                     continue
-                if isinstance(oid, str):
-                    oid = oid.strip()
-                    if oid in matched_terminals:
-                        continue
-                    original_id = item.get("orgn_odno")
-                    original = (
-                        cancelled_by_id.get(original_id.strip())
-                        if isinstance(original_id, str)
-                        else None
+                if identity in matched_terminals:
+                    continue
+                original_identity = futures_order_identity(
+                    item.get("ord_dt"), item.get("orgn_odno")
+                )
+                original = cancelled_by_id.get(original_identity)
+                if (
+                    original is not None
+                    and len(history_by_id[identity]) == 1
+                    and identity[1]
+                ):
+                    cancel = terminal_evidence(
+                        item,
+                        broker_symbol=original.broker_symbol,
+                        side=original.side,
+                        quantity=original.quantity,
                     )
-                    if original is not None and len(history_by_id[oid]) == 1 and oid:
-                        cancel = terminal_evidence(
-                            item,
-                            broker_symbol=original.broker_symbol,
-                            side=original.side,
-                            quantity=original.quantity,
-                        )
-                        if cancel is not None and cancel.status == "cancelled":
-                            continue
+                    if cancel is not None and cancel.status == "cancelled":
+                        continue
             symbol = item.get("pdno")
             if isinstance(symbol, str) and symbol:
                 blocked_symbols.add(symbol)
