@@ -138,23 +138,20 @@ the scanner, and reprocessing paths are unaffected.
 
 ### Hermes Report Generation (ROB-287)
 
-`auto_trader`는 결정적 evidence + persistence 레이어, Hermes는 LLM reasoning + composition. 4개 MCP tool (`investment_report_prepare_bundle` / `..._get_hermes_context` / `investment_stage_artifacts_ingest_from_hermes` / `..._create_from_hermes_composition`) 와 동일 surface를 HTTP transport로도 제공.
+`auto_trader`는 결정적 evidence + persistence 레이어, Hermes는 LLM reasoning + composition. 4개 MCP tool (`investment_report_prepare_bundle` / `..._get_hermes_context` / `investment_stage_artifacts_ingest_from_hermes` / `..._create_from_hermes_composition`) 을 제공한다. 같은 surface의 HTTP transport(`/trading/api/investment-reports/hermes/*`)는 hk 6933에서 제거했다 — 라우터, AuthMiddleware 토큰 분기, Hermes ingest 토큰 설정이 모두 없다. MCP tools는 후속 PR 전까지 유지한다.
 
 - **MCP tools**: `app/mcp_server/tooling/investment_hermes_handlers.py`
-- **HTTP routes**: `app/routers/investment_hermes_http.py` — prefix `/trading/api/investment-reports/hermes/`
-- **AuthMiddleware token branch**: `app/middleware/auth.py` — `HERMES_INGEST_PATH_PREFIX` 라인. 토큰 미설정 → 403, 잘못된 토큰 → 401.
 - **서비스**: `app/services/investment_stages/{hermes_context,hermes_ingest}.py`
 - **런북**: `docs/runbooks/hermes-report-generation.md`
 
-(ROB-986: `app/flows/hermes_bundle_preparation_flow.py` — 미배포·미호출 확인 후 제거됨. bundle 준비는 MCP/HTTP `prepare-bundle` 호출 시점에 ad hoc로 이루어짐, 별도 스케줄 없음.)
+(ROB-986: `app/flows/hermes_bundle_preparation_flow.py` — 미배포·미호출 확인 후 제거됨. bundle 준비는 MCP `investment_report_prepare_bundle` 호출 시점에 ad hoc로 이루어짐, 별도 스케줄 없음.)
 
 **Env / config 게이트 (모두 default off)**:
-- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools + HTTP endpoints 공통 게이트
-- `HERMES_INGEST_TOKEN` / `HERMES_INGEST_TOKEN_HEADER` — HTTP transport shared secret (header default `X-Hermes-Ingest-Token`). 운영 secret manager에 배치, repo에 commit 금지.
+- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools 게이트 (hk 6933 이후 HTTP endpoints 없음)
 
-**안전 경계**: 모든 endpoint는 service-layer를 통해서만 쓰기. 어떤 경로도 broker/order/watch/order-intent mutation 도달 안 함. PR #898 static import guard가 `app/services/action_report/snapshot_backed/` + `app/services/investment_stages/` 전체에서 in-process LLM provider 재도입 차단.
+**안전 경계**: 모든 쓰기는 service-layer를 통해서만. 어떤 경로도 broker/order/watch/order-intent mutation 도달 안 함. PR #898 static import guard가 `app/services/action_report/snapshot_backed/` + `app/services/investment_stages/` 전체에서 in-process LLM provider 재도입 차단.
 
-**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
+**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover)의 MCP 절차만 유효하다 — HTTP 절차는 hk 6933에서 제거됨. 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
 
 ### Report writer diagnostic (ROB-1488)
 

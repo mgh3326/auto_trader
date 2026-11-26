@@ -14,8 +14,8 @@ Hard invariants:
 * Auth-gated by ``ORDER_PROPOSALS_TELEGRAM_TOKEN`` at the middleware
   layer; an unconfigured token responds ``403``.
 * When ``settings.ORDER_PROPOSALS_TELEGRAM_ENABLED`` is off, the endpoint
-  short-circuits with ``503`` and a structured body — same shape as the
-  Hermes HTTP transport's gate-off (``investment_hermes_http.py``).
+  short-circuits with ``503`` and a structured body — the same gate-off
+  shape the other gated machine routers use.
 * The shared ``normalize_callback_update`` boundary applies the chat allowlist
   and R37 exact Telegram-identifier checks for both inline and durable paths;
   this router does not duplicate them.

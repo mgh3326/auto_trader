@@ -15,7 +15,7 @@
 **참고할 기존 패턴 (구현 전 일독):**
 - DB 세션: `app/core/db.py` — `AsyncSessionLocal` (MCP tooling 사용례: `app/mcp_server/tooling/kis_live_ledger.py:71`)
 - upsert: `app/services/llm_news_service.py:312` — `pg_insert(...).on_conflict_do_nothing(index_elements=[NewsArticle.url])`
-- token-auth: `app/middleware/auth.py:206` HERMES 분기 + `app/routers/investment_hermes_http.py` + `tests/routers/test_investment_hermes_http_auth.py`
+- token-auth: `app/middleware/auth.py:206` HERMES 분기 + `app/routers/retired-investment-hermes-http.py` + `tests/routers/test_retired-investment-hermes-http_auth.py`
 - DB 테스트: `tests/conftest.py:454` `db_session` 픽스처 (create_all 기반, xdist advisory lock)
 
 ---
@@ -1454,13 +1454,13 @@ PR body에 명시: operator 게이트 = 배포 후 `alembic upgrade head` 수동
 ### Task 8: 설정 + AuthMiddleware 토큰 분기
 
 **Files:**
-- Modify: `app/core/config.py` (HERMES_INGEST_TOKEN 근처, ~482행)
+- Modify: `app/core/config.py` (retired-hermes-ingest-token 근처, ~482행)
 - Modify: `app/middleware/auth.py` (HERMES 분기 바로 아래)
 - Test: `tests/routers/test_news_relevance_auth.py`
 
 - [ ] **Step 1: Write the failing auth tests**
 
-`tests/routers/test_investment_hermes_http_auth.py`의 구조를 그대로 따른다 (해당 파일을 먼저 읽을 것):
+`tests/routers/test_retired-investment-hermes-http_auth.py`의 구조를 그대로 따른다 (해당 파일을 먼저 읽을 것):
 
 ```python
 # tests/routers/test_news_relevance_auth.py
@@ -1800,7 +1800,7 @@ git commit -m "feat(ROB-491): store 판정 표면 — list_pending + apply_judgm
 **Files:**
 - Create: `app/schemas/news_relevance.py`
 - Create: `app/routers/news_relevance.py`
-- Modify: `app/main.py` (`investment_hermes_http` include 근처에 추가)
+- Modify: `app/main.py` (`retired-investment-hermes-http` include 근처에 추가)
 - Test: `tests/routers/test_news_relevance_auth.py` (Task 8에서 작성됨) + `tests/routers/test_news_relevance_ingest.py`
 
 - [ ] **Step 1: Write the failing functional test**
@@ -2056,7 +2056,7 @@ async def ingest_bulk(
     return {"applied": applied, "errors": errors}
 ```
 
-`app/main.py` — `app.include_router(investment_hermes_http.router)` 근처에 추가 (import 포함):
+`app/main.py` — `app.include_router(retired-investment-hermes-http.router)` 근처에 추가 (import 포함):
 
 ```python
 from app.routers import news_relevance

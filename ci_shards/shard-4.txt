@@ -80,7 +80,6 @@ tests/routers/test_candidate_discovery.py
 tests/routers/test_execution_ledger_ingest_auth.py
 tests/routers/test_execution_ledger_ingest_fillwire.py
 tests/routers/test_invest_retrospectives_router.py
-tests/routers/test_investment_hermes_http.py
 tests/routers/test_investment_reports_snapshot_backed.py
 tests/routers/test_market_calendar_router.py
 tests/routers/test_order_previews.py
@@ -425,7 +424,6 @@ tests/test_forecast_tools.py
 tests/test_forecast_web_read.py
 tests/test_fundamentals_screener.py
 tests/test_fundamentals_sources_naver.py
-tests/test_hermes_roundtrip_smoke.py
 tests/test_hk6036_upbit_shadow_migration_db.py
 tests/test_hk6406_event_format_migration.py
 tests/test_ingest_validated_run_card_cli.py

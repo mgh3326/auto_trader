@@ -60,7 +60,6 @@ class AuthMiddleware:
     RESEARCH_REPORTS_BULK_INGEST_PATH: ClassVar[str] = (
         "/trading/api/research-reports/ingest/bulk"
     )
-    HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
     NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
     EXECUTION_LEDGER_INGEST_PATH_PREFIX: ClassVar[str] = (
         "/trading/api/execution-ledger/"
@@ -219,34 +218,8 @@ class AuthMiddleware:
                 return error("scope_denied", "Scope denied.", 403)
             return None
 
-        # ROB-287 — Hermes-initiated HTTP ingest family. Same shape as the
-        # research-reports / news-ingestor token branches, but applies to a
-        # path *prefix* because we expose four endpoints under the same
-        # namespace (``prepare-bundle`` / ``context`` / ``stage-artifacts``
-        # / ``composition``).
-        if path.startswith(self.HERMES_INGEST_PATH_PREFIX):
-            expected_token = settings.HERMES_INGEST_TOKEN
-            if not expected_token:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Hermes ingest token not configured"},
-                )
-            header_name = settings.HERMES_INGEST_TOKEN_HEADER.strip()
-            if not header_name:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Hermes ingest token header not configured"},
-                )
-            supplied_token = request.headers.get(header_name, "")
-            if not hmac.compare_digest(supplied_token, expected_token):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Invalid Hermes ingest token"},
-                )
-            return None
-
         # fillwire P0 — execution-ledger fills ingest + reconnect reconcile
-        # trigger. Same prefix-token shape as the Hermes branch, and placed
+        # trigger. Same prefix-token shape as the research-reports branch, and placed
         # ahead of the generic API/session logic on purpose: a valid session
         # cookie must never substitute for this dedicated machine token.
         if path.startswith(self.EXECUTION_LEDGER_INGEST_PATH_PREFIX):

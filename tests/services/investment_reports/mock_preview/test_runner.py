@@ -34,7 +34,7 @@ from app.services.investment_reports.repository import InvestmentReportsReposito
 # ``investment_reports_cleanup_lock`` fixture holds the same advisory lock the
 # helper uses for the whole test body, serializing this file's report-table
 # access against those truncates — the established pattern for cross-domain
-# ``db_session`` tests (see test_hermes_roundtrip_smoke / test_run_card_snapshot_ingest).
+# ``db_session`` tests (see test_run_card_snapshot_ingest).
 pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
 
 _SEED_SNAPSHOT_UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")

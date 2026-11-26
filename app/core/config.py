@@ -861,16 +861,8 @@ class Settings(BaseSettings):
     RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS: int = 24
     RESEARCH_REPORTS_INGEST_COMMIT_ENABLED: bool = False
 
-    # ROB-287 — Hermes-initiated HTTP ingest authentication. Mirror of the
-    # research-reports / news-ingestor token pattern: a single shared secret
-    # gates the entire ``/trading/api/investment-reports/hermes/*`` family.
-    # Required by the AuthMiddleware token branch; if unset, all four HTTP
-    # endpoints respond ``403 "token not configured"`` regardless of body.
     RETRO_API_ENABLED: bool = False
     RETRO_API_READ_TOKEN: str = ""
-
-    HERMES_INGEST_TOKEN: str = ""
-    HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
 
     # ROB-491 — external news-relevance judgment job surface. Same prefix-token
     # shape as the Hermes branch; gates the whole

@@ -64,6 +64,7 @@ tests/mcp_server/tooling/test_toss_batch_evidence_source.py
 tests/mcp_server/tooling/test_toss_booking_concurrency_db.py
 tests/mcp_server/tooling/test_toss_live_ledger.py
 tests/mcp_server/tooling/test_toss_reconcile_resilience.py
+tests/middleware/test_auth_hermes_prefix_retired.py
 tests/middleware/test_auth_telegram_branch.py
 tests/models/test_investment_symbol_intermediate_reports_model.py
 tests/models/test_research_pipeline_models.py
@@ -101,7 +102,6 @@ tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_manual_cash.py
 tests/routers/test_invest_session_context_router.py
 tests/routers/test_invest_watches_router.py
-tests/routers/test_investment_hermes_http_auth.py
 tests/routers/test_investment_snapshots_router.py
 tests/routers/test_news_relevance_auth.py
 tests/routers/test_research_pipeline_router.py

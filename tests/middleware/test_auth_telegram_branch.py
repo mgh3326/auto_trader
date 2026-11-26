@@ -1,8 +1,8 @@
 """ROB-816 PR 2 — AuthMiddleware secret-token gate for the Telegram
 order-proposals approval webhook (``/trading/api/telegram/*``).
 
-Same prefix-token shape as the Hermes / news-relevance branches
-(``test_investment_hermes_http_auth.py`` / ``test_news_relevance_auth.py``):
+Same prefix-token shape as the news-relevance branch
+(``test_news_relevance_auth.py``):
 
 * token unset -> 403 "not configured"
 * header name unset -> 403 "not configured" (header, not token)

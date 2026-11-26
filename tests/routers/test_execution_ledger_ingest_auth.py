@@ -1,6 +1,6 @@
 """execution-ledger ingest token gate (fillwire P0) — 403/401/valid contract.
 
-Mirrors the research-reports / Hermes / news-relevance branch shape: an unset
+Mirrors the research-reports / news-relevance branch shape: an unset
 token (or unset header name) is fail-closed 403, a wrong token is 401, and a
 session cookie is never a substitute for the machine token.
 """

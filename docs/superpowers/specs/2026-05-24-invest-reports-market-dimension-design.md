@@ -86,7 +86,7 @@ Mirrors the ROB-301 symbol-intermediate-report pattern, but on the **dimension**
 
 ### M3. Hermes dimension-reports ingest contract (new, push-only)
 
-- `POST /trading/api/investment-reports/hermes/dimension-reports` — token-authed under the existing `HERMES_INGEST_PATH_PREFIX` branch; push-only; no in-process LLM. Mirrors the ROB-301 `/symbol-reports` route + ingest service shape.
+- `POST /trading/api/investment-reports/hermes/dimension-reports` — token-authed under the existing `retired-hermes-ingest-path-prefix` branch; push-only; no in-process LLM. Mirrors the ROB-301 `/symbol-reports` route + ingest service shape.
 - Request: `{run_uuid, dimension, market, account_scope?, symbol?, report_text, key_findings[], signals{}, stance?, confidence?, cited_snapshot_uuids[], ...}` with `extra="forbid"`.
 - auto_trader validates run membership, caps confidence by freshness, computes content_hash, upserts.
 - **Context export**: extend the Hermes context (`HermesContextPayload` / `hermes_context.py`) to include the Market evidence bundle (M1) so Hermes has the material to write the report. Gated by the existing `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` env flag.
@@ -126,6 +126,6 @@ This slice is **Slice 1 of a program**:
 
 ## Assumptions to verify during implementation
 
-- Hermes context export (`hermes_context.py`) and the symbol-reports ingest (`investment_hermes_http.py`, ROB-301) shapes can be mirrored for dimension reports without disrupting existing surfaces.
+- Hermes context export (`hermes_context.py`) and the symbol-reports ingest (`retired-investment-hermes-http.py`, ROB-301) shapes can be mirrored for dimension reports without disrupting existing surfaces.
 - `invest_screener_snapshots` (KR/US) has enough populated rows in the target environment to compute non-trivial breadth/movers.
 - `investment_stage_runs` is the right FK parent (a dimension report belongs to a run, like symbol intermediate reports).

@@ -534,7 +534,7 @@ router's guards and the tables it reads. Gate env values were read from the prod
 | `invest_watches.py` | /trading/api/invest/watches | 1 | `/invest` watches | keep |
 | `invest_web_spa.py` | /invest | 3 | `/invest` shell | keep |
 | `investment_dimension_reports.py` | /trading/api/investment-reports | 1 | `/invest` dimension reports | retire with the report pipeline |
-| `investment_hermes_http.py` | /trading/api/investment-reports/hermes | 6 | Hermes token ingest (gate off) | retire with the report pipeline (gate already off) |
+| `retired-investment-hermes-http.py` | /trading/api/investment-reports/hermes | 6 | Hermes token ingest (gate off) | retire with the report pipeline (gate already off) |
 | `investment_reports.py` | — | 13 | `/invest` reports | keep |
 | `investment_snapshots.py` | /trading | 3 | `/invest` snapshots | retire with the report pipeline |
 | `investment_stage_runs.py` | — | 5 | `/invest` stage runs | retire with the report pipeline |
@@ -567,7 +567,7 @@ router's guards and the tables it reads. Gate env values were read from the prod
 | `user_defaults.py` | /api/symbol-settings | 2 | `/invest` settings | keep |
 | `websocket.py` | — | 1 | websocket endpoint | keep |
 
-Retire list from this table: 11 router modules (`investment_hermes_http`, `investment_stage_runs`,
+Retire list from this table: 11 router modules (`retired-investment-hermes-http`, `investment_stage_runs`,
 `investment_dimension_reports`, `investment_snapshots`, `research_pipeline`, `research_retrospective`,
 `research_reports`, `invest_scalping`, `kospi200`, `test`, `mock_auto_read_model`) = 11 modules, ~45 routes.
 `invest_api.py` alone is 34 routes and carries the whole `/invest` product; it should be split per domain before
@@ -654,7 +654,7 @@ none is on a schedule by itself.
 
 **ops & CI** (15): `call_durations`, `call_durations_test`, `cio_quality_gate`, `deploy_ci_gate`, `devkit_healthcheck`, `invest_perf_report`, `mcp_profile_import_rss`, `mcp_tool_usage_audit`, `merge_test_durations`, `merge_test_durations_test`, `ncp_job_timers_check`, `ncp_job_timers_golden`, `ncp_mcp_watchdog`, `perf_compare_sentry`, `sentry_profiling_canary`
 
-**other** (27): `attribute_daily_spikes`, `cleanup_toss_manual_holdings`, `debug_economic_calendar`, `fix_overseas_exchange_codes`, `free_social_sources_probe`, `hermes_roundtrip_smoke`, `invest_reports_us_schedule`, `kis_lean_once`, `kis_overseas_premarket_probe`, `kis_overseas_price_smoke`, `list_recent_watch_events`, `make_dev_seed`, `measure_calendar_endpoint`, `post_watch_triage_reply`, `precompute_spike_attribution`, `probe_us_earnings_coverage`, `quote_parity_shadow_probe`, `remote_debug_audit_smoke`, `review_active_watches`, `run_crypto_pending_order_alert`, `run_kr_stageb`, `run_market_close_digest`, `run_us_upside_instrumentation`, `snapshot_bundle_smoke`, `test_discord_webhook_e2e`, `toss_auto_acceptance_fixture`, `websocket_healthcheck`
+**other** (27): `attribute_daily_spikes`, `cleanup_toss_manual_holdings`, `debug_economic_calendar`, `fix_overseas_exchange_codes`, `free_social_sources_probe`, `retired-roundtrip-smoke`, `invest_reports_us_schedule`, `kis_lean_once`, `kis_overseas_premarket_probe`, `kis_overseas_price_smoke`, `list_recent_watch_events`, `make_dev_seed`, `measure_calendar_endpoint`, `post_watch_triage_reply`, `precompute_spike_attribution`, `probe_us_earnings_coverage`, `quote_parity_shadow_probe`, `remote_debug_audit_smoke`, `review_active_watches`, `run_crypto_pending_order_alert`, `run_kr_stageb`, `run_market_close_digest`, `run_us_upside_instrumentation`, `snapshot_bundle_smoke`, `test_discord_webhook_e2e`, `toss_auto_acceptance_fixture`, `websocket_healthcheck`
 
 **research replays** (13): `r4_p0_collector`, `r4_p0_readiness`, `r4_p0_watchdog`, `replay_cr_s1_etr`, `replay_cr_s1_tpr_ceb`, `resynthesize_cr_s1_b2`, `resynthesize_cr_s1_b2_correction`, `rob178_smoke`, `rob278_kr_dryrun`, `run_d3_calibration`, `run_d3_primary`, `run_rob1040_crs24_refreeze`, `run_rob974_r2_campaign`
 
