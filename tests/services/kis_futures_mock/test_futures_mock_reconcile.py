@@ -167,6 +167,62 @@ def test_unmatched_fill_blocks_close_basis(run_reconcile, capsys):
     assert "entry_fill_unverified" in capsys.readouterr().out
 
 
+def test_external_close_keeps_open_unsettled_until_attributed(run_reconcile):
+    opening = order(1, "buy", "open")
+    opening_fill = fill(1, "02", "150700", "729.28")
+    closing_fill = fill(2, "01", "150800", "700")
+    assert run_reconcile([opening], [opening_fill], "--commit").commits == 1
+    assert opening.status == "filled"
+    assert opening.realized_pnl_krw is None
+    history = [opening_fill, closing_fill]
+    assert run_reconcile([opening], history, "--commit").commits == 0
+    assert opening.realized_pnl_krw is None
+
+    closing = order(2, "sell", "close")
+    assert run_reconcile([opening, closing], history, "--commit").commits == 1
+    assert opening.realized_pnl_krw == 0
+    assert closing.realized_pnl_krw == Decimal(-1464000)
+    assert run_reconcile([opening, closing], history, "--commit").commits == 0
+
+
+def test_multiple_filled_closes_leave_loss_unsettled(run_reconcile):
+    orders = [
+        order(1, "buy", "open"),
+        order(2, "sell", "close"),
+        order(3, "sell", "close"),
+    ]
+    history = [
+        fill(1, "02", "150700", "729.28"),
+        fill(2, "01", "150800", "730"),
+        fill(3, "01", "150900", "729"),
+    ]
+    run_reconcile(orders, history, "--commit")
+    assert all(row.realized_pnl_krw is None for row in orders)
+
+
+def test_proven_zero_fill_cancel_does_not_block_round_trip(run_reconcile):
+    cancelled = order(1, "buy", "open")
+    opening, closing = order(3, "buy", "open"), order(4, "sell", "close")
+    original = fill(1, "02", "150500", "0") | {
+        "trad_dvsn_name": "취소완료",
+        "tot_ccld_qty": "0",
+    }
+    cancel = original | {
+        "odno": "0000000002",
+        "orgn_odno": cancelled.broker_order_id,
+    }
+    history = [
+        original,
+        cancel,
+        fill(3, "02", "150700", "729.28"),
+        fill(4, "01", "150800", "728"),
+    ]
+    run_reconcile([cancelled, opening, closing], history, "--commit")
+    assert cancelled.status == "cancelled"
+    assert opening.realized_pnl_krw == 0
+    assert closing.realized_pnl_krw == Decimal(-64000)
+
+
 @pytest.mark.parametrize(
     ("label", "status"),
     [("취소완료", "cancelled"), ("만료", "expired"), ("매매", "accepted")],

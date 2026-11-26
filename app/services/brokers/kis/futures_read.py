@@ -32,7 +32,8 @@ class FuturesReadResponseError(RuntimeError):
         )
         self.msg_cd = (
             msg_cd
-            if isinstance(msg_cd, str) and re.fullmatch(r"[A-Z]{2,5}[0-9]{4,6}", msg_cd)
+            if isinstance(msg_cd, str)
+            and re.fullmatch(r"(?:[A-Z]{2,5}[0-9]{4,6}|[0-9]{8})", msg_cd)
             else None
         )
 

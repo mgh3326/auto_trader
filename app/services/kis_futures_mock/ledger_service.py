@@ -244,6 +244,7 @@ class FuturesMockOrderLedgerService:
         evidence: dict[int, TerminalEvidence] = {}
         fills_by_symbol: dict[str, list[KISFuturesMockOrderLedger]] = defaultdict(list)
         matched_terminals: set[str] = set()
+        cancelled_by_id: dict[str, KISFuturesMockOrderLedger] = {}
         blocked_symbols: set[str] = set()
         for order in orders:
             rows = history_by_id.get(order.broker_order_id or "", [])
@@ -292,6 +293,8 @@ class FuturesMockOrderLedgerService:
             evidence[order.id] = proof
             if order.broker_order_id:
                 matched_terminals.add(order.broker_order_id)
+                if proof.status == "cancelled":
+                    cancelled_by_id[order.broker_order_id] = order
             if proof.status == "filled":
                 fills_by_symbol[order.broker_symbol].append(order)
 
@@ -314,54 +317,77 @@ class FuturesMockOrderLedgerService:
             ):
                 if day != trading_day:
                     continue
-                if isinstance(oid, str) and oid.strip() in matched_terminals:
-                    continue
+                if isinstance(oid, str):
+                    oid = oid.strip()
+                    if oid in matched_terminals:
+                        continue
+                    original_id = item.get("orgn_odno")
+                    original = (
+                        cancelled_by_id.get(original_id.strip())
+                        if isinstance(original_id, str)
+                        else None
+                    )
+                    if original is not None and len(history_by_id[oid]) == 1 and oid:
+                        cancel = terminal_evidence(
+                            item,
+                            broker_symbol=original.broker_symbol,
+                            side=original.side,
+                            quantity=original.quantity,
+                        )
+                        if cancel is not None and cancel.status == "cancelled":
+                            continue
             symbol = item.get("pdno")
             if isinstance(symbol, str) and symbol:
                 blocked_symbols.add(symbol)
             else:
                 blocked_symbols.update(fills_by_symbol)
 
-        closing_pnl: dict[int, Decimal] = {}
+        realized_pnl: dict[int, Decimal] = {}
         for symbol, fills in fills_by_symbol.items():
-            times = [evidence[order.id].order_time for order in fills]
-            if symbol in blocked_symbols or len(set(times)) != len(times):
+            # Order time is not execution time. Extra fills make the basis
+            # ambiguous even if their order times are distinct.
+            if symbol in blocked_symbols or len(fills) != 2:
                 continue
-            opening = None
-            for order in sorted(fills, key=lambda order: evidence[order.id].order_time):
-                if order.position_effect == "open" and opening is None:
-                    opening = order
-                    continue
-                if (
-                    opening is None
-                    or order.position_effect != "close"
-                    or opening.side == order.side
-                ):
-                    break
-                entry, exit_ = evidence[opening.id].price, evidence[order.id].price
-                assert entry is not None and exit_ is not None
-                difference = exit_ - entry if order.side == "sell" else entry - exit_
-                closing_pnl[order.id] = (
-                    difference * MINI_KOSPI200.multiplier * evidence[order.id].quantity
-                )
-                opening = None
+            opening, closing = sorted(
+                fills, key=lambda order: evidence[order.id].order_time
+            )
+            entry, exit_ = evidence[opening.id], evidence[closing.id]
+            if (
+                opening.position_effect != "open"
+                or closing.position_effect != "close"
+                or opening.side == closing.side
+                or entry.order_time == exit_.order_time
+            ):
+                continue
+            assert entry.price is not None and exit_.price is not None
+            difference = (
+                exit_.price - entry.price
+                if closing.side == "sell"
+                else entry.price - exit_.price
+            )
+            realized_pnl[opening.id] = Decimal(0)
+            realized_pnl[closing.id] = (
+                difference * MINI_KOSPI200.multiplier * exit_.quantity
+            )
 
         timestamp = datetime.now(UTC)
         for order in orders:
             proof = evidence.get(order.id)
-            if proof is None or order.reconciled_at is not None:
+            if proof is None:
+                continue
+            pnl = realized_pnl.get(order.id)
+            if order.reconciled_at is not None and (
+                pnl is None or order.realized_pnl_krw is not None
+            ):
                 continue
             detail = details[order.id]
-            pnl = None
-            if proof.status == "filled":
-                pnl = (
-                    Decimal(0)
-                    if order.position_effect == "open"
-                    else closing_pnl.get(order.id)
-                )
-                if pnl is None:
-                    detail["result"] = "entry_fill_unverified"
-                    continue
+            if (
+                proof.status == "filled"
+                and order.position_effect == "close"
+                and pnl is None
+            ):
+                detail["result"] = "entry_fill_unverified"
+                continue
             detail.update(
                 result="booked" if commit else "would_book",
                 status=proof.status,
@@ -376,7 +402,8 @@ class FuturesMockOrderLedgerService:
                 order.avg_fill_price = proof.price
                 order.fee = proof.fee
                 order.realized_pnl_krw = pnl
-                order.reconciled_at = timestamp
+                if order.reconciled_at is None:
+                    order.reconciled_at = timestamp
         if commit and any(detail["result"] == "booked" for detail in details.values()):
             await self._db.commit()
         return list(details.values())

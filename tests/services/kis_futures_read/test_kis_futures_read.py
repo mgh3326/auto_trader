@@ -328,11 +328,12 @@ def test_orderable_rejects_unreadable_price_before_network(monkeypatch):
         assert parent.calls == []
 
 
-def test_preview_deposit_rejection_exposes_only_protocol_codes(monkeypatch):
+@pytest.mark.parametrize("msg_cd", ["APBK1234", "40240000"])
+def test_preview_deposit_rejection_exposes_only_protocol_codes(monkeypatch, msg_cd):
     from app.services.brokers.kis.futures_read import FuturesRead
 
     monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
-    parent = Parent([({"rt_cd": "1", "msg_cd": "APBK1234", "msg1": "12345678"}, {})])
+    parent = Parent([({"rt_cd": "1", "msg_cd": msg_cd, "msg1": "12345678"}, {})])
     read = FuturesRead(parent)
 
     class Fake:
@@ -352,6 +353,6 @@ def test_preview_deposit_rejection_exposes_only_protocol_codes(monkeypatch):
         "value": None,
         "reason": "FuturesReadResponseError",
         "rt_cd": "1",
-        "msg_cd": "APBK1234",
+        "msg_cd": msg_cd,
     }
     assert "12345678" not in str(result)
