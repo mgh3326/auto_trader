@@ -421,6 +421,28 @@ async def test_nx_is_read_only_for_nxt_eligible_symbols() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fixed_kr_etfs_are_collected_on_krx_only() -> None:
+    symbols = ["069500", "229200"]
+    kis = FakeKis(
+        kr_frames={(symbol, "J"): _frame(["2026-11-24 09:00"]) for symbol in symbols}
+    )
+    writer = RecordingWriter()
+
+    report = await sc.collect(
+        market="kr",
+        symbols=symbols,
+        kis=kis,
+        writer=writer,
+        clock=_clock(NOW),
+    )
+
+    assert sorted(kis.kr_calls) == [("069500", "J"), ("229200", "J")]
+    assert {bar.symbol for call in writer.calls for bar in call[0]} == set(symbols)
+    assert {bar.venue for call in writer.calls for bar in call[0]} == {"KRX"}
+    assert report["errors"] == 0
+
+
+@pytest.mark.asyncio
 async def test_rerun_reports_already_present_and_uses_one_batch_per_run() -> None:
     kis = FakeKis(
         kr_frames={("005930", "J"): _frame(["2026-11-24 09:00", "2026-11-24 09:01"])}
