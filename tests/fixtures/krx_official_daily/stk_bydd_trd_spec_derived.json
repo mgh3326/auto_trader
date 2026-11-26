@@ -1,0 +1,39 @@
+{
+  "_provenance": "SPEC-DERIVED, NOT CAPTURED. Built from the public KRX Open API field list (hk 6586 brief). Replace with the first live success response after service approval.",
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20261126",
+      "ISU_CD": "005930",
+      "ISU_NM": "삼성전자",
+      "MKT_NM": "KOSPI",
+      "SECT_TP_NM": "전기전자",
+      "TDD_CLSPRC": "80,000",
+      "CMPPREVDD_PRC": "1,000",
+      "FLUC_RT": "1.27",
+      "TDD_OPNPRC": "79,000",
+      "TDD_HGPRC": "81,000",
+      "TDD_LWPRC": "78,000",
+      "ACC_TRDVOL": "12,345,678",
+      "ACC_TRDVAL": "987,654,321,000",
+      "MKTCAP": "477,000,000,000,000",
+      "LIST_SHRS": "5,969,782,550"
+    },
+    {
+      "BAS_DD": "20261126",
+      "ISU_CD": "000080",
+      "ISU_NM": "하이트진로",
+      "MKT_NM": "KOSPI",
+      "SECT_TP_NM": "",
+      "TDD_CLSPRC": "-",
+      "CMPPREVDD_PRC": "-",
+      "FLUC_RT": "-",
+      "TDD_OPNPRC": "-",
+      "TDD_HGPRC": "-",
+      "TDD_LWPRC": "-",
+      "ACC_TRDVOL": "0",
+      "ACC_TRDVAL": "0",
+      "MKTCAP": "",
+      "LIST_SHRS": "1,234"
+    }
+  ]
+}

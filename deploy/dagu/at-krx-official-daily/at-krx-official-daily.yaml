@@ -1,0 +1,21 @@
+# KRX Open API 일별 매매 수집의 Dagu 복사본이며 저장소가 등록하지 않는다.
+# 평일 세션은 다음 날 아침(화–토 08:30 KST)에 전날 날짜로 수집한다. 월–금 세션 전부를 덮는다.
+description: "KRX Open API official daily trading (manual collection implementation)"
+schedule:
+  - "CRON_TZ=Asia/Seoul 30 8 * * 2-6"
+max_active_runs: 1
+hist_retention_days: 30
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_krx_official_daily --date "$(TZ=Asia/Seoul date -d yesterday +%F)" --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-krx-official-daily "dag=at-krx-official-daily status=success"'
+  failure:
+    command: 'logger -t at-dagu-krx-official-daily "dag=at-krx-official-daily status=failure"'
