@@ -460,6 +460,7 @@ async def test_empty_store_bootstraps_through_page_cap_and_bithumb_independently
     )
     assert second[UPBIT_SOURCE]["inserted"] == 0
     assert second[BITHUMB_SOURCE]["inserted"] == 0
+    assert second[UPBIT_SOURCE]["older_history_uncollected"] is True
     assert len(repo.events) == 3
     assert len(repo.revisions[(UPBIT_SOURCE, "88001")]) == 1
     assert rerun_client.pages == [1]

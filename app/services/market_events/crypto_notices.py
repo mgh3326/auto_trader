@@ -513,6 +513,7 @@ async def collect_crypto_notices(
                         await process_upbit(row, now)
                         if is_known:
                             output[source]["stopped_at_known_id"] = 1
+                            output[source]["older_history_uncollected"] = True
                             saw_known = True
                             stop = True
                             break
