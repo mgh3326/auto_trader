@@ -1,5 +1,6 @@
 """Allow additional US intraday mover observation sources."""
 
+# expand-contract: contract-step 6663
 from sqlalchemy import text
 
 from alembic import op
@@ -21,7 +22,9 @@ NEW_SOURCES = (
 
 
 def upgrade() -> None:
+    # expand-contract: contract-step 6663
     op.execute(f"ALTER TABLE {TABLE} DROP CONSTRAINT {CHECK}")
+    # expand-contract: contract-step 6663
     op.execute(
         f"ALTER TABLE {TABLE} ADD CONSTRAINT {CHECK} CHECK (source IN ({NEW_SOURCES})) NOT VALID"
     )
@@ -31,9 +34,12 @@ def downgrade() -> None:
     op.execute("LOCK TABLE invest_momentum_event_runs IN SHARE MODE")
     op.execute(f"LOCK TABLE {TABLE} IN ACCESS EXCLUSIVE MODE")
     new_sources = (
-        "kis_overseas_price_fluct", "kis_overseas_volume_surge",
-        "kis_overseas_new_highlow", "kis_overseas_volume_power",
-        "toss_rankings", "benzinga_market_movers",
+        "kis_overseas_price_fluct",
+        "kis_overseas_volume_surge",
+        "kis_overseas_new_highlow",
+        "kis_overseas_volume_power",
+        "toss_rankings",
+        "benzinga_market_movers",
     )
     quoted = ", ".join("'" + item + "'" for item in new_sources)
     if op.get_bind().scalar(

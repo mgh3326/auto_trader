@@ -1,5 +1,6 @@
 """Validate the expanded mover source CHECK without holding ADD's strong lock."""
 
+# expand-contract: contract-step 6663
 from alembic import op
 
 revision = "20261126_hk6663_us_mover_sources_val"
@@ -9,6 +10,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # expand-contract: contract-step 6663
     op.execute(
         "ALTER TABLE invest_momentum_event_snapshots "
         "VALIDATE CONSTRAINT ck_invest_momentum_event_snapshots_source"
