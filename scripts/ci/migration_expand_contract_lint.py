@@ -666,14 +666,49 @@ def violations(source: str, task_id: str) -> list[str]:
 
 
 def changed_migrations(root: Path, base_ref: str, head_ref: str) -> list[Path]:
+    # The pull_request checkout is a synthetic merge commit. Its first parent
+    # is the base tip used to build that merge, while pull_request.base.sha may
+    # predate migrations that landed on the base branch in the meantime.
+    # Resolve the supplied base first so an unreadable event base stays fatal.
+    subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head_commit = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{head_ref}^{{commit}}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    parents = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", head_commit],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    if len(parents) > 2:
+        diff_base = parents[1]
+    else:
+        diff_base = subprocess.run(
+            ["git", "merge-base", base_ref, head_commit],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
     result = subprocess.run(
         [
             "git",
             "diff",
             "--name-only",
             "--diff-filter=ACMRT",
-            base_ref,
-            head_ref,
+            diff_base,
+            head_commit,
             "--",
             "alembic/versions/*.py",
         ],

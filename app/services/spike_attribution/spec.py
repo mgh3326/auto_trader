@@ -152,14 +152,21 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
         },
         "timestamp_trust": {
             "rule": "per-feed clock registry; unregistered or unconfirmed → never eligible",
-            "confirmed_kr_exact": ["http_naver_stock_aggregate"],
+            "confirmed_kr_exact": [
+                "http_naver_mstock_mainnews",
+                "http_naver_stock_aggregate",
+            ],
+            "exact_precision_by_feed": {"http_naver_mstock_mainnews": "second"},
+            "kr_minute_not_exact": [
+                "naver_item_news",
+                "http_naver_mstock_mainnews (published_precision!=second)",
+            ],
             "confirmed_kr_date_only": [
                 "browser_naver_research",
                 "browser_naver_research_company",
                 "browser_naver_research_economy",
                 "browser_naver_research_industry",
                 "browser_naver_research_invest",
-                "naver_item_news",
             ],
             "date_only_disposition": "timestamp_unknown_never_eligible",
             "us_feeds": "tz_unconfirmed_never_eligible_pending_confirmation",
@@ -337,7 +344,7 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
 # Recomputed by tests/services/spike_attribution/test_spec_freeze.py.
 # Bump only together with an explicit pre-registration amendment.
 PINNED_SPEC_SHA256: Final = (
-    "6d32a577427e1d44f15448c3857f7fb0d28698e578f09765d650bbf70ffc74ca"
+    "544298e1ebe0af3ad7cd16987142f89b4b2a41bb664a2bc5f124950730bc9dd3"
 )
 
 
