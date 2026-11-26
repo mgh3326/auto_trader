@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
-
 import pytest
 
 from app.services.brokers.upbit import client
@@ -74,7 +73,9 @@ def test_market_max_total_refuses_locally() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_krw_market_is_rejected_before_chance_request(monkeypatch, capsys) -> None:
+async def test_non_krw_market_is_rejected_before_chance_request(
+    monkeypatch, capsys
+) -> None:
     chance = AsyncMock(return_value=_chance())
     monkeypatch.setattr(
         check,
@@ -108,12 +109,16 @@ async def test_order_test_only_reports_validation_errors_as_rejected(
         json={"error": {"name": error_name}},
         request=httpx.Request("POST", "https://api.upbit.com/v1/orders/test"),
     )
-    failure = httpx.HTTPStatusError("request failed", request=response.request, response=response)
+    failure = httpx.HTTPStatusError(
+        "request failed", request=response.request, response=response
+    )
     post = AsyncMock(side_effect=failure)
     monkeypatch.setattr(
         check,
         "_upbit_client",
-        lambda: SimpleNamespace(order_chance=AsyncMock(return_value=_chance()), order_test=post),
+        lambda: SimpleNamespace(
+            order_chance=AsyncMock(return_value=_chance()), order_test=post
+        ),
     )
     monkeypatch.setenv("UPBIT_ORDER_TEST_ENABLED", "true")
     args = argparse.Namespace(
@@ -140,9 +145,7 @@ async def test_auth_retry_builds_a_fresh_nonce_for_each_send(monkeypatch) -> Non
             return None
 
         async def get(self, url, **kwargs):
-            return httpx.Response(
-                200, json={}, request=httpx.Request("GET", url)
-            )
+            return httpx.Response(200, json={}, request=httpx.Request("GET", url))
 
     async def fake_retry(limiter, send_fn, *, url, **kwargs):
         captured.update(retry_options=kwargs)
@@ -156,11 +159,15 @@ async def test_auth_retry_builds_a_fresh_nonce_for_each_send(monkeypatch) -> Non
     monkeypatch.setattr(
         client.jwt,
         "encode",
-        lambda payload, key: payloads.append(payload.copy()) or f'token-{len(payloads)}',
+        lambda payload, key: (
+            payloads.append(payload.copy()) or f"token-{len(payloads)}"
+        ),
     )
 
     await client._request_with_auth(
-        "GET", "https://api.upbit.com/v1/orders/chance", query_params={"market": "KRW-ETH"}
+        "GET",
+        "https://api.upbit.com/v1/orders/chance",
+        query_params={"market": "KRW-ETH"},
     )
 
     assert len(payloads) == 2

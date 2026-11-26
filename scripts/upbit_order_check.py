@@ -82,9 +82,7 @@ def _local_verdict(
         errors.append("max_total_exceeded")
 
     bid_fee = _fee_rate(chance.get("bid_fee"), label="매수 수수료율")
-    maker_bid_fee = _fee_rate(
-        chance.get("maker_bid_fee"), label="메이커 매수 수수료율"
-    )
+    maker_bid_fee = _fee_rate(chance.get("maker_bid_fee"), label="메이커 매수 수수료율")
 
     bid_balance, bid_locked = _account_summary(chance.get("bid_account"))
     ask_balance, ask_locked = _account_summary(chance.get("ask_account"))
