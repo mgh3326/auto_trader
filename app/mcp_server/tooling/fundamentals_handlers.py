@@ -73,6 +73,10 @@ from app.mcp_server.tooling.fundamentals._valuation import (
     handle_get_short_interest,
     handle_get_valuation,
 )
+from app.mcp_server.tooling.kr_flow_signals import (
+    handle_get_kr_flow_signals,
+    handle_get_kr_investor_rankings,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -113,6 +117,12 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_sector_peers",
 }
 
+KR_FLOW_TOOL_NAMES: set[str] = {
+    "get_kr_flow_signals",
+    "get_kr_investor_rankings",
+}
+FUNDAMENTALS_TOOL_NAMES.update(KR_FLOW_TOOL_NAMES)
+
 # Crypto research subset (registered on all profiles; kept as metadata for
 # tests/surface audits).
 CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
@@ -132,6 +142,8 @@ CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
 
 def _register_fundamentals_tools_impl(
     mcp: FastMCP,
+    *,
+    include_kr_flow: bool = False,
 ) -> None:
     @mcp.tool(
         name="get_news",
@@ -364,6 +376,37 @@ def _register_fundamentals_tools_impl(
         days: int = 20,
     ) -> dict[str, Any]:
         return await handle_get_short_interest(symbol, days)
+
+    if include_kr_flow:
+
+        @mcp.tool(
+            name="get_kr_flow_signals",
+            description=(
+                "Read Korean stock short selling, securities lending, credit trades, "
+                "program trades, KIS VI status, and broker buy/sell summary. Each "
+                "source reports its own status and observation time. Read-only."
+            ),
+        )
+        async def get_kr_flow_signals(
+            symbol: str,
+            days: int = 20,
+        ) -> dict[str, Any]:
+            return await handle_get_kr_flow_signals(symbol, days)
+
+        @mcp.tool(
+            name="get_kr_investor_rankings",
+            description=(
+                "Read the latest Toss Korean stock net-buy or net-sell ranking for "
+                "foreign, institution, or individual investors. Amounts are KRW; "
+                "the source observation time is returned. Read-only."
+            ),
+        )
+        async def get_kr_investor_rankings(
+            investor: str = "foreign",
+            side: str = "buy",
+            limit: int = 20,
+        ) -> dict[str, Any]:
+            return await handle_get_kr_investor_rankings(investor, side, limit)
 
     @mcp.tool(
         name="get_kimchi_premium",
@@ -656,6 +699,7 @@ def _register_fundamentals_tools_impl(
 __all__ = [
     "CRYPTO_FUNDAMENTALS_TOOL_NAMES",
     "FUNDAMENTALS_TOOL_NAMES",
+    "KR_FLOW_TOOL_NAMES",
     "_register_fundamentals_tools_impl",
     "_get_support_resistance_impl",
     "_get_cost_basis_distribution_impl",

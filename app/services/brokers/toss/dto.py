@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -697,6 +698,138 @@ class TossMarketInvestorTradingPage:
 
     records: list[TossMarketInvestorTradingRecord]
     next_until: str | None
+
+
+@dataclass(frozen=True)
+class TossTradingTrendPage:
+    """Strict daily Toss stock-trading trend rows, normalized without floats."""
+
+    records: list[dict[str, Any]]
+    next_until: date | None
+
+
+def _flow_decimal_tree(value: Any, field: str) -> Any:
+    if isinstance(value, dict):
+        return {key: _flow_decimal_tree(item, f"{field}.{key}") for key, item in value.items()}
+    if isinstance(value, list):
+        return [_flow_decimal_tree(item, f"{field}[]") for item in value]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TossResponseContractError(f"'{field}' must be a decimal string or null")
+    return _req_decimal(value, field)
+
+
+def _parse_trading_trend_page(raw: Any, endpoint: str) -> TossTradingTrendPage:
+    try:
+        result = _req_map(raw, "result")
+        rows = result.get("records")
+        if not isinstance(rows, list):
+            raise TossResponseContractError("'records' must be a list")
+        records: list[dict[str, Any]] = []
+        for item in rows:
+            row = _req_map(item, "records[]")
+            row_date = _parse_iso_date(row.get("date"), "date")
+            updated_raw = row.get("updatedAt")
+            if updated_raw is None and endpoint != "program-trades":
+                raise TossResponseContractError("'updatedAt' is required")
+            updated_at = _req_datetime(updated_raw, "updatedAt") if updated_raw is not None else None
+            normalized: dict[str, Any] = {
+                "date": row_date,
+                "updated_at": updated_at,
+            }
+            for key, value in row.items():
+                if key in {"date", "updatedAt"}:
+                    continue
+                normalized[key] = _flow_decimal_tree(value, key)
+            records.append(normalized)
+        next_until = _opt_str(result.get("nextUntil"), "nextUntil")
+        return TossTradingTrendPage(
+            records=records,
+            next_until=_parse_iso_date(next_until, "nextUntil") if next_until else None,
+        )
+    except TossResponseContractError:
+        raise
+    except _CONTRACT_FIELDS as exc:
+        raise TossResponseContractError(
+            f"stocks/{'{symbol}'}/{endpoint} payload violates the documented schema"
+        ) from exc
+
+
+def _parse_iso_date(value: Any, field: str) -> date:
+    text = _req_str(value, field)
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as exc:
+        raise TossResponseContractError(f"'{field}' must be YYYY-MM-DD") from exc
+    if parsed.isoformat() != text:
+        raise TossResponseContractError(f"'{field}' must be YYYY-MM-DD")
+    return parsed
+
+
+def parse_short_selling_page(raw: Any) -> TossTradingTrendPage:
+    return _parse_trading_trend_page(raw, "short-selling")
+
+
+def parse_securities_lending_page(raw: Any) -> TossTradingTrendPage:
+    return _parse_trading_trend_page(raw, "securities-lending")
+
+
+def parse_credit_trades_page(raw: Any) -> TossTradingTrendPage:
+    return _parse_trading_trend_page(raw, "credit-trades")
+
+
+def parse_program_trades_page(raw: Any) -> TossTradingTrendPage:
+    return _parse_trading_trend_page(raw, "program-trades")
+
+
+@dataclass(frozen=True)
+class TossInvestorRanking:
+    ranked_at: datetime | None
+    buy: list[dict[str, Any]]
+    sell: list[dict[str, Any]]
+
+
+def parse_investor_trading_rankings(raw: Any) -> dict[str, TossInvestorRanking]:
+    try:
+        result = _req_map(raw, "result")
+        parsed: dict[str, TossInvestorRanking] = {}
+        for investor in ("foreigner", "institution", "individual"):
+            section = _req_map(result.get(investor), investor)
+            ranked_at_raw = section.get("rankedAt")
+            ranked_at = (
+                _req_datetime(ranked_at_raw, f"{investor}.rankedAt")
+                if ranked_at_raw is not None
+                else None
+            )
+            lists: list[list[dict[str, Any]]] = []
+            for field in ("netBuyRankings", "netSellRankings"):
+                rows = section.get(field)
+                if not isinstance(rows, list):
+                    raise TossResponseContractError(f"'{investor}.{field}' must be a list")
+                parsed_rows = []
+                for item in rows:
+                    row = _req_map(item, f"{investor}.{field}[]")
+                    parsed_rows.append({
+                        "rank": _req_int(row.get("rank"), "rank"),
+                        "symbol": _req_str(row.get("symbol"), "symbol"),
+                        "currency": _req_str(row.get("currency"), "currency"),
+                        "amount": _req_decimal(
+                            row.get("netBuyAmount" if field == "netBuyRankings" else "netSellAmount"),
+                            "netBuyAmount" if field == "netBuyRankings" else "netSellAmount",
+                        ),
+                    })
+                lists.append(parsed_rows)
+            parsed[investor] = TossInvestorRanking(
+                ranked_at=ranked_at, buy=lists[0], sell=lists[1]
+            )
+        return parsed
+    except TossResponseContractError:
+        raise
+    except _CONTRACT_FIELDS as exc:
+        raise TossResponseContractError(
+            "rankings/investor-trading payload violates the documented schema"
+        ) from exc
 
 
 def _parse_trading_amount(raw: Any) -> TossInvestorTradingAmount:
