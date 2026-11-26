@@ -33,7 +33,7 @@ class KSDEventSpec:
     date_field: str
     date_fields: tuple[str, ...] = ()
     value_fields: tuple[tuple[str, str], ...] = ()
-    identity_field: str | None = None
+    identity_fields: tuple[str, ...] = ()
 
 
 KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
@@ -48,7 +48,7 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
             ("disc_rate", "%"),
             ("fix_price", "KRW"),
         ),
-        "list_date",
+        ("stk_kind", "fix_price", "issue_stk_qty"),
     ),
     "bonus_issue": KSDEventSpec(
         "무상증자",
@@ -60,14 +60,14 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
             ("tot_issue_stk_qty", "shares"),
             ("issue_stk_qty", "shares"),
         ),
-        "stk_kind",
+        ("stk_kind", "fix_rate", "issue_stk_qty"),
     ),
     "purreq": KSDEventSpec(
         "주식매수청구",
         "record_date",
         ("opp_opi_rcpt_term", "buy_req_rcpt_term"),
         (("buy_req_price", "KRW"),),
-        "stk_kind",
+        ("stk_kind", "buy_req_price"),
     ),
     "merger_split": KSDEventSpec(
         "합병·분할",
@@ -78,21 +78,21 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
             ("tot_issue_stk_qty", "shares"),
             ("issue_stk_qty", "shares"),
         ),
-        "seq",
+        ("seq", "opp_cust_cd", "merge_type"),
     ),
     "rev_split": KSDEventSpec(
         "액면교체·병합",
         "record_date",
         ("td_stop_dt", "list_dt"),
         (("inter_bf_face_amt", "KRW"), ("inter_af_face_amt", "KRW")),
-        "stk_kind",
+        ("stk_kind", "inter_bf_face_amt", "inter_af_face_amt"),
     ),
     "cap_dcrs": KSDEventSpec(
         "자본감소",
         "record_date",
         ("td_stop_dt", "list_dt"),
         (("reduce_cap_rate", "%"),),
-        "reduce_cap_type",
+        ("reduce_cap_type", "stk_kind", "reduce_cap_rate"),
     ),
     "list_info": KSDEventSpec(
         "상장정보",
@@ -103,7 +103,7 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
             ("tot_issue_stk_qty", "shares"),
             ("issue_price", "KRW"),
         ),
-        "issue_type",
+        ("issue_type", "stk_kind", "issue_price", "issue_stk_qty"),
     ),
     "pub_offer": KSDEventSpec(
         "공모주 청약",
@@ -116,28 +116,28 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
             ("pub_af_cap", "KRW"),
             ("assign_stk_qty", "shares"),
         ),
-        "subscr_dt",
+        ("lead_mgr", "fix_subscr_pri", "assign_stk_qty"),
     ),
     "forfeit": KSDEventSpec(
         "실권주",
         "record_date",
         ("subscr_dt", "refund_dt", "list_dt"),
         (("subscr_price", "KRW"), ("subscr_stk_qty", "shares")),
-        "subscr_dt",
+        ("lead_mgr", "subscr_price", "subscr_stk_qty"),
     ),
     "mand_deposit": KSDEventSpec(
         "의무예치",
         "depo_date",
         (),
         (("stk_qty", "shares"), ("tot_issue_qty_per_rate", "%")),
-        "depo_reason",
+        ("depo_reason", "stk_qty", "tot_issue_qty_per_rate"),
     ),
     "sharehld_meet": KSDEventSpec(
         "주주총회",
         "gen_meet_dt",
         ("record_date",),
         (("vote_tot_qty", "shares"),),
-        "gen_meet_type",
+        ("gen_meet_type", "agenda"),
     ),
 }
 
@@ -151,7 +151,30 @@ def _parse_date(value: Any, field: str, *, required: bool = True) -> date | None
         return None
     if not isinstance(value, str):
         raise ValueError(f"KSD row has invalid {field}")
-    for date_format in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
+    exact_shapes = {
+        "%Y%m%d": len(value) == 8 and value.isascii() and value.isdigit(),
+        "%Y/%m/%d": (
+            len(value) == 10
+            and value.isascii()
+            and value[:4].isdigit()
+            and value[4] == "/"
+            and value[5:7].isdigit()
+            and value[7] == "/"
+            and value[8:].isdigit()
+        ),
+        "%Y-%m-%d": (
+            len(value) == 10
+            and value.isascii()
+            and value[:4].isdigit()
+            and value[4] == "-"
+            and value[5:7].isdigit()
+            and value[7] == "-"
+            and value[8:].isdigit()
+        ),
+    }
+    for date_format, has_exact_shape in exact_shapes.items():
+        if not has_exact_shape:
+            continue
         try:
             return datetime.strptime(value, date_format).date()
         except ValueError:
@@ -179,7 +202,7 @@ def normalize_ksd_dividend_row(
     assert record_date is not None
     payment_date = _parse_date(row.get("divi_pay_dt"), "divi_pay_dt", required=False)
     symbol = str(row.get("sht_cd") or "").strip()
-    if not (len(symbol) == 6 and symbol.isdigit()):
+    if not (len(symbol) == 6 and symbol.isascii() and symbol.isalnum()):
         raise ValueError("KSD dividend row has invalid sht_cd")
     dps = _parse_amount(row.get("per_sto_divi_amt"))
     kind = str(row.get("divi_kind") or "").strip()
@@ -291,7 +314,7 @@ def normalize_ksd_event_row(
     event_date = _parse_date(row.get(spec.date_field), spec.date_field)
     assert event_date is not None
     raw_symbol = str(row.get("sht_cd") or "").strip()
-    if len(raw_symbol) != 6 or not raw_symbol.isascii() or not raw_symbol.isdigit():
+    if len(raw_symbol) != 6 or not raw_symbol.isascii() or not raw_symbol.isalnum():
         raise ValueError("KSD event row has invalid sht_cd")
     symbol = to_db_symbol(raw_symbol)
     company_name = (
@@ -326,16 +349,23 @@ def normalize_ksd_event_row(
             continue
         values.append({"metric_name": field, "actual": amount, "unit": unit})
 
-    identity_value = (
-        str(row.get(spec.identity_field) or "").strip() if spec.identity_field else ""
-    )
-    if not identity_value:
-        identity_value = sha256(
-            json.dumps(
-                {"kind": kind, "symbol": symbol, "date": event_date.isoformat()},
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()[:16]
+    selected_identity = {
+        field: str(row.get(field) or "").strip() for field in spec.identity_fields
+    }
+    schedule_fields = {spec.date_field, *spec.date_fields}
+    descriptive_fields = {"isin_name", "cust_nm", "opp_cust_nm"}
+    provider_identity = {
+        field: str(value or "").strip()
+        for field, value in row.items()
+        if field not in schedule_fields and field not in descriptive_fields
+    }
+    identity_value = sha256(
+        json.dumps(
+            {"selected": selected_identity, "provider": provider_identity},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()[:20]
     source_event_id = f"{kind}:{symbol}:{event_date:%Y%m%d}:{identity_value}"
     raw_payload[spec.date_field] = event_date.isoformat()
     raw_payload["kind"] = kind

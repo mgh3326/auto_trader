@@ -4,9 +4,11 @@ description: "KIS KSD 기업 일정 일일 수집 (미등록 복사본)"
 schedule: "CRON_TZ=UTC 15 21 * * *"
 max_active_runs: 1
 hist_retention_days: 60
+worker_selector:
+  host: pi
 steps:
   - name: kis-ksd-events
-    command: docker run --rm --init --network host --workdir /app "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_kis_ksd_dividends --kinds dividend paidin_capin bonus_issue purreq merger_split rev_split cap_dcrs list_info pub_offer forfeit mand_deposit sharehld_meet --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date +%F) --commit
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_kis_ksd_dividends --kinds dividend paidin_capin bonus_issue purreq merger_split rev_split cap_dcrs list_info pub_offer forfeit mand_deposit sharehld_meet --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date +%F) --commit
     timeout_sec: 900
     retry_policy:
       limit: 1

@@ -57,15 +57,34 @@ def _normalize(
     return normalize_ksd_event_row(kind, row)
 
 
+def _normalize_rows(
+    kind: str, rows: list[dict[str, Any]]
+) -> tuple[list[tuple[dict[str, Any], list[dict[str, Any]]]], int]:
+    normalized: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    failures = 0
+    for index, row in enumerate(rows, start=1):
+        try:
+            normalized.append(_normalize(kind, row))
+        except ValueError as exc:
+            failures += 1
+            logger.warning(
+                "KSD 행 정규화 실패 kind=%s row=%d reason=%s", kind, index, exc
+            )
+    return normalized, failures
+
+
 async def run(args: argparse.Namespace) -> int:
     client = KISClient(is_mock=False)
     normalized: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    normalization_failures = 0
     truncation_count = 0
     try:
         for kind in args.kinds:
             fetch = getattr(client, FETCH_METHODS[kind])
             result = await fetch_ksd_event_window(fetch, args.from_date, args.to_date)
-            normalized.extend(_normalize(kind, row) for row in result.rows)
+            kind_events, kind_failures = _normalize_rows(kind, result.rows)
+            normalized.extend(kind_events)
+            normalization_failures += kind_failures
             for start, end in result.truncated_windows:
                 truncation_count += 1
                 logger.warning(
@@ -80,11 +99,12 @@ async def run(args: argparse.Namespace) -> int:
 
     if not args.commit:
         logger.info(
-            "dry-run 조회·정규화=%d, 저장=0, 절단 구간=%d",
+            "dry-run 조회·정규화=%d, 저장=0, 정규화 실패=%d, 절단 구간=%d",
             len(normalized),
+            normalization_failures,
             truncation_count,
         )
-        return 0
+        return 1 if normalization_failures else 0
 
     from app.core.db import AsyncSessionLocal
 
@@ -93,8 +113,13 @@ async def run(args: argparse.Namespace) -> int:
         for event, values in normalized:
             await repo.upsert_event_with_values(event, values, replace_values=True)
         await db.commit()
-    logger.info("KSD 저장=%d, 절단 구간=%d", len(normalized), truncation_count)
-    return 0
+    logger.info(
+        "KSD 저장=%d, 정규화 실패=%d, 절단 구간=%d",
+        len(normalized),
+        normalization_failures,
+        truncation_count,
+    )
+    return 1 if normalization_failures else 0
 
 
 def main() -> int:

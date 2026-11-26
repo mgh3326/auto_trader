@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -122,6 +123,63 @@ def test_ksd_decimal_rejects_float_input():
         )
 
 
+def test_alphanumeric_short_code_and_distinct_listings_keep_distinct_ids():
+    fixture = next(
+        item for item in DOCUMENTED_EXAMPLES["events"] if item["kind"] == "list_info"
+    )
+    first_row = {**fixture["row"], "sht_cd": "00104K"}
+    second_row = {
+        **first_row,
+        "stk_kind": "우선주",
+        "issue_price": "73000",
+        "issue_stk_qty": "300000",
+    }
+
+    first, _ = normalize_ksd_event_row("list_info", first_row)
+    second, _ = normalize_ksd_event_row("list_info", second_row)
+
+    assert first["symbol"] == "00104K"
+    assert first["source_event_id"] != second["source_event_id"]
+
+
+def test_ksd_identity_fallback_includes_other_stable_provider_fields():
+    fixture = next(
+        item for item in DOCUMENTED_EXAMPLES["events"] if item["kind"] == "list_info"
+    )
+    row = {
+        key: value
+        for key, value in fixture["row"].items()
+        if key not in {"issue_type", "stk_kind", "issue_price", "issue_stk_qty"}
+    }
+    first, _ = normalize_ksd_event_row("list_info", row)
+    second, _ = normalize_ksd_event_row(
+        "list_info", {**row, "tot_issue_stk_qty": "2000000"}
+    )
+
+    assert first["source_event_id"] != second["source_event_id"]
+
+
+def test_schedule_revision_updates_identity_without_splitting_event():
+    fixture = next(
+        item for item in DOCUMENTED_EXAMPLES["events"] if item["kind"] == "paidin_capin"
+    )
+    original, _ = normalize_ksd_event_row("paidin_capin", fixture["row"])
+    revised, _ = normalize_ksd_event_row(
+        "paidin_capin", {**fixture["row"], "list_date": "20261220"}
+    )
+
+    assert original["source_event_id"] == revised["source_event_id"]
+    assert revised["raw_payload_json"]["list_date"] == "2026-12-20"
+
+
+@pytest.mark.parametrize("bad_date", ["202611", "2026111"])
+def test_ksd_event_rejects_truncated_compact_date(bad_date):
+    with pytest.raises(ValueError, match="record_date"):
+        normalize_ksd_event_row(
+            "bonus_issue", {"record_date": bad_date, "sht_cd": "005930"}
+        )
+
+
 @pytest.mark.asyncio
 async def test_100_row_non_dividend_response_splits_and_reports_truncated_day():
     calls: list[tuple[str, str]] = []
@@ -197,3 +255,71 @@ async def test_dry_run_normalizes_without_constructing_repository(monkeypatch):
     assert result == 0
     assert client.closed
     repository.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invalid_ksd_row_does_not_discard_valid_rows_and_returns_failure(
+    monkeypatch, caplog
+):
+    from argparse import Namespace
+
+    from scripts import ingest_kis_ksd_dividends as cli
+
+    fixture = next(
+        item for item in DOCUMENTED_EXAMPLES["events"] if item["kind"] == "bonus_issue"
+    )
+
+    class FakeKISClient:
+        closed = False
+
+        async def ksd_bonus_issue(self, _start: str, _end: str):
+            return [fixture["row"], {**fixture["row"], "record_date": "202611"}]
+
+        async def close(self):
+            self.closed = True
+
+    client = FakeKISClient()
+    monkeypatch.setattr(cli, "KISClient", lambda **_kwargs: client)
+
+    class FakeRepository:
+        events = []
+
+        async def upsert_event_with_values(self, event, values, *, replace_values):
+            self.events.append((event, values, replace_values))
+
+    class FakeSession:
+        committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def commit(self):
+            self.committed = True
+
+    fake_repo = FakeRepository()
+    fake_session = FakeSession()
+    monkeypatch.setattr(cli, "MarketEventsRepository", lambda _db: fake_repo)
+    from app.core import db
+
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: fake_session)
+    caplog.set_level(logging.INFO)
+
+    result = await cli.run(
+        Namespace(
+            from_date=date(2026, 11, 20),
+            to_date=date(2026, 11, 20),
+            kinds=["bonus_issue"],
+            commit=True,
+        )
+    )
+
+    assert result == 1
+    assert client.closed
+    assert fake_session.committed
+    assert len(fake_repo.events) == 1
+    assert fake_repo.events[0][2] is True
+    assert "KSD 저장=1" in caplog.text
+    assert "정규화 실패=1" in caplog.text

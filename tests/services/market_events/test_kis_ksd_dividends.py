@@ -37,6 +37,22 @@ def test_ksd_dividend_normalizes_exact_decimal_and_dates():
     assert isinstance(values[0]["actual"], Decimal)
 
 
+@pytest.mark.parametrize("bad_date", ["202611", "2026111"])
+def test_ksd_dividend_rejects_truncated_dates(bad_date):
+    with pytest.raises(ValueError, match="record_date"):
+        normalize_ksd_dividend_row(
+            {"record_date": bad_date, "sht_cd": "005930", "per_sto_divi_amt": "1"}
+        )
+
+
+def test_ksd_dividend_accepts_ascii_alphanumeric_short_code():
+    event, _ = normalize_ksd_dividend_row(
+        {"record_date": "20261120", "sht_cd": "00104K", "per_sto_divi_amt": "1"}
+    )
+
+    assert event["symbol"] == "00104K"
+
+
 @pytest.mark.asyncio
 async def test_100_row_response_splits_date_window():
     calls: list[tuple[str, str]] = []
