@@ -54,6 +54,72 @@ _TVSCREENER_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
     "crypto": ("http_tvscreener_news_crypto",),
 }
 
+_ARTICLE_MERGE_FIELDS = (
+    "title",
+    "source",
+    "author",
+    "article_content",
+    "summary",
+    "stock_symbol",
+    "stock_name",
+    "keywords",
+    "provider_article_id",
+    "source_document_ids",
+)
+_ARTICLE_PUBLICATION_FIELDS = (
+    "article_published_at",
+    "published_at_raw",
+    "published_offset",
+    "published_at",
+    "published_precision",
+    "published_at_reason",
+)
+_ARTICLE_REVISION_FIELDS = (
+    "title",
+    "source",
+    "author",
+    "article_content",
+    "summary",
+    "stock_symbol",
+    "stock_name",
+    *symbol_news_store.PUBLICATION_CONTENT_FIELDS,
+)
+
+
+def _merge_batch_article_values(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> dict[str, Any]:
+    """Fold one duplicate URL using the same precedence as the SQL upsert."""
+    merged = dict(existing)
+    for name in _ARTICLE_MERGE_FIELDS:
+        value = incoming[name]
+        if name == "title" or value is not None:
+            merged[name] = value
+
+    existing_rank = symbol_news_store.publication_precision_rank(
+        existing.get("published_precision")
+    )
+    incoming_rank = symbol_news_store.publication_precision_rank(
+        incoming.get("published_precision")
+    )
+    if incoming_rank >= existing_rank:
+        for name in _ARTICLE_PUBLICATION_FIELDS:
+            value = incoming.get(name)
+            if value is not None:
+                merged[name] = value
+
+    changed = any(
+        merged.get(name) != existing.get(name) for name in _ARTICLE_MERGE_FIELDS
+    )
+    changed = changed or any(
+        merged.get(name) != existing.get(name) for name in _ARTICLE_PUBLICATION_FIELDS
+    )
+    if changed:
+        merged["updated_at"] = incoming.get("created_at")
+    if any(merged.get(name) != existing.get(name) for name in _ARTICLE_REVISION_FIELDS):
+        merged["revised_at"] = incoming["first_received_at"]
+    return merged
+
 
 async def create_news_article(
     title: str,
@@ -314,27 +380,24 @@ async def ingest_news_ingestor_bulk(
         ]
         values_by_url: dict[str, dict[str, Any]] = {}
         for values in article_values:
-            values_by_url.setdefault(values["url"], values)
+            current = values_by_url.get(values["url"])
+            if current is None:
+                values_by_url[values["url"]] = values
+            else:
+                values_by_url[values["url"]] = _merge_batch_article_values(
+                    current, values
+                )
         article_values = list(values_by_url.values())
+        for values in article_values:
+            values.setdefault("updated_at", None)
+            values.setdefault("revised_at", None)
         article_insert = pg_insert(NewsArticle).values(article_values)
         excluded = article_insert.excluded
-        article_content_fields = (
-            "title",
-            "source",
-            "author",
-            "article_content",
-            "summary",
-            "stock_symbol",
-            "stock_name",
-            "keywords",
-            "provider_article_id",
-            "source_document_ids",
-        )
         update_values = {
             name: getattr(excluded, name)
             if name == "title"
             else func.coalesce(getattr(excluded, name), getattr(NewsArticle, name))
-            for name in article_content_fields
+            for name in _ARTICLE_MERGE_FIELDS
         }
         update_values.update(symbol_news_store.publication_update_values(excluded))
         changed_fields = [
@@ -343,17 +406,10 @@ async def ingest_news_ingestor_bulk(
         ]
         content_changed_fields = [
             NewsArticle.title.is_distinct_from(update_values["title"]),
-            NewsArticle.source.is_distinct_from(update_values["source"]),
-            NewsArticle.author.is_distinct_from(update_values["author"]),
-            NewsArticle.article_content.is_distinct_from(
-                update_values["article_content"]
-            ),
-            NewsArticle.summary.is_distinct_from(update_values["summary"]),
-            NewsArticle.stock_symbol.is_distinct_from(update_values["stock_symbol"]),
-            NewsArticle.stock_name.is_distinct_from(update_values["stock_name"]),
             *[
                 getattr(NewsArticle, name).is_distinct_from(update_values[name])
-                for name in symbol_news_store.PUBLICATION_CONTENT_FIELDS
+                for name in _ARTICLE_REVISION_FIELDS
+                if name != "title"
             ],
         ]
         article_stmt = article_insert.on_conflict_do_update(

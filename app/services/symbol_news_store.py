@@ -39,18 +39,24 @@ PUBLICATION_CONTENT_FIELDS = (
 )
 
 
+def publication_precision_rank(precision: str | None) -> int:
+    return _PUBLICATION_PRECISION_RANK.get(precision or "", 0)
+
+
 def publication_update_values(excluded: Any) -> dict[str, Any]:
     """Only replace stored publication data with equal or better precision."""
     incoming_rank = case(
-        (excluded.published_precision == "second", 3),
-        (excluded.published_precision == "minute", 2),
-        (excluded.published_precision == "date", 1),
+        *(
+            (excluded.published_precision == precision, rank)
+            for precision, rank in _PUBLICATION_PRECISION_RANK.items()
+        ),
         else_=0,
     )
     stored_rank = case(
-        (NewsArticle.published_precision == "second", 3),
-        (NewsArticle.published_precision == "minute", 2),
-        (NewsArticle.published_precision == "date", 1),
+        *(
+            (NewsArticle.published_precision == precision, rank)
+            for precision, rank in _PUBLICATION_PRECISION_RANK.items()
+        ),
         else_=0,
     )
     use_incoming = incoming_rank >= stored_rank

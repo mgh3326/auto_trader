@@ -241,3 +241,37 @@ async def test_bulk_ingest_reports_repeated_new_url_as_skipped(db_session):
             select(NewsArticle.id).where(NewsArticle.url == target_url)
         )
     ).scalar_one()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_bulk_ingest_folds_repeated_url_to_later_richer_article(db_session):
+    payload = _unique_payload(f"test-news-bulk-merge-{uuid4().hex}")
+    first_article = payload["articles"][0]
+    later_article = dict(first_article)
+    later_article.update(
+        {
+            "title": f"{first_article['title']} revised",
+            "summary": "Later summary enrichment",
+            "content": "Later article body enrichment",
+        }
+    )
+    payload["articles"] = [first_article, later_article]
+    target_url = first_article.get("canonical_url") or first_article["url"]
+
+    response = await ingest_news_ingestor_bulk(
+        NewsBulkIngestRequest.model_validate(payload)
+    )
+
+    assert response.success
+    assert response.inserted_count == 1
+    assert response.skipped_count == 1
+    stored = (
+        await db_session.execute(
+            select(NewsArticle).where(NewsArticle.url == target_url)
+        )
+    ).scalar_one()
+    assert stored.title == later_article["title"]
+    assert stored.summary == later_article["summary"]
+    assert stored.article_content == later_article["content"]
+    assert stored.revised_at is not None

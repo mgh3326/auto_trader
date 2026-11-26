@@ -50,6 +50,50 @@ def _sample_payload() -> dict:
     }
 
 
+@pytest.mark.unit
+def test_duplicate_article_values_keep_later_content_and_revision_time():
+    from app.services.llm_news_service import _merge_batch_article_values
+
+    first_received = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
+    later_received = datetime(2026, 11, 26, 1, 1, tzinfo=UTC)
+    first = {
+        "title": "Initial title",
+        "source": None,
+        "author": None,
+        "article_content": None,
+        "summary": None,
+        "stock_symbol": None,
+        "stock_name": None,
+        "keywords": ["fingerprint:one"],
+        "provider_article_id": None,
+        "source_document_ids": None,
+        "article_published_at": None,
+        "published_at_raw": None,
+        "published_offset": None,
+        "published_at": None,
+        "published_precision": None,
+        "published_at_reason": None,
+        "first_received_at": first_received,
+        "created_at": first_received,
+    }
+    later = {
+        **first,
+        "title": "Revised title",
+        "article_content": "Later body",
+        "summary": "Later summary",
+        "first_received_at": later_received,
+        "created_at": later_received,
+    }
+
+    merged = _merge_batch_article_values(first, later)
+
+    assert merged["title"] == "Revised title"
+    assert merged["article_content"] == "Later body"
+    assert merged["summary"] == "Later summary"
+    assert merged["first_received_at"] == first_received
+    assert merged["revised_at"] == later_received
+
+
 class TestNewsIngestorSchemas:
     def test_news_ingestor_bulk_schema_maps_payload(self):
         from app.schemas.news import NewsBulkIngestRequest
