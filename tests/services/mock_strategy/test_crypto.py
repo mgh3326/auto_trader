@@ -111,6 +111,8 @@ class Broker:
         self.fail = False
         self.partial = False
         self.pending = False
+        self.unknown_received_qty = False
+        self.available = Decimal("100000")
 
     async def rules(self, symbol):
         return MarketRules(Decimal("0.1"), Decimal("0.1"), Decimal("5"))
@@ -129,6 +131,9 @@ class Broker:
 
     async def closeable(self, order, qty):
         assert qty > 0
+
+    async def available_qty(self, order):
+        return self.available
 
     async def preflight(self, order, *, confirm):
         assert confirm is True
@@ -152,6 +157,11 @@ class Broker:
             qty,
             self.mark if qty else None,
             not self.pending,
+            qty
+            if order.venue == "alpaca_paper_crypto"
+            and qty
+            and not self.unknown_received_qty
+            else None,
         )
         self.orders[order.client_order_id] = proof
         return proof
@@ -266,6 +276,34 @@ async def test_uncertain_claim_is_never_sent_again():
     broker.fail = False
     await run_lists(signals(), **args)
     assert sum(c.client_order_id == uncertain for c in broker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_alpaca_crypto_exit_refuses_when_net_received_quantity_is_unknown():
+    recorder = Recorder()
+    broker = Broker(recorder)
+    broker.unknown_received_qty = True
+    await run_lists(
+        signals(),
+        venue="alpaca_paper_crypto",
+        asof=ASOF,
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+        now=DECISION,
+    )
+    sent_before_exit = len(broker.calls)
+    result = await close_due(
+        venue="alpaca_paper_crypto",
+        asof=DECISION + timedelta(days=3),
+        broker=broker,
+        recorder=recorder,
+        dry_run=False,
+        confirm=True,
+    )
+    assert all(row["status"] == "exit_refused_fee_unknown" for row in result["orders"])
+    assert len(broker.calls) == sent_before_exit
 
 
 @pytest.mark.asyncio

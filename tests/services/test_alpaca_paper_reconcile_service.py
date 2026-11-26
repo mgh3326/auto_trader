@@ -268,6 +268,69 @@ async def test_reconcile_only_books_execution_row_and_rerun_is_noop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_crypto_fee_reconcile_preview_and_commit_never_submit_orders():
+    from app.services.alpaca_paper_crypto_fee_reconcile import (
+        AlpacaPaperCryptoFeeReconcileService,
+    )
+
+    class FeeRow:
+        client_order_id = "crypto-buy"
+        broker_order_id = "alpaca-buy-1"
+        execution_symbol = "BTC/USD"
+        side = "buy"
+        filled_qty = Decimal("0.0007")
+
+    class FeeLedger:
+        written = []
+
+        async def list_crypto_fee_candidates(self, *, limit):
+            assert limit == 100
+            return [FeeRow()]
+
+        async def record_crypto_fee_evidence(self, client_order_id, **values):
+            self.written.append((client_order_id, values))
+
+    class FeeBroker:
+        async def list_crypto_fee_activities(self, *, order_id):
+            assert order_id == "alpaca-buy-1"
+            return [
+                {
+                    "id": "activity-1",
+                    "activity_type": "CFEE",
+                    "order_id": order_id,
+                    "symbol": "BTCUSD",
+                    "qty": "-0.00000175",
+                    "price": "60630.38",
+                    "status": "executed",
+                }
+            ]
+
+        async def submit_order(self, *_args, **_kwargs):
+            raise AssertionError("fee reconciliation must never submit orders")
+
+    ledger = FeeLedger()
+    service = AlpacaPaperCryptoFeeReconcileService(ledger, FeeBroker())
+    preview = await service.reconcile()
+    assert preview["dry_run"] is True
+    assert preview["items"][0]["net_received_qty"] == "0.00069825"
+    assert ledger.written == []
+
+    committed = await service.reconcile(commit=True)
+    assert committed["dry_run"] is False
+    assert ledger.written == [
+        (
+            "crypto-buy",
+            {
+                "fee_amount": Decimal("0.00000175"),
+                "fee_currency": "BTC",
+                "net_received_qty": Decimal("0.00069825"),
+                "reason": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_skips_final_reconciled_execution_row() -> None:
     from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
 

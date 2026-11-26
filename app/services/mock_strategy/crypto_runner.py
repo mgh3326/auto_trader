@@ -50,6 +50,14 @@ async def _save(recorder: Any, order: Any, evidence: FillEvidence) -> None:
         ),
         meta={
             "filled_qty": str(evidence.filled_qty),
+            "net_received_qty": (
+                str(evidence.held_qty) if evidence.held_qty is not None else None
+            ),
+            "fee_amount": (
+                str(evidence.fee_amount) if evidence.fee_amount is not None else None
+            ),
+            "fee_currency": evidence.fee_currency,
+            "fee_evidence_reason": evidence.fee_evidence_reason,
             "entry_terminal": evidence.terminal,
             "broker_status": evidence.status,
         },
@@ -559,6 +567,16 @@ async def close_due(
                     in_flight.append(leg)
             if planned_count > 1:
                 raise ValueError("multiple planned close legs require review")
+            if venue == "alpaca_paper_crypto" and evidence.held_qty is None:
+                results.append(
+                    {
+                        "client_order_id": entry.client_order_id,
+                        "status": "exit_refused_fee_unknown",
+                        "reason": evidence.fee_evidence_reason
+                        or "net_received_quantity_unknown",
+                    }
+                )
+                continue
             held = (
                 evidence.held_qty
                 if evidence.held_qty is not None
@@ -575,6 +593,10 @@ async def close_due(
                     }
                 )
                 continue
+            if venue == "alpaca_paper_crypto" and remaining:
+                # The entry's net receive is an upper bound; the shared paper
+                # account may have less available after unrelated activity.
+                remaining = min(remaining, await broker.available_qty(entry))
             rules, price = (
                 await broker.rules(entry.symbol),
                 await broker.price(entry.symbol),
@@ -614,6 +636,15 @@ async def close_due(
                     results.append(_output(pending or close))
                     continue
                 leg = pending or await recorder.record(close)
+                if venue == "alpaca_paper_crypto" and leg.qty > qty:
+                    results.append(
+                        {
+                            "client_order_id": leg.client_order_id,
+                            "status": "exit_refused_quantity_exceeds_net_received",
+                            "reason": "planned_exit_exceeds_attributed_quantity",
+                        }
+                    )
+                    continue
                 await broker.closeable(entry, leg.qty)
                 sent = await _send(recorder, broker, leg, confirm=confirm)
                 if (
@@ -654,16 +685,47 @@ async def close_due(
                 pnl = proceeds - positive(evidence.price) * sold
                 if entry.side == "short":
                     pnl = -pnl
+                pnl_meta: dict[str, Any] = {
+                    "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
+                    "gross_pnl": str(pnl),
+                    "residual_qty": str(remaining),
+                }
+                if venue == "alpaca_paper_crypto":
+                    fee_values = [evidence]
+                    for fee_leg in legs:
+                        if (
+                            fee_leg.side in {"sell", "cover"}
+                            and fee_leg.status != "planned"
+                            and Decimal(fee_leg.meta.get("filled_qty", "0")) > 0
+                        ):
+                            fee_values.append(await broker.evidence(fee_leg))
+                    if all(item.fee_amount is not None for item in fee_values):
+                        fees_usd = Decimal("0")
+                        known = True
+                        for item in fee_values:
+                            if item.fee_currency == "USD":
+                                fees_usd += item.fee_amount or Decimal("0")
+                            elif item.fee_currency == entry.symbol.removesuffix("USDT"):
+                                reference_price = item.price
+                                if reference_price is None:
+                                    known = False
+                                    break
+                                fees_usd += (
+                                    item.fee_amount or Decimal("0")
+                                ) * reference_price
+                            elif item.fee_amount != 0:
+                                known = False
+                                break
+                        if known:
+                            pnl_meta["net_pnl"] = str(pnl - fees_usd)
+                            pnl_meta["fee_total_usd"] = str(fees_usd)
                 await recorder.update(
                     entry.client_order_id,
                     status="filled" if remaining else "closed",
                     closed_at=None if remaining else datetime.now(UTC),
                     exit_price=proceeds / sold,
                     realized_pnl=pnl,
-                    meta={
-                        "pnl_basis": "gross_closed_quantity_excludes_fees_and_funding",
-                        "residual_qty": str(remaining),
-                    },
+                    meta=pnl_meta,
                 )
             results.append(
                 {

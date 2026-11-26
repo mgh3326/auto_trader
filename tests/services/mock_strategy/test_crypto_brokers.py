@@ -1,6 +1,8 @@
 """Fake broker wires preserve isolated 1x, reduceOnly, account and fill proof."""
 
+import json
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,10 @@ from app.services.mock_strategy.crypto_brokers import (
 )
 
 pytestmark = pytest.mark.unit
+
+FEE_ACTIVITY_FIXTURE = json.loads(
+    Path("tests/fixtures/alpaca_paper_crypto_fee_activities.json").read_text()
+)
 
 
 def intent(side="short"):
@@ -269,6 +275,48 @@ async def test_alpaca_crypto_buy_and_sell_above_fifty_dollars(monkeypatch):
     assert bought.filled_qty == sold.filled_qty == 2
     assert [r.side for r in client.calls] == ["buy", "sell"]
     assert all(r.symbol == "BTC/USD" and r.time_in_force == "gtc" for r in client.calls)
+
+
+def test_crypto_fee_activity_fixtures_preserve_currency_and_net_quantity():
+    from app.services.alpaca_paper_crypto_fee_evidence import (
+        resolve_crypto_fee_evidence,
+    )
+
+    buy = resolve_crypto_fee_evidence(
+        order_id="alpaca-buy-1",
+        symbol="BTC/USD",
+        side="buy",
+        filled_qty=Decimal("0.0007"),
+        activities=FEE_ACTIVITY_FIXTURE["buy_base_fee"],
+    )
+    assert buy.amount == Decimal("0.00000175")
+    assert buy.currency == "BTC"
+    assert buy.net_received_qty == Decimal("0.00069825")
+
+    sell = resolve_crypto_fee_evidence(
+        order_id="alpaca-sell-1",
+        symbol="BTC/USD",
+        side="sell",
+        filled_qty=Decimal("0.00069825"),
+        activities=FEE_ACTIVITY_FIXTURE["sell_usd_fee"],
+    )
+    assert sell.amount == Decimal("0.08")
+    assert sell.currency == "USD"
+    assert sell.net_received_qty is None
+
+    missing = resolve_crypto_fee_evidence(
+        order_id="alpaca-buy-2",
+        symbol="BTC/USD",
+        side="buy",
+        filled_qty=Decimal("1"),
+        activities=FEE_ACTIVITY_FIXTURE["missing"],
+    )
+    assert (missing.amount, missing.currency, missing.net_received_qty) == (
+        None,
+        None,
+        None,
+    )
+    assert missing.reason == "fee_activity_missing"
 
 
 @pytest.mark.asyncio

@@ -79,7 +79,16 @@ class RoundtripFillBlock(_RoundtripBaseModel):
     filled_avg_price: Decimal | None = None
     fee_amount: Decimal | None = None
     fee_currency: str | None = None
+    fee_evidence_reason: str | None = None
+    net_received_qty: Decimal | None = None
     qty_delta: Decimal | None = None
+
+
+class RoundtripPnlBlock(_RoundtripBaseModel):
+    currency: str = "USD"
+    gross_pnl: Decimal | None = None
+    net_pnl: Decimal | None = None
+    reason: str | None = None
 
 
 class RoundtripReconcileBlock(_RoundtripBaseModel):
@@ -145,6 +154,7 @@ class AlpacaPaperRoundtripReport(_RoundtripBaseModel):
     approval_packet: RoundtripApprovalPacketBlock
     buy_leg: RoundtripLegBlock | None = None
     sell_leg: RoundtripLegBlock | None = None
+    pnl: RoundtripPnlBlock = Field(default_factory=RoundtripPnlBlock)
     final_position: RoundtripFinalPositionBlock
     open_orders: RoundtripOpenOrdersBlock
     anomalies: RoundtripAnomalyBlock
@@ -171,6 +181,7 @@ __all__ = [
     "RoundtripLookupKey",
     "RoundtripOpenOrdersBlock",
     "RoundtripOrderBlock",
+    "RoundtripPnlBlock",
     "RoundtripQaBlock",
     "RoundtripReconcileBlock",
     "RoundtripSafetyBlock",

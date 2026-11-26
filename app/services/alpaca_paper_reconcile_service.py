@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.services.alpaca_paper_crypto_fee_evidence import resolve_crypto_fee_evidence
 from app.services.alpaca_paper_ledger_service import (
     KNOWN_TERMINAL_BROKER_STATUSES,
     LIFECYCLE_ANOMALY,
@@ -429,6 +430,45 @@ class AlpacaPaperReconcileService:
         ``record_status`` actually persists (ROB-953 R4 invariant).
         """
         result["transition_depth"] = transition.label
+        fee_evidence = None
+        fee_reason = None
+        if (
+            getattr(row, "account_mode", None) == "alpaca_paper_crypto"
+            and getattr(row, "side", None) in {"buy", "sell"}
+            and broker_qty > 0
+        ):
+            order_id = getattr(order, "id", None)
+            if not order_id:
+                fee_reason = "broker_order_id_missing"
+            else:
+                try:
+                    activities = await self._broker.list_crypto_fee_activities(
+                        order_id=str(order_id)
+                    )
+                    fee_evidence = resolve_crypto_fee_evidence(
+                        order_id=str(order_id),
+                        symbol=row.execution_symbol,
+                        side=row.side,
+                        filled_qty=broker_qty,
+                        activities=activities,
+                    )
+                    fee_reason = fee_evidence.reason
+                except Exception:
+                    fee_reason = "fee_activity_unreadable"
+            result.update(
+                fee_amount=(
+                    str(fee_evidence.amount)
+                    if fee_evidence and fee_evidence.amount is not None
+                    else None
+                ),
+                fee_currency=fee_evidence.currency if fee_evidence else None,
+                net_received_qty=(
+                    str(fee_evidence.net_received_qty)
+                    if fee_evidence and fee_evidence.net_received_qty is not None
+                    else None
+                ),
+                fee_evidence_reason=fee_reason,
+            )
         if dry_run:
             result["lifecycle_state"] = transition.lifecycle_state
             result["action"] = transition.action(dry_run=True)
@@ -487,6 +527,20 @@ class AlpacaPaperReconcileService:
                 stale_write_rejected=True,
             )
             return result
+
+        if (
+            getattr(row, "account_mode", None) == "alpaca_paper_crypto"
+            and broker_qty > 0
+        ):
+            await self._ledger.record_crypto_fee_evidence(
+                row.client_order_id,
+                fee_amount=fee_evidence.amount if fee_evidence else None,
+                fee_currency=fee_evidence.currency if fee_evidence else None,
+                net_received_qty=(
+                    fee_evidence.net_received_qty if fee_evidence else None
+                ),
+                reason=fee_reason,
+            )
 
         persisted_label = _LIFECYCLE_ACTION_LABELS.get(
             persisted, persisted or transition.label

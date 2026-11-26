@@ -8,6 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from app.services.alpaca_paper_crypto_fee_evidence import resolve_crypto_fee_evidence
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.brokers.binance.demo.quantity import venue_order_quantity
@@ -43,6 +44,9 @@ class FillEvidence:
     price: Decimal | None
     terminal: bool
     held_qty: Decimal | None = None
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_evidence_reason: str | None = None
 
 
 class CryptoBroker(Protocol):
@@ -54,6 +58,7 @@ class CryptoBroker(Protocol):
     async def submit(self, order: Any, *, confirm: bool) -> FillEvidence: ...
     async def evidence(self, order: Any) -> FillEvidence: ...
     async def closeable(self, order: Any, qty: Decimal) -> None: ...
+    async def available_qty(self, order: Any) -> Decimal: ...
 
 
 def require_enabled(venue: str, *, confirm: bool) -> None:
@@ -312,6 +317,8 @@ class BinanceCryptoDemo:
             evidence.price,
             evidence.terminal,
             total - base_fee,
+            base_fee if base_fee else None,
+            order.symbol.removesuffix("USDT") if base_fee else None,
         )
 
     async def evidence(self, order: Any) -> FillEvidence:
@@ -415,15 +422,19 @@ class AlpacaCryptoPaper:
         return await self.pricing.price(symbol)
 
     async def closeable(self, order: Any, qty: Decimal) -> None:
+        available = await self.available_qty(order)
+        if available < qty:
+            raise ValueError("paper crypto quantity unavailable")
+
+    async def available_qty(self, order: Any) -> Decimal:
         position = await self.client.get_position(
             order.symbol.removesuffix("USDT") + "USD"
         )
-        if (
-            position is None
-            or position.qty_available is None
-            or position.qty_available < qty
-        ):
+        if position is None or position.qty_available is None:
             raise ValueError("paper crypto quantity unavailable")
+        if not position.qty_available.is_finite() or position.qty_available < 0:
+            raise ValueError("paper crypto quantity unavailable")
+        return position.qty_available
 
     def _evidence(self, response: Any, order: Any) -> FillEvidence:
         execution = self.execution_symbol(order.symbol)
@@ -449,6 +460,38 @@ class AlpacaCryptoPaper:
             filled,
             positive(response.filled_avg_price) if filled else None,
             response.status in {"filled", "canceled", "expired", "rejected"},
+        )
+
+    async def _evidence_with_fees(self, response: Any, order: Any) -> FillEvidence:
+        evidence = self._evidence(response, order)
+        if evidence.filled_qty <= 0:
+            return evidence
+        try:
+            activities = await self.client.list_crypto_fee_activities(
+                order_id=evidence.broker_order_id
+            )
+        except Exception:
+            return FillEvidence(
+                **{
+                    **evidence.__dict__,
+                    "fee_evidence_reason": "fee_activity_unreadable",
+                }
+            )
+        fee_evidence = resolve_crypto_fee_evidence(
+            order_id=evidence.broker_order_id,
+            symbol=self.execution_symbol(order.symbol),
+            side=order.side,
+            filled_qty=evidence.filled_qty,
+            activities=activities,
+        )
+        return FillEvidence(
+            **{
+                **evidence.__dict__,
+                "held_qty": fee_evidence.net_received_qty,
+                "fee_amount": fee_evidence.amount,
+                "fee_currency": fee_evidence.currency,
+                "fee_evidence_reason": fee_evidence.reason,
+            }
         )
 
     async def preflight(self, order: Any, *, confirm: bool) -> None:
@@ -477,13 +520,13 @@ class AlpacaCryptoPaper:
                 client_order_id=order.client_order_id,
             )
         )
-        return self._evidence(response, order)
+        return await self._evidence_with_fees(response, order)
 
     async def evidence(self, order: Any) -> FillEvidence:
         response = await self.client.get_order_by_client_order_id(order.client_order_id)
         if response is None:
             raise ValueError("paper order evidence unavailable; no resend")
-        return self._evidence(response, order)
+        return await self._evidence_with_fees(response, order)
 
     async def aclose(self) -> None:
         await self.pricing.aclose()

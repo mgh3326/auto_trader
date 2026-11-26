@@ -19,6 +19,7 @@ from app.services.brokers.alpaca.schemas import (
     AccountSnapshot,
     Asset,
     CashBalance,
+    CryptoFeeActivity,
     Fill,
     MarketClock,
     Order,
@@ -302,3 +303,40 @@ class AlpacaPaperBrokerService:
         if not data:
             return []
         return [Fill.model_validate(item) for item in data]
+
+    async def list_crypto_fee_activities(
+        self, *, order_id: str
+    ) -> list[CryptoFeeActivity]:
+        """Read the crypto CFEE and USD FEE activities linked to an order."""
+        results: dict[str, CryptoFeeActivity] = {}
+        for activity_type in ("CFEE", "FEE"):
+            page_token: str | None = None
+            for _page_no in range(20):
+                params: dict[str, str | int] = {
+                    "order_id": order_id,
+                    "direction": "desc",
+                    "page_size": 100,
+                }
+                if page_token is not None:
+                    params["page_token"] = page_token
+                data = await self._request(
+                    "GET", f"/v2/account/activities/{activity_type}", params=params
+                )
+                if not data:
+                    break
+                if not isinstance(data, list):
+                    raise ValueError("crypto_fee_activity_shape_invalid")
+                page = [CryptoFeeActivity.model_validate(item) for item in data]
+                for activity in page:
+                    if activity.activity_type != activity_type:
+                        raise ValueError("crypto_fee_activity_type_mismatch")
+                    results.setdefault(activity.id, activity)
+                if len(page) < 100:
+                    break
+                next_token = page[-1].id
+                if not next_token or next_token == page_token:
+                    raise ValueError("crypto_fee_activity_pagination_invalid")
+                page_token = next_token
+            else:
+                raise ValueError("crypto_fee_activity_pagination_limit_exceeded")
+        return list(results.values())

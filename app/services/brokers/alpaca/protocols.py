@@ -5,6 +5,7 @@ from app.services.brokers.alpaca.schemas import (
     AccountSnapshot,
     Asset,
     CashBalance,
+    CryptoFeeActivity,
     Fill,
     Order,
     OrderRequest,
@@ -49,3 +50,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
         page_size: int | None = None,
         direction: str | None = None,
     ) -> list[Fill]: ...
+
+    async def list_crypto_fee_activities(
+        self, *, order_id: str
+    ) -> list[CryptoFeeActivity]: ...

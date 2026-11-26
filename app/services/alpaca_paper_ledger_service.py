@@ -533,6 +533,99 @@ class AlpacaPaperLedgerService:
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_crypto_fee_candidates(
+        self, limit: int = 100
+    ) -> list[AlpacaPaperOrderLedger]:
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.side.in_(("buy", "sell")),
+                AlpacaPaperOrderLedger.filled_qty > 0,
+                or_(
+                    AlpacaPaperOrderLedger.fee_amount.is_(None),
+                    AlpacaPaperOrderLedger.fee_evidence_reason.is_not(None),
+                ),
+            )
+            .order_by(AlpacaPaperOrderLedger.created_at.asc())
+            .limit(limit)
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def record_crypto_fee_evidence(
+        self,
+        client_order_id: str,
+        *,
+        fee_amount: Decimal | None,
+        fee_currency: str | None,
+        net_received_qty: Decimal | None,
+        reason: str | None,
+    ) -> AlpacaPaperOrderLedger:
+        """Persist paper crypto fee evidence without changing execution state."""
+        row = await self.get_execution_by_client_order_id(client_order_id)
+        if (
+            row is None
+            or row.account_mode != "alpaca_paper_crypto"
+            or row.side not in {"buy", "sell"}
+            or row.filled_qty is None
+            or Decimal(str(row.filled_qty)) <= 0
+        ):
+            raise LedgerNotFoundError("eligible Alpaca crypto fill not found")
+        allowed_reasons = {
+            "fee_activity_missing",
+            "fee_activity_unreadable",
+            "fee_activity_order_mismatch",
+            "fee_activity_symbol_mismatch",
+            "fee_activity_type_unknown",
+            "fee_currency_ambiguous",
+            "fee_exceeds_filled_quantity",
+            "broker_order_id_missing",
+        }
+        if reason is not None:
+            if reason not in allowed_reasons or any(
+                value is not None
+                for value in (fee_amount, fee_currency, net_received_qty)
+            ):
+                raise ValueError("invalid unknown crypto fee evidence")
+        else:
+            if fee_amount is None or fee_currency not in {
+                "USD",
+                row.execution_symbol.split("/")[0],
+            }:
+                raise ValueError("complete crypto fee evidence required")
+            if not fee_amount.is_finite() or fee_amount < 0:
+                raise ValueError("invalid crypto fee amount")
+            if row.side == "buy":
+                if (
+                    net_received_qty is None
+                    or not net_received_qty.is_finite()
+                    or net_received_qty <= 0
+                    or net_received_qty > Decimal(str(row.filled_qty))
+                ):
+                    raise ValueError("invalid net received quantity")
+            elif net_received_qty is not None:
+                raise ValueError("sell fee evidence cannot set net received quantity")
+        await self._db.execute(
+            update(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.id == row.id,
+                AlpacaPaperOrderLedger.account_mode == "alpaca_paper_crypto",
+                AlpacaPaperOrderLedger.side == row.side,
+                AlpacaPaperOrderLedger.filled_qty == row.filled_qty,
+            )
+            .values(
+                fee_amount=fee_amount,
+                fee_currency=fee_currency,
+                fee_evidence_reason=reason,
+                net_received_qty=net_received_qty,
+            )
+        )
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
+
     async def list_by_correlation_id(
         self,
         lifecycle_correlation_id: str,

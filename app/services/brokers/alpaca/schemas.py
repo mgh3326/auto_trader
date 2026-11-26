@@ -99,3 +99,15 @@ class Fill(BaseModel):
     cum_qty: Decimal | None = None
     leaves_qty: Decimal | None = None
     order_status: str | None = None
+
+
+class CryptoFeeActivity(BaseModel):
+    id: str
+    activity_type: str
+    order_id: str | None = None
+    symbol: str | None = None
+    qty: Decimal | None = None
+    price: Decimal | None = None
+    net_amount: Decimal | None = None
+    currency: str | None = None
+    status: str | None = None

@@ -73,6 +73,23 @@ paper endpoint·예상 계정 검증·기본 비활성·호출별 confirm은 유
 
 **주의**: 서비스는 브로커 mutation 없음. 직접 SQL INSERT/UPDATE/DELETE 금지.
 
+**Alpaca paper crypto 수수료·순수령 수량 (hk 6784)**: `alpaca_paper_crypto` 체결은 주문 ID로 연결한
+Account Activities `CFEE`(수취 암호자산 수수료)와 `FEE`(USD 수수료)만 수수료 증거로 쓴다.
+`fee_amount`는 최대 18자리 소수 정밀도를 보존하고, `fee_currency`와 닫힌
+`fee_evidence_reason`을 `AlpacaPaperLedgerService`가 기록한다. 매수의
+`net_received_qty`는 base-asset `CFEE`를 `filled_qty`에서 뺀 값이며, USD `FEE`만 있으면
+확인된 총 체결 수량이다. 수수료 행 부재·읽기 실패·귀속/통화/심볼 불일치는 NULL과 사유로 남기며
+0 수수료나 총 체결량으로 대체하지 않는다. 수수료 활동은 당일 뒤늦게 올라올 수 있다.
+
+수동 복구 CLI `python -m scripts.reconcile_alpaca_paper_crypto_fees`는 기본 미리보기이고,
+`--commit`만 서비스 레이어에 기록한다. 이 단계는 읽기 전용 Alpaca paper client로 계좌 활동을
+가져오며 주문을 제출하지 않는다. 기존 mock 전략의 Alpaca crypto 청산은 entry의 검증된
+순수령 수량과 현재 broker 가용 포지션 중 작은 수량만 청산한다. 순수령 수량을 모르면 청산을
+거부한다. 기존 gross P&L은 유지하고, 매수·매도 수수료가 모두 확인되면 fill price로 통화 변환한
+net P&L을 mock 전략 기록과 Alpaca roundtrip 보고에 추가한다. 수수료가 빠진 보고는 gross P&L과
+`fee_evidence_missing`을 내고 net P&L은 NULL이다. 근거: [Alpaca crypto trading](https://docs.alpaca.markets/us/v1.1/docs/crypto-trading),
+[Account Activities](https://docs.alpaca.markets/us/reference/getaccountactivitiesbyactivitytype-1).
+
 **Alpaca paper 프리·애프터 모의 제출 — `extended_hours` (hk 6497)**: `alpaca_paper_preview_order`와
 `alpaca_paper_submit_order`는 선택 인자 `extended_hours: bool = False`를 받는다. 기본값은 기존 요청 본문·
 정규화 canonical·hash·`client_order_id`·echo를 바이트 단위로 바꾸지 않는다(테스트가 골든으로 고정).

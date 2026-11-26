@@ -29,6 +29,7 @@ from app.schemas.alpaca_paper_roundtrip_report import (
     RoundtripLookupKey,
     RoundtripOpenOrdersBlock,
     RoundtripOrderBlock,
+    RoundtripPnlBlock,
     RoundtripQaBlock,
     RoundtripReconcileBlock,
 )
@@ -365,6 +366,7 @@ class AlpacaPaperRoundtripReportService:
             ),
             buy_leg=self._leg_block(ordered, "buy"),
             sell_leg=self._leg_block(ordered, "sell"),
+            pnl=self._pnl_block(ordered),
             final_position=self._final_position_block(ordered, positions),
             open_orders=RoundtripOpenOrdersBlock(
                 source="caller_supplied" if open_orders else "missing",
@@ -455,6 +457,8 @@ class AlpacaPaperRoundtripReportService:
                 filled_avg_price=_as_decimal(_get(latest_fill, "filled_avg_price")),
                 fee_amount=_as_decimal(_get(latest_fill, "fee_amount")),
                 fee_currency=_get(latest_fill, "fee_currency"),
+                fee_evidence_reason=_get(latest_fill, "fee_evidence_reason"),
+                net_received_qty=_as_decimal(_get(latest_fill, "net_received_qty")),
                 qty_delta=_as_decimal(_get(latest_fill, "qty_delta")),
             ),
             reconcile=RoundtripReconcileBlock(
@@ -467,6 +471,80 @@ class AlpacaPaperRoundtripReportService:
                 error_summary=_get(latest_reconcile, "error_summary"),
             ),
             latest_row_created_at=_get(leg_rows[-1], "created_at"),
+        )
+
+    def _pnl_block(self, rows: list[Any]) -> RoundtripPnlBlock:
+        if not rows or _get(rows[0], "account_mode") != "alpaca_paper_crypto":
+            return RoundtripPnlBlock(reason="not_crypto_paper")
+        buy = _latest(
+            rows,
+            lambda row: (
+                _get(row, "side") == "buy"
+                and _get(row, "filled_qty") is not None
+                and _get(row, "filled_avg_price") is not None
+            ),
+        )
+        sell_fills = [
+            row
+            for row in rows
+            if _get(row, "side") == "sell"
+            and _as_decimal(_get(row, "filled_qty")) is not None
+            and _as_decimal(_get(row, "filled_qty")) > 0
+            and _as_decimal(_get(row, "filled_avg_price")) is not None
+        ]
+        if buy is None or not sell_fills:
+            return RoundtripPnlBlock(reason="fill_evidence_missing")
+        buy_qty = _as_decimal(_get(buy, "filled_qty"))
+        buy_price = _as_decimal(_get(buy, "filled_avg_price"))
+        if buy_qty is None or buy_price is None:
+            return RoundtripPnlBlock(reason="fill_evidence_missing")
+        sell_qty = Decimal("0")
+        proceeds = Decimal("0")
+        for row in sell_fills:
+            quantity = _as_decimal(_get(row, "filled_qty"))
+            price = _as_decimal(_get(row, "filled_avg_price"))
+            assert quantity is not None and price is not None
+            sell_qty += quantity
+            proceeds += quantity * price
+        if sell_qty > buy_qty:
+            return RoundtripPnlBlock(reason="sell_quantity_exceeds_buy_fill")
+        gross = proceeds - buy_price * sell_qty
+        fee_rows = (buy, *sell_fills)
+        fee_total_usd = Decimal("0")
+        base_currency = (
+            str(_get(buy, "execution_symbol") or "")
+            .upper()
+            .replace("/", "")
+            .removesuffix("USD")
+        )
+        for fee_row in fee_rows:
+            amount = _as_decimal(_get(fee_row, "fee_amount"))
+            currency = _get(fee_row, "fee_currency")
+            if (
+                amount is None
+                or _get(fee_row, "fee_evidence_reason") is not None
+                or not currency
+            ):
+                return RoundtripPnlBlock(gross_pnl=gross, reason="fee_evidence_missing")
+            if currency == "USD":
+                fee_total_usd += amount
+            elif currency == base_currency:
+                price = (
+                    buy_price
+                    if _get(fee_row, "side") == "buy"
+                    else _as_decimal(_get(fee_row, "filled_avg_price"))
+                )
+                if price is None:
+                    return RoundtripPnlBlock(
+                        gross_pnl=gross, reason="fill_evidence_missing"
+                    )
+                fee_total_usd += amount * price
+            else:
+                return RoundtripPnlBlock(
+                    gross_pnl=gross, reason="fee_currency_unconvertible"
+                )
+        return RoundtripPnlBlock(
+            gross_pnl=gross, net_pnl=gross - fee_total_usd, reason=None
         )
 
     def _final_position_block(
