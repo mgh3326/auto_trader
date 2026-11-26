@@ -125,9 +125,13 @@ class _FakeRepository:
         self.known = known or set()
         self.known_by_category = known_by_category
 
-    async def known_source_ids(self, *, source: str, category: str) -> set[str]:
+    async def known_source_ids(
+        self, *, source: str, category: str | None = None
+    ) -> set[str]:
         assert source == "naver_research"
         if self.known_by_category is not None:
+            if category is None:
+                return set().union(*self.known_by_category.values())
             return set(self.known_by_category.get(category, set()))
         return set(self.known)
 
