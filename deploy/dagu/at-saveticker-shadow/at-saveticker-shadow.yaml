@@ -1,0 +1,21 @@
+# 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# Save+ 공개 뉴스와 개인 관심도만 3분 간격으로 외부 JSONL에 기록한다.
+description: "Save+ news shadow poll into host JSONL (no DB writes)"
+schedule:
+  - "CRON_TZ=Asia/Seoul */3 7-23 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: poll
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api -e BENZINGA_NEWS_SHADOW_ENABLED=true -v /root/at-run/saveticker-shadow:/out "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.benzinga_news_shadow poll --symbols NVDA,AMD,QQQ,SMH,DELL,URBN,0256C0.KR --out-dir /out --saveticker --saveticker-pages 3 --skip-benzinga --skip-finnhub --skip-kis || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-saveticker-shadow "dag=at-saveticker-shadow status=success"'
+  failure:
+    command: 'logger -t at-dagu-saveticker-shadow "dag=at-saveticker-shadow status=failure"'
