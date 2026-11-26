@@ -109,6 +109,13 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    # hk 6751 daily plan tables (children before parents).
+    "review.daily_plan_row_links",
+    "review.daily_plan_outcomes",
+    "review.daily_plan_rows",
+    "review.daily_plan_versions",
+    "review.daily_plan_input_bundles",
+    "review.daily_plan_heads",
     # hk 6503 KR trading flags (public schema, not review.*) is later than the parent.
     "kr_symbol_trading_flags",
     "review.kis_us_inference_expiry_events",

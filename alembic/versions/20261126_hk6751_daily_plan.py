@@ -5,7 +5,7 @@
 from alembic import op
 
 revision = "20261126_hk6751_daily_plan"
-down_revision = "20261126_hk6674"
+down_revision = "20261126_hk6750"
 branch_labels = None
 depends_on = None
 
