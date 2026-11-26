@@ -1,0 +1,22 @@
+[
+  {
+    "mksc_shrn_iscd": "005930",
+    "hts_kor_isnm": "삼성전자",
+    "stck_prpr": "171300",
+    "prdy_vrss": "-200",
+    "prdy_ctrt": "-0.12",
+    "acml_vol": "1137019",
+    "acml_tr_pbmn": "194804000000",
+    "hts_avls": "10224000"
+  },
+  {
+    "mksc_shrn_iscd": "000660",
+    "hts_kor_isnm": "SK하이닉스",
+    "stck_prpr": "550000",
+    "prdy_vrss": "10000",
+    "prdy_ctrt": "1.85",
+    "acml_vol": "1020304",
+    "acml_tr_pbmn": "561166000000",
+    "hts_avls": "4000000"
+  }
+]

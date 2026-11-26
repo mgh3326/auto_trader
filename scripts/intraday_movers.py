@@ -29,6 +29,7 @@ from typing import Any
 from app.core.cli import setup_logging_and_sentry
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.services.brokers.kis.client import KISClient
 from app.services.invest_momentum_events import intraday
 from app.services.naver_stock.client import NaverStockClient
 
@@ -42,22 +43,35 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     gate_on = bool(settings.invest_momentum_events_commit_enabled)
     commit = not args.dry_run and gate_on
+    now = datetime.now(UTC)
     client = NaverStockClient()
+    kis_client = (
+        KISClient()
+        if intraday.observation_window(now) in {"nxt_pre", "after"}
+        else None
+    )
     try:
         if commit:
             async with AsyncSessionLocal() as session:
                 report = await intraday.run_intraday_movers(
                     fetcher=client,
                     session=session,
-                    now=datetime.now(UTC),
+                    now=now,
                     commit=True,
+                    kis_fetcher=kis_client,
                 )
         else:
             report = await intraday.run_intraday_movers(
-                fetcher=client, session=None, now=datetime.now(UTC), commit=False
+                fetcher=client,
+                session=None,
+                now=now,
+                commit=False,
+                kis_fetcher=kis_client,
             )
     finally:
         await client.aclose()
+        if kis_client is not None:
+            await kis_client.close()
     payload = report.as_dict()
     payload["failed"] = report.failed
     if not args.dry_run and not gate_on:

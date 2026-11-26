@@ -1,11 +1,13 @@
-# KRX 장중 급등·급락 관측: 월–금 KRX 정규장 09:00–15:25 KST 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
-# 네이버 상승·하락·거래대금 순위를 invest_momentum_event_snapshots 에 삽입 전용으로, 면별 상태를 invest_momentum_event_runs 에 쓴다.
-# 정규장 밖·휴장일은 스크립트가 outside_session 으로 아무것도 쓰지 않고 종료 코드 0 으로 끝난다.
+# KR 급등락 관측: NXT 장전 08:00–08:45, KRX 정규장 09:00–15:25, NXT·KRX 장후 16:00–19:55 KST 5분 간격. 이 파일은 Dagu 복사본이며 저장소가 등록하지 않는다.
+# Naver 순위와 미지원 NXT 면의 KIS NX 순위를 invest_momentum_event_snapshots 에 삽입 전용으로, 면별 상태를 invest_momentum_event_runs 에 쓴다.
+# 정의된 창 밖·XKRX 휴장일은 스크립트가 outside_session 으로 아무것도 쓰지 않고 종료 코드 0 으로 끝난다.
 # 쓰기는 INVEST_MOMENTUM_EVENTS_COMMIT_ENABLED=true 일 때만 일어난다(기본 false). 등록과 스위치 변경은 설계 세션이 한다.
-description: "KRX intraday movers observation log (up / down / trading value)"
+description: "KR extended-session movers observation log (up / down / trading value)"
 schedule:
+  - "CRON_TZ=Asia/Seoul 0,5,10,15,20,25,30,35,40,45 8 * * 1-5"
   - "CRON_TZ=Asia/Seoul */5 9-14 * * 1-5"
   - "CRON_TZ=Asia/Seoul 0,5,10,15,20,25 15 * * 1-5"
+  - "CRON_TZ=Asia/Seoul */5 16-19 * * 1-5"
 max_active_runs: 1
 hist_retention_days: 60
 worker_selector:
