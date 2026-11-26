@@ -173,6 +173,8 @@ _JOURNALED_AVG_KEY: Final = "journaled_avg"
 #: A sell delta that could not fully match its FIFO lots leaves this reason so
 #: the row surfaces for review; cleared once the remainder journals.
 _JOURNAL_MANUAL_REVIEW_KEY: Final = "journal_manual_review"
+#: First omission of the cumulative trade row, independent of FIFO recovery.
+_TRADE_ROW_UNRECORDED_KEY: Final = "trade_row_unrecorded"
 #: When the unmatched-remainder reason was first recorded (ISO). The retried
 #: remainder may only close lots that already existed by then — a lot journaled
 #: from a LATER buy is not cover for an older sell (mergewake r4578899894).
@@ -1021,6 +1023,7 @@ class KiwoomMockOrderLedgerService:
         journaled_qty: Decimal | None = None,
         journaled_avg: Decimal | None = None,
         manual_review_reason: str | None = None,
+        trade_row_reason: str | None = None,
         commit: bool = True,
     ) -> None:
         """Record what a booked fill journaled, monotonically.
@@ -1029,7 +1032,8 @@ class KiwoomMockOrderLedgerService:
         closed lot is replaced by the new one); ``trade_id`` is add-only so a
         re-run cannot repoint the row at a second trade. The progress markers
         only advance — never regress — and ``manual_review_reason`` is stored
-        while set and cleared once the unjournaled remainder is resolved.
+        while set and cleared once the unjournaled remainder is resolved. The
+        first ``trade_row_reason`` stays recorded independently of that remainder.
         """
         row = await self._lock_row(ledger_id)
         if trade_id is not None and row.trade_id is None:
@@ -1054,6 +1058,8 @@ class KiwoomMockOrderLedgerService:
         elif journaled_qty is not None:
             detail.pop(_JOURNAL_MANUAL_REVIEW_KEY, None)
             detail.pop(_UNMATCHED_SELL_SINCE_KEY, None)
+        if trade_row_reason is not None:
+            detail.setdefault(_TRADE_ROW_UNRECORDED_KEY, trade_row_reason)
         row.last_reconcile_detail = detail
         if commit:
             await self._db.commit()
@@ -1137,6 +1143,10 @@ class KiwoomMockOrderLedgerService:
             **preserved,
             **(detail or {}),
         }
+        if _TRADE_ROW_UNRECORDED_KEY in prior:
+            row.last_reconcile_detail[_TRADE_ROW_UNRECORDED_KEY] = prior[
+                _TRADE_ROW_UNRECORDED_KEY
+            ]
 
     async def _lock_row(
         self, ledger_id: int, *, account_mode: str = ACCOUNT_MODE_KIWOOM_MOCK

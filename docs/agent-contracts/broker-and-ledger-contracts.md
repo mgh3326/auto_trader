@@ -398,9 +398,9 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   갱신하지 못한다(같은 날의 누적 갱신만 계속 동작하고, 다른 날 체결은 trade id 를 받지 않아
   어떤 저널도 이전 날 행을 가리키지 않는다). trade 행을 쓰지 못한 체결은 조용히 넘어가지
   않는다 — 저널은 그대로 진행되지만 원장 행의 `last_reconcile_detail` 에
-  `trade_row_day_conflict`(다른 거래일 소유) 또는 `trade_row_day_unavailable`(일자 판독 불가,
-  이때 trade 행을 관측일로 대신 찍지 않는다) 수동 검토 표시가 남아 journal recovery 스캔에
-  다시 보인다.
+  `trade_row_unrecorded` 수동 검토 표시가 추가된다. 최초 사유는
+  `trade_row_other_trading_day`(다른 거래일 소유) 또는 `trade_row_day_unavailable`(일자 판독 불가)이며,
+  매도 잔여 해소와 원장 종결 뒤에도 보존한다.
   🔴 **저널 투영은 델타 부킹과 같은 트랜잭션이다 (hk 4802).** full 대사는 부킹한
   `execution_ledger` 델타마다 `(account, order_id)` 단일 누적 `review.trades` 행을
   upsert 하고 `account='kiwoom_mock'`·`account_type='mock'` 의 `TradeJournal` 을
