@@ -1206,6 +1206,38 @@ async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bo
         await connection.close()
 
 
+async def _assert_hk6302_legacy_writer_compatibility(database_url: str) -> None:
+    """Old writers may omit relation additions; report receipt gets a DB default."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        article_id = await connection.fetchval(
+            "INSERT INTO news_articles (url, title, scraped_at, created_at) "
+            "VALUES ($1, $2, now(), now()) RETURNING id",
+            f"https://example.test/{uuid.uuid4()}",
+            "migration compatibility",
+        )
+        await connection.execute(
+            "INSERT INTO news_article_related_symbols "
+            "(article_id, market, symbol, source, created_at) "
+            "VALUES ($1, 'kr', '005930', 'legacy_writer', now())",
+            article_id,
+        )
+        first_received_at = await connection.fetchval(
+            "INSERT INTO research_reports (dedup_key, report_type, source) "
+            "VALUES ($1, 'equity_research', 'legacy_writer') "
+            "RETURNING first_received_at",
+            f"legacy-{uuid.uuid4()}",
+        )
+        assert first_received_at is not None
+    finally:
+        await connection.close()
+
+
 async def _outcome_constraint_matrix(
     database_url: str,
 ) -> tuple[tuple[str, bool, bool], ...]:
@@ -1399,6 +1431,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     # -- upgrade -------------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
     await _check_head_state()
+    await _assert_hk6302_legacy_writer_compatibility(scratch_database)
     handoff_entry = await _insert_fill_handoff_context(scratch_database)
     assert (
         await _context_created_by(scratch_database, handoff_entry)

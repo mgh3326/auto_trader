@@ -349,8 +349,8 @@ def test_news_article_related_symbol_model_contract():
     assert "ix_news_article_related_symbols_market_symbol_article" in indexes
     assert "ck_news_article_related_symbols_relation_type" in constraints
     assert "ck_news_article_related_symbols_relation_evidence" in constraints
-    assert not NewsArticleRelatedSymbol.relation_type.property.columns[0].nullable
-    assert not NewsArticleRelatedSymbol.relation_evidence.property.columns[0].nullable
+    assert NewsArticleRelatedSymbol.relation_type.property.columns[0].nullable
+    assert NewsArticleRelatedSymbol.relation_evidence.property.columns[0].nullable
 
 
 def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candidates():

@@ -312,6 +312,10 @@ async def ingest_news_ingestor_bulk(
             _article_values_from_ingestor_payload(article_data)
             for article_data in request.articles
         ]
+        values_by_url: dict[str, dict[str, Any]] = {}
+        for values in article_values:
+            values_by_url.setdefault(values["url"], values)
+        article_values = list(values_by_url.values())
         article_insert = pg_insert(NewsArticle).values(article_values)
         excluded = article_insert.excluded
         article_content_fields = (
@@ -322,37 +326,46 @@ async def ingest_news_ingestor_bulk(
             "summary",
             "stock_symbol",
             "stock_name",
-            "article_published_at",
-            "market",
-            "feed_source",
             "keywords",
-            "published_at_raw",
-            "published_offset",
-            "published_at",
-            "published_precision",
-            "published_at_reason",
             "provider_article_id",
             "source_document_ids",
         )
-        changed_fields = [
-            getattr(NewsArticle, name).is_distinct_from(getattr(excluded, name))
+        update_values = {
+            name: getattr(excluded, name)
+            if name == "title"
+            else func.coalesce(getattr(excluded, name), getattr(NewsArticle, name))
             for name in article_content_fields
+        }
+        update_values.update(symbol_news_store.publication_update_values(excluded))
+        changed_fields = [
+            getattr(NewsArticle, name).is_distinct_from(value)
+            for name, value in update_values.items()
+        ]
+        content_changed_fields = [
+            NewsArticle.title.is_distinct_from(update_values["title"]),
+            NewsArticle.source.is_distinct_from(update_values["source"]),
+            NewsArticle.author.is_distinct_from(update_values["author"]),
+            NewsArticle.article_content.is_distinct_from(
+                update_values["article_content"]
+            ),
+            NewsArticle.summary.is_distinct_from(update_values["summary"]),
+            NewsArticle.stock_symbol.is_distinct_from(update_values["stock_symbol"]),
+            NewsArticle.stock_name.is_distinct_from(update_values["stock_name"]),
+            NewsArticle.keywords.is_distinct_from(update_values["keywords"]),
         ]
         article_stmt = article_insert.on_conflict_do_update(
             index_elements=[NewsArticle.url],
             set_={
-                **{name: getattr(excluded, name) for name in article_content_fields},
-                "first_received_at": func.coalesce(
-                    NewsArticle.first_received_at, excluded.first_received_at
-                ),
+                **update_values,
                 "revised_at": case(
-                    (or_(*changed_fields), func.now()), else_=NewsArticle.revised_at
+                    (or_(*content_changed_fields), func.now()),
+                    else_=NewsArticle.revised_at,
                 ),
                 "updated_at": case(
                     (or_(*changed_fields), func.now()), else_=NewsArticle.updated_at
                 ),
             },
-            where=or_(*changed_fields, NewsArticle.first_received_at.is_(None)),
+            where=or_(*changed_fields),
         ).returning(
             NewsArticle.id,
             NewsArticle.url,
@@ -360,7 +373,14 @@ async def ingest_news_ingestor_bulk(
         )
         article_result = await db.execute(article_stmt)
         affected_rows = article_result.all()
-        article_url_to_id = {url: article_id for article_id, url, _ in affected_rows}
+        article_ids_result = await db.execute(
+            select(NewsArticle.id, NewsArticle.url).where(
+                NewsArticle.url.in_(values_by_url)
+            )
+        )
+        article_url_to_id = {
+            url: article_id for article_id, url in article_ids_result.all()
+        }
         inserted_url_to_id = {
             url: article_id for article_id, url, inserted in affected_rows if inserted
         }

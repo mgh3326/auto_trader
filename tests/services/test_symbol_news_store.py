@@ -322,6 +322,7 @@ async def test_collector_reingest_keeps_first_received_and_single_article(
     assert rows[0].id == article_id
     assert rows[0].url == provider_url
     assert rows[0].first_received_at == received_at
+    assert rows[0].revised_at is not None
     assert rows[0].published_at_raw == "2026-11-25 10:00"
     assert rows[0].published_at == datetime(2026, 11, 25, 1, 0, tzinfo=UTC)
     assert rows[0].published_precision == "minute"
@@ -335,6 +336,122 @@ async def test_collector_reingest_keeps_first_received_and_single_article(
         )
     ).scalar_one()
     assert link.status == "excluded"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_noncanonical_reingest_dedupes_and_preserves_existing_metadata(
+    db_session,
+) -> None:
+    url = _unique_url("preserve")
+    first_received = datetime(2026, 11, 20, 1, 2, tzinfo=UTC)
+    published_at = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+    db_session.add(
+        NewsArticle(
+            url=url,
+            title="stored title",
+            source="stored publisher",
+            summary="stored summary",
+            market="kr",
+            feed_source="stored feed",
+            scraped_at=first_received,
+            created_at=first_received,
+            first_received_at=first_received,
+            published_at=published_at,
+            published_at_raw="2026-11-20T09:00:00+09:00",
+            published_offset="+09:00",
+            published_precision="second",
+            provider_article_id="provider-123",
+            source_document_ids={"dart_id": ["20261120000001"]},
+        )
+    )
+    await db_session.commit()
+
+    less_complete = FeedArticleInput(
+        url=url,
+        title="stored title",
+        source=None,
+        summary=None,
+        published_at=datetime(2026, 11, 20, 0, 0, tzinfo=UTC),
+        published_at_raw="2026-11-20",
+        published_precision="date",
+    )
+    await symbol_news_store._upsert_feed_articles(
+        db_session,
+        "kr",
+        "005930",
+        [less_complete, less_complete],
+        feed_source="new feed",
+    )
+
+    stored = (
+        await db_session.execute(select(NewsArticle).where(NewsArticle.url == url))
+    ).scalar_one()
+    assert stored.first_received_at == first_received
+    assert stored.revised_at is None
+    assert stored.source == "stored publisher"
+    assert stored.summary == "stored summary"
+    assert stored.published_at == published_at
+    assert stored.published_at_raw == "2026-11-20T09:00:00+09:00"
+    assert stored.published_precision == "second"
+    assert stored.provider_article_id == "provider-123"
+    assert stored.source_document_ids == {"dart_id": ["20261120000001"]}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_canonical_reingest_keeps_nonempty_content_when_feed_omits_it(
+    db_session,
+) -> None:
+    existing_url = "https://n.news.naver.com/mnews/article/001/0007654?sid=101"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0007654?sid=102"
+    first_received = datetime(2026, 11, 20, 1, 2, tzinfo=UTC)
+    db_session.add(
+        NewsArticle(
+            url=existing_url,
+            title="canonical title",
+            source="stored publisher",
+            summary="aggregate summary",
+            market="kr",
+            feed_source="http_naver_stock_aggregate",
+            scraped_at=first_received,
+            created_at=first_received,
+            first_received_at=first_received,
+            published_at=datetime(2026, 11, 20, 0, 0, tzinfo=UTC),
+            published_at_raw="2026-11-20T09:00:00+09:00",
+            published_precision="second",
+        )
+    )
+    await db_session.commit()
+
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session,
+        "005930",
+        [
+            FeedArticleInput(
+                url=incoming_url,
+                title="canonical title",
+                source=None,
+                summary=None,
+                published_at=datetime(2026, 11, 20, 0, 0, tzinfo=UTC),
+                published_at_raw="2026-11-20",
+                published_precision="date",
+            )
+        ],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    stored = (
+        await db_session.execute(
+            select(NewsArticle).where(NewsArticle.url == existing_url)
+        )
+    ).scalar_one()
+    assert stored.first_received_at == first_received
+    assert stored.revised_at is None
+    assert stored.source == "stored publisher"
+    assert stored.summary == "aggregate summary"
+    assert stored.published_at_raw == "2026-11-20T09:00:00+09:00"
+    assert stored.published_precision == "second"
 
 
 @pytest.mark.integration

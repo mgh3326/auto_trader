@@ -48,14 +48,10 @@ def upgrade() -> None:
         "'matched_term', matched_term, 'candidate', COALESCE(raw, '{}'::jsonb)) "
         "WHERE relation_type IS NULL OR relation_evidence IS NULL"
     )
-    # expand-contract: contract-step 6302
-    op.alter_column("news_article_related_symbols", "relation_type", nullable=False)
-    # expand-contract: contract-step 6302
-    op.alter_column("news_article_related_symbols", "relation_evidence", nullable=False)
     op.create_check_constraint(
         "ck_news_article_related_symbols_relation_evidence",
         "news_article_related_symbols",
-        "relation_evidence <> '{}'::jsonb",
+        "relation_evidence IS NULL OR relation_evidence <> '{}'::jsonb",
     )
     op.add_column(
         "research_reports",
@@ -67,7 +63,12 @@ def upgrade() -> None:
         "WHERE first_received_at IS NULL"
     )
     # expand-contract: contract-step 6302
-    op.alter_column("research_reports", "first_received_at", nullable=False)
+    op.alter_column(
+        "research_reports",
+        "first_received_at",
+        nullable=False,
+        server_default="now()",
+    )
     op.add_column("research_reports", sa.Column("published_date", sa.Date()))
     op.add_column(
         "research_reports", sa.Column("revised_at", sa.DateTime(timezone=True))
@@ -77,7 +78,12 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("research_reports", "published_date")
     op.drop_column("research_reports", "revised_at")
-    op.alter_column("research_reports", "first_received_at", nullable=True)
+    op.alter_column(
+        "research_reports",
+        "first_received_at",
+        nullable=True,
+        server_default=None,
+    )
     op.drop_column("research_reports", "first_received_at")
     op.drop_constraint(
         "ck_news_article_related_symbols_relation_evidence",

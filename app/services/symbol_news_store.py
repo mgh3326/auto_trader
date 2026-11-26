@@ -32,6 +32,41 @@ FINNHUB_GENERAL_FEED_SOURCE = "finnhub_general_news"  # crypto (심볼 키 아�
 _PUBLICATION_PRECISION_RANK = {"date": 1, "minute": 2, "second": 3}
 
 
+def publication_update_values(excluded: Any) -> dict[str, Any]:
+    """Only replace stored publication data with equal or better precision."""
+    incoming_rank = case(
+        (excluded.published_precision == "second", 3),
+        (excluded.published_precision == "minute", 2),
+        (excluded.published_precision == "date", 1),
+        else_=0,
+    )
+    stored_rank = case(
+        (NewsArticle.published_precision == "second", 3),
+        (NewsArticle.published_precision == "minute", 2),
+        (NewsArticle.published_precision == "date", 1),
+        else_=0,
+    )
+    use_incoming = incoming_rank >= stored_rank
+    fields = (
+        "article_published_at",
+        "published_at_raw",
+        "published_offset",
+        "published_at",
+        "published_precision",
+        "published_at_reason",
+    )
+    return {
+        name: case(
+            (
+                use_incoming,
+                func.coalesce(getattr(excluded, name), getattr(NewsArticle, name)),
+            ),
+            else_=getattr(NewsArticle, name),
+        )
+        for name in fields
+    }
+
+
 @dataclass(frozen=True)
 class FeedArticleInput:
     url: str
@@ -259,11 +294,11 @@ async def _upsert_feed_articles(
                 for name, value in values.items()
                 if value != existing.get(name)
             }
-            if item.title != existing["title"]:
+            if item.title and item.title != existing["title"]:
                 changed_values["title"] = item.title
-            if item.source != existing["source"]:
+            if item.source is not None and item.source != existing["source"]:
                 changed_values["source"] = item.source
-            if item.summary != existing["summary"]:
+            if item.summary is not None and item.summary != existing["summary"]:
                 changed_values["summary"] = item.summary
             if changed_values:
                 changed_values["revised_at"] = datetime.now(tz=UTC)
@@ -279,6 +314,10 @@ async def _upsert_feed_articles(
         ]
     else:
         existing_by_key = {}
+        unique_by_url: dict[str, FeedArticleInput] = {}
+        for item in items:
+            unique_by_url.setdefault(item.url, item)
+        items = list(unique_by_url.values())
     if canonical_dedupe and market == "kr":
         # Items that were filtered above are represented by the original batch
         # when constructing links; the lookup includes all known URL variants.
@@ -329,36 +368,38 @@ async def _upsert_feed_articles(
     if article_values:
         statement = pg_insert(NewsArticle).values(article_values)
         excluded = statement.excluded
-        content_fields = (
-            "title",
-            "source",
-            "summary",
-            "article_published_at",
-            "published_at_raw",
-            "published_offset",
-            "published_at",
-            "published_precision",
-            "published_at_reason",
-            "provider_article_id",
-            "source_document_ids",
-        )
-        changed = [
-            getattr(NewsArticle, name).is_distinct_from(getattr(excluded, name))
-            for name in content_fields
-        ]
-        update_values = {name: getattr(excluded, name) for name in content_fields}
-        update_values.update(
-            first_received_at=func.coalesce(
-                NewsArticle.first_received_at, excluded.first_received_at
+        update_values = {
+            "title": excluded.title,
+            "source": func.coalesce(excluded.source, NewsArticle.source),
+            "summary": func.coalesce(excluded.summary, NewsArticle.summary),
+            **publication_update_values(excluded),
+            "provider_article_id": func.coalesce(
+                excluded.provider_article_id, NewsArticle.provider_article_id
             ),
-            revised_at=case((or_(*changed), now_aware), else_=NewsArticle.revised_at),
+            "source_document_ids": func.coalesce(
+                excluded.source_document_ids, NewsArticle.source_document_ids
+            ),
+        }
+        changed = [
+            getattr(NewsArticle, name).is_distinct_from(value)
+            for name, value in update_values.items()
+        ]
+        content_changed = [
+            NewsArticle.title.is_distinct_from(update_values["title"]),
+            NewsArticle.source.is_distinct_from(update_values["source"]),
+            NewsArticle.summary.is_distinct_from(update_values["summary"]),
+        ]
+        update_values.update(
+            revised_at=case(
+                (or_(*content_changed), now_aware), else_=NewsArticle.revised_at
+            ),
             updated_at=case((or_(*changed), now), else_=NewsArticle.updated_at),
         )
         inserted_rows = await db.execute(
             statement.on_conflict_do_update(
                 index_elements=[NewsArticle.url],
                 set_=update_values,
-                where=or_(*changed, NewsArticle.first_received_at.is_(None)),
+                where=or_(*changed),
             ).returning(NewsArticle.id, literal_column("xmax = 0").label("inserted"))
         )
         new_articles = sum(
