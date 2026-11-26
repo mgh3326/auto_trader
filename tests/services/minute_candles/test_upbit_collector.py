@@ -13,6 +13,7 @@ from app.services.minute_candles.repository import (
     MinuteCandlesRepository,
 )
 from app.services.minute_candles.upbit_collector import (
+    MAX_PAGES_PER_MARKET,
     MAX_TOP_N,
     SOURCE,
     _rows_for_current_day,
@@ -331,7 +332,8 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
     )
 
     monkeypatch.setattr(
-        "app.services.minute_candles.upbit_collector.MAX_PAGES_PER_MARKET", 5
+        "app.services.minute_candles.upbit_collector.MAX_PAGES_PER_MARKET",
+        MAX_PAGES_PER_MARKET,
     )
     normal_run = FakeData(
         {
