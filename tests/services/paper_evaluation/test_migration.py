@@ -462,12 +462,23 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # hk 6786 tables are newer than this stamped boundary and already
             # exist because current Base.metadata created them above. Drop them
             # so the migration can exercise the upgrade/downgrade round trip.
-            for table in (
+            kr_market_daily_tables = (
                 "kr_market_breadth",
                 "kr_market_investor_net",
                 "kr_market_deposit_credit",
-            ):
+            )
+            for table in kr_market_daily_tables:
+                for suffix in ("insert_only", "no_truncate"):
+                    await connection.execute(
+                        text(
+                            f"DROP TRIGGER IF EXISTS trg_{table}_{suffix} "
+                            f"ON public.{table}"
+                        )
+                    )
                 await connection.execute(text(f"DROP TABLE public.{table}"))
+            await connection.execute(
+                text("DROP FUNCTION IF EXISTS public.kr_market_daily_reject_mutation()")
+            )
             # hk 4702 trend state tables are later too (intents reference signals).
             await connection.execute(text("DROP TABLE review.binance_trend_intents"))
             await connection.execute(text("DROP TABLE review.binance_trend_signals"))
