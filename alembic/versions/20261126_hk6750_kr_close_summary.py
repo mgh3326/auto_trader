@@ -74,11 +74,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    count = (
-        op.get_bind()
-        .execute(sa.text("SELECT count(*) FROM kr_market_close_summaries"))
-        .scalar_one()
+    connection = op.get_bind()
+    connection.execute(
+        sa.text("LOCK TABLE public.kr_market_close_summaries IN ACCESS EXCLUSIVE MODE")
     )
+    count = connection.execute(
+        sa.text("SELECT count(*) FROM public.kr_market_close_summaries")
+    ).scalar_one()
     if count:
         raise RuntimeError(
             "refusing to downgrade: kr_market_close_summaries contains records"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,9 @@ from app.services.kr_market_close_summary.sources import (
 )
 from app.services.kr_market_close_summary.types import Evidence
 from scripts.run_kr_market_close_summary import parse_args
+
+REPO = Path(__file__).resolve().parents[3]
+MIGRATION_PATH = REPO / "alembic/versions/20261126_hk6750_kr_close_summary.py"
 
 pytestmark = pytest.mark.unit
 
@@ -117,6 +121,16 @@ async def test_preview_prints_every_section_with_provenance_and_missing_reason()
 
 def test_cli_defaults_to_preview() -> None:
     assert parse_args([]).commit is False
+
+
+def test_migration_downgrade_locks_before_checking_and_dropping() -> None:
+    source = MIGRATION_PATH.read_text(encoding="utf-8")
+    lock_at = source.index(
+        "LOCK TABLE public.kr_market_close_summaries IN ACCESS EXCLUSIVE MODE"
+    )
+    count_at = source.index("SELECT count(*) FROM public.kr_market_close_summaries")
+    drop_at = source.index('op.drop_table("kr_market_close_summaries")')
+    assert lock_at < count_at < drop_at
 
 
 @pytest.mark.asyncio
