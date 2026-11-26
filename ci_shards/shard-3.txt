@@ -37,7 +37,6 @@ tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_investment_report_context_get_description.py
 tests/mcp_server/test_kis_live_daily_orders.py
 tests/mcp_server/test_kis_live_order_history_expired.py
-tests/mcp_server/test_kr_flow_signals.py
 tests/mcp_server/test_market_quote_snapshot_tools.py
 tests/mcp_server/test_mcp_profile_required.py
 tests/mcp_server/test_niche_tools.py
@@ -183,7 +182,6 @@ tests/services/brokers/binance/trend/test_strategy_sizing.py
 tests/services/brokers/binance/trend/test_truth_gate.py
 tests/services/brokers/binance/trend/test_wire_contract.py
 tests/services/brokers/kis/test_circuit_breaker.py
-tests/services/brokers/kis/test_flow_signals.py
 tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
 tests/services/brokers/kiwoom/test_credential_identity.py
@@ -192,7 +190,6 @@ tests/services/brokers/nhplug/test_client.py
 tests/services/brokers/paper/test_production_adapter_contract.py
 tests/services/brokers/toss/test_candles.py
 tests/services/brokers/toss/test_client.py
-tests/services/brokers/toss/test_kr_flow_dto.py
 tests/services/brokers/toss/test_minute_candles.py
 tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/buy_gate_ab_shadow/test_forecast_tag.py
