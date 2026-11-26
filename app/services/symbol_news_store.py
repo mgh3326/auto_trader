@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 KR_FEED_SOURCE = "naver_item_news"
 FINNHUB_COMPANY_FEED_SOURCE = "finnhub_company_news"  # us
 FINNHUB_GENERAL_FEED_SOURCE = "finnhub_general_news"  # crypto (심볼 키 아님)
+_PUBLICATION_PRECISION_RANK = {"date": 1, "minute": 2, "second": 3}
 
 
 @dataclass(frozen=True)
@@ -148,15 +149,68 @@ async def _upsert_feed_articles(
             NewsArticle.url.startswith(prefix) for prefix in candidate_prefixes
         )
         prior_rows = await db.execute(
-            select(NewsArticle.id, NewsArticle.url).where(or_(*lookup_conditions))
+            select(
+                NewsArticle.id,
+                NewsArticle.url,
+                NewsArticle.published_at_raw,
+                NewsArticle.published_at,
+                NewsArticle.published_precision,
+            ).where(or_(*lookup_conditions))
         )
-        existing_by_key: dict[str, int] = {}
-        for article_id, url in prior_rows.all():
+        existing_by_key: dict[
+            str, tuple[int, str | None, datetime | None, str | None]
+        ] = {}
+        for article_id, url, raw, published_at, precision in prior_rows.all():
             try:
                 key = canonicalize_naver_news_url(url)
             except ValueError:
                 continue
-            existing_by_key.setdefault(key, article_id)
+            existing_by_key.setdefault(key, (article_id, raw, published_at, precision))
+        # A canonical URL can already be stored under a provider URL from an
+        # older collector. Enrich that row in place without changing its URL
+        # key or first receipt time.
+        for key, item in items_by_key.items():
+            existing = existing_by_key.get(key)
+            if existing is None:
+                continue
+            article_id, existing_raw, existing_published_at, existing_precision = (
+                existing
+            )
+            incoming_published_at = item.published_at
+            if (
+                incoming_published_at is not None
+                and incoming_published_at.utcoffset() is None
+            ):
+                incoming_published_at = incoming_published_at.replace(
+                    tzinfo=ZoneInfo("Asia/Seoul")
+                )
+            existing_rank = _PUBLICATION_PRECISION_RANK.get(existing_precision or "", 0)
+            incoming_rank = _PUBLICATION_PRECISION_RANK.get(
+                item.published_precision or "", 0
+            )
+            values: dict[str, Any] = {}
+            if incoming_rank > existing_rank:
+                if item.published_at_raw is not None:
+                    values["published_at_raw"] = item.published_at_raw
+                if incoming_published_at is not None:
+                    values["published_at"] = incoming_published_at
+                if item.published_precision is not None:
+                    values["published_precision"] = item.published_precision
+                if item.published_at_reason is not None:
+                    values["published_at_reason"] = item.published_at_reason
+            else:
+                if existing_raw is None and item.published_at_raw is not None:
+                    values["published_at_raw"] = item.published_at_raw
+                if existing_published_at is None and incoming_published_at is not None:
+                    values["published_at"] = incoming_published_at
+                if existing_precision is None and item.published_precision is not None:
+                    values["published_precision"] = item.published_precision
+            if values:
+                await db.execute(
+                    update(NewsArticle)
+                    .where(NewsArticle.id == article_id)
+                    .values(**values)
+                )
         items = [
             item
             for item in items
@@ -226,7 +280,8 @@ async def _upsert_feed_articles(
             select(NewsArticle.id, NewsArticle.url).where(or_(*lookup_conditions))
         )
         url_to_id: dict[str, int] = {}
-        for article_id, url in id_rows.all():
+        for row in id_rows.all():
+            article_id, url = row[0], row[1]
             try:
                 key = canonicalize_naver_news_url(url)
             except ValueError:

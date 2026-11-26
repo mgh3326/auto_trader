@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql.dml import Insert
+from sqlalchemy.sql.dml import Update
 
 from app.models.news import NewsArticle
 from app.models.symbol_news_relevance import SymbolNewsRelevance
@@ -83,7 +84,7 @@ async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -
         rowcount = 0
 
         def all(self):
-            return [(88, existing_url)]
+            return [(88, existing_url, None, None, None)]
 
     class Session:
         async def execute(self, statement):
@@ -110,6 +111,67 @@ async def test_collector_reuses_existing_mobile_url_row_for_canonical_dedupe() -
     assert article_inserts == 0
     assert len(relevance_inserts) == 1
     assert 88 in relevance_inserts[0].values()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_enriches_legacy_provider_url_row_publication_fields() -> None:
+    existing_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=101"
+    incoming_url = "https://n.news.naver.com/mnews/article/001/0001234?sid=102"
+    updates: list[dict[str, object]] = []
+    article_inserts = 0
+
+    class Result:
+        rowcount = 0
+
+        def __init__(self, rows=()):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+    class Session:
+        async def execute(self, statement):
+            nonlocal article_inserts
+            if isinstance(statement, Update):
+                params = statement.compile(dialect=postgresql.dialect()).params
+                updates.append(params)
+                return Result()
+            if isinstance(statement, Insert):
+                if statement.table.name == "news_articles":
+                    article_inserts += 1
+                return Result()
+            if len(statement.selected_columns) == 5:
+                return Result([(88, existing_url, None, None, None)])
+            return Result([(88, existing_url)])
+
+        async def commit(self):
+            return None
+
+    item = FeedArticleInput(
+        url=incoming_url,
+        title="삼성전자 기사",
+        source="네이버뉴스",
+        published_at=datetime(2026, 11, 25, 10, 0),
+        published_at_raw="2026-11-25 10:00",
+        published_precision="minute",
+    )
+    await symbol_news_store.upsert_kr_collector_articles(
+        Session(),
+        "005930",
+        [item],
+        feed_source="http_naver_stock_aggregate",
+    )
+
+    assert article_inserts == 0
+    assert len(updates) == 1
+    assert updates[0]["published_at_raw"] == "2026-11-25 10:00"
+    assert updates[0]["published_precision"] == "minute"
+    assert updates[0]["published_at"].astimezone(UTC).isoformat() == (
+        "2026-11-25T01:00:00+00:00"
+    )
+    assert "first_received_at" not in updates[0]
+    assert "url" not in updates[0]
 
 
 @pytest.mark.integration
