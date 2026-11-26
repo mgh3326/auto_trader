@@ -20,14 +20,17 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.core.timezone import KST
 from app.services.kis_futures_mock.place import (
     PlaceRequest,
     cancel_futures_mock_order,
     place_futures_mock_order,
 )
+from app.services.kis_futures_mock.reconcile import reconcile_futures_mock_day
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -67,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     cancel = sub.add_parser("cancel", help="오늘 이 레인이 보낸 주문 하나 전량 취소")
     cancel.add_argument("--broker-order-id", required=True)
     cancel.add_argument("--confirm", action="store_true", help="취소를 실제로 보낸다")
+    reconcile = sub.add_parser("reconcile", help="모의 주간 주문체결 내역 대사")
+    reconcile.add_argument(
+        "--day", type=date.fromisoformat, help="KST 거래일 (YYYY-MM-DD, 기본값 오늘)"
+    )
+    reconcile.add_argument(
+        "--commit", action="store_true", help="확인된 체결을 원장에 기록"
+    )
     return parser
 
 
@@ -97,6 +107,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 rung=args.rung,
             ),
             confirm=args.confirm,
+        )
+    if args.command == "reconcile":
+        day = args.day or datetime.now(KST).date()
+        return await reconcile_futures_mock_day(
+            trading_day=day.strftime("%Y%m%d"), commit=args.commit
         )
     return await cancel_futures_mock_order(
         broker_order_id=args.broker_order_id, confirm=args.confirm
