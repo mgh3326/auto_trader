@@ -1195,8 +1195,20 @@ async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_reader
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_cross_facade_whole_snapshot_composes_readers_once_and_keeps_l1_fields():
+async def test_cross_facade_whole_snapshot_composes_readers_once_and_keeps_l1_fields(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.services import protected_quantity_service
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    monkeypatch.setattr(
+        protected_quantity_service, "_read_head_snapshot", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        protected_quantity_service,
+        "_read_upbit_asset_alias",
+        AsyncMock(return_value=None),
+    )
 
     whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
     PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
