@@ -42,6 +42,9 @@ ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
 # must live inside ``ALLOWED_PACKAGE_PATHS`` and must not be added here.
 ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
     {
+        # hk 6729 — execution-stage metrics use "binance" only as a closed venue
+        # label value; the module has no HTTP/WS client or signed endpoint.
+        "app/monitoring/execution_metrics.py",
         # ROB-849 — canonical cohort orchestration stores the exact venue/source
         # literals and consumes the one existing public REST client. None of
         # these files defines a parallel Binance HTTP/WS client or signed path.
