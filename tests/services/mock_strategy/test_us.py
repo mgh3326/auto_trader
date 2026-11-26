@@ -631,11 +631,16 @@ async def test_refresh_finalizes_terminal_partial_entry_from_cumulative_exit_fil
         residual.client_order_id
     ].model_copy(
         update={
-            "status": "filled",
-            "filled_qty": Decimal("25"),
+            "status": "canceled",
+            "filled_qty": Decimal("20"),
             "filled_avg_price": Decimal("110"),
         }
     )
+    await strategy.refresh()
+    assert entry.status == "partially_filled"
+    broker.orders[residual.client_order_id] = broker.orders[
+        residual.client_order_id
+    ].model_copy(update={"status": "filled", "filled_qty": Decimal("25")})
     await strategy.refresh()
     assert entry.status == "closed"
     assert first.status == "canceled"
