@@ -1,0 +1,22 @@
+# 국내 네이버 뉴스 수집(수집 대상 최대 30종목). 이 파일은 미등록 Dagu 사본이다.
+# 평일 07:00–20:00 KST, 5분 간격. 등록·기동은 운영자만 수행한다.
+description: "국내 네이버 뉴스 수집"
+schedule:
+  - "CRON_TZ=Asia/Seoul */5 7-19 * * 1-5"
+  - "CRON_TZ=Asia/Seoul 0 20 * * 1-5"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+steps:
+  - name: collect
+    script: |
+      rc=0
+      docker run --rm --init --network host --workdir /app --env DATABASE_URL "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_kr_news --commit || rc=$?
+      exit "$rc"
+    timeout_sec: 300
+handler_on:
+  success:
+    command: 'logger -t at-dagu-kr-news "dag=at-kr-news-timing status=success"'
+  failure:
+    command: 'logger -t at-dagu-kr-news "dag=at-kr-news-timing status=failure"'

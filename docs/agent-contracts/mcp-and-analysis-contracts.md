@@ -272,6 +272,25 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   fail-closed. 같은 `to_thread`+slow-drip 위험이 있던 `finnhub_news`
   (ROB-510) 경로는 ROB-1388에서 같은 비동기 HTTP 패턴으로 전환됐다.
 
+### 국내 네이버 뉴스 정기 수집과 발행 시각 (hk 6674)
+
+- 수동 실행: `python -m scripts.collect_kr_news [--dry-run|--commit] [--symbols 005930,000660]`.
+  기본은 DB 연결 없는 드라이런이다. 저장 수집은 `symbol_news_store`만 사용한다.
+- 매 실행 `http_naver_stock_aggregate`의 main/flash/ranking/focus 집계와 작은 국내 종목 집합
+  (보유 ∪ 활성 watch ∪ 오늘의 국내 `first_captures`, 기본 상한 30)을 수집한다. 상한 절단 종목은
+  JSON `symbol_cut_list`에 출처와 함께 남긴다. 종목별 Naver 뉴스 조회 실패는 해당 source의 error로
+  보고하고 다른 source 처리는 계속한다. 보고서의 source별 `fetched`/`new`/`duplicate`/`errors`는
+  정상 빈 응답과 조회 실패를 구분한다.
+- `news_articles.published_at_raw`는 제공자 시각 문자열 원문이고 `published_at`은 시간대가 있는 UTC 시각,
+  `published_precision`은 `second`/`minute`/`date`다. Naver의 시간대 없는 값은 KST로 해석한다.
+  해석 실패는 parsed 시각·정밀도 NULL과 `published_at_reason`으로 남긴다. `first_received_at`은 최초
+  INSERT 시각으로 URL 재수집에서 바뀌지 않는다. `article_published_at`은 기존 읽기 경로 호환을 위해
+  유지한다. 신규 열은 기존 행을 backfill하지 않는다.
+- 🔴 **hk 6302 발행 시각 보존**: 기존 `article_published_at`은 시간대 없는 `DateTime`이라 제공자 시간대와
+  원문 정밀도가 보존되지 않는다. 정밀한 비교는 `published_at`과 `first_received_at`을 사용하며 기존
+  `article_published_at` 소비자와 과거 행은 이 변경으로 재작성하지 않는다.
+- 미등록 Dagu 사본: `deploy/dagu/at-kr-news-timing/` — 평일 07:00–20:00 KST, 5분 간격.
+  저장소 변경은 DAG를 등록하거나 활성화하지 않는다.
 
 
 ### retro/v1 모의 왕복 읽기 `mock_round_trips` (hk 6476)

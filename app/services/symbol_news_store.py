@@ -9,9 +9,10 @@ LLM, no broker/order surface. Callers own session lifecycle and commit.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol
 from app.models.symbol_news_relevance import SymbolNewsRelevance
+from app.services.naver_news_urls import canonicalize_naver_news_url
 from app.services.symbol_news_relevance import build_relevance_hints
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,9 @@ class FeedArticleInput:
     source: str | None
     published_at: datetime | None
     summary: str | None = None
+    published_at_raw: str | None = None
+    published_precision: str | None = None
+    published_at_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,9 +96,36 @@ async def upsert_feed_articles(
     Returns the number of *newly created* pending links (ROB-506 enqueue
     trigger). 0 when every (article, symbol) pair already existed.
     """
+    _articles_new, new_links = await _upsert_feed_articles(
+        db, market, symbol, items, feed_source=feed_source
+    )
+    return new_links
+
+
+async def _upsert_feed_articles(
+    db: AsyncSession,
+    market: str,
+    symbol: str | None,
+    items: list[FeedArticleInput],
+    *,
+    feed_source: str,
+) -> tuple[int, int]:
     if not items:
-        return 0
+        return 0, 0
+    if market == "kr" and feed_source in {KR_FEED_SOURCE, "http_naver_stock_aggregate"}:
+        items = [
+            replace(item, url=canonicalize_naver_news_url(item.url)) for item in items
+        ]
     now = _utcnow()
+    now_aware = datetime.now(tz=UTC)
+    publication_times = []
+    for item in items:
+        published_at = item.published_at
+        if published_at is not None and published_at.utcoffset() is None:
+            published_at = published_at.replace(
+                tzinfo=ZoneInfo("Asia/Seoul") if market == "kr" else UTC
+            )
+        publication_times.append(published_at)
     article_values = [
         {
             "url": item.url,
@@ -103,20 +135,31 @@ async def upsert_feed_articles(
             "market": market,
             "feed_source": feed_source,
             "article_published_at": item.published_at.replace(tzinfo=None)
+            if item.published_at and item.published_at.utcoffset() is None
+            else item.published_at.astimezone(ZoneInfo("Asia/Seoul")).replace(
+                tzinfo=None
+            )
             if item.published_at
             else None,
+            "published_at_raw": item.published_at_raw,
+            "published_at": published_at,
+            "published_precision": item.published_precision,
+            "published_at_reason": item.published_at_reason,
+            "first_received_at": now_aware,
             "is_analyzed": False,
             "scraped_at": now,
             "created_at": now,
             "updated_at": now,
         }
-        for item in items
+        for item, published_at in zip(items, publication_times, strict=True)
     ]
-    await db.execute(
+    inserted_rows = await db.execute(
         pg_insert(NewsArticle)
         .values(article_values)
         .on_conflict_do_nothing(index_elements=[NewsArticle.url])
+        .returning(NewsArticle.id)
     )
+    new_articles = len(inserted_rows.all())
     urls = [item.url for item in items]
     id_rows = await db.execute(
         select(NewsArticle.id, NewsArticle.url).where(NewsArticle.url.in_(urls))
@@ -124,7 +167,7 @@ async def upsert_feed_articles(
     url_to_id = {url: article_id for article_id, url in id_rows.all()}
 
     link_values = []
-    for item in items:
+    for item in items if symbol is not None else ():
         article_id = url_to_id.get(item.url)
         if (
             article_id is None
@@ -160,7 +203,7 @@ async def upsert_feed_articles(
         )
         new_links = int(result.rowcount or 0)
     await db.commit()
-    return new_links
+    return new_articles, new_links
 
 
 async def upsert_kr_feed_articles(
@@ -172,6 +215,17 @@ async def upsert_kr_feed_articles(
 ) -> int:
     """KR 호환 래퍼 — 기존 호출부 보존용 (ROB-491)."""
     return await upsert_feed_articles(db, "kr", symbol, items, feed_source=feed_source)
+
+
+async def upsert_kr_collector_articles(
+    db: AsyncSession,
+    symbol: str | None,
+    items: list[FeedArticleInput],
+    *,
+    feed_source: str,
+) -> tuple[int, int]:
+    """Store collector articles and return (new articles, new symbol links)."""
+    return await _upsert_feed_articles(db, "kr", symbol, items, feed_source=feed_source)
 
 
 async def upsert_related_symbols(

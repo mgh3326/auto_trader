@@ -1,0 +1,49 @@
+{
+  "flashNews": [
+    {
+      "url": "https://n.news.naver.com/article/001/0016132057",
+      "title": "[마켓뷰] 중동긴장 고조속 불안한 투심…변동성 장세 지속 전망",
+      "leadtext": "국제유가 2% 안팎 상승…뉴욕증시 3대지수 하락 마감",
+      "press": "연합뉴스",
+      "time": "2026-06-11T07:48:45"
+    }
+  ],
+  "mainNews": [
+    {
+      "url": "https://n.news.naver.com/article/648/0000047912",
+      "title": "[단독]'회비 꼬박꼬박 걷는데'…적립금 3800억 쌓아둔 금융투자협회",
+      "leadtext": "회원사 회비를 주요 재원으로 운영하는 금융투자협회가 지난해 적립금을 쌓아둔 것으로 확인됐다.",
+      "press": "비즈워치",
+      "time": "2026-06-11T07:30:16"
+    }
+  ],
+  "rankingNews": [
+    {
+      "title": "[단독] 집팔아 ‘삼전닉스’ 들어간 야수들…생각보다 훨씬 더 많았다",
+      "url": "https://n.news.naver.com/article/009/0005692146",
+      "rank": "1",
+      "press": "매일경제",
+      "time": "13시간 전"
+    }
+  ],
+  "newsFocus": [
+    {
+      "category": "시황·전망",
+      "categoryUrl": "/news/section?tab=market-outlook",
+      "news": [
+        {
+          "title": "삼천리, 연간 최대 이익 달성 가능성…재무구조도 안정적",
+          "press": "매일경제",
+          "time": "2026-06-10T22:43:08.000Z",
+          "url": "https://n.news.naver.com/mnews/article/009/0005692236?sid=101258401"
+        },
+        {
+          "title": "[마켓뷰] 중동긴장 고조속 불안한 투심…변동성 장세 지속 전망",
+          "press": "연합뉴스",
+          "time": "2026-06-10T22:48:45.000Z",
+          "url": "https://n.news.naver.com/mnews/article/001/0016132057?sid=101258401"
+        }
+      ]
+    }
+  ]
+}

@@ -76,6 +76,54 @@ async def test_upsert_is_idempotent_set_difference(db_session) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_collector_reingest_keeps_first_received_and_single_article(
+    db_session,
+) -> None:
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url = "https://n.news.naver.com/article/001/0001234"
+    first = FeedArticleInput(
+        url="https://n.news.naver.com/mnews/article/001/0001234?sid=101",
+        title="첫 수신",
+        source="네이버뉴스",
+        published_at=datetime(2026, 11, 25, 0, 0, tzinfo=UTC),
+        published_at_raw="2026-11-25",
+        published_precision="date",
+    )
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session, symbol, [first], feed_source="http_naver_stock_aggregate"
+    )
+    stored = (
+        await db_session.execute(select(NewsArticle).where(NewsArticle.url == url))
+    ).scalar_one()
+    received_at = stored.first_received_at
+
+    await symbol_news_store.upsert_kr_collector_articles(
+        db_session,
+        symbol,
+        [
+            FeedArticleInput(
+                url="https://n.news.naver.com/mnews/article/001/0001234?sid=102",
+                title="다시 수신",
+                source="다른 출처",
+                published_at=datetime(2026, 11, 25, 1, 0, tzinfo=UTC),
+                published_at_raw="2026-11-25 10:00",
+                published_precision="minute",
+            )
+        ],
+        feed_source="http_naver_stock_aggregate",
+    )
+    rows = (
+        (await db_session.execute(select(NewsArticle).where(NewsArticle.url == url)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].first_received_at == received_at
+    assert rows[0].published_at_raw == "2026-11-25"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_upsert_attaches_hints_for_alias_match(db_session) -> None:
     symbol = f"S-{uuid.uuid4()}"[:20]
     url = _unique_url("h1")
