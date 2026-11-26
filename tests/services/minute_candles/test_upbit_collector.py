@@ -22,6 +22,7 @@ from app.services.minute_candles.upbit_collector import (
     select_targets,
 )
 from app.services.minute_candles.upbit_public import (
+    PAGE_SIZE,
     Candle,
     CandlePage,
     Pacer,
@@ -251,11 +252,10 @@ def test_walk_reaching_checkpoint_exactly_is_complete(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_gap(
+async def test_incomplete_first_run_does_not_write_and_next_run_fills_window(
     monkeypatch,
 ) -> None:
-    now = datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
-    checkpoint = now - timedelta(minutes=5)
+    now = datetime(2026, 11, 26, 15, 5, tzinfo=UTC)
     monkeypatch.setattr("app.services.minute_candles.upbit_collector.PAGE_SIZE", 1)
     monkeypatch.setattr(
         "app.services.minute_candles.upbit_collector.MAX_PAGES_PER_MARKET", 2
@@ -263,7 +263,7 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
 
     class Session:
         def __init__(self) -> None:
-            self.rows = {("KRW-BTC", checkpoint)}
+            self.rows: set[tuple[str, datetime]] = set()
 
         async def execute(self, statement, _payload=None):
             sql = str(statement)
@@ -271,7 +271,8 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
                 return None
             if "crypto_instruments.id" in sql:
                 return type("Result", (), {"scalar_one": lambda _self: 1})()
-            latest = max(stamp for market, stamp in self.rows if market == "KRW-BTC")
+            stamps = [stamp for market, stamp in self.rows if market == "KRW-BTC"]
+            latest = max(stamps) if stamps else None
             return type("Result", (), {"scalar_one_or_none": lambda _self: latest})()
 
         async def commit(self) -> None:
@@ -318,14 +319,11 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
         dry_run=False,
     )
 
-    assert session.rows == {("KRW-BTC", checkpoint)}
+    assert session.rows == set()
     first_btc = next(row for row in first.markets if row.market == "KRW-BTC")
     assert first_btc.pages == 2
     assert first_btc.reached_boundary is False
-    assert first_btc.pending_gap == (
-        checkpoint + timedelta(minutes=1),
-        now - timedelta(minutes=4),
-    )
+    assert first_btc.pending_gap is not None
 
     monkeypatch.setattr(
         "app.services.minute_candles.upbit_collector.MAX_PAGES_PER_MARKET",
@@ -333,7 +331,7 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
     )
     normal_run = FakeData(
         {
-            "KRW-BTC": [page(2), page(3), page(4), page(5), page(6)],
+            "KRW-BTC": [page(minute) for minute in range(2, 9)],
             "KRW-ETH": [CandlePage((), now)],
             "KRW-XRP": [CandlePage((), now)],
         }
@@ -348,15 +346,103 @@ async def test_incomplete_walk_does_not_advance_checkpoint_and_next_run_fills_ga
     )
 
     assert session.rows == {
-        ("KRW-BTC", checkpoint),
-        ("KRW-BTC", now - timedelta(minutes=2)),
-        ("KRW-BTC", now - timedelta(minutes=3)),
-        ("KRW-BTC", now - timedelta(minutes=4)),
+        ("KRW-BTC", now - timedelta(minutes=minute)) for minute in range(2, 9)
     }
     second_btc = next(row for row in second.markets if row.market == "KRW-BTC")
-    assert second_btc.pages == 4
+    assert second_btc.pages == 7
     assert second_btc.reached_boundary is True
     assert second_btc.pending_gap is None
+
+
+@pytest.mark.asyncio
+async def test_large_backlog_advances_checkpoint_from_oldest_window_each_run(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
+    checkpoint = now - timedelta(minutes=3000)
+
+    class Session:
+        def __init__(self) -> None:
+            self.rows = {("KRW-BTC", checkpoint)}
+
+        async def execute(self, statement, _payload=None):
+            sql = str(statement)
+            if "INSERT INTO public.crypto_instruments" in sql:
+                return None
+            if "crypto_instruments.id" in sql:
+                return type("Result", (), {"scalar_one": lambda _self: 1})()
+            latest = max(stamp for market, stamp in self.rows if market == "KRW-BTC")
+            return type("Result", (), {"scalar_one_or_none": lambda _self: latest})()
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    class FakeRepository:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def insert_rows(self, *, rows):
+            added = 0
+            for row in rows:
+                key = ("KRW-BTC", row.time_utc)
+                if key not in self.session.rows:
+                    self.session.rows.add(key)
+                    added += 1
+            return added
+
+    class BackwardPages(FakeData):
+        def __init__(self) -> None:
+            super().__init__({"KRW-BTC": []})
+            self.cursors: list[datetime] = []
+
+        def candles(self, market: str, before: datetime) -> CandlePage:
+            if market != "KRW-BTC":
+                return CandlePage((), now)
+            self.calls[market] = self.calls.get(market, 0) + 1
+            self.cursors.append(before)
+            latest_closed = now - timedelta(minutes=2)
+            latest = min(before - timedelta(minutes=1), latest_closed)
+            return CandlePage(
+                tuple(
+                    candle("KRW-BTC", latest - timedelta(minutes=offset))
+                    for offset in range(PAGE_SIZE)
+                ),
+                now,
+            )
+
+    monkeypatch.setattr(
+        "app.services.minute_candles.upbit_collector.MinuteCandlesRepository",
+        FakeRepository,
+    )
+    session = Session()
+    cap_minutes = MAX_PAGES_PER_MARKET * PAGE_SIZE
+    runs = []
+    page_sources = []
+    for _ in range(2):
+        data = BackwardPages()
+        page_sources.append(data)
+        result = await collect_upbit_minute_candles(
+            session=session,
+            data=data,
+            held_markets_loader=lambda: _resolved(set()),
+            now=now,
+            top_n=0,
+            dry_run=False,
+        )
+        runs.append(next(row for row in result.markets if row.market == "KRW-BTC"))
+
+    btc_rows = sorted(stamp for market, stamp in session.rows if market == "KRW-BTC")
+    expected_rows = [checkpoint + timedelta(minutes=minute) for minute in range(2999)]
+    assert btc_rows == expected_rows
+    assert [result.status for result in runs] == ["ok", "ok"]
+    assert [result.reached_boundary for result in runs] == [True, True]
+    assert all(result.pending_gap is None for result in runs)
+    assert [len(data.cursors) for data in page_sources] == [8, 7]
+    assert page_sources[0].cursors[0] == checkpoint + timedelta(minutes=cap_minutes)
+    assert page_sources[1].cursors[0] == now
 
 
 @pytest.mark.asyncio

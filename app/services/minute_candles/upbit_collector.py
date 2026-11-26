@@ -130,8 +130,13 @@ def _walk_rows(
     after: datetime | None = None,
 ):
     start = _kst_day_start(now)
-    cursor = now.astimezone(UTC)
     checkpoint = after.astimezone(UTC) if after is not None else None
+    cursor = now.astimezone(UTC)
+    if checkpoint is not None:
+        page_window = timedelta(minutes=MAX_PAGES_PER_MARKET * PAGE_SIZE)
+        if cursor - checkpoint > page_window:
+            # Upbit pages backward, so cap the first run to the oldest window.
+            cursor = checkpoint + page_window
     # A new collector starts with a short overlap so a run at midnight can
     # still capture the previous day's final closed minutes. Existing
     # checkpoints are retained across midnight and bound the walk directly.
