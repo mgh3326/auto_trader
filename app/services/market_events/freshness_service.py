@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.invest_momentum_event_snapshot import InvestMomentumEventRun
 from app.models.market_events import MarketEvent, MarketEventIngestionPartition
 from app.schemas.calendar_freshness import (
     CalendarCoverage,
@@ -48,6 +49,20 @@ class _Key:
     source: str
     category: str
     market: str
+
+
+@dataclass(frozen=True)
+class _PushCapture:
+    snapshot_at: datetime
+    trading_date: date
+    status: str
+    error: str | None
+
+
+_BENZINGA_PRO_BREAKING_NEWS = _Key(
+    source="benzinga_pro", category="breaking_news", market="us"
+)
+_BENZINGA_PRO_SURFACE_PREFIX = "us:benzinga_pro:"
 
 
 _MARKET_ZONES: dict[str, tuple[Market, str]] = {
@@ -119,6 +134,9 @@ class MarketEventsFreshnessService:
 
         partitions = await self._load_partitions(window_from, window_to)
         event_counts = await self._fetch_event_counts(window_from, window_to)
+        benzinga_captures = await self._load_benzinga_pro_captures(
+            window_from, window_to
+        )
 
         partitions_by_key: dict[_Key, list[MarketEventIngestionPartition]] = (
             defaultdict(list)
@@ -128,23 +146,45 @@ class MarketEventsFreshnessService:
                 _Key(partition.source, partition.category, partition.market)
             ].append(partition)
 
-        keys = set(partitions_by_key) | {
-            _Key(source, category, market)
-            for source, category, market in event_counts.keys()
-        }
+        keys = (
+            set(partitions_by_key)
+            | {
+                _Key(source, category, market)
+                for source, category, market in event_counts.keys()
+            }
+            | {_BENZINGA_PRO_BREAKING_NEWS}
+        )
         expected_refresh = expected_next_refresh_by_key or {}
         rows = [
-            self._row_for_key(
-                key=key,
-                partitions=partitions_by_key.get(key, []),
-                event_count=event_counts.get((key.source, key.category, key.market), 0),
-                window_from=window_from,
-                window_to=window_to,
-                stale_threshold_hours=stale_threshold_hours,
-                expected_next_refresh=expected_refresh.get(
-                    (key.source, key.category, key.market)
-                ),
-                now=clock,
+            (
+                self._benzinga_pro_row(
+                    captures=benzinga_captures,
+                    event_count=event_counts.get(
+                        (key.source, key.category, key.market), 0
+                    ),
+                    window_from=window_from,
+                    window_to=window_to,
+                    stale_threshold_hours=stale_threshold_hours,
+                    expected_next_refresh=expected_refresh.get(
+                        (key.source, key.category, key.market)
+                    ),
+                    now=clock,
+                )
+                if key == _BENZINGA_PRO_BREAKING_NEWS
+                else self._row_for_key(
+                    key=key,
+                    partitions=partitions_by_key.get(key, []),
+                    event_count=event_counts.get(
+                        (key.source, key.category, key.market), 0
+                    ),
+                    window_from=window_from,
+                    window_to=window_to,
+                    stale_threshold_hours=stale_threshold_hours,
+                    expected_next_refresh=expected_refresh.get(
+                        (key.source, key.category, key.market)
+                    ),
+                    now=clock,
+                )
             )
             for key in sorted(
                 keys, key=lambda item: (item.source, item.category, item.market)
@@ -158,6 +198,112 @@ class MarketEventsFreshnessService:
             stale_threshold_hours=stale_threshold_hours,
             rows=rows,
             warnings=_build_warnings(rows, stale_threshold_hours),
+        )
+
+    async def _load_benzinga_pro_captures(
+        self, window_from: date, window_to: date
+    ) -> list[_PushCapture]:
+        stmt = (
+            select(InvestMomentumEventRun)
+            .where(
+                InvestMomentumEventRun.trading_date >= window_from,
+                InvestMomentumEventRun.trading_date <= window_to,
+                InvestMomentumEventRun.surface.startswith(
+                    _BENZINGA_PRO_SURFACE_PREFIX, autoescape=True
+                ),
+            )
+            .order_by(
+                InvestMomentumEventRun.snapshot_at.asc(),
+                InvestMomentumEventRun.run_id.asc(),
+                InvestMomentumEventRun.surface.asc(),
+            )
+        )
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        by_run: dict[object, list[InvestMomentumEventRun]] = defaultdict(list)
+        for row in rows:
+            by_run[row.run_id].append(row)
+
+        captures: list[_PushCapture] = []
+        for _run_id, run_rows in by_run.items():
+            sides = {row.surface.rsplit(":", 1)[-1] for row in run_rows}
+            errors = [row for row in run_rows if row.status == "error"]
+            incomplete = sides != {"up", "down"}
+            latest = max(run_rows, key=lambda row: _ensure_aware(row.snapshot_at))
+            error = (
+                (max(errors, key=lambda row: _ensure_aware(row.snapshot_at)).reason)
+                or "capture_error"
+                if errors
+                else "incomplete_evidence"
+                if incomplete
+                else None
+            )
+            captures.append(
+                _PushCapture(
+                    snapshot_at=_ensure_aware(latest.snapshot_at),
+                    trading_date=latest.trading_date,
+                    status="error" if error else "succeeded",
+                    error=error,
+                )
+            )
+        return captures
+
+    def _benzinga_pro_row(
+        self,
+        *,
+        captures: list[_PushCapture],
+        event_count: int,
+        window_from: date,
+        window_to: date,
+        stale_threshold_hours: float,
+        expected_next_refresh: datetime | None,
+        now: datetime,
+    ) -> MarketEventsFreshnessRow:
+        succeeded = [capture for capture in captures if capture.status == "succeeded"]
+        failed = [capture for capture in captures if capture.status == "error"]
+        latest_succeeded = max(succeeded, key=lambda row: row.snapshot_at, default=None)
+        latest_failed = max(failed, key=lambda row: row.snapshot_at, default=None)
+        latest_failed_error = latest_failed.error if latest_failed else None
+        latest_finished_at = latest_succeeded.snapshot_at if latest_succeeded else None
+        allowance_hours = (
+            24.0 * _non_session_days("us", latest_finished_at, now)
+            if latest_finished_at is not None
+            else 0.0
+        )
+        hours_since = (
+            round((now - latest_finished_at).total_seconds() / 3600.0, 4)
+            if latest_finished_at is not None
+            else None
+        )
+        return MarketEventsFreshnessRow(
+            source=_BENZINGA_PRO_BREAKING_NEWS.source,
+            category=_BENZINGA_PRO_BREAKING_NEWS.category,
+            market=_BENZINGA_PRO_BREAKING_NEWS.market,
+            window_from=window_from,
+            window_to=window_to,
+            partition_count_total=len(captures),
+            partition_count_succeeded=len(succeeded),
+            partition_count_failed=len(failed),
+            partition_count_running=0,
+            partition_count_pending=0,
+            # Push captures are event driven, so a missing calendar-day
+            # partition is not meaningful for this source.
+            partition_count_missing=0,
+            event_count_in_window=event_count,
+            latest_succeeded_partition_date=(
+                latest_succeeded.trading_date if latest_succeeded else None
+            ),
+            latest_succeeded_finished_at=latest_finished_at,
+            hours_since_latest_succeeded=hours_since,
+            latest_failed_partition_date=(
+                latest_failed.trading_date if latest_failed else None
+            ),
+            latest_failed_error=latest_failed_error,
+            expected_next_refresh_at=expected_next_refresh,
+            stale=(
+                latest_finished_at is None
+                or hours_since is None
+                or hours_since > stale_threshold_hours + allowance_hours
+            ),
         )
 
     async def _load_partitions(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace as ns
@@ -42,6 +43,62 @@ def crypto_route(rows):
 
 def by_dataset(response):
     return {row["dataset"]: row for row in response["data"]}
+
+
+def _benzinga_run_rows(*, status: str, reason: str | None, row_count: int):
+    run_id = uuid.uuid4()
+    captured_at = datetime.now(UTC)
+    return [
+        ns(
+            run_id=run_id,
+            snapshot_at=captured_at,
+            trading_date=captured_at.date(),
+            surface=f"us:benzinga_pro:us_regular:{side}",
+            status=status,
+            reason=reason,
+            row_count=row_count,
+        )
+        for side in ("up", "down")
+    ]
+
+
+async def _benzinga_gap_response(run_rows):
+    return await read_data_gaps(
+        gap_session(
+            **{
+                "FROM market_events": [],
+                "FROM market_event_ingestion_partitions": [],
+                "FROM invest_momentum_event_runs": run_rows,
+            }
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_empty_benzinga_capture_is_not_a_data_gap() -> None:
+    response = await _benzinga_gap_response(
+        _benzinga_run_rows(status="empty", reason="no_rows", row_count=0)
+    )
+    validate(response, "DataGapsResponse")
+    assert "market_events.benzinga_pro.breaking_news.us" not in by_dataset(response)
+
+
+@pytest.mark.asyncio
+async def test_missing_benzinga_capture_is_reported_as_stale_lag() -> None:
+    response = await _benzinga_gap_response([])
+    validate(response, "DataGapsResponse")
+    row = by_dataset(response)["market_events.benzinga_pro.breaking_news.us"]
+    assert row["missing_reason"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_benzinga_capture_error_is_incomplete_evidence() -> None:
+    response = await _benzinga_gap_response(
+        _benzinga_run_rows(status="error", reason="timeout", row_count=0)
+    )
+    validate(response, "DataGapsResponse")
+    row = by_dataset(response)["market_events.benzinga_pro.breaking_news.us"]
+    assert row["missing_reason"] == "incomplete_evidence"
 
 
 # --------------------------------------------------------------------------
