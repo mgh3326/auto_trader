@@ -99,6 +99,10 @@ def _add_minute_fields(row: dict[str, Any], minute: daily_bars.MinuteExtras) -> 
         row["first_received_at"] = iso(minute.first_received_at)
     else:
         row["first_received_reason"] = "unavailable"
+    if minute.revised_at is not None:
+        row["revised_at"] = iso(minute.revised_at)
+    if minute.krx_official_close is not None:
+        row["krx_official_close"] = dec(minute.krx_official_close)
 
 
 async def read_get_bars(

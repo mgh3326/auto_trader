@@ -1,0 +1,26 @@
+{
+  "captures": [
+    {
+      "path": "nasdaqlisted-20261024.txt",
+      "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+      "archive_capture": "2026-10-24T22:34:55Z",
+      "closest_partition_days": ["2026-11-02"],
+      "sha256": "08abb07ba11392c9550cd791e81f5f3b18c187da6699ccfff68c43e9d9b49c8d"
+    },
+    {
+      "path": "otherlisted-20261024.txt",
+      "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+      "archive_capture": "2026-10-24T22:34:55Z",
+      "closest_partition_days": ["2026-11-02", "2026-11-25"],
+      "sha256": "311aec1865a3a9ecdded1cf2ff0a63383bd22219ed1cb286ce781b987cdc9ebc"
+    },
+    {
+      "path": "nasdaqlisted-20261125.txt",
+      "source_url": "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt",
+      "archive_capture": "2026-11-25T10:14:11Z",
+      "closest_partition_days": ["2026-11-25"],
+      "sha256": "2f78980e04d02b949303a8c656222a88cb7b5c06beca6675f9803fbb6b271ebd"
+    }
+  ],
+  "note": "Internet Archive CDX returned no 2026-11-02 capture for either series and no otherlisted.txt capture from 2026-11-01 through 2026-11-26. The 2026-10-24 otherlisted capture is the nearest result for both target dates."
+}
