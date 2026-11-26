@@ -954,11 +954,11 @@ async def _apply_nxt_quote_overlay(
     session = await _nxt_quote_session(data_state)
     if session is None:
         return False
+    now = _current_kst_datetime()
     # ROB-888: the daily quote can already include after-market activity. During
     # NXT post, read the KRX 15:30 closing-auction bar as the only close basis.
     krx_close = None
     if session == "nxt_after":
-        now = _current_kst_datetime()
         krx_close = await _fetch_krx_regular_close(symbol, session_date=now.date())
         session_ohlcv = await _fetch_quote_session_ohlcv(symbol, now=now)
     else:
