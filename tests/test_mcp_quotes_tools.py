@@ -774,6 +774,96 @@ async def test_quote_session_bar_paging_respects_page_cap(monkeypatch):
     assert len(frame) == 4
 
 
+@pytest.mark.asyncio
+async def test_internal_nxt_overlay_skips_session_ohlcv_by_default(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_after"
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_fetch_nxt_quote_overlay",
+        AsyncMock(return_value={"price": 101.0, "venues": {"nxt": {}}}),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_fetch_krx_regular_close",
+        AsyncMock(return_value=(100.0, "2026-11-26T15:30:00+09:00")),
+    )
+    bars = AsyncMock(return_value=({}, None))
+    monkeypatch.setattr(market_data_quotes, "_fetch_quote_session_ohlcv", bars)
+    monkeypatch.setattr(
+        market_data_quotes, "_fetch_krx_after_venue", AsyncMock(return_value={})
+    )
+
+    quote = {"symbol": "005930", "price": 100.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "005930", quote, data_state="market_closed"
+    )
+
+    assert applied is True
+    assert quote["price"] == 101.0
+    bars.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quote_session_ohlcv_reuses_krx_frame_for_regular_close(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes as quotes
+
+    class FrameKIS:
+        calls: list[str] = []
+
+        async def inquire_minute_chart(self, *, market, **kwargs):
+            self.calls.append(market)
+            if market == "J":
+                return pd.DataFrame(
+                    [
+                        {
+                            "datetime": dt.datetime(2026, 11, 26, 9, 0),
+                            "open": 290000,
+                            "high": 291000,
+                            "low": 289000,
+                            "close": 290500,
+                            "volume": 10,
+                        },
+                        {
+                            "datetime": dt.datetime(2026, 11, 26, 15, 30),
+                            "open": None,
+                            "high": None,
+                            "low": None,
+                            "close": 298500,
+                            "volume": 10623,
+                        },
+                    ]
+                )
+            return pd.DataFrame(
+                [
+                    {
+                        "datetime": dt.datetime(2026, 11, 26, 16, 0),
+                        "open": 299000,
+                        "high": 300000,
+                        "low": 298000,
+                        "close": 299500,
+                        "volume": 15,
+                    }
+                ]
+            )
+
+    kis = FrameKIS()
+    monkeypatch.setattr(quotes, "KISClient", lambda: kis)
+
+    session_ohlcv, krx_close = await quotes._fetch_quote_session_ohlcv(
+        "278470", now=dt.datetime(2026, 11, 26, 17, 0, tzinfo=quotes._KST)
+    )
+
+    assert kis.calls == ["J", "NX"]
+    assert krx_close == (298500.0, "2026-11-26T15:30:00+09:00")
+    assert session_ohlcv["regular"]["close"] == 298500
+    assert session_ohlcv["nxt_post"]["close"] == 299500
+
+
 def _patch_nxt_eligible(monkeypatch, market_data_quotes) -> None:
     """hk 6300: premarket NXT overlay is gated on NXT tradability (now True)."""
     import datetime as dt
@@ -950,6 +1040,7 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
             return df
 
     get_orderbook_mock = AsyncMock(return_value=_nxt_quote_book(expected_price=113900))
+    session_bars = AsyncMock(return_value=({}, None))
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
@@ -968,6 +1059,9 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
         "get_orderbook",
         get_orderbook_mock,
     )
+    monkeypatch.setattr(
+        market_data_quotes, "_fetch_quote_session_ohlcv", session_bars
+    )
 
     result = await tools["get_quote"]("005930")
 
@@ -985,6 +1079,7 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
     assert result["session"] == "nxt_after"
     assert result["venue"] == "nxt"
     assert result["price_source"] is None
+    session_bars.assert_awaited_once()
 
 
 @pytest.mark.asyncio
