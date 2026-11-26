@@ -296,9 +296,9 @@ async def _upsert_feed_articles(
             }
             if item.title and item.title != existing["title"]:
                 changed_values["title"] = item.title
-            if item.source is not None and item.source != existing["source"]:
+            if item.source and item.source != existing["source"]:
                 changed_values["source"] = item.source
-            if item.summary is not None and item.summary != existing["summary"]:
+            if item.summary and item.summary != existing["summary"]:
                 changed_values["summary"] = item.summary
             if changed_values:
                 changed_values["revised_at"] = datetime.now(tz=UTC)
