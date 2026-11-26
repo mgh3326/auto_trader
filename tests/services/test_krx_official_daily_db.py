@@ -58,7 +58,13 @@ async def test_rerun_inserts_zero_rows_and_keeps_the_first_observation(
     await db_session.commit()
     assert first == 2
 
-    changed = [dict(row, close_price=row["close_price"] + 1) for row in rows]
+    # Change only non-NULL prices so incomplete facts still exercise duplicate handling.
+    changed = [
+        dict(row, close_price=row["close_price"] + 1)
+        if row["close_price"] is not None
+        else dict(row)
+        for row in rows
+    ]
     later_at = first_at + timedelta(hours=5)
     second = await insert_official_daily(
         db_session, rows=changed, first_received_at=later_at
@@ -117,7 +123,7 @@ async def test_check_constraints_refuse_bad_symbol_market_and_zero_volume_mismat
     session_date = _unique_session()
     base = _rows(session_date, "903001", "903002")[0]
     bad_cases = (
-        {**base, "symbol": "KR7903001"},
+        {**base, "symbol": "ABC001"},
         {**base, "symbol": "903003", "market": "KOSPI"},
         {**base, "symbol": "903004", "full_day_zero_volume": True, "volume": 5},
     )
@@ -130,6 +136,23 @@ async def test_check_constraints_refuse_bad_symbol_market_and_zero_volume_mismat
                     first_received_at=datetime(2091, 1, 2, tzinfo=UTC),
                 )
         await db_session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_overlong_symbol_is_refused_by_the_column_length_not_the_check(
+    db_session,
+) -> None:
+    # VARCHAR(6) rejects a 9-character value (SQLSTATE 22001) before the CHECK runs.
+    base = _rows(_unique_session(), "905001", "905002")[0]
+    with pytest.raises(DBAPIError):
+        async with db_session.begin_nested():
+            await insert_official_daily(
+                db_session,
+                rows=[{**base, "symbol": "KR7905001"}],
+                first_received_at=datetime(2091, 1, 2, tzinfo=UTC),
+            )
+    await db_session.rollback()
 
 
 @pytest.mark.integration

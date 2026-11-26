@@ -552,6 +552,42 @@ async def test_store_is_insert_only_on_the_natural_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_full_collection_is_split_into_statements_under_the_parameter_limit() -> (
+    None
+):
+    """asyncpg rejects more than 32,767 bound parameters; one full run is ~44k unchunked."""
+    template = parse_daily_payload(
+        fixture("stk_bydd_trd_captured_20261125.json"),
+        market="kospi",
+        session_date=SESSION,
+    ).rows[0]
+    columns = len(template) + 1  # + first_received_at
+    total_rows = 2772  # about 935 KOSPI + 1837 KOSDAQ rows on one session
+    rows = [{**template, "symbol": f"{i:06d}"} for i in range(total_rows)]
+
+    class CountingSession:
+        def __init__(self) -> None:
+            self.parameter_counts: list[int] = []
+
+        async def execute(self, statement: Any) -> Any:
+            compiled = statement.compile(dialect=postgresql.dialect())
+            params = len(compiled.params)
+            self.parameter_counts.append(params)
+            return SimpleNamespace(rowcount=params // columns)
+
+        async def flush(self) -> None:
+            return None
+
+    session = CountingSession()
+    inserted = await insert_official_daily(
+        session, rows=rows, first_received_at=datetime(2026, 11, 27, tzinfo=UTC)
+    )
+    assert inserted == total_rows
+    assert len(session.parameter_counts) == 3
+    assert max(session.parameter_counts) <= 32767
+
+
+@pytest.mark.asyncio
 async def test_store_with_no_rows_issues_no_statement() -> None:
     session = FakeSession()
     assert (
