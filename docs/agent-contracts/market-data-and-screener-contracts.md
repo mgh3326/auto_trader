@@ -1309,3 +1309,80 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 기존 예측을 먼저 조회하고, 새 예측이 필요한 경우에만 별도 `forecast_save`를
 호출한다. `daily_plan_confirm_links`는 기존 예측과 기각 판단을 대조하고
 연결 사실을 추가한다.
+
+### 순위 입력·예산 배분 비교 (hk 6790)
+
+발행할 때마다 순수 모듈 `app/services/daily_plan/allocation.py`가 비교 블록
+(`daily-plan-allocation/v1`)을 만들고, 단일 writer가 같은 트랜잭션에서
+`review.daily_plan_versions.metadata`의 `allocation_comparison`에 저장한다.
+같은 `idempotency_key` 재시도는 다시 계산하지 않는다. 모듈은 DB·브로커·
+네트워크·주문 코드를 import하지 않으며, 주문·제안·감시·위임장을 쓰지 않고
+주차 종목도 팔지 않는다.
+
+🔴 **이 블록은 운영자 전용이다.** `daily_plan_write_version`(재시도 포함),
+`daily_plan_get`, `daily_plan_list`, `daily_plan_confirm_links` 응답에는 이 키가
+없다. 순위 A는 설계 §4.2 대조군 C에서 수급을 뺀 것이어서, 세션이 보면 C에
+앵커링한다. MCP 도구·인자를 더하지 말고 SQL로 읽는다.
+
+```sql
+SELECT v.seq, v.metadata -> 'allocation_comparison'
+  FROM review.daily_plan_versions v
+  JOIN review.daily_plan_heads h ON h.id = v.head_id
+ WHERE h.session_date = DATE '2026-11-27'
+ ORDER BY v.seq;
+```
+
+이 비교는 사전등록(`hk-5750-daily-plan-score-vs-control`)의 S·C 판정, manifest
+해시, `k`를 바꾸지 않는다.
+
+**대상과 시점.** 후보는 그 발행 직후 유효한 후보 행 전부(앞 버전에서 이어진
+행 포함)이고, 입력은 그 발행이 참조한 번들뿐이다. 정보 경계 `cutoff_at`은
+번들의 `bundle_closed_at`(번들이 없으면 요청 `asof`)이며 premarket 버전은
+08:30 KST 이전이다. 값은 `event_at`과 `first_observed_at`이 둘 다 시간대와 함께
+있고 경계 이하이며 `event_at`이 직전 세션 정규장 마감 이후일 때만 `present`다.
+그 밖은 `unknown`과 닫힌 사유(`input_missing`·`input_invalid`·
+`observed_time_unproven`·`observed_after_cutoff`·`input_stale`·
+`direction_unclassified`)이며 0이나 "악재 없음"이 되지 않는다. 후보마다 입력별
+상태와 순위에 쓴 입력(`inputs_used`)을 남긴다.
+
+**번들의 선택 키.** 후보 evidence 행의 `ranking_inputs`에서
+`dist_to_support_pct`·`rsi_14`·`daily_turnover`·`pbr`·`foreign_net`은
+`{value, event_at, first_observed_at}` 또는 `{unavailable}`이고, `news`·
+`disclosures`는 `{items: [{direction, event_at, first_observed_at}]}`
+(`direction`은 `positive`·`neutral`·`negative`)이다. 기준가는 같은 행의
+`last_close`와 `sources.price`다. 최상위 `accounts`는
+`{account_ref, currency, cash, parking}` 목록이며 `cash`는
+`{value, event_at, first_observed_at}`, `parking` 항목은 `symbol`·`quantity`·
+`price`·`sell_cost_bps`·`event_at`·`first_observed_at`이다. 금액·수량은 십진
+문자열이다. 레포에는 아직 번들을 조립해 `store_input_bundle`을 부르는 코드가
+없으므로, 조립기가 이 키를 채우기 전의 블록은 `unknown`뿐이다.
+
+**순위.** A는 가격·유동성·장부(`dist_to_support_pct`·`rsi_14`·
+`daily_turnover`·`pbr`), B는 A에 `foreign_net`·`news`·`disclosures`를 더한다.
+수치 입력은 설계 §4.2 2의 백분위 점수이며 관측이 2개 이상일 때만 점수가 된다
+(제안 상태인 지표 최소 관측 수는 적용하지 않는다). 뉴스·공시는 경계 안 항목의
+순방향을 `negative` 0·`neutral` 0.5·`positive` 1로 매긴다. 경계 안일 수 있는데
+시각이나 방향을 모르는 항목이 하나라도 있으면 그 입력 전체가 `unknown`이고,
+경계 뒤 항목과 오래된 항목은 빼고 센다. 합성은 있는 입력 점수의 동일 가중
+평균이다. 동점은 같은 순위이며 예산은 `symbol` 오름차순으로 순회한다. 수급의
+종가는 쓰지 않는다. 지표마다 한 출처·단위를 지키는 것은 번들 조립기 책임이다.
+시장 공통 일일 맥락(hk 6786)은 종목을 가르지 않아 순위 입력이 아니다.
+
+**예산.** A와 B 각각에 W(상위 대기 예약)와 N(다음 순위 허용)을 계좌·통화별로
+계산한다. `daily_plan.max_adopt`는 순위·정책 조합마다 계좌 합산 한도다. 자격은
+`new`·`add`·`watch`, 처분이 `dropped`가 아님, `not_executable_reason` 없음,
+발행 시각에 만료 전, `would_be_account_ref`와 그 계좌 사실 있음, 금액 있음
+(`would_be_quantity`×지정가 또는 `max_buy_price`, 다음 `would_be_notional`, 다음
+`planned_amount`)이다. 자격이 없으면 어느 정책에서도 배분이 없다. 진입 조건은
+증명된 기준가가 `trigger`와 `max_buy_price`를 모두 만족할 때만 `met`이고 사건
+trigger는 `unknown`이다. 미충족·미상 상위 후보의 금액과 한도 한 자리를 W는
+보유하고(`reserved_waiting`) N은 넘긴다(`skipped_waiting`).
+
+**자금.** 현금을 먼저 쓰고 모자라면 `would_sell_parking`
+(`symbol`·`quantity`·`est_cost`·`reason="cash_short"`, 총액·순액 포함)을
+가정으로만 기록한다. 대상은 `is_parking_instrument` 종목뿐이고 수량은 정수 주
+내림이라 1주 순액보다 작은 부족분은 채우지 않는다(`partially_funded`).
+`sell_cost_bps`를 모르는 보유는 쓰지 않으며, 현금을 모르면 배분도 가정 매도도
+없다. 가정 매도가 붙은 배분은 `precondition=
+buy_must_not_proceed_until_broker_orderable_cash_has_increased`를 싣는다. 이
+문자열을 강제하거나 매도를 실행하는 경로는 없다.
