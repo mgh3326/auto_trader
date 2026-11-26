@@ -11,6 +11,19 @@ BASE = BASE_URL  # Alias for backward compatibility
 # Domestic Stock - Price & Volume
 KSD_DIVIDEND_URL = "/uapi/domestic-stock/v1/ksdinfo/dividend"
 KSD_DIVIDEND_TR = "HHKDB669102C0"
+KSD_EVENT_ENDPOINTS = {
+    "paidin_capin": ("/uapi/domestic-stock/v1/ksdinfo/paidin-capin", "HHKDB669100C0"),
+    "bonus_issue": ("/uapi/domestic-stock/v1/ksdinfo/bonus-issue", "HHKDB669101C0"),
+    "purreq": ("/uapi/domestic-stock/v1/ksdinfo/purreq", "HHKDB669103C0"),
+    "merger_split": ("/uapi/domestic-stock/v1/ksdinfo/merger-split", "HHKDB669104C0"),
+    "rev_split": ("/uapi/domestic-stock/v1/ksdinfo/rev-split", "HHKDB669105C0"),
+    "cap_dcrs": ("/uapi/domestic-stock/v1/ksdinfo/cap-dcrs", "HHKDB669106C0"),
+    "list_info": ("/uapi/domestic-stock/v1/ksdinfo/list-info", "HHKDB669107C0"),
+    "pub_offer": ("/uapi/domestic-stock/v1/ksdinfo/pub-offer", "HHKDB669108C0"),
+    "forfeit": ("/uapi/domestic-stock/v1/ksdinfo/forfeit", "HHKDB669109C0"),
+    "mand_deposit": ("/uapi/domestic-stock/v1/ksdinfo/mand-deposit", "HHKDB669110C0"),
+    "sharehld_meet": ("/uapi/domestic-stock/v1/ksdinfo/sharehld-meet", "HHKDB669111C0"),
+}
 DOMESTIC_VOLUME_URL = "/uapi/domestic-stock/v1/quotations/volume-rank"
 DOMESTIC_VOLUME_TR = "FHPST01710000"  # 실전 전용
 
