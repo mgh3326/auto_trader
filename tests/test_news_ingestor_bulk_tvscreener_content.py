@@ -99,7 +99,6 @@ async def test_bulk_ingest_dedupes_repeated_urls_and_preserves_richer_existing_r
     run_uuid = f"test-rob-162-repeat-url-{uuid4().hex}"
     payload = _unique_payload(run_uuid)
     article_payload = payload["articles"][0]
-    payload["articles"] = [article_payload, dict(article_payload)]
     target_url = article_payload.get("canonical_url") or article_payload["url"]
 
     first_received = datetime(2026, 4, 30, 1, 0, tzinfo=UTC)
@@ -141,6 +140,7 @@ async def test_bulk_ingest_dedupes_repeated_urls_and_preserves_richer_existing_r
             "raw": {},
         }
     )
+    payload["articles"] = [article_payload, dict(article_payload)]
     request = NewsBulkIngestRequest.model_validate(payload)
     response = await ingest_news_ingestor_bulk(request)
 
