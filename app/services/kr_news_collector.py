@@ -14,6 +14,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.mcp_server.tooling.shared import is_korean_equity_code
 from app.models.account_value import AccountValueSnapshot
 from app.models.investment_reports import InvestmentWatchAlert
 from app.models.manual_holdings import ManualHolding, MarketType
@@ -126,7 +127,7 @@ def normalize_aggregate_item(row: object) -> dict[str, Any] | None:
     if not isinstance(url, str) or not isinstance(title, str) or not title.strip():
         return None
     try:
-        canonical_url = canonicalize_url(url)
+        dedupe_url = canonicalize_url(url)
     except ValueError:
         return None
     published_raw = _first_value(
@@ -147,7 +148,10 @@ def normalize_aggregate_item(row: object) -> dict[str, Any] | None:
         row, "leadtext", "subcontent", "summary", "body", "description"
     )
     return {
-        "url": canonical_url,
+        # Keep the provider URL as the stored identity. The canonical form is
+        # only used to collapse equivalent URLs within this fetched batch.
+        "url": url.strip(),
+        "dedupe_url": dedupe_url,
         "title": title.strip(),
         "source": str(source).strip() if source is not None else None,
         "summary": str(summary).strip() if summary is not None else None,
@@ -194,9 +198,9 @@ async def fetch_aggregate_news(
             raise ValueError(f"aggregate_section_missing:{response_key}")
         for raw in section_items:
             item = normalize_aggregate_item(raw)
-            if item is None or item["url"] in seen:
+            if item is None or item["dedupe_url"] in seen:
                 continue
-            seen.add(item["url"])
+            seen.add(item["dedupe_url"])
             item["section"] = section
             if raw.get("focus_category"):
                 item["focus_category"] = str(raw["focus_category"])
@@ -229,10 +233,11 @@ def build_symbol_set(
     origins: dict[str, list[str]] = {}
     for source, values in priorities:
         for raw in values:
-            symbol = str(raw).strip()
-            if not symbol or not symbol.isdigit() or len(symbol) > 6:
+            symbol = str(raw).strip().upper()
+            if symbol.isascii() and symbol.isdigit() and len(symbol) < 6:
+                symbol = symbol.zfill(6)
+            if not is_korean_equity_code(symbol):
                 continue
-            symbol = symbol.zfill(6)
             if source not in origins.setdefault(symbol, []):
                 origins[symbol].append(source)
             if symbol not in ordered:
@@ -355,7 +360,7 @@ async def _store_items(
             for item in items
         ]
         inserted, links = await symbol_news_store.upsert_kr_collector_articles(
-            db, symbol, inputs, feed_source=feed_source
+            db, symbol, inputs, feed_source=feed_source, commit=False
         )
         new_articles += inserted
         new_links += links
@@ -435,7 +440,11 @@ async def collect_kr_news(
                         )
                     ]
                     inserted, _ = await symbol_news_store.upsert_kr_collector_articles(
-                        db, None, inputs, feed_source=AGGREGATE_FEED_SOURCE
+                        db,
+                        None,
+                        inputs,
+                        feed_source=AGGREGATE_FEED_SOURCE,
+                        commit=False,
                     )
                     aggregate_report.new += inserted
                 urls.append(item["url"])
@@ -463,13 +472,17 @@ async def collect_kr_news(
                                 }
                                 for match in matches
                             ],
+                            commit=False,
                         )
             aggregate_report.duplicate = max(
                 0, aggregate_report.fetched - aggregate_report.new
             )
+            await db.commit()
     except (
         Exception
     ) as exc:  # source failure must remain distinguishable from an empty feed
+        if db is not None:
+            await db.rollback()
         aggregate_report.status = "error"
         aggregate_report.errors.append(type(exc).__name__)
         logger.warning("KR aggregate news collection failed: %s", type(exc).__name__)
@@ -487,13 +500,15 @@ async def collect_kr_news(
                 raw_time = row.get("datetime_raw", row.get("datetime"))
                 published = parse_publish_time(raw_time)
                 try:
-                    url = canonicalize_url(str(row.get("url") or ""))
+                    url = str(row.get("url") or "").strip()
+                    dedupe_url = canonicalize_url(url)
                 except ValueError:
                     continue
                 if not row.get("title"):
                     continue
                 item = {
                     "url": url,
+                    "dedupe_url": dedupe_url,
                     "title": str(row["title"]),
                     "source": row.get("source"),
                     "summary": None,
@@ -502,7 +517,7 @@ async def collect_kr_news(
                 normalized.append(item)
             unique: dict[str, dict[str, Any]] = {}
             for item in normalized:
-                unique.setdefault(item["url"], item)
+                unique.setdefault(item["dedupe_url"], item)
             source.fetched = len(normalized)
             if db is not None and unique:
                 inserted, _links = await _store_items(
@@ -513,9 +528,12 @@ async def collect_kr_news(
                 )
                 source.new = inserted
                 source.duplicate = max(0, source.fetched - source.new)
+                await db.commit()
             else:
                 source.duplicate = max(0, source.fetched - len(unique))
         except Exception as exc:
+            if db is not None:
+                await db.rollback()
             source.status = "error"
             source.errors.append(type(exc).__name__)
             logger.warning(

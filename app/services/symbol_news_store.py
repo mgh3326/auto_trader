@@ -9,12 +9,13 @@ LLM, no broker/order surface. Callers own session lifecycle and commit.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,13 +110,63 @@ async def _upsert_feed_articles(
     items: list[FeedArticleInput],
     *,
     feed_source: str,
+    canonical_dedupe: bool = False,
+    commit: bool = True,
 ) -> tuple[int, int]:
     if not items:
         return 0, 0
-    if market == "kr" and feed_source in {KR_FEED_SOURCE, "http_naver_stock_aggregate"}:
+    if canonical_dedupe and market == "kr":
+        # Resolve the collector's canonical identity against both the exact
+        # incoming URL and the legacy Naver mobile URL before inserting. Keep
+        # the provider URL in `news_articles.url`; get_news uses that exact key
+        # to reconnect its live payload and freshness metadata.
+        items_by_key: dict[str, FeedArticleInput] = {}
+        for item in items:
+            key = canonicalize_naver_news_url(item.url)
+            items_by_key.setdefault(key, item)
+        items = list(items_by_key.values())
+        candidate_urls: set[str] = set()
+        candidate_prefixes: set[str] = set()
+        for item in items:
+            canonical = canonicalize_naver_news_url(item.url)
+            candidate_urls.add(item.url)
+            candidate_urls.add(canonical)
+            parts = urlsplit(canonical)
+            if parts.hostname == "n.news.naver.com" and parts.path.startswith(
+                "/article/"
+            ):
+                mobile_url = urlunsplit(
+                    (parts.scheme, parts.netloc, "/mnews" + parts.path, "", "")
+                )
+                candidate_urls.add(mobile_url)
+                candidate_prefixes.update({canonical, mobile_url})
+        lookup_conditions = [NewsArticle.url.in_(candidate_urls)]
+        lookup_conditions.extend(
+            NewsArticle.url.startswith(prefix) for prefix in candidate_prefixes
+        )
+        prior_rows = await db.execute(
+            select(NewsArticle.id, NewsArticle.url).where(or_(*lookup_conditions))
+        )
+        existing_by_key: dict[str, int] = {}
+        for article_id, url in prior_rows.all():
+            try:
+                key = canonicalize_naver_news_url(url)
+            except ValueError:
+                continue
+            existing_by_key.setdefault(key, article_id)
         items = [
-            replace(item, url=canonicalize_naver_news_url(item.url)) for item in items
+            item
+            for item in items
+            if canonicalize_naver_news_url(item.url) not in existing_by_key
         ]
+    else:
+        existing_by_key = {}
+    if canonical_dedupe and market == "kr":
+        # Items that were filtered above are represented by the original batch
+        # when constructing links; the lookup includes all known URL variants.
+        link_items = list(items_by_key.values())
+    else:
+        link_items = items
     now = _utcnow()
     now_aware = datetime.now(tz=UTC)
     publication_times = []
@@ -153,22 +204,47 @@ async def _upsert_feed_articles(
         }
         for item, published_at in zip(items, publication_times, strict=True)
     ]
-    inserted_rows = await db.execute(
-        pg_insert(NewsArticle)
-        .values(article_values)
-        .on_conflict_do_nothing(index_elements=[NewsArticle.url])
-        .returning(NewsArticle.id)
-    )
-    new_articles = len(inserted_rows.all())
-    urls = [item.url for item in items]
-    id_rows = await db.execute(
-        select(NewsArticle.id, NewsArticle.url).where(NewsArticle.url.in_(urls))
-    )
-    url_to_id = {url: article_id for article_id, url in id_rows.all()}
+    new_articles = 0
+    if article_values:
+        inserted_rows = await db.execute(
+            pg_insert(NewsArticle)
+            .values(article_values)
+            .on_conflict_do_nothing(index_elements=[NewsArticle.url])
+            .returning(NewsArticle.id)
+        )
+        new_articles = len(inserted_rows.all())
+    if canonical_dedupe and market == "kr":
+        candidate_urls = set(candidate_urls)
+        candidate_urls.update(item.url for item in items)
+        lookup_conditions = [NewsArticle.url.in_(candidate_urls)]
+        lookup_conditions.extend(
+            NewsArticle.url.startswith(prefix) for prefix in candidate_prefixes
+        )
+        id_rows = await db.execute(
+            select(NewsArticle.id, NewsArticle.url).where(or_(*lookup_conditions))
+        )
+        url_to_id: dict[str, int] = {}
+        for article_id, url in id_rows.all():
+            try:
+                key = canonicalize_naver_news_url(url)
+            except ValueError:
+                continue
+            url_to_id.setdefault(key, article_id)
+    else:
+        urls = [item.url for item in items]
+        id_rows = await db.execute(
+            select(NewsArticle.id, NewsArticle.url).where(NewsArticle.url.in_(urls))
+        )
+        url_to_id = {url: article_id for article_id, url in id_rows.all()}
 
     link_values = []
-    for item in items if symbol is not None else ():
-        article_id = url_to_id.get(item.url)
+    for item in link_items if symbol is not None else ():
+        item_key = (
+            canonicalize_naver_news_url(item.url)
+            if canonical_dedupe and market == "kr"
+            else item.url
+        )
+        article_id = url_to_id.get(item_key)
         if (
             article_id is None
         ):  # insert race lost and url missing — skip, next call heals
@@ -202,7 +278,8 @@ async def _upsert_feed_articles(
             )
         )
         new_links = int(result.rowcount or 0)
-    await db.commit()
+    if commit:
+        await db.commit()
     return new_articles, new_links
 
 
@@ -223,9 +300,18 @@ async def upsert_kr_collector_articles(
     items: list[FeedArticleInput],
     *,
     feed_source: str,
+    commit: bool = True,
 ) -> tuple[int, int]:
     """Store collector articles and return (new articles, new symbol links)."""
-    return await _upsert_feed_articles(db, "kr", symbol, items, feed_source=feed_source)
+    return await _upsert_feed_articles(
+        db,
+        "kr",
+        symbol,
+        items,
+        feed_source=feed_source,
+        canonical_dedupe=True,
+        commit=commit,
+    )
 
 
 async def upsert_related_symbols(

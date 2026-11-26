@@ -12,7 +12,7 @@ steps:
   - name: collect
     script: |
       rc=0
-      docker run --rm --init --network host --workdir /app --env DATABASE_URL "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_kr_news --commit || rc=$?
+      docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_kr_news --commit || rc=$?
       exit "$rc"
     timeout_sec: 300
 handler_on:
