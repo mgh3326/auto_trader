@@ -100,6 +100,7 @@ from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.daily_plan_registration import register_daily_plan_tools
 from app.mcp_server.tooling.dead_tools import without_dead_tools
 from app.mcp_server.tooling.decision_table_apply_registration import (
     register_decision_table_apply_tools,
@@ -451,6 +452,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_kiwoom_us(mcp)
         # #849: NH Namuh mock (NHPLUG Stage 2) — same flag-gated DEFAULT-only
         # pattern. No live profile or lane allowlist lists these names.
+        if settings.daily_plan_enabled:
+            register_daily_plan_tools(mcp)
         if settings.nh_mock_mcp_enabled:
             from app.mcp_server.tooling.orders_nh_mock_variants import (
                 register as register_nh_mock,
