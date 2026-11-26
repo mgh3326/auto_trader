@@ -218,6 +218,7 @@ tests/services/kis_futures_mock/test_futures_mock_boundary.py
 tests/services/kis_futures_mock/test_futures_mock_credentials.py
 tests/services/kis_futures_mock/test_futures_mock_ledger_db.py
 tests/services/kis_futures_mock/test_futures_mock_place.py
+tests/services/kis_futures_mock/test_futures_mock_reconcile.py
 tests/services/kis_futures_mock/test_futures_mock_rules.py
 tests/services/kis_futures_mock/test_futures_mock_schema_static.py
 tests/services/kis_futures_read/test_kis_futures_read.py

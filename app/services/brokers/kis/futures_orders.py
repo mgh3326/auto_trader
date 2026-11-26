@@ -2,7 +2,7 @@
 
 🔴 이 모듈은 **모의 전용**이다: 호스트가 정확히 VTS 호스트가 아니거나 클라이언트가 모의가
 아니거나 계좌가 8자리가 아니면 요청을 만들기 전에 ``FuturesPreDispatchError`` 로 거부한다.
-TR 은 모의 주간 ``VTTO1101U``/``VTTO1103U`` 뿐이다(실전·야간 TR 상수 없음). 이 모듈을
+송신 TR 은 모의 주간 ``VTTO1101U``/``VTTO1103U`` 뿐이다(실전·야간 TR 상수 없음). 이 모듈을
 부르는 곳은 ``app/services/kis_futures_mock/`` 하나이고(정적 테스트), ``KISClient`` 에는
 메서드를 더하지 않는다 — T1 읽기 view(`kis_futures_read.view`)의 허용 목록과 ``futures_*``
 메서드 집합 대조 테스트가 그대로 성립한다.
@@ -18,10 +18,12 @@ TR 은 모의 주간 ``VTTO1101U``/``VTTO1103U`` 뿐이다(실전·야간 TR 상
 from __future__ import annotations
 
 import os
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from app.services.brokers.kis.circuit_breaker import KISCircuitOpen
+from app.services.brokers.kis.futures_read import FuturesRead
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.vts_distributed_gate import DistributedGateUnavailable
 from app.services.kis_futures_mock import constants as C  # noqa: N812
@@ -70,6 +72,64 @@ class FuturesOrders:
 
     async def close(self) -> None:
         await self._parent.close()
+
+    async def daily_history(
+        self, *, account: str, trading_day: str
+    ) -> list[dict[str, Any]]:
+        """VTTO5201R output1 is per order. output2 has account-wide totals."""
+        if not self.is_mock_client or self.base_url != C.MOCK_HOST:
+            raise FuturesPreDispatchError("not_mock_host")
+        if date.fromisoformat(trading_day).strftime("%Y%m%d") != trading_day:
+            raise ValueError("거래일 형식 오류")
+        params = _account(account) | {
+            "STRT_ORD_DT": trading_day,
+            "END_ORD_DT": trading_day,
+            "SLL_BUY_DVSN_CD": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "SORT_SQN": "AS",
+            "PDNO": "",
+            "STRT_ODNO": "",
+            "MKET_ID_CD": "",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+        reader = FuturesRead(self._parent)
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        cont = ""
+        for _ in range(100):
+            data, headers = await reader._get(
+                "inquire-ccnl", "VTTO5201R", params, cont, max_retries_override=0
+            )
+            page = data.get("output1")
+            if not isinstance(page, list) or not all(
+                isinstance(row, dict) for row in page
+            ):
+                raise RuntimeError("주문체결 내역 응답 형식 오류")
+            if any(
+                row.get("cano", account) != account
+                or row.get("acnt_prdt_cd", C.ACCOUNT_PRODUCT_CODE)
+                != C.ACCOUNT_PRODUCT_CODE
+                for row in page
+            ):
+                raise RuntimeError("주문체결 내역 계좌 불일치")
+            rows.extend(page)
+            flag = headers.get("tr_cont", "").strip().upper()
+            if flag in {"", "D", "E"}:
+                return rows
+            fk, nk = data.get("ctx_area_fk200"), data.get("ctx_area_nk200")
+            if (
+                flag not in {"F", "M"}
+                or not isinstance(fk, str)
+                or not isinstance(nk, str)
+                or not nk.strip()
+                or (fk, nk) in seen
+            ):
+                raise RuntimeError("주문체결 내역 연속조회 응답 오류")
+            seen.add((fk, nk))
+            params = params | {"CTX_AREA_FK200": fk, "CTX_AREA_NK200": nk}
+            cont = "N"
+        raise RuntimeError("주문체결 내역 연속조회 한도 초과")
 
     async def _post(
         self, path: str, tr: str, body: dict[str, str], api_name: str

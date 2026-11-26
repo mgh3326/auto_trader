@@ -177,3 +177,76 @@ def test_only_the_mock_tr_ids_exist():
     source = inspect.getsource(futures_orders) + inspect.getsource(C)
     for live in ("TTTO1101U", "TTTO1103U", "STTN1101U", "TTTN1103U", "STTN"):
         assert live not in source.replace("VTTO", "")  # 실전·야간 TR 상수 없음
+
+
+def test_daily_history_uses_mock_get_and_complete_pagination(monkeypatch):
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    monkeypatch.delenv(C.ENABLED_ENV)
+    parent = Parent()
+    first = {"ord_dt": "20261126", "odno": "1"}
+    second = {"ord_dt": "20261126", "odno": "2"}
+    pages = iter(
+        [
+            (
+                {
+                    "rt_cd": "0",
+                    "output1": [first],
+                    "output2": {"fee_smtl": "52"},
+                    "ctx_area_fk200": "a",
+                    "ctx_area_nk200": "b",
+                },
+                {"tr_cont": "M"},
+            ),
+            ({"rt_cd": "0", "output1": [second], "output2": {}}, {"tr_cont": "D"}),
+        ]
+    )
+
+    async def fetch(method, url, **kwargs):
+        parent.calls.append((method, url, kwargs))
+        return next(pages)
+
+    parent._request_with_rate_limit_with_headers = fetch
+    result = run(
+        FuturesOrders(parent).daily_history(account="12345678", trading_day="20261126")
+    )
+    assert result == [first, second]
+    for method, url, request in parent.calls:
+        assert method == "GET"
+        assert (
+            url == C.MOCK_HOST + "/uapi/domestic-futureoption/v1/trading/inquire-ccnl"
+        )
+        assert request["headers"]["tr_id"] == "VTTO5201R"
+        params = request["params"]
+        assert params["STRT_ORD_DT"] == params["END_ORD_DT"] == "20261126"
+        assert params["ACNT_PRDT_CD"] == "03"
+    assert parent.calls[1][2]["headers"]["tr_cont"] == "N"
+    assert parent.calls[1][2]["params"]["CTX_AREA_NK200"] == "b"
+
+
+def test_daily_history_refuses_incomplete_page(monkeypatch):
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    parent = Parent()
+
+    async def fetch(*args, **kwargs):
+        return {"rt_cd": "0", "output1": [{"odno": "1"}]}, {"tr_cont": "M"}
+
+    parent._request_with_rate_limit_with_headers = fetch
+    with pytest.raises(RuntimeError, match="연속조회"):
+        run(
+            FuturesOrders(parent).daily_history(
+                account="12345678", trading_day="20261126"
+            )
+        )
+
+
+def test_daily_history_refuses_live_client_before_token(monkeypatch):
+    monkeypatch.setenv("KIS_FUTURES_READ_ENABLED", "true")
+    parent = Parent(
+        is_mock=False, token_error=AssertionError("token must not be called")
+    )
+    with pytest.raises(FuturesPreDispatchError, match="not_mock_host"):
+        run(
+            FuturesOrders(parent).daily_history(
+                account="12345678", trading_day="20261126"
+            )
+        )
