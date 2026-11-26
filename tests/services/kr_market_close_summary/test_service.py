@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,6 +10,8 @@ from app.services.kr_market_close_summary.formatter import format_summary
 from app.services.kr_market_close_summary.service import SECTIONS, build_summary
 from app.services.kr_market_close_summary.sources import (
     _breadth,
+    _load_disclosures,
+    _load_news,
     confirmed_flow_evidence,
 )
 from app.services.kr_market_close_summary.types import Evidence
@@ -230,3 +233,107 @@ def test_breadth_is_null_with_coverage_counts_below_threshold() -> None:
     assert evidence["reason"] == "session_bar_coverage_incomplete"
     assert evidence["coverage"]["covered_symbols"] == 1
     assert evidence["coverage"]["universe_symbols"] == 100
+
+
+@pytest.mark.asyncio
+async def test_disclosures_stay_pending_until_post_close_partition_is_complete() -> (
+    None
+):
+    class Session:
+        query: Any = None
+
+        async def scalar(self, query: Any) -> Any:
+            self.query = query
+            return SimpleNamespace(
+                status="succeeded",
+                finished_at=datetime(2026, 11, 25, 9, 29, tzinfo=UTC),
+            )
+
+        async def scalars(self, query: Any) -> Any:
+            raise AssertionError("incomplete partition must not read events")
+
+    evidence, complete = await _load_disclosures(Session(), SESSION_DATE, ["005930"])
+
+    assert complete is False
+    assert evidence["value"] is None
+    assert evidence["reason"] == "disclosure_ingestion_pending"
+
+
+@pytest.mark.asyncio
+async def test_disclosure_query_includes_dart_earnings_categories() -> None:
+    class Session:
+        statement: Any = None
+
+        async def scalar(self, query: Any) -> Any:
+            return SimpleNamespace(
+                status="succeeded",
+                finished_at=datetime(2026, 11, 25, 9, 31, tzinfo=UTC),
+            )
+
+        async def scalars(self, query: Any) -> Any:
+            self.statement = query
+            return SimpleNamespace(
+                all=lambda: [
+                    SimpleNamespace(
+                        symbol="005930",
+                        title="잠정실적",
+                        source="dart",
+                        source_url="https://example.invalid/report",
+                        release_time_utc=AS_OF,
+                        first_received_at=None,
+                    )
+                ]
+            )
+
+    session = Session()
+    evidence, complete = await _load_disclosures(session, SESSION_DATE, ["005930"])
+    statement = str(
+        session.statement.compile(compile_kwargs={"literal_binds": True})
+    ).lower()
+
+    assert complete is True
+    assert evidence["value"][0]["title"] == "잠정실적"
+    assert "earnings" in statement
+    assert "disclosure" in statement
+    assert "dart" in statement
+
+
+@pytest.mark.asyncio
+async def test_news_query_unions_relevance_links_and_deduplicates_before_limit() -> (
+    None
+):
+    article = SimpleNamespace(
+        id=7,
+        title="news",
+        feed_source="naver_item_news",
+        source="naver",
+        url="https://example.invalid/news",
+        published_at=datetime(2026, 11, 25, 9, tzinfo=UTC),
+    )
+
+    class Session:
+        statement: Any = None
+
+        async def execute(self, statement: Any) -> Any:
+            self.statement = statement
+            return SimpleNamespace(all=lambda: [(article, "005930")])
+
+    session = Session()
+    evidence = await _load_news(session, SESSION_DATE, ["005930"])
+    statement = str(
+        session.statement.compile(compile_kwargs={"literal_binds": True})
+    ).lower()
+
+    assert evidence["value"] == [
+        {
+            "symbol": "005930",
+            "title": "news",
+            "source": "naver_item_news",
+            "url": "https://example.invalid/news",
+            "provider_published_at": article.published_at.isoformat(),
+        }
+    ]
+    assert "symbol_news_relevance" in statement
+    assert "news_article_related_symbols" in statement
+    assert "distinct" in statement
+    assert "limit 50" in statement
