@@ -163,8 +163,61 @@ async def test_bulk_ingest_dedupes_repeated_urls_and_preserves_richer_existing_r
     assert stored.published_at == published_at
     assert stored.published_at_raw == "2026-04-30T10:32:00+09:00"
     assert stored.published_precision == "second"
+    assert stored.revised_at is None
     assert stored.provider_article_id == "provider-article-7"
     assert stored.source_document_ids == {"dart_id": ["20260430000007"]}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_news_ingestor_bulk_publication_time_change_marks_revision(db_session):
+    payload = _unique_payload(f"test-news-timing-revision-{uuid4().hex}")
+    article_payload = payload["articles"][0]
+    target_url = article_payload.get("canonical_url") or article_payload["url"]
+    first_received = datetime(2026, 4, 30, 1, 0, tzinfo=UTC)
+    db_session.add(
+        NewsArticle(
+            url=target_url,
+            title=article_payload["title"],
+            source=article_payload.get("source") or article_payload.get("publisher"),
+            article_content=article_payload.get("content"),
+            summary=article_payload.get("summary"),
+            market=article_payload["market"],
+            feed_source="stored-feed",
+            scraped_at=first_received,
+            created_at=first_received,
+            first_received_at=first_received,
+            published_at=datetime(2026, 4, 29, 15, 0, tzinfo=UTC),
+            published_at_raw="2026-04-30",
+            published_precision="date",
+        )
+    )
+    await db_session.commit()
+
+    article_payload.update(
+        {
+            "published_at": "2026-04-29T15:32:00+00:00",
+            "published_at_raw": "2026-04-30T00:32:00+09:00",
+            "published_offset": "+09:00",
+            "published_precision": "second",
+        }
+    )
+    response = await ingest_news_ingestor_bulk(
+        NewsBulkIngestRequest.model_validate(payload)
+    )
+
+    assert response.success
+    stored = (
+        await db_session.execute(
+            select(NewsArticle).where(NewsArticle.url == target_url)
+        )
+    ).scalar_one()
+    assert stored.first_received_at == first_received
+    assert stored.published_at_raw == "2026-04-30T00:32:00+09:00"
+    assert stored.published_at == datetime(2026, 4, 29, 15, 32, tzinfo=UTC)
+    assert stored.published_offset == "+09:00"
+    assert stored.published_precision == "second"
+    assert stored.revised_at is not None
 
 
 @pytest.mark.integration

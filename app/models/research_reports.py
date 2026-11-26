@@ -84,9 +84,9 @@ class ResearchReport(Base):
     published_at_text: Mapped[str | None] = mapped_column(Text)
     published_date: Mapped[date | None] = mapped_column(Date)
     published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
-    first_received_at: Mapped[datetime] = mapped_column(
+    first_received_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
-        nullable=False,
+        nullable=True,
         default=func.now(),
         server_default=func.now(),
     )

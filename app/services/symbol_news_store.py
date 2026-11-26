@@ -30,6 +30,13 @@ KR_FEED_SOURCE = "naver_item_news"
 FINNHUB_COMPANY_FEED_SOURCE = "finnhub_company_news"  # us
 FINNHUB_GENERAL_FEED_SOURCE = "finnhub_general_news"  # crypto (심볼 키 아님)
 _PUBLICATION_PRECISION_RANK = {"date": 1, "minute": 2, "second": 3}
+PUBLICATION_CONTENT_FIELDS = (
+    "article_published_at",
+    "published_at_raw",
+    "published_offset",
+    "published_at",
+    "published_precision",
+)
 
 
 def publication_update_values(excluded: Any) -> dict[str, Any]:
@@ -283,7 +290,10 @@ async def _upsert_feed_articles(
                     values["published_at"] = incoming_published_at
                 if existing_precision is None and item.published_precision is not None:
                     values["published_precision"] = item.published_precision
-                if item.published_offset is not None:
+                if (
+                    existing.get("published_offset") is None
+                    and item.published_offset is not None
+                ):
                     values["published_offset"] = item.published_offset
             if item.provider_article_id is not None:
                 values["provider_article_id"] = item.provider_article_id
@@ -301,7 +311,16 @@ async def _upsert_feed_articles(
             if item.summary and item.summary != existing["summary"]:
                 changed_values["summary"] = item.summary
             if changed_values:
-                changed_values["revised_at"] = datetime.now(tz=UTC)
+                if any(
+                    field in changed_values
+                    for field in (
+                        "title",
+                        "source",
+                        "summary",
+                        *PUBLICATION_CONTENT_FIELDS,
+                    )
+                ):
+                    changed_values["revised_at"] = datetime.now(tz=UTC)
                 await db.execute(
                     update(NewsArticle)
                     .where(NewsArticle.id == article_id)
@@ -388,6 +407,10 @@ async def _upsert_feed_articles(
             NewsArticle.title.is_distinct_from(update_values["title"]),
             NewsArticle.source.is_distinct_from(update_values["source"]),
             NewsArticle.summary.is_distinct_from(update_values["summary"]),
+            *[
+                getattr(NewsArticle, name).is_distinct_from(update_values[name])
+                for name in PUBLICATION_CONTENT_FIELDS
+            ],
         ]
         update_values.update(
             revised_at=case(

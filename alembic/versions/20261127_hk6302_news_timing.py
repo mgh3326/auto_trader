@@ -62,12 +62,10 @@ def upgrade() -> None:
         "UPDATE research_reports SET first_received_at = created_at "
         "WHERE first_received_at IS NULL"
     )
-    # expand-contract: contract-step 6302
     op.alter_column(
         "research_reports",
         "first_received_at",
-        nullable=False,
-        server_default="now()",
+        server_default=sa.text("now()"),
     )
     op.add_column("research_reports", sa.Column("published_date", sa.Date()))
     op.add_column(
