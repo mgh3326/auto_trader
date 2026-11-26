@@ -1,7 +1,7 @@
 """Add source timing, article identity and relation evidence to news.
 
 Revision ID: 20261127_hk6302
-Revises: 20261126_hk6674
+Revises: 20261126_hk6778_merge
 Create Date: 2026-11-27
 """
 
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20261127_hk6302"
-down_revision: str | None = "20261126_hk6674"
+down_revision: str | None = "20261126_hk6778_merge"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
