@@ -145,15 +145,24 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   short interest 는 `symbols`(필수)/`from`/`to` + `page`/`pageSize`, news/WIIM 은 `dateFrom`/`dateTo` +
   `page`/`pageSize`(최대 100)를 쓴다. `shortInterestData` 는 심볼별 `{data: []}` 맵이라 평탄화한다.
   추가 캘린더(`split`, `merger_acquisition`, `offering`, `fda`, `ipo`)도 같은 page/pagesize/date 필터를 쓴다.
+  FDA 심볼 필터 이름은 `parameters[securities]`다(그 밖의 해당 캘린더는 `parameters[tickers]`).
   옵션 이상거래는 `page`/`pageSize`와 `parameters[date_from]`/`parameters[date_to]`를 쓴다. SEC 내부자 filing은
-  `--symbols`가 필수이며 `page`/`pagesize`/`date_from`/`date_to`/`symbols`를, 의회 거래는 `page`/`pagesize`와
-  `date_from`/`date_to`를, analyst insights는 `page`/`pageSize`와 `date_from`/`date_to`(선택 `symbols`)를 쓴다.
+  `page`/`pagesize`/`date_from`/`date_to`를 쓰며, 선택 `--symbols`는 `search_keys_type=symbol`과 `search_keys`로
+  보낸다. 의회 거래는 `page`/`pagesize`와 `updated_since`를 쓴다(`updated_since`는 요청 창 시작의 UTC Unix 초).
+  ingestion은 disclosure를 놓치지 않도록 category 조회/파티션 창을 30일 뒤로 확장하며 `report_date`를 event_date로 쓴다;
+  선택 `--symbols`는 `search_keys_type=ticker`와 `search_keys`로 보낸다. analyst insights는 `page`/`pageSize`와
+  `date_from`/`date_to`(선택 `symbols`)를 쓴다.
   새 category의 날짜·값 정규화는 문서 필드에 한정한다: split=`date_announced`(ratio 분자/분모, shares),
   merger_acquisition=`date`(deal_size, 통화), offering=`date`(주식 수와 금액은 각각 shares/통화), fda=`date`,
-  ipo=`date`(연도만 주어지면 그해 1월 1일로 버킷; `pricing_date`는 date가 없을 때만 대체),
+  ipo=`date`(`pricing_date`는 date가 유효하지 않을 때만 대체; 둘 다 날짜 정밀도가 없으면 해당 row를 건너뜀),
   option_activity=`date`(가격·계약 수·비용 basis는 USD/contract·contracts·USD), insider_trade=`filing_date`
-  (중첩 transaction shares와 price_per_share는 shares·USD/share), congress_trade=`transaction_date`
-  (amount 구간의 최소/최대는 USD), analyst_insight=`date`(pt는 USD/share). 비수치 FDA 본문은 raw evidence에만 둔다.
+  (중첩 transaction shares와 price_per_share는 shares·USD/share), congress_trade=`report_date`
+  (amount 구간의 최소/최대는 USD, 값 period에는 `transaction_date`), analyst_insight=`date`(pt는 USD/share).
+  IPO status는 `deal_status`를 따라 Priced→released, Withdrawn→cancelled, Postponed→tentative, 기타→scheduled다.
+  `date`가 연도뿐이고 유효한 `pricing_date`도 없으면 정밀도를 꾸며내지 않고 행을 건너뛴다. `ipo_doc_example.json`은
+  이 비정밀 실제 응답을 그대로 보존하고, 유효한 정규화 예제는 docs의 schema field examples를 표시한
+  `ipo_schema_doc_example.json`을 사용한다.
+  비수치 FDA 본문은 raw evidence에만 둔다.
   Insider filing의 provider id는 filing `id`, 각 나머지는 row `id`다. 이 아홉 예시 응답은
   `tests/fixtures/benzinga_calendars/*_doc_example.json`에 문서 예시 그대로 보존하고 출처를 README에 기록한다.
   `ok=false` 오류 봉투·키 누락·비객체·비리스트 행은 **페이지 전체 실패**이고, 읽기 종료는

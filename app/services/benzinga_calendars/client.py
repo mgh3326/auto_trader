@@ -23,7 +23,7 @@ before any socket is opened.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from app.services.benzinga_calendars.spec import CalendarEndpoint, endpoint_for
@@ -68,8 +68,18 @@ def build_params(
         params["date_from"] = from_date.isoformat()
         params["date_to"] = to_date.isoformat()
         tickers = _csv(symbols)
-        if tickers and endpoint.category == "insider_trade":
-            params["symbols"] = tickers
+        if tickers and endpoint.symbol_search_type:
+            params["search_keys_type"] = endpoint.symbol_search_type
+            params["search_keys"] = tickers
+    elif endpoint.paging_style == "v1_updated":
+        params["pagesize"] = endpoint.page_size
+        params["updated_since"] = int(
+            datetime.combine(from_date, time.min, tzinfo=UTC).timestamp()
+        )
+        tickers = _csv(symbols)
+        if tickers and endpoint.symbol_search_type:
+            params["search_keys_type"] = endpoint.symbol_search_type
+            params["search_keys"] = tickers
     elif endpoint.paging_style == "analyst":
         params["pageSize"] = endpoint.page_size
         params["date_from"] = from_date.isoformat()
@@ -97,7 +107,7 @@ def build_params(
         params["parameters[date_to]"] = to_date.isoformat()
         tickers = _csv(symbols)
         if tickers:
-            params["parameters[tickers]"] = tickers
+            params[endpoint.symbol_param] = tickers
     return params
 
 

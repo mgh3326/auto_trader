@@ -801,23 +801,22 @@ def _normalize_ipo(
 ) -> NormalizedRow:
     event_date = _parse_iso_date(row.get("date")) or _parse_iso_date(row.get("pricing_date"))
     if event_date is None:
-        # The provider's documented example contains a year-only IPO date.
-        # Keep it in the correct calendar year at its earliest representable
-        # date instead of dropping the documented row.
-        year_text = _text(row.get("date"))
-        if year_text and re.fullmatch(r"\d{4}", year_text):
-            event_date = date(int(year_text), 1, 1)
-    if event_date is None:
         raise ValueError("benzinga IPO row missing a valid date or pricing_date")
     symbol = _row_symbol(row)
     if symbol is None:
         raise ValueError("benzinga IPO row missing ticker")
     currency = _text(row.get("currency")) or "USD"
+    deal_status = (_text(row.get("deal_status")) or "").casefold()
+    status = {
+        "priced": "released",
+        "withdrawn": "cancelled",
+        "postponed": "tentative",
+    }.get(deal_status, "scheduled")
     event = _base_event(
         category="ipo", row=row,
         source_event_id=_event_id("ipo", row, f"{symbol}:{event_date}"),
         event_date=event_date, symbol=symbol, company_name=_text(row.get("name")),
-        title=f"{symbol} IPO", status="released",
+        title=f"{symbol} IPO", status=status,
         first_received_at=first_received_at, fetched_at=fetched_at, currency=currency,
     )
     values: list[dict[str, Any]] = []
@@ -904,7 +903,7 @@ def _normalize_insider_trade(
 def _normalize_congress_trade(
     row: dict[str, Any], *, first_received_at: datetime, fetched_at: datetime
 ) -> NormalizedRow:
-    event_date = _required_date(row, "transaction_date", "congress trade")
+    event_date = _required_date(row, "report_date", "congress trade")
     security = row.get("security") if isinstance(row.get("security"), dict) else {}
     symbol = _row_symbol(security, key="ticker")
     filer = row.get("filer_info") if isinstance(row.get("filer_info"), dict) else {}
@@ -926,7 +925,12 @@ def _normalize_congress_trade(
         for metric, raw in zip(("trade_amount_min", "trade_amount_max"), bounds):
             number = _decimal(raw.replace(",", ""))
             if number is not None:
-                values.append({"metric_name": metric, "actual": number, "unit": "USD"})
+                values.append({
+                    "metric_name": metric,
+                    "actual": number,
+                    "unit": "USD",
+                    "period": _text(row.get("transaction_date")),
+                })
     return NormalizedRow(event=event, values=values)
 
 

@@ -67,7 +67,6 @@ def test_every_scheduled_category_is_registered(name: str) -> None:
 def test_short_interest_is_not_scheduled_without_a_symbol_list() -> None:
     for name in DAGS:
         assert "short_interest" not in _step(name)
-        assert "insider_trade" not in _step(name)
 
 
 def test_the_intraday_step_targets_a_single_day_and_the_premarket_a_week() -> None:

@@ -49,6 +49,9 @@ class CalendarEndpoint:
     nested_symbol_map: bool = False
     extra_params: dict[str, str] = field(default_factory=dict)
     paging_style: str = "calendar"
+    symbol_param: str = "parameters[tickers]"
+    symbol_search_type: str | None = None
+    lookback_days: int = 0
 
 
 CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
@@ -136,6 +139,7 @@ CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
             path="/api/v2.1/calendar/fda",
             row_key="fda",
             docs_url="https://docs.benzinga.com/api-reference/calendar-api/get-fda",
+            symbol_param="parameters[securities]",
         ),
         CalendarEndpoint(
             category="ipo",
@@ -159,8 +163,8 @@ CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
                 "https://docs.benzinga.com/api-reference/calendar-api/"
                 "insider-transaction/get-insider-transaction-filing"
             ),
-            requires_symbols=True,
             paging_style="v1_calendar",
+            symbol_search_type="symbol",
         ),
         CalendarEndpoint(
             category="congress_trade",
@@ -170,7 +174,9 @@ CALENDAR_ENDPOINTS: dict[str, CalendarEndpoint] = {
                 "https://docs.benzinga.com/api-reference/calendar-api/"
                 "government-trades/get-government-trades"
             ),
-            paging_style="v1_calendar",
+            paging_style="v1_updated",
+            symbol_search_type="ticker",
+            lookback_days=30,
         ),
         CalendarEndpoint(
             category="analyst_insight",

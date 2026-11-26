@@ -68,9 +68,9 @@ def test_short_interest_accepts_symbols():
 
 
 @pytest.mark.unit
-def test_insider_trade_requires_symbols():
-    with pytest.raises(SystemExit):
-        cli.parse_args(["--category", "insider_trade", "--date", "2026-11-25"])
+def test_insider_trade_accepts_optional_symbols():
+    ns = cli.parse_args(["--category", "insider_trade", "--date", "2026-11-25"])
+    assert ns.symbols is None
 
 
 @pytest.mark.unit
