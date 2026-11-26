@@ -50,6 +50,7 @@ _TOKEN_PARAM_RE = re.compile(r"token=[^&\s]*")
 DEFAULT_TIMEOUT_S = 15.0
 
 _JSON_MEDIA_TYPE = "application/json"
+BENZINGA_REQUEST_HEADERS = {"Accept": "application/json"}
 
 
 class BenzingaGateOff(Exception):
@@ -209,7 +210,9 @@ async def fetch_json(
     response: httpx.Response | None = None
     try:
         async with factory(timeout_s) as client:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                url, params=params, headers=BENZINGA_REQUEST_HEADERS
+            )
     except httpx.TimeoutException as exc:
         failure = BenzingaTransportError(
             f"benzinga timeout {type(exc).__name__} (path {path})"

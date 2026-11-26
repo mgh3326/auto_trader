@@ -1,0 +1,20 @@
+{
+  "_fixture_note": "Shape from the official KIS sample column mapping (examples_llm, read 2026-11-26). Values are synthetic, not captured responses; the TR's real output keys and timezone are unverified until a live smoke.",
+  "rt_cd": "0",
+  "outblock1": [
+    {
+      "info_gb": "1",
+      "news_key": "20251125BSN000123",
+      "data_dt": "20251125",
+      "data_tm": "093000",
+      "class_cd": "01",
+      "class_name": "Earnings",
+      "source": "WIRE",
+      "nation_cd": "US",
+      "exchange_cd": "NAS",
+      "symb": "NVDA",
+      "symb_name": "NVIDIA",
+      "title": "NVIDIA raises guidance"
+    }
+  ]
+}

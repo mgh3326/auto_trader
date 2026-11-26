@@ -1,0 +1,43 @@
+{
+  "_fixture_note": "Shape from the official KIS sample column mapping (examples_llm, read 2026-11-26). Values are synthetic, not captured responses; the TR's real output keys and timezone are unverified until a live smoke.",
+  "rt_cd": "0",
+  "output": [
+    {
+      "cntt_usiq_srno": "2025112500001",
+      "news_ofer_entp_code": "0",
+      "data_dt": "20251125",
+      "data_tm": "093015",
+      "hts_pbnt_titl_cntt": "NVIDIA unveils new data center chip",
+      "news_lrdv_code": "",
+      "dorg": "WIRE",
+      "iscd1": "NVDA",
+      "iscd2": "AMD",
+      "iscd3": "",
+      "kor_isnm1": "엔비디아",
+      "kor_isnm2": "AMD"
+    },
+    {
+      "cntt_usiq_srno": "2025112500002",
+      "news_ofer_entp_code": "0",
+      "data_dt": "20251125",
+      "data_tm": "101500",
+      "hts_pbnt_titl_cntt": "Oil prices edge higher",
+      "news_lrdv_code": "",
+      "dorg": "WIRE",
+      "iscd1": "",
+      "iscd2": ""
+    },
+    {
+      "cntt_usiq_srno": "2025112500003",
+      "news_ofer_entp_code": "0",
+      "data_dt": "2025-11-25",
+      "data_tm": "25:99:00",
+      "hts_pbnt_titl_cntt": "Berkshire B item",
+      "news_lrdv_code": "",
+      "dorg": "WIRE",
+      "iscd1": "BRK/B",
+      "iscd2": "",
+      "kor_isnm1": ""
+    }
+  ]
+}

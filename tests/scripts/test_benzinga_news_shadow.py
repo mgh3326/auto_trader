@@ -38,7 +38,16 @@ def test_gate_off_exits_without_network(
 
     monkeypatch.setattr(bz, "fetch_benzinga_news", _boom)
     code = cli.main(
-        ["poll", "--symbols", "NVDA", "--out-dir", str(tmp_path), "--poll-id", "p-gate"]
+        [
+            "poll",
+            "--skip-kis",
+            "--symbols",
+            "NVDA",
+            "--out-dir",
+            str(tmp_path),
+            "--poll-id",
+            "p-gate",
+        ]
     )
     assert code == 2
     assert list(tmp_path.iterdir()) == []
@@ -54,7 +63,16 @@ def test_out_dir_inside_repo_is_refused(
 
     monkeypatch.setattr(bz, "fetch_benzinga_news", _boom)
     code = cli.main(
-        ["poll", "--symbols", "NVDA", "--out-dir", "docs", "--poll-id", "p-refuse"]
+        [
+            "poll",
+            "--skip-kis",
+            "--symbols",
+            "NVDA",
+            "--out-dir",
+            "docs",
+            "--poll-id",
+            "p-refuse",
+        ]
     )
     assert code == 2
     assert "outside the repo" in capsys.readouterr().err
@@ -71,7 +89,16 @@ def test_poll_id_traversal_is_refused(
     monkeypatch.setattr(bz, "fetch_benzinga_news", _boom)
     for bad in ("../evil", "/abs/path", "a/b"):
         code = cli.main(
-            ["poll", "--symbols", "NVDA", "--out-dir", str(tmp_path), "--poll-id", bad]
+            [
+                "poll",
+                "--skip-kis",
+                "--symbols",
+                "NVDA",
+                "--out-dir",
+                str(tmp_path),
+                "--poll-id",
+                bad,
+            ]
         )
         assert code == 2
         assert "[A-Za-z0-9._-]+" in capsys.readouterr().err
@@ -108,6 +135,7 @@ def test_poll_writes_append_only_jsonl(
     out_dir = tmp_path / "shadow"
     argv = [
         "poll",
+        "--skip-kis",
         "--symbols",
         "NVDA",
         "--out-dir",
@@ -193,6 +221,7 @@ def test_poll_stamps_each_source_after_its_own_response(
     code = cli.main(
         [
             "poll",
+            "--skip-kis",
             "--symbols",
             "NVDA",
             "--out-dir",
@@ -231,6 +260,7 @@ def test_poll_explicit_zero_counts(
     code = cli.main(
         [
             "poll",
+            "--skip-kis",
             "--symbols",
             "NVDA",
             "--out-dir",
@@ -277,6 +307,7 @@ def test_poll_error_writes_status_and_exits_nonzero(
     code = cli.main(
         [
             "poll",
+            "--skip-kis",
             "--symbols",
             "NVDA",
             "--out-dir",
@@ -336,6 +367,7 @@ def test_poll_filters_finnhub_to_requested_window(
     code = cli.main(
         [
             "poll",
+            "--skip-kis",
             "--symbols",
             "NVDA",
             "--out-dir",
@@ -499,6 +531,7 @@ def test_poll_queries_both_params_and_records_names(
     code = cli.main(
         [
             "poll",
+            "--skip-kis",
             "--symbols",
             "NVDA",
             "--out-dir",
