@@ -1,0 +1,24 @@
+{
+  "offerings": [
+    {
+      "currency": "USD",
+      "cusip": "73245B107",
+      "date": "2025-12-29",
+      "dollar_shares": "50000000.000",
+      "exchange": "NASDAQ",
+      "id": "69531bc06ab0a40001b39686",
+      "importance": 2,
+      "name": "SBC Medical Group Holding",
+      "notes": "",
+      "number_shares": 0,
+      "offering_type": "",
+      "price": "",
+      "proceeds": "",
+      "shelf": true,
+      "ticker": "SBC",
+      "time": "19:24:32",
+      "updated": 1767054276,
+      "url": ""
+    }
+  ]
+}

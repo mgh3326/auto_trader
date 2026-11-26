@@ -1,0 +1,21 @@
+{
+  "splits": [
+    {
+      "cusip": "87807D509",
+      "date_announced": "2025-12-30",
+      "date_distribution": "2025-01-06",
+      "date_ex": "2025-01-07",
+      "date_recorded": "2025-01-02",
+      "exchange": "NASDAQ",
+      "id": "677675329a903000017cb6f1",
+      "importance": 1,
+      "name": "TC BioPharm (Holdings)",
+      "notes": "",
+      "optionable": false,
+      "ratio": "1.25:1",
+      "split_type": "ADR Ratio Change",
+      "ticker": "TCBP",
+      "updated": 1735816783
+    }
+  ]
+}

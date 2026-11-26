@@ -49,7 +49,7 @@ from app.services.benzinga_calendars.ingestion import (
     dates_in_range,
     ingest_benzinga_category_for_range,
 )
-from app.services.benzinga_calendars.spec import CATEGORIES
+from app.services.benzinga_calendars.spec import CATEGORIES, endpoint_for
 from app.services.benzinga_http import (
     BenzingaApiKeyMissing,
     calendars_enabled,
@@ -151,8 +151,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     unknown = [c for c in ns.categories if c not in CATEGORIES]
     if unknown:
         parser.error(f"unknown --category {unknown}; supported: {list(CATEGORIES)}")
-    if "short_interest" in ns.categories and not ns.symbols:
-        parser.error("--symbols is required for the short_interest category")
+    missing_symbols = {"short_interest"}.intersection(ns.categories)
+    if missing_symbols and not ns.symbols:
+        parser.error(
+            f"--symbols is required for categories: {', '.join(sorted(missing_symbols))}"
+        )
     return ns
 
 
@@ -219,7 +222,15 @@ async def run(ns: argparse.Namespace) -> int:
     if ns.compare_earnings:
         return await _run_compare(ns.from_date, ns.to_date, ns.symbols)
 
-    partition_count = len(dates_in_range(ns.from_date, ns.to_date))
+    partition_counts = {
+        category: len(
+            dates_in_range(
+                ns.from_date - timedelta(days=endpoint_for(category).lookback_days),
+                ns.to_date,
+            )
+        )
+        for category in ns.categories
+    }
 
     if ns.dry_run:
         summary = {
@@ -227,18 +238,18 @@ async def run(ns: argparse.Namespace) -> int:
             "categories": ns.categories,
             "from_date": ns.from_date.isoformat(),
             "to_date": ns.to_date.isoformat(),
-            "partitions_per_category": partition_count,
+            "partitions_by_category": partition_counts,
             "symbols": ns.symbols,
             "force": ns.force,
         }
         print(json.dumps({"benzinga_calendars": summary}))
         logger.info(
-            "[DRY-RUN] would ingest %s for %s..%s (%d partitions per category); "
+            "[DRY-RUN] would ingest %s for %s..%s (partitions=%s); "
             "pass --commit to write",
             ns.categories,
             ns.from_date,
             ns.to_date,
-            partition_count,
+            partition_counts,
         )
         return EXIT_OK
 
