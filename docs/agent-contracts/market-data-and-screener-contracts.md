@@ -1215,3 +1215,24 @@ truncated_windows로 반환한다. 호출자는 각 절단 창을 경고한다.
 `KISClient.inquire_vi_status`는 국내 VI TR `FHPST01390000`과 요청 종목·당일 KST 날짜를 사용한다. 응답 종목 키 `mksc_shrn_iscd`, 영업일 `bsop_date`, 체결 시각 `cntg_vi_hour`/취소 시각 `vi_cncl_hour`, 가격·괴리 필드(`vi_prc`, `vi_stnd_prc`, `vi_dprt`, `vi_dmc_stnd_prc`, `vi_dmc_dprt`)와 건수 `vi_count`를 보존하며 수치는 float 없이 Decimal로, 날짜는 date로 엄격 정규화한다. `inquire_member`는 TR `FHKST01010600`에서 회원사 코드·이름과 `total_shnu_qty{n}`/`total_seln_qty{n}`를 상위 매수/매도 수량으로 정규화한다. malformed 행과 요청 심볼 불일치는 `KISFlowResponseContractError`다. 두 호출은 기존 KIS 토큰 인증 transport만 이용하며 주문·계좌 표면에 닿지 않는다. 공식 샘플: [국내주식 함수](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py) 및 [국내주식 호출 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
 
 MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `days` 1..100을 받고 `risk`와 `reference`로 나눈다. `risk`는 VI 이벤트와 hk 6503의 `kr_symbol_trading_flags` 저장소 조회를 포함하며, 저장 행 부재는 `state="unknown"`이지 `none`이 아니다. `reference`는 네 Toss 종목 수급 endpoint, Toss 투자자 랭킹, KIS 회원사 창을 소스별 블록으로 반환한다. 각 소스에 독립 `status`·제공자 `as_of`·로컬 `fetched_at`이 있고 제공자 시각이 없을 때는 `as_of=null`이다. `get_kr_investor_rankings`도 선택한 투자자/side 결과를 `reference.toss_investor_rankings`로 반환한다. 소스 실패는 해당 블록의 `error_class`에 한정되며 빈 결과는 `empty`이지 0값 행이 아니다. 저장소 조회 외 수집·저장·정책·주문 경로는 추가하지 않는다.
+
+## KR 일일 계획 v0 발행 (hk 6751)
+
+`DAILY_PLAN_ENABLED`는 기본 false다. 켜면 DEFAULT 프로필의 KR 레인이
+`daily_plan_write_version`, `daily_plan_confirm_links`, `daily_plan_get`,
+`daily_plan_list`를 쓴다. 발행은 날짜별 트랜잭션 잠금 아래 기준 버전을
+확인한 뒤 변경 행과 `PUBLISHED` 버전을 함께 추가한다. 읽기는 해당 버전까지
+행 키별 마지막 변경을 접는다. 입력 번들의 값·관측 시각·해시를 고정하며,
+필수 입력이 누락되거나 오래됐거나 시점을 증명할 수 없으면 사유와 함께
+`watch`로만 발행한다.
+
+관찰 행은 발동·무효화 조건, 가격 상한, 만기와 입력 기준 시각을 저장한다.
+만기 뒤 이월 허용 행은 정책 상한 안에서 다음 거래일의 장전 재평가 목록에
+오른다. 상한에 닿거나 이월을 허용하지 않으면 `expired`로 닫힌다. 이월의
+원천은 이전 발행 행이다. 이 경로는 주문·제안·감시·위임장을 쓰지 않는다.
+
+설계 §8.2의 역할 구성은 hk 6751 디자인 레인 결정으로 조정했다.
+`at_migration_owner`는 `NOCREATEROLE`이고 앱 로그인은 `at_app`을 상속한다.
+기존 `at_app`에 객체별 조건부 `SELECT`·`INSERT`를 부여한다.
+`app/services/daily_plan`이 단일 writer이며 모든 역할에서 트리거가
+`UPDATE`·`DELETE`·`TRUNCATE`를 거부한다.

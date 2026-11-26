@@ -327,6 +327,7 @@ class Settings(BaseSettings):
     # profile only. Registration is all this flag does; every call still needs
     # NHPLUG_MOCK_ENABLED, the five NHPLUG_STAGE2_*_CONFIRMED gates, a retained
     # key registry, and a fresh acct_type=03 verification before any order.
+    daily_plan_enabled: bool = False
     nh_mock_mcp_enabled: bool = False
 
     # Kiwoom LIVE read-only market data (charts only). Disabled by default.

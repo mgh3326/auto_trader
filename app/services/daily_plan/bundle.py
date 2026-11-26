@@ -62,3 +62,9 @@ def canonical_bundle(body: dict[str, Any]) -> bytes:
 
 def bundle_sha256(body: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_bundle(body)).hexdigest()
+
+
+def canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        _normalize(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
