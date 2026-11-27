@@ -2,7 +2,9 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 import taskiq_fastapi
 from fastapi import FastAPI, Request, status
@@ -84,6 +86,9 @@ from app.routers import (
     user_defaults,
     websocket,
 )
+from app.services.brokers.toss.market_calendar import (
+    get_toss_market_calendar,
+)
 from app.services.error_serialization import (
     domain_error_status_code,
     is_domain_error,
@@ -91,6 +96,9 @@ from app.services.error_serialization import (
 )
 from app.services.order_proposals.callback_inbox.ingress import (
     shutdown_callback_enqueue_tasks,
+)
+from app.services.research_candles.us_day_calendar import (
+    register_us_calendar_reader,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,9 +126,16 @@ def configure_logging() -> None:
     logging.getLogger("uvicorn.access").setLevel(log_level)
 
 
+async def _read_toss_us_calendar(day: date) -> Any | None:
+    return await get_toss_market_calendar("us", day)
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     configure_logging()
+    # hk 7044: the research-minutes ingest reads the Toss US calendar only through
+    # this registered reader, so the router never imports the Toss brokers package.
+    register_us_calendar_reader(_read_toss_us_calendar)
     init_sentry(
         service_name="auto-trader-api",
         enable_fastapi=True,

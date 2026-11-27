@@ -22,8 +22,9 @@ no order, ledger, approval or broker-mutation module (static guard test).
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal, cast
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,17 +33,23 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.mcp_server.env_utils import _env_int
 from app.schemas.research_minutes_ingest import (
+    ResearchMinuteBarItem,
     ResearchMinutesIngestItemResult,
     ResearchMinutesIngestRequest,
     ResearchMinutesIngestResponse,
 )
-from app.services.research_candles import futures_listing, minute_ingest
+from app.services.research_candles import (
+    futures_listing,
+    minute_ingest,
+    us_day_calendar,
+)
 from app.services.research_candles import session_minutes_collector as collector
 from app.services.research_candles.futures_minutes_collector import (
     FuturesBar,
     SqlFuturesMinuteWriter,
 )
 from app.services.research_candles.session_minutes_collector import SqlMinuteWriter
+from app.services.research_candles.session_segment import KIS_DAY_VENUE
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,7 @@ router = APIRouter(prefix="/trading", tags=["research-minutes-ingest"])
 
 _INGEST_PATH = "/api/research-minutes/ingest"
 _TARGETS_PATH = "/api/research-minutes/targets"
+_KST = ZoneInfo("Asia/Seoul")
 
 #: Same source the MCP portfolio tools use for manual holdings (default 1).
 #: Read here instead of importing ``app.mcp_server.tooling.shared``, which drags
@@ -81,6 +89,46 @@ class _HoldingsOnlyReader:
 
     async def fetch_my_us_stocks(self) -> list[dict[str, Any]]:
         return await self._client.fetch_my_us_stocks()
+
+
+def _is_kis_day(venue: object) -> bool:
+    return str(venue or "").strip().upper() == KIS_DAY_VENUE
+
+
+def _kst_date(item: ResearchMinuteBarItem) -> date | None:
+    if item.time_utc.tzinfo is None:
+        return None
+    try:
+        return item.time_utc.astimezone(_KST).date()
+    except (OverflowError, ValueError):
+        # Refused per item by decide_bar (bar_time_invalid); never fails the batch.
+        return None
+
+
+async def _kis_day_calendars(
+    bars: list[ResearchMinuteBarItem],
+) -> dict[date, Any | None]:
+    """One Toss US calendar read per KST date of this batch's KIS_DAY bars.
+
+    A KIS_DAY bar is labelled ``US_DAY`` only from this calendar (hk 7044). Other
+    venues never read it, so their labels stay exactly the KIS windows.
+    """
+    days: set[date] = set()
+    for item in bars:
+        if _is_kis_day(item.venue):
+            day = _kst_date(item)
+            if day is not None:
+                days.add(day)
+    return {day: await us_day_calendar.read_us_calendar(day) for day in sorted(days)}
+
+
+def _calendar_for_item(
+    item: ResearchMinuteBarItem, calendars: dict[date, Any | None]
+) -> Any | None:
+    if not _is_kis_day(item.venue):
+        return None
+    day = _kst_date(item)
+    return None if day is None else calendars.get(day)
 
 
 class _UnavailableKisReader:
@@ -115,6 +163,7 @@ async def ingest_research_minutes(
         else None
     )
     futures_writer = SqlFuturesMinuteWriter(db) if request.market == "futures" else None
+    calendars = await _kis_day_calendars(request.bars) if request.market == "us" else {}
     stock_writer = (
         None if request.market == "futures" else SqlMinuteWriter(db, request.market)
     )
@@ -163,6 +212,7 @@ async def ingest_research_minutes(
                 received_at=item.received_at,
                 source=item.source,
                 now=now,
+                us_calendar=_calendar_for_item(item, calendars),
             )
         bar = decision.bar
         retrieved_at = decision.retrieved_at
