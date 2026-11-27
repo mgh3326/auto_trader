@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +57,23 @@ class CollectionFailure(StrEnum):
     BAD_RESPONSE = "bad_response"
     UNPARSEABLE = "unparseable"
     QUOTA = "quota"
+
+
+# Sets one column and nothing else: no ``updated_at`` (see
+# ``MarketEventsRepository.fill_null_symbol``), and the ``symbol IS NULL``
+# predicate makes a replay a no-op.
+_FILL_NULL_SYMBOL_SQL = text(
+    """
+    UPDATE market_events
+       SET symbol = :symbol
+     WHERE source = :source
+       AND market = :market
+       AND category = :category
+       AND source_event_id = :source_event_id
+       AND symbol IS NULL
+    RETURNING id
+    """
+)
 
 
 def _normalize_publication(payload: dict[str, Any]) -> None:
@@ -550,6 +567,76 @@ class MarketEventsRepository:
         partition.last_error = error[:2000]
         partition.retry_count = (partition.retry_count or 0) + 1
         await self.db.flush()
+
+    # -- DART symbol backfill (hk 5623) --------------------------------------
+
+    async def list_null_symbol_dart_rows(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_date: date,
+        to_date: date,
+    ) -> list[tuple[date, str, str]]:
+        """Return ``(event_date, category, source_event_id)`` for NULL-symbol rows.
+
+        Read-only: the caller decides whether a re-collected provider row
+        resolves the symbol before asking for any write.
+        """
+        stmt = (
+            select(
+                MarketEvent.event_date,
+                MarketEvent.category,
+                MarketEvent.source_event_id,
+            )
+            .where(
+                MarketEvent.source == source,
+                MarketEvent.market == market,
+                MarketEvent.event_date >= from_date,
+                MarketEvent.event_date <= to_date,
+                MarketEvent.symbol.is_(None),
+                MarketEvent.source_event_id.is_not(None),
+            )
+            .order_by(
+                MarketEvent.event_date,
+                MarketEvent.category,
+                MarketEvent.source_event_id,
+            )
+        )
+        return [(row[0], row[1], row[2]) for row in (await self.db.execute(stmt)).all()]
+
+    async def fill_null_symbol(
+        self,
+        *,
+        source: str,
+        market: str,
+        category: str,
+        source_event_id: str,
+        symbol: str,
+    ) -> bool:
+        """Set ``symbol`` on a still-NULL row and nothing else.
+
+        The UPDATE is conditional on ``symbol IS NULL`` (a compare-and-set), so a
+        replay after the fill is a no-op rather than an overwrite. It is written
+        as raw SQL because the table's ``updated_at`` carries a Core ``onupdate``
+        default: a ``sqlalchemy.update()`` would move that timestamp, and the
+        daily-plan bundle reads ``updated_at > created_at`` as
+        ``observed_time_unproven`` (hk 5623). ``first_received_at``,
+        ``raw_payload_json`` and every other stored value must stay untouched.
+        """
+        if not symbol:
+            raise ValueError("symbol is required")
+        result = await self.db.execute(
+            _FILL_NULL_SYMBOL_SQL,
+            {
+                "symbol": symbol,
+                "source": source,
+                "market": market,
+                "category": category,
+                "source_event_id": source_event_id,
+            },
+        )
+        return result.scalar_one_or_none() is not None
 
     async def list_succeeded_partitions_in_range(
         self,
