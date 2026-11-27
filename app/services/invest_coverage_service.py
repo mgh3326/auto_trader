@@ -77,6 +77,10 @@ SUPPORTED_STATES: list[CoverageState] = [
 # `pending` permanently by design (benzinga_calendars/ingestion.py). Those
 # pending partitions are excluded from the stuck count in
 # `_calendar_surfaces`; `failed` and other unfinished statuses still count.
+#
+# Same shape for SEC EDGAR disclosures (hk 6407): every collection run is
+# symbol/CIK-scoped — there is no unfiltered "all filers" read — so a clean
+# run leaves the day partition `pending` permanently by design.
 _PARTITION_UNFINISHED_STATUSES = tuple(
     sorted(PARTITION_STATUSES - {"succeeded", "failed"})
 )
@@ -87,17 +91,26 @@ _BENZINGA_SYMBOL_REQUIRED_CATEGORIES = frozenset(
     if endpoint.requires_symbols
 )
 
+_SEC_SCOPED_SOURCE = "sec"
 
-def _benzinga_symbol_required_pending_clause(
+
+def _symbol_scoped_pending_clause(
     current_kst_date: dt.date,
 ) -> sa.ColumnElement[bool]:
-    return sa.and_(
-        MarketEventIngestionPartition.source == _BENZINGA_SOURCE,
-        MarketEventIngestionPartition.category.in_(
-            _BENZINGA_SYMBOL_REQUIRED_CATEGORIES
+    return sa.or_(
+        sa.and_(
+            MarketEventIngestionPartition.source == _BENZINGA_SOURCE,
+            MarketEventIngestionPartition.category.in_(
+                _BENZINGA_SYMBOL_REQUIRED_CATEGORIES
+            ),
+            MarketEventIngestionPartition.status == "pending",
+            MarketEventIngestionPartition.partition_date < current_kst_date,
         ),
-        MarketEventIngestionPartition.status == "pending",
-        MarketEventIngestionPartition.partition_date < current_kst_date,
+        sa.and_(
+            MarketEventIngestionPartition.source == _SEC_SCOPED_SOURCE,
+            MarketEventIngestionPartition.status == "pending",
+            MarketEventIngestionPartition.partition_date < current_kst_date,
+        ),
     )
 
 
@@ -670,16 +683,14 @@ async def _calendar_surfaces(
                                 MarketEventIngestionPartition.partition_date
                                 < current_kst_date,
                                 sa.not_(
-                                    _benzinga_symbol_required_pending_clause(
-                                        current_kst_date
-                                    )
+                                    _symbol_scoped_pending_clause(current_kst_date)
                                 ),
                             ),
                         )
                     )
                     .label("partial"),
                     sa.func.count()
-                    .filter(_benzinga_symbol_required_pending_clause(current_kst_date))
+                    .filter(_symbol_scoped_pending_clause(current_kst_date))
                     .label("excluded_pending"),
                 ).where(MarketEventIngestionPartition.market == m)
             )
@@ -696,10 +707,10 @@ async def _calendar_surfaces(
             warnings.append("One or more calendar partitions failed or are incomplete.")
         if excluded_pending:
             warnings.append(
-                f"{excluded_pending} pending partition(s) for symbol-required "
-                "Benzinga calendar categories are excluded from the stuck "
-                "count; those categories have no unfiltered read and stay "
-                "pending by design."
+                f"{excluded_pending} pending partition(s) for symbol-scoped "
+                "sources (symbol-required Benzinga calendar categories, SEC "
+                "EDGAR disclosures) are excluded from the stuck count; those "
+                "sources have no unfiltered read and stay pending by design."
             )
         if latest_at and latest_at < stale_cutoff:
             state = "stale" if state == "fresh" else state

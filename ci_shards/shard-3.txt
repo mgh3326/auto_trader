@@ -114,6 +114,7 @@ tests/scripts/test_binance_trend_ncp_playbook.py
 tests/scripts/test_binance_trend_tick_export.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_collect_kr_market_daily.py
+tests/scripts/test_collect_sec_edgar.py
 tests/scripts/test_dagu_kr_market_daily.py
 tests/scripts/test_deploy_ci_gate.py
 tests/scripts/test_diagnose_krx_after_market_eligibility.py
@@ -265,6 +266,7 @@ tests/services/market_close_digest/test_calendar.py
 tests/services/market_events/test_benzinga_pro_freshness.py
 tests/services/market_events/test_dart_symbol_backfill.py
 tests/services/market_events/test_earnings_decision_time.py
+tests/services/market_events/test_sec_edgar.py
 tests/services/market_events/test_session_calendar.py
 tests/services/market_events/test_us_earnings_coverage.py
 tests/services/market_valuation_snapshots/test_normalized_market_cap.py

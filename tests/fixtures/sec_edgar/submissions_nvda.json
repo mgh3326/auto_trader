@@ -1,0 +1,99 @@
+{
+  "cik": "0001045810",
+  "entityType": "operating",
+  "sic": "3674",
+  "sicDescription": "Semiconductors & Related Devices",
+  "ownerOrg": "06 Technology",
+  "insiderTransactionForOwnerExists": 0,
+  "insiderTransactionForIssuerExists": 0,
+  "name": "NVIDIA CORP",
+  "tickers": ["NVDA"],
+  "exchanges": ["Nasdaq"],
+  "ein": "943842691",
+  "description": "",
+  "website": "",
+  "investorWebsite": "",
+  "category": "Large accelerated filer",
+  "fiscalYearEnd": "0131",
+  "stateOfIncorporation": "DE",
+  "stateOfIncorporationDescription": "DE",
+  "phone": "",
+  "flags": "",
+  "formerNames": [],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001045810-25-000301",
+        "0001045810-25-000287",
+        "0001045810-25-000270",
+        "0001045810-25-000255",
+        "0001193125-25-000777"
+      ],
+      "filingDate": [
+        "2025-11-19",
+        "2025-08-27",
+        "2025-05-28",
+        "2025-02-26",
+        "2025-11-20"
+      ],
+      "reportDate": [
+        "2025-10-26",
+        "2025-07-27",
+        "2025-04-27",
+        "",
+        ""
+      ],
+      "acceptanceDateTime": [
+        "2025-11-19T21:31:12.000Z",
+        "2025-08-27T20:32:01.000Z",
+        "2025-05-28T21:05:44.000Z",
+        "2025-02-26T17:00:00.000Z",
+        ""
+      ],
+      "act": ["", "", "", "", ""],
+      "form": ["8-K", "10-Q", "10-K", "8-K/A", "4"],
+      "fileNumber": [
+        "001-37813",
+        "001-37813",
+        "001-37813",
+        "001-37813",
+        ""
+      ],
+      "filmNumber": [
+        "251419123",
+        "251234567",
+        "251123456",
+        "251234568",
+        "251419124"
+      ],
+      "items": ["2.02,9.01", "", "", "2.02", ""],
+      "core_type": ["", "", "", "", ""],
+      "size": [12345, 23456, 34567, 4567, 8901],
+      "isXBRL": [1, 1, 1, 0, 0],
+      "isInlineXBRL": [1, 1, 1, 0, 0],
+      "isForeignPrivateIssuer": [0, 0, 0, 0, 0],
+      "primaryDocument": [
+        "nvda-20251119.htm",
+        "nvda-20250827.htm",
+        "nvda-20251026.htm",
+        "nvda-20250226.htm",
+        "xslF345X06/wk-form4_1750000000.xml"
+      ],
+      "primaryDocDescription": [
+        "",
+        "10-Q",
+        "10-K",
+        "",
+        "Statement of changes in beneficial ownership"
+      ]
+    },
+    "files": [
+      {
+        "name": "CIK0001045810-submissions-001.json",
+        "filingCount": 1234,
+        "filingFrom": "1998-01-02",
+        "filingTo": "2015-06-30"
+      }
+    ]
+  }
+}

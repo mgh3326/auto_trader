@@ -1,0 +1,28 @@
+{
+  "cik": "0000000001",
+  "entityType": "operating",
+  "name": "EMPTY HOLDINGS CORP",
+  "tickers": ["ESPY"],
+  "exchanges": ["NYSE"],
+  "filings": {
+    "recent": {
+      "accessionNumber": [],
+      "filingDate": [],
+      "reportDate": [],
+      "acceptanceDateTime": [],
+      "act": [],
+      "form": [],
+      "fileNumber": [],
+      "filmNumber": [],
+      "items": [],
+      "core_type": [],
+      "size": [],
+      "isXBRL": [],
+      "isInlineXBRL": [],
+      "isForeignPrivateIssuer": [],
+      "primaryDocument": [],
+      "primaryDocDescription": []
+    },
+    "files": []
+  }
+}

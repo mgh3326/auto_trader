@@ -566,6 +566,61 @@ async def test_calendar_events_excludes_symbol_required_benzinga_pending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_us_calendar_partitions")
+async def test_calendar_events_excludes_sec_scoped_pending(
+    db_session,
+):
+    """hk 6407: SEC EDGAR runs are always symbol-scoped, so their `pending`
+    partitions are the designed resting state and must not count as stuck;
+    other unfinished partitions still do.
+    """
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="test",
+                category="economic",
+                market="us",
+                partition_date=trading_day,
+                status="succeeded",
+                event_count=3,
+                finished_at=now,
+            ),
+            MarketEventIngestionPartition(
+                source="sec",
+                category="disclosure",
+                market="us",
+                partition_date=trading_day,
+                status="pending",
+            ),
+            MarketEventIngestionPartition(
+                source="benzinga",
+                category="earnings",
+                market="us",
+                partition_date=trading_day,
+                status="pending",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="us", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "us"
+    )
+
+    # Only the `earnings` pending partition counts: `sec` runs are symbol-
+    # scoped by design, so its pending partition is the resting state.
+    assert calendar.counts.partial == 1
+    assert calendar.state == "partial"
+    assert any("symbol-required Benzinga" in warning for warning in calendar.warnings)
+
+
+@pytest.mark.asyncio
 async def test_all_market_symbol_drilldown_resolves_per_symbol_market(db_session):
     trading_day = dt.date(2026, 5, 11)
     now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
