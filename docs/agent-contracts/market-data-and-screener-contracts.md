@@ -121,8 +121,11 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 `scripts/backfill_dart_symbols.py --from-date D --to-date D [--commit]`로 채운다. 기본은 미리보기이고 `--commit`만 쓴다.
 대상 날짜의 공시 목록은 기존 `fetch_dart_filings_for_date`(`use_cache=False`)로 다시 받고, 행마다 같은 hk 4591 규칙
 (`normalize_dart_disclosure_row`)으로 해석한다. 해석된 행은 `symbol` 열 하나만 `symbol IS NULL` 조건으로 갱신한다.
-`first_received_at`, `raw_payload_json`, 다른 값은 건드리지 않으며 재실행은 아무것도 쓰지 않는다. 해석되지 않은 행은
-`NULL`로 남고 사유는 보고서에만 센다. 쓰기는 `MarketEventsRepository.fill_dart_symbol_if_null` 하나뿐이다.
+`first_received_at`, `raw_payload_json`, 다른 값은 건드리지 않으며 재실행은 아무것도 쓰지 않는다. 심볼 채움은
+`updated_at`을 바꾸지 않는다: 일일 계획 번들은 `updated_at > created_at`인 행을 `observed_time_unproven`으로 보므로
+(설계 5750 §7.1), 값 변화 없이 갱신 시각을 올리면 이 행들이 까닭 없이 강등된다. 해석되지 않은 행은
+`NULL`로 남고 사유는 보고서(CLI 출력의 사유별 건수)에만 센다. `raw_payload_json`은 다시 쓰지 않는다.
+쓰기는 `MarketEventsRepository.fill_dart_symbol_if_null` 하나뿐이다.
 스케줄 등록은 없다. 날짜별 DART 실패는 보고서에 남고 종료 코드 1이다.
 
 **DART 구조화 자본 이벤트 (hk 6582)**: 기존 날짜별 공시 수집은 주요사항보고서의 유상·무상증자, 감자,

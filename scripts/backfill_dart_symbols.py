@@ -9,9 +9,14 @@ Examples:
     python -m scripts.backfill_dart_symbols --from-date 2026-10-01 --to-date 2026-10-31 --commit
 
 Preview is the default. ``--commit`` is the only write switch. There is no
-scheduler registration. ``first_received_at`` and every other stored value are
-left unchanged. Exit code 0 when every affected day was fetched; 1 when a day's
-DART fetch failed (the report lists each one). Unresolved rows are not failures.
+scheduler registration. ``first_received_at``, ``raw_payload_json``, and every
+other stored value are left unchanged. ``updated_at`` is deliberately NOT moved
+when a symbol is filled: the daily-plan bundle treats ``updated_at > created_at``
+as ``observed_time_unproven`` (design 5750 section 7.1), so bumping it would
+downgrade these rows for no change in value. Rows that still do not resolve stay
+NULL; their per-reason counts in the JSON output are the audit trail. Exit code 0
+when every affected day was fetched; 1 when a day's DART fetch failed (the report
+lists each one). Unresolved rows are not failures.
 """
 
 from __future__ import annotations
@@ -46,7 +51,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="Write the resolved symbols. Without this flag nothing is written.",
+        help=(
+            "Write the resolved symbol column only. Without this flag nothing is "
+            "written. updated_at, first_received_at, and raw_payload_json are never "
+            "changed (updated_at > created_at would mark the row observed_time_unproven "
+            "in the daily-plan bundle). Unresolved rows stay NULL; per-reason counts "
+            "in the JSON output are the audit."
+        ),
     )
     ns = parser.parse_args(argv)
     if ns.from_date > ns.to_date:
