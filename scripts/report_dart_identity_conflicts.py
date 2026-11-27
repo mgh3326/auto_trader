@@ -42,7 +42,7 @@ SUMMARY_SQL = text(
         count(*) AS dart_rows,
         count(DISTINCT source_event_id) AS receipts
     FROM market_events
-    WHERE source = 'dart' AND source_event_id IS NOT NULL
+    WHERE source = 'dart'
     """
 )
 
@@ -63,13 +63,14 @@ CONFLICT_SQL = text(
     """
 )
 
+# A DART row with a NULL receipt number is malformed too: the identity scope
+# needs every DART row to carry a 14-digit receipt number.
 MALFORMED_SQL = text(
     """
     SELECT count(*) AS malformed_rows
     FROM market_events
     WHERE source = 'dart'
-      AND source_event_id IS NOT NULL
-      AND source_event_id !~ '^[0-9]{14}$'
+      AND (source_event_id IS NULL OR source_event_id !~ '^[0-9]{14}$')
     """
 )
 

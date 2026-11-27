@@ -103,3 +103,11 @@ def test_report_never_prints_the_url_value(monkeypatch, capsys, name):
     out = capsys.readouterr().out
     assert code == 2
     assert "SECRET" not in out
+
+
+def test_a_null_receipt_number_is_counted_as_malformed_and_as_a_dart_row():
+    malformed = str(report.MALFORMED_SQL)
+    summary = str(report.SUMMARY_SQL)
+
+    assert "source_event_id IS NULL" in malformed
+    assert "source_event_id IS NOT NULL" not in summary
