@@ -256,3 +256,59 @@ def test_the_guard_would_catch_a_new_direct_order_import() -> None:
         "app.services.research_candles.session_segment",
     ):
         assert not safe.startswith(DENIED_PREFIXES)
+
+
+def test_the_router_reads_the_us_calendar_only_through_the_wrapper() -> None:
+    """hk 7044: KIS_DAY labels come from the calendar-only wrapper, never Toss.
+
+    The router reaches the Toss US calendar only through the registered reader
+    in ``us_day_calendar`` (constructed by ``app.main`` outside this closure).
+    The wrapper itself is in the closure and imports no brokers module. (Toss
+    modules still reach the closure through the pre-existing reviewed KIS
+    package reach, unchanged by this wrapper.)
+    """
+    parent = _closure()
+    assert "app.services.research_candles.us_day_calendar" in parent
+    assert parent["app.services.research_candles.us_day_calendar"] == START
+    source = ROUTER.read_text()
+    assert "us_day_calendar.read_us_calendar" in source
+    assert "app.services.brokers.toss" not in source
+    # The wrapper itself imports no brokers module at all (its own import list).
+    wrapper = _module_file("app.services.research_candles.us_day_calendar")
+    assert wrapper is not None
+    assert not any(
+        m.startswith("app.services.brokers")
+        for m in _imports_of(
+            wrapper, "app.services.research_candles.us_day_calendar", deep=True
+        )
+    )
+
+
+def test_a_toss_order_import_added_to_the_router_is_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutant: the router importing the Toss market calendar directly goes red.
+
+    ``market_calendar`` pulls ``toss.client`` (order-capable) into the closure,
+    so the guard must fail with the chain that reaches it.
+    """
+    import sys
+
+    real_imports_of = sys.modules[__name__]._imports_of
+
+    def mutated(path: Path, importing: str, *, deep: bool) -> set[str]:
+        found = real_imports_of(path, importing, deep=deep)
+        if path == ROUTER and deep:
+            found = found | {"app.services.brokers.toss.market_calendar"}
+        return found
+
+    monkeypatch.setattr(sys.modules[__name__], "_imports_of", mutated)
+    parent = _closure()
+    offenders = {
+        module: _chain(parent, module)
+        for module in parent
+        if module.startswith(DENIED_PREFIXES)
+        and not _reached_through(parent, module, REVIEWED_REACH_ROOT)
+    }
+    assert "app.services.brokers.toss.market_calendar" in offenders
+    assert "app.services.brokers.toss.client" in offenders
