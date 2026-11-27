@@ -707,6 +707,47 @@ def _issuer_identity(
     return symbol, symbols, company_name
 
 
+def _scope_key_hash(*parts: str) -> str:
+    return hashlib.sha256("\x1f".join(sorted(set(parts))).encode()).hexdigest()
+
+
+def _request_spec_scope_key(symbols: list[str], ciks: list[int]) -> str:
+    """Hash of the requested scope as given — available even when the
+    ticker map fails before requests can be resolved."""
+    parts = [f"sym:{str(item).strip().upper()}" for item in symbols]
+    parts += [f"cik:{cik}" for cik in ciks]
+    return _scope_key_hash(*parts)
+
+
+def _resolved_scope_key(requests: list[dict[str, Any]]) -> str:
+    """Hash of the resolved issuer set — ``--symbols NVDA`` and
+    ``--ciks 1045810`` produce the same key."""
+    return _scope_key_hash(*{f"cik:{request['cik']}" for request in requests})
+
+
+def _failed_scope_map(raw: Any) -> dict[str, str] | None:
+    """Parse per-scope failure state from ``source_request_hash``.
+
+    ``None`` means absent or corrupt — the failing scope is unknown, so no
+    scoped run can prove it recovered.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def _record_scope_failure(raw: Any, key: str, code: str) -> str:
+    data = _failed_scope_map(raw) or {}
+    data[key] = code
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+
 def _in_window(
     row: dict[str, Any], from_date: date | None, to_date: date | None
 ) -> bool:
@@ -819,6 +860,9 @@ async def collect_sec_filings(
     already_complete = False
     complete_event_count = 0
     partition_persisted = False
+    persisted_status: str | None = None
+    spec_scope_key = _request_spec_scope_key(symbols, parsed_ciks)
+    resolved_scope_key: str | None = None
     if commit:
         assert repo is not None
         partition = await repo.get_or_create_partition(
@@ -847,18 +891,53 @@ async def collect_sec_filings(
 
     async def _persist_terminal_partition() -> None:
         """Mark the run's terminal partition state and commit it."""
-        nonlocal partition_persisted
+        nonlocal partition_persisted, persisted_status
         assert repo is not None
         if first_failure_code is not None:
             await repo.mark_partition_failed(partition, failure_code=first_failure_code)
+            # Per-scope failure state on the shared day row: this run's
+            # scope is recorded so another scope's clean run cannot erase
+            # it, and this scope's clean re-run is what clears it.
+            scope_key = resolved_scope_key or spec_scope_key
+            partition.source_request_hash = _record_scope_failure(
+                partition.source_request_hash, scope_key, first_failure_code
+            )
+            persisted_status = "failed"
         elif already_complete:
             # A scoped read cannot complete the day, but it must not downgrade
             # a day an earlier run already proved (Benzinga parity).
             await repo.mark_partition_succeeded(
                 partition, event_count=complete_event_count
             )
+            partition.source_request_hash = None
+            persisted_status = "succeeded"
         else:
-            await repo.mark_partition_pending(partition)
+            # Clean run: clear only this run's own recorded failures — a
+            # different scope's failure on this shared row stays failed.
+            failed_scopes = _failed_scope_map(partition.source_request_hash)
+            keep_failed = False
+            if partition.status == "failed":
+                if failed_scopes is None:
+                    # Failed before per-scope tracking (or corrupt): the
+                    # failing scope is unknown, so no scoped run can prove
+                    # it recovered — the failure stays visible.
+                    keep_failed = True
+                else:
+                    for key in (spec_scope_key, resolved_scope_key):
+                        if key is not None:
+                            failed_scopes.pop(key, None)
+                    if failed_scopes:
+                        keep_failed = True
+                        partition.last_error = next(iter(failed_scopes.values()))
+                        partition.source_request_hash = json.dumps(
+                            failed_scopes, sort_keys=True, separators=(",", ":")
+                        )
+            if keep_failed:
+                persisted_status = "failed"
+            else:
+                await repo.mark_partition_pending(partition)
+                partition.source_request_hash = None
+                persisted_status = "pending"
         if session is not None:
             await session.commit()
         partition_persisted = True
@@ -869,7 +948,7 @@ async def collect_sec_filings(
         The crashed transaction is rolled back first — otherwise the aborted
         Postgres transaction would take the partition write down with it.
         """
-        nonlocal partition, partition_persisted
+        nonlocal partition, partition_persisted, persisted_status
         await _safe_rollback()
         if repo is None:
             return
@@ -881,6 +960,11 @@ async def collect_sec_filings(
                 partition_date=partition_day,
             )
             await repo.mark_partition_failed(partition, failure_code=failure_code)
+            scope_key = resolved_scope_key or spec_scope_key
+            partition.source_request_hash = _record_scope_failure(
+                partition.source_request_hash, scope_key, failure_code
+            )
+            persisted_status = "failed"
             if session is not None:
                 await session.commit()
             partition_persisted = True
@@ -890,7 +974,9 @@ async def collect_sec_filings(
     def _finish_partition() -> None:
         if partition is None:
             return
-        if first_failure_code is not None:
+        if persisted_status is not None:
+            status = persisted_status
+        elif first_failure_code is not None:
             status = "failed"
         elif already_complete:
             status = "succeeded"
@@ -954,6 +1040,8 @@ async def collect_sec_filings(
                 "persisted": bool(commit and partition_persisted),
             }
             return report
+
+        resolved_scope_key = _resolved_scope_key(requests)
 
         for request in requests:
             label = request["label"]

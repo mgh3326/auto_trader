@@ -70,6 +70,7 @@ class FakePartition:
         self.retry_count = 0
         self.started_at = None
         self.finished_at = None
+        self.source_request_hash = None
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -725,7 +726,8 @@ async def test_fetch_failure_marks_partition_failed_distinct_from_no_filings():
 
 @pytest.mark.asyncio
 async def test_scoped_success_never_completes_shared_partition():
-    """A different symbol's success must not clear another scope's failure."""
+    """A different symbol's success must not clear another scope's failure,
+    and only the failing scope's own clean re-run clears it."""
     repo = FakeRepository()
     tickers = {
         **TICKERS,
@@ -749,9 +751,11 @@ async def test_scoped_success_never_completes_shared_partition():
     partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
     assert partition.status == "failed"
     assert partition.last_error == "http_5xx"
+    nvda_failure_map = json.loads(partition.source_request_hash)
+    assert len(nvda_failure_map) == 1
 
     # A same-day AAPL run succeeds — but it is a different scope, so the
-    # shared day partition can only go back to pending, never succeeded.
+    # shared day partition must stay failed: the NVDA gap is still real.
     ok = FakeEdgarClient(submissions={320193: EMPTY_SUBMISSIONS}, tickers=tickers)
     second = await collect_sec_filings(
         None,
@@ -762,9 +766,27 @@ async def test_scoped_success_never_completes_shared_partition():
         clock=lambda: RECEIVED + timedelta(hours=2),
         run_date=RUN_DATE,
     )
-    assert second["partition"]["status"] == "pending"
+    assert second["partition"]["status"] == "failed"
+    assert partition.status == "failed"
+    assert partition.last_error == "http_5xx"
+    assert json.loads(partition.source_request_hash) == nvda_failure_map
+
+    # Only the failing scope's own clean re-run clears the failure.
+    recovered = FakeEdgarClient(
+        submissions={1045810: NVDA_SUBMISSIONS}, tickers=tickers
+    )
+    third = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=recovered,
+        commit=True,
+        clock=lambda: RECEIVED + timedelta(hours=4),
+        run_date=RUN_DATE,
+    )
+    assert third["partition"]["status"] == "pending"
     assert partition.status == "pending"
-    assert partition.event_count == 0
+    assert partition.source_request_hash is None
 
 
 @pytest.mark.asyncio
