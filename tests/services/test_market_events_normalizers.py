@@ -211,6 +211,55 @@ def test_normalize_dart_existing_stock_code_is_preserved_and_corp_code_is_not_sy
     assert event["symbol"] is None
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("code", ["0256C0", "00104K", "005930"])
+def test_normalize_dart_registry_accepts_kr_short_codes_with_letters(code):
+    """A listed issuer with an alphanumeric KRX short code resolves (hk 7031)."""
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY}
+    row.pop("stock_code")
+    registry = {"삼성전자": [{"corp_code": "1", "stock_code": code}]}
+
+    event, _ = normalize_dart_disclosure_row(row, corp_registry=registry)
+
+    assert event["symbol"] == code
+    assert "symbol_resolution_reason" not in event["raw_payload_json"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("code", ["0256c0", "0256C", "0256C00", "0256-C", ""])
+def test_normalize_dart_registry_rejects_malformed_listed_codes(code):
+    """Lower case, wrong length, and separators stay unlisted, never guessed."""
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY}
+    row.pop("stock_code")
+    registry = {"삼성전자": [{"corp_code": "1", "stock_code": code}]}
+
+    event, _ = normalize_dart_disclosure_row(row, corp_registry=registry)
+
+    assert event["symbol"] is None
+    assert event["raw_payload_json"]["symbol_resolution_reason"] == "unlisted"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [("0256C0", "0256C0"), ("0256c0", None), ("0256C", None), ("0256-C0", None)],
+)
+def test_normalize_dart_explicit_stock_code_uses_the_same_short_code_rule(
+    code, expected
+):
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY, "stock_code": code}
+
+    event, _ = normalize_dart_disclosure_row(row, corp_registry={})
+
+    assert event["symbol"] == expected
+
+
 FF_ROW_HIGH_IMPACT = {
     "title": "Core CPI m/m",
     "currency": "USD",

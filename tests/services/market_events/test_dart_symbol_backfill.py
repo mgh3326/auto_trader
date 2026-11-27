@@ -158,6 +158,40 @@ async def test_unlisted_name_stays_null_with_reason():
 
 
 @pytest.mark.asyncio
+async def test_alphanumeric_listed_code_fills_symbol_and_keeps_first_received_at():
+    """A listed issuer with a KRX alphanumeric short code is backfilled (hk 7031)."""
+    store = FakeStore([_stored("20261028000005")])
+    listing = {DAY: [_dart_row("20261028000005", "영문코드회사")]}
+    registry = _registry(
+        "영문코드회사", {"corp_code": "00000005", "stock_code": "0256C0"}
+    )
+
+    report = await _run(store, listing=listing, registry=registry)
+
+    row = store.rows["20261028000005"]
+    assert row.symbol == "0256C0"
+    assert row.first_received_at == FIRST_RECEIVED
+    assert store.writes == [("20261028000005", "0256C0")]
+    assert report.reasons == {"resolved": 1}
+    assert report.filled == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_listed_code_stays_null_with_unlisted_reason():
+    store = FakeStore([_stored("20261028000006")])
+    listing = {DAY: [_dart_row("20261028000006", "소문자코드회사")]}
+    registry = _registry(
+        "소문자코드회사", {"corp_code": "00000006", "stock_code": "0256c0"}
+    )
+
+    report = await _run(store, listing=listing, registry=registry)
+
+    assert store.rows["20261028000006"].symbol is None
+    assert store.writes == []
+    assert report.reasons == {"unlisted": 1}
+
+
+@pytest.mark.asyncio
 async def test_missing_registry_entry_reports_no_match():
     store = FakeStore([_stored("20261028000004")])
     listing = {DAY: [_dart_row("20261028000004", "없는회사")]}
