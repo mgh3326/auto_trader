@@ -36,7 +36,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,7 @@ from app.services.research_candles.session_minutes_collector import (
     targets_report,
 )
 from app.services.research_candles.session_segment import (
+    KIS_DAY_VENUE,
     futures_session_date,
     session_segment_of,
     us_session_date,
@@ -97,9 +98,12 @@ SOURCES_BY_MARKET: dict[str, frozenset[str]] = {
 
 #: Closed ``venue`` vocabulary per market (table CHECKs). Futures has no venue
 #: column: its one KRX derivatives venue is the only value it accepts.
+#: US: ``KIS_DAY`` (hk 7037) is the KIS 주간거래 venue. The raw KIS day-market
+#: exchange codes ``BAY``/``BAQ``/``BAA`` are not venues and are refused with
+#: ``unknown_venue``; the producer must send ``KIS_DAY``.
 VENUES_BY_MARKET: dict[str, frozenset[str]] = {
     "kr": frozenset({"KRX", "NTX"}),
-    "us": frozenset({"NASD", "NYSE", "AMEX"}),
+    "us": frozenset({"NASD", "NYSE", "AMEX", KIS_DAY_VENUE}),
     "futures": frozenset({"KRX"}),
 }
 
@@ -123,6 +127,9 @@ REASON_INCONSISTENT_OHLC = "inconsistent_ohlc"
 REASON_INVALID_VOLUME = "invalid_volume"
 REASON_INVALID_VALUE = "invalid_value"
 REASON_VALUE_REQUIRED = "value_required"
+#: A KIS_DAY bar needs the Toss US calendar to be labelled (US_DAY window). Without
+#: it the label would be a guess, and insert-only rows cannot be relabelled later.
+REASON_CALENDAR_UNAVAILABLE = "calendar_unavailable"
 # Futures only (hk 6424). A field the market does not carry, or a value the
 # server derives differently from the producer's claim.
 REASON_FIELD_NOT_APPLICABLE = "field_not_applicable"
@@ -150,6 +157,7 @@ REASONS: frozenset[str] = frozenset(
         REASON_INVALID_VOLUME,
         REASON_INVALID_VALUE,
         REASON_VALUE_REQUIRED,
+        REASON_CALENDAR_UNAVAILABLE,
         REASON_FIELD_NOT_APPLICABLE,
         REASON_MASTER_UNAVAILABLE,
         REASON_ROLL_STATE_UNVERIFIABLE,
@@ -296,11 +304,16 @@ def decide_bar(
     received_at: object,
     source: object,
     now: datetime,
+    us_calendar: Any | None = None,
 ) -> BarDecision:
     """Validate one posted kr/us bar and derive the server-owned fields.
 
     ``now`` is the server clock read once per request; a claim beyond it (plus
     ``MAX_CLOCK_SKEW``) is refused rather than stored.
+
+    ``us_calendar`` is the Toss US market calendar (hk 6322) that labels a KIS_DAY
+    bar ``US_DAY``. A KIS_DAY bar without it is refused (``calendar_unavailable``):
+    the label would otherwise be a guess, and rows are insert-only.
     """
     label = str(source or "").strip().upper()
     if label not in SOURCES_BY_MARKET[market]:
@@ -342,6 +355,9 @@ def decide_bar(
         if traded_value is None or traded_value < 0:
             return BarDecision(reason=REASON_INVALID_VALUE)
 
+    if market == "us" and venue_code == KIS_DAY_VENUE and us_calendar is None:
+        return BarDecision(reason=REASON_CALENDAR_UNAVAILABLE)
+
     try:
         session_date = (
             start.astimezone(_KR).date() if market == "kr" else us_session_date(start)
@@ -354,7 +370,9 @@ def decide_bar(
             session_date=session_date,
             symbol=normalized,
             venue=venue_code,
-            session_segment=session_segment_of(market, venue_code, start),
+            session_segment=session_segment_of(
+                market, venue_code, start, us_calendar=us_calendar
+            ),
             source=label,
             open=o,
             high=h,

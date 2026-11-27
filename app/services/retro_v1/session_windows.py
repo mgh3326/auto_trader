@@ -56,6 +56,9 @@ US_EXCHANGE_SESSIONS: Final = ("US_PRE", "US_REGULAR", "US_POST")
 US_DAY: Final = "US_DAY"
 #: The integrated Toss feed (hk 6322); the execution venue is unknown.
 TOSS_US_VENUE: Final = "TOSS_INTEGRATED"
+#: KIS 주간거래 day-market bars (hk 7037). Like the Toss venue, it is not a listing
+#: exchange, so it gets no phantom US_PRE/US_REGULAR/US_POST expected slots.
+KIS_DAY_US_VENUE: Final = "KIS_DAY"
 US_PRE_OPEN_ET: Final = time(4, 0)
 US_POST_CLOSE_ET: Final = time(20, 0)
 #: After-market close on an early-close day (Nasdaq ETA #2026-69, NYSE holidays
