@@ -6,7 +6,8 @@ from datetime import datetime
 from decimal import Decimal, localcontext
 from typing import Any
 
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
+from app.core.upbit_tick import is_on_upbit_krw_tick
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.daily_plan.vocabulary import (
     ACCOUNT_MODES,
@@ -20,11 +21,17 @@ from app.services.daily_plan.vocabulary import (
     ROW_KINDS,
     TRIGGER_KINDS,
     UNAVAILABLE_REASONS,
+    VENUE_MARKETS,
     VENUE_SESSIONS,
 )
 
+# Upbit KRW market minimum order amount (orders/chance ``market.bid.min_total``).
+# The plan layer reads no live orders/chance; the order path revalidates later.
+UPBIT_KRW_MIN_ORDER_KRW = Decimal("5000")
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
+_US_SYMBOL = re.compile(r"[A-Z][A-Z0-9]{0,9}(?:\.[A-Z0-9]{1,4})?")
+_CRYPTO_SYMBOL = re.compile(r"KRW-[A-Z0-9]{1,20}")
 # Loss-cut replay inputs, with the skip an unknown one means (design §7.2).
 # Open-sell, protected quantity and bar volume are absent on purpose: the rule
 # already reads an unknown one as unknown.
@@ -55,12 +62,39 @@ def parse_positive_decimal(value: Any) -> Decimal:
 
 
 def normalize_symbol(symbol: str, market: str, venue: str, session: str) -> str:
-    normalized = to_db_symbol(symbol.strip().upper())
-    if market != "kr" or not KR_SHORT_CODE.fullmatch(normalized):
+    """Normalise with the market's own rule; the DB CHECK repeats the shape.
+
+    KR keeps its case-folding (hk 6769). US and crypto refuse lower case and
+    use their own normaliser: ``to_db_symbol`` would turn KRW-BTC into KRW.BTC.
+    """
+    stripped = symbol.strip()
+    if market == "kr":
+        normalized, shape = to_db_symbol(stripped.upper()), KR_SHORT_CODE
+    elif market == "us" and stripped == stripped.upper():
+        normalized, shape = to_db_symbol(stripped), _US_SYMBOL
+    elif market == "crypto" and stripped == stripped.upper():
+        normalized, shape = to_upbit_symbol(stripped), _CRYPTO_SYMBOL
+    else:
         raise ValueError("invalid_symbol")
-    if session not in VENUE_SESSIONS.get(venue, ()):
+    if not normalized.isascii() or not shape.fullmatch(normalized):
+        raise ValueError("invalid_symbol")
+    if VENUE_MARKETS.get(venue) != market or session not in VENUE_SESSIONS[venue]:
         raise ValueError("invalid_venue_session")
     return normalized
+
+
+def _check_price_grid(market: str, limit: Decimal, security_type: Any) -> None:
+    if market == "kr":
+        limit_int = int(limit)
+        if limit != limit_int or limit_int % get_tick_size_kr(limit_int, security_type):
+            raise ValueError("tick_grid_violation")
+    elif market == "us":
+        # Sub-penny pricing is refused at or above 1 USD (SEC Rule 612).
+        step = Decimal("0.01") if limit >= 1 else Decimal("0.0001")
+        if limit % step:
+            raise ValueError("tick_grid_violation")
+    elif not is_on_upbit_krw_tick(limit):
+        raise ValueError("tick_grid_violation")
 
 
 def validate_side(action: str, side: str | None) -> None:
@@ -407,15 +441,21 @@ def prepare_row(
     if row["action"] in ("new", "add"):
         limit = parse_positive_decimal(row["would_be_limit_price"])
         size = row.get("would_be_quantity")
-        limit_int = int(limit)
-        security_type = (evidence or {}).get("security_type")
-        if limit != limit_int or limit_int % get_tick_size_kr(limit_int, security_type):
-            raise ValueError("tick_grid_violation")
+        _check_price_grid(row["market"], limit, (evidence or {}).get("security_type"))
         if size is not None:
             quantity = parse_positive_decimal(size)
-            if quantity != int(quantity):
-                raise ValueError("invalid_kr_quantity")
-        if size is None and parse_positive_decimal(row["would_be_notional"]) < limit:
+            if row["market"] in ("kr", "us") and quantity != int(quantity):
+                raise ValueError(f"invalid_{row['market']}_quantity")
+        if row["market"] == "crypto":
+            amount = (
+                parse_positive_decimal(size) * limit
+                if size is not None
+                else parse_positive_decimal(row["would_be_notional"])
+            )
+            if amount < UPBIT_KRW_MIN_ORDER_KRW:
+                raise ValueError("below_min_order_amount")
+        elif size is None and parse_positive_decimal(row["would_be_notional"]) < limit:
+            # KR and US trade whole shares: a notional must buy at least one.
             raise ValueError("below_min_order_amount")
     if row["action"] == "watch":
         if reason and trigger is None:

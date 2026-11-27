@@ -63,7 +63,10 @@ heads = _table(
     Column("cutoff_at", DateTime(timezone=True), nullable=False),
     _created(),
     UniqueConstraint("market", "session_date"),
-    CheckConstraint("market = 'kr' AND mode = 'plan_only'", name="kr_plan_only"),
+    CheckConstraint(
+        "market IN ('kr', 'us', 'crypto') AND mode IN ('plan_only', 'executable')",
+        name="market_mode",
+    ),
 )
 
 bundles = _table(
@@ -132,8 +135,15 @@ rows = _table(
     _vocabulary("row_kind", ROW_KINDS),
     _vocabulary("action", ACTIONS),
     _vocabulary("action_basis", ACTION_BASES),
-    CheckConstraint("execution_state = 'plan_only'", name="plan_only"),
-    CheckConstraint("market = 'kr' AND symbol ~ '^[0-9A-Z]{6}$'", name="kr_symbol"),
+    CheckConstraint(
+        "execution_state IN ('plan_only', 'executable')", name="execution_state"
+    ),
+    CheckConstraint(
+        "(market = 'kr' AND symbol ~ '^[0-9A-Z]{6}$') OR "
+        "(market = 'us' AND symbol ~ '^[A-Z][A-Z0-9]{0,9}([.][A-Z0-9]{1,4})?$') OR "
+        "(market = 'crypto' AND symbol ~ '^KRW-[A-Z0-9]{1,20}$')",
+        name="market_symbol",
+    ),
     CheckConstraint(
         "(row_kind = 'holding' AND account_ref IS NOT NULL AND account_ref <> '') OR "
         "(row_kind = 'candidate' AND account_ref IS NULL)",

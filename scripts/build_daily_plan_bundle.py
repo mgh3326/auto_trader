@@ -36,6 +36,7 @@ from app.services.daily_plan.store import store_input_bundle
 # The pure keyed digest the order path uses, so a plan row and a send agree on
 # which account is meant. Nothing else of the mandate package is used.
 from app.services.mandate.account_ref import derive_account_ref
+from app.services.trading_policy_service import load_trading_policy
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -177,7 +178,11 @@ async def run(
     if args.commit:
         async with session_factory() as db, db.begin():
             bundle_id = await store_input_bundle(
-                db, day=day, body=body, claimed_sha256=digest
+                db,
+                day=day,
+                body=body,
+                claimed_sha256=digest,
+                policy=load_trading_policy(),
             )
         report.update(status="stored", bundle_id=str(bundle_id))
     return 0, report

@@ -2363,6 +2363,10 @@ class DailyPlanPolicy(BaseModel):
     max_adopt: int = Field(ge=1, le=100)
     judged_top_n: int = Field(ge=1, le=200)
     carry_max_sessions: int = Field(ge=1, le=60)
+    # hk 6981: markets whose plan heads are created ``executable``. The single
+    # source of a day's mode; no request or CLI chooses it. Empty by default,
+    # so enabling a market is an operator PR to the policy file.
+    executable_markets: frozenset[Market] = frozenset()
 
 
 class TradingPolicyDocument(BaseModel):

@@ -1347,6 +1347,28 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 호출한다. `daily_plan_confirm_links`는 기존 예측과 기각 판단을 대조하고
 연결 사실을 추가한다.
 
+### 미국·크립토 행과 executable 모드 (hk 6981, 6939 §1.1 N1)
+
+마이그레이션 `20261127_hk6981_plan_widen`은 제약만 바꾼다(새 객체·GRANT 없음): heads `market`
+`kr|us|crypto`·`mode` `plan_only|executable`, rows `execution_state` `plan_only|executable`, 시장별
+심볼 CHECK(KR 6자 영숫자, US DB 점 표기 `^[A-Z][A-Z0-9]{0,9}([.][A-Z0-9]{1,4})?$`, crypto
+`^KRW-[A-Z0-9]{1,20}$`). downgrade 는 넓힌 값이 하나라도 있으면 거부한다.
+`daily_plan_write_version` 요청의 선택 필드 `market`(기본 `kr`)이 (시장, 날짜) head 를 고른다. 🔴 그날의 mode 는
+요청·CLI 가 아니라 정책 `daily_plan.executable_markets`(기본 비어 있음 → 모두 `plan_only`) 하나가 정한다
+(`store.day_mode`). head 를 만드는 두 writer(`write_version`, `store_input_bundle`)가 같은 값을 쓰므로 08:20 번들
+작업이 먼저 돌아도 mode 를 정하지 않는다. 요청의 `mode` 는 확인용일 뿐이고 정책과 다르면 head 를 만들기 전에
+`plan_mode_conflict`, 기존 head 의 mode 와 정책이 다르면(장중 정책 변경) 역시 `plan_mode_conflict` 다. 시장을
+켜려면 정책 파일 운영자 PR 이 필요하다. 행 시장이 요청 시장과 다르면 `market_mismatch`다. 크립토 최소 주문액은
+Upbit KRW 5,000원(`UPBIT_KRW_MIN_ORDER_KRW`, 수량×지정가 또는 금액)이고 KR·US 는 금액이 1주 이상이어야 한다. 정규화는 시장별이다: KR 은 기존 대문자화(hk 6769), US 는
+`to_db_symbol`(`BRK/B`·`BRK-B`→`BRK.B`), crypto 는 `to_upbit_symbol`(`KRW-BTC` 유지, `BTC`→`KRW-BTC`)이고
+US·crypto 는 소문자 입력을 거부한다. venue·세션: `NASD`/`NYSE`/`AMEX` × `us_pre`/`us_regular`/`us_post`,
+`UPBIT` × `crypto_24h`, venue 의 시장이 행 시장과 달라도 `invalid_venue_session`. 시계는 US=XNYS·ET
+(장전 버전 상한 04:00 ET, `us_pre` 종료=정규장 개장, `us_post` 종료=마감+4시간), crypto=UTC 하루(장전
+상한 00:00). 호가 단위는 US 0.01(1 USD 미만 0.0001), crypto `app/core/upbit_tick.py`. 서버 입력 번들은
+KR 전용이라 다른 시장의 번들 참조는 `bundle_market_unsupported`다. `ACCOUNT_MODES` 에 `upbit_live` 와
+결정이 이름 붙인 모의 계좌가 더해졌다. 🔴 `executable` 행을 읽는 코드는 아직 없다(의도 발급기는 N2).
+주문·E1 경로 import 는 여전히 없고 경계 테스트는 그대로다.
+
 ### 순위 입력·예산 배분 비교 (hk 6790)
 
 발행할 때마다 순수 모듈 `app/services/daily_plan/allocation.py`가 비교 블록
