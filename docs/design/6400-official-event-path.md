@@ -10,14 +10,21 @@ hk 6302·6031·6372·6395, 같은 날짜의 dots 댓글 33192/33232/33252.
 태그: `[사실]` = 이 문서에서 인용한 코드/공식 문서로 확인, `[unverified]` = 확인하지 못했거나 실행하지 않음,
 `[추정]` = 근거 있는 추론.
 
+**정정 (hk 6417, 2026-11-28)**: PR #2569 리뷰에서 미룬 지적 8건을 `auto_trader@7955ef356` 코드와 대조해 고쳤고,
+고친 곳에는 `(hk 6417)` 을 달았다. `auto_trader@<sha>` 를 붙인 인용은 그 커밋 기준이며, 뒤따르는
+`:NN` 단축 인용은 직전 인용의 파일·커밋을 잇는다. sha 가 없는 인용은 `b7d72f17b` 기준이다. 그 뒤 병합된 변경으로 낡은 곳 중
+일부(§0 2·4행, §1.2, §1.6, §1.8, §2.1, §2.2)에는 `대체됨` 표시만 달았고 설계 본문과 소유권·티켓 표는 다시 쓰지 않았다.
+**표시가 없는 서술은 현행 코드에서 다시 확인하지 않았다** — 예를 들어 §1.9 의 `retro_timeline` source 목록에는 그 뒤
+hk 7005(`508cbee55`)가 `plan` 을 더했다.
+
 ## 0. 결론 요약
 
 |#|결론|
 |---|---|
 |1|공식 이벤트(공시·IR·거래소 공지)의 저장지는 이미 **시장 이벤트 영역**(`market_events`, `market_event_values`, `market_event_ingestion_partitions`) 하나다. 이 영역은 브로커·계좌·주문 권한이 없다 — `app/services/market_events/` 는 `brokers`·`order_proposals`·`execution_ledger` 를 import 하지 않는다(패키지 내 grep 0건). 새 저장소·새 레포를 만들지 않고 이 영역을 확장한다.|
-|2|지금 형식은 **"이벤트 1건 = 원천 1건"** 이다. §2 가 요구하는 최초 수신·수정·효력 시각, 관련성(direct/sector/market + 미확인), 원천 묶음, 개정 판본이 모두 없고, `fetched_at` 은 upsert 마다 덮여 **최초 수신 시각이 아니다**(`market_events/repository.py:58`).|
+|2|지금 형식은 **"이벤트 1건 = 원천 1건"** 이다. `b7d72f17b` 에는 §2 가 요구하는 최초 수신·수정·효력 시각, 관련성(direct/sector/market + 미확인), 원천 묶음, 개정 판본이 모두 없었고, **(hk 6417)** `fetched_at` 은 **생산자가 없어 전 행 NULL — 최초 수신 시각 없음** 이었다(`app/models/market_events.py:102` 에 server_default 없음, `app/services/market_events/repository.py:58` 은 upsert 갱신 열 후보 목록일 뿐). 현행(`대체됨`): 저장 열·표는 hk 6513(`d9c32123d`)·6406(`cdb088116`)이 추가했다. 다만 원천 묶음 `market_event_sources` 에 쓰는 수집기는 아직 없다(`auto_trader@7955ef356 app/services/market_events/repository.py:514` `append_source` 의 `app/`·`scripts/` 호출자 0건). `first_received_at` 은 insert 때만 쓰인다(`auto_trader@7955ef356 app/services/market_events/repository.py:328-329`). `first_received_at`·`fetched_at` 을 둘 다 쓰는 생산자는 Benzinga 캘린더(`auto_trader@7955ef356 app/services/benzinga_calendars/normalizers.py:207-208`, hk 6513), Benzinga Pro(`auto_trader@7955ef356 app/services/invest_momentum_events/benzinga_pro.py:136-137`, hk 6579 `ae7c1300d`), KIS KSD(`auto_trader@7955ef356 app/services/market_events/kis_ksd_dividends.py:228-229`, hk 6583 `425f3c9d6`), 네이버 공시(`auto_trader@7955ef356 app/services/market_events/naver_disclosures.py:208-209`, hk 6777 `9213bea64`), 거래소 공지(`auto_trader@7955ef356 app/services/market_events/crypto_notices.py:207-208`, hk 6787 `1ea80c2f9`)다. DART 공시 수집은 `first_received_at` 만 쓰고(`auto_trader@7955ef356 app/services/market_events/ingestion.py:428`, hk 6968 `540f2cf76`), Finnhub·WiseFn·ForexFactory·TradingView 경로는 둘 다 쓰지 않는다. 6406 마이그레이션은 `fetched_at` 을 `first_received_at` 으로 백필하지 않았다. `fetched_at` 은 위 생산자가 쓰지 않은 행에서는 NULL 이고 upsert 갱신 열이기도 하므로(`auto_trader@7955ef356 app/services/market_events/repository.py:319`) **백필 원천이나 최초 수신 시각으로 쓰지 않는다.**|
 |3|뉴스 시각 결함(hk 6302)은 코드로 확인된다. Naver 의 `+09:00` 오프셋은 `replace(tzinfo=None)` 로 버려지고(`symbol_news_store.py:105`), Finnhub epoch 는 **호스트 로컬 naive** 로 변환된다(`finnhub_news.py:360`). 같은 naive 컬럼(`models/news.py:93`)에 서로 다른 시간대 의미가 섞인다.|
-|4|Upbit 공지는 **저장되지 않는다** — MCP 호출마다 라이브 fetch 만 한다(`upbit_public_read_model/notices.py:91`, 소비 `_crypto_catalysts.py:124`). 유의·주의 상태는 유니버스 스냅샷의 **마지막 관측 1개**만 남고 지정·해제 이력이 없다(`upbit_symbol_universe_service.py:211-216`). hk 6031 소관.|
+|4|Upbit 공지는 **저장되지 않는다** — MCP 호출마다 라이브 fetch 만 한다(`upbit_public_read_model/notices.py:91`, 소비 `_crypto_catalysts.py:124`). 유의·주의 상태는 유니버스 스냅샷의 **마지막 관측 1개**만 남고 지정·해제 이력이 없다(`upbit_symbol_universe_service.py:211-216`). hk 6031 소관. **(hk 6417) 공지 저장 부분은 `대체됨`**: hk 6787(`1ea80c2f9`)이 Upbit·Bithumb 공지를 `market_events` 에 저장하는 수동 CLI 를 추가했다(`auto_trader@7955ef356 app/services/market_events/crypto_notices.py:1-6`). MCP 조회는 여전히 라이브 fetch 다(`auto_trader@7955ef356 app/mcp_server/tooling/fundamentals/_crypto_catalysts.py:124`).|
 |5|미국 공식 공시(SEC EDGAR)·기업 IR 보도자료 수집 코드는 없다. 미국은 Finnhub 실적(`market_events`)과 Finnhub 뉴스(`news_articles`/`symbol_news_relevance`)뿐이다. → 신규 hk 6407.|
 |6|Factortrail 은 `retro_timeline` 에 시장 이벤트가 없고 source enum 이 닫혀 있다(`retro_timeline.py:82`, `contracts/retro/v1/openapi.yaml:2117-2125`). 공통 형식 확장 뒤 **새 operation**(`retro_symbol_events`)으로 호환 확장 순서대로 붙인다 → 신규 hk 6410.|
 |7|소유: 뉴스 시각·관련성 = hk 6302, Upbit 공지 이력 = hk 6031, 크립토 현재 상태 완결성 = hk 6372, Benzinga 그림자 = hk 6395, 나머지 공백 = 신규 hk 6406(공통 형식)·6407(SEC/IR)·6408(DART 정본)·6409(운영·보충)·6410(Factortrail 읽기). 중복 티켓은 만들지 않는다(§5).|
@@ -41,11 +48,21 @@ hk 6302·6031·6372·6395, 같은 날짜의 dots 댓글 33192/33232/33252.
 
 ### 1.2 KR DART 공시 — 저장 경로
 
+> **(hk 6417) `대체됨` — 이 절은 `b7d72f17b` 기준이다.** hk 6408(`ea12e0916`)이 시장 전체 목록을 공식
+> `list.json` 으로 바꿨고(`auto_trader@7955ef356 app/services/market_events/dart_helpers.py:235`), 시각 없는 행에는
+> 날짜 정밀도 발행 열을 쓰며, 정정 묶음 `group_key` 를 더했다
+> (`auto_trader@7955ef356 app/services/market_events/normalizers.py:188-204`, `:275-280`). 접수 시각은 스크래핑 보강으로만
+> 얻고, 수집 실패는 닫힌 코드로 남긴다(`auto_trader@7955ef356 app/services/market_events/ingestion.py:512-514`).
+> 현행 정본은 `docs/agent-contracts/market-data-and-screener-contracts.md` 의 "DART 일일 목록" 항목이다.
+
 - 수집: `app/services/market_events/dart_helpers.py:190` `fetch_dart_filings_for_date` — `OpenDartReader.list_date_ex()` 로
   `dart.fss.or.kr` 를 **스크래핑**한다(`dart_helpers.py:3` 주석이 명시). 캐시는 `target_date < today_kst()` 일 때만
   (`dart_helpers.py:216`), 오늘 날짜는 매번 실제 요청이다.
 - 정규화: `market_events/normalizers.py:132` — `rcept_no` → `source_event_id`, `rcept_dt` → `event_date`, `report_nm` →
-  `title`, 종목은 `stock_code`(없으면 corp registry 이름 정확 일치, `dart_helpers.py:158`), `source_url` 은
+  `title`, 종목은 `stock_code`(없으면 corp registry 이름 정확 일치 — **(hk 6417)** 이 해석은 registry 로더가 아니라
+  정규화 함수 안에 있다: `app/services/market_events/normalizers.py:155-178`, 현행
+  `auto_trader@7955ef356 app/services/market_events/normalizers.py:230-253`; hk 7031 `7b051d0dc`·hk 6408 `ea12e0916` 이후
+  줄 이동), `source_url` 은
   `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`, 해석 실패 사유는 `raw_payload_json.symbol_resolution_reason`
   (`no_registry_match`/`unlisted`/`ambiguous_corp_name`/`registry_unavailable`).
 - 분류: `market_events/normalizers.py:122` `classify_dart_category` — 보고서명 키워드로 `earnings`/`disclosure` 를 가른다.
@@ -74,8 +91,11 @@ hk 6302·6031·6372·6395, 같은 날짜의 dots 댓글 33192/33232/33252.
 ### 1.4 US 실적(Finnhub, 저장됨)
 
 `market_events/ingestion.py:117` `ingest_us_earnings_for_date` → `finnhub_helpers` fetch → `market_events/normalizers.py:37`
-`normalize_finnhub_earnings_row` (EPS/매출 actual·forecast·previous, `release_time_utc/local` 은 UTC 기준,
-`time_hint` 는 `before_open`/`after_close`/`during_market`/`unknown`). MCP `get_earnings_calendar` 는 라이브
+`normalize_finnhub_earnings_row`. **(hk 6417)** 이 함수는 발표 시각을 만들지 않는다. `release_time_utc` 와
+`release_time_local` 은 둘 다 `None` 이고 `source_timezone` 은 `America/New_York` 이다
+(`auto_trader@7955ef356 app/services/market_events/normalizers.py:66-68`). 시점 정보는 Finnhub `hour` 를 옮긴 `time_hint` 버킷
+(`before_open`/`after_close`/`during_market`/`unknown`, `:17-22`, `:53-54`)뿐이다. 값 행은 EPS·매출의
+`actual`/`forecast`/`unit` 만 넣고 `previous` 는 넣지 않는다(`:84-106`). MCP `get_earnings_calendar` 는 라이브
 Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback_source="market_events"` 로 내려준다
 (`fundamentals_handlers.py:227-238`, `fundamentals/_financials.py:350`). KR 분기(`_financials.py:255`)는
 저장된 `market_events`(WiseFn/DART)만 읽는다. 도구 설명 자체가 "KR 주주총회·배당락·IR·컨퍼런스는 아직 미포함"
@@ -94,6 +114,10 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 ### 1.6 Upbit 공지 — 라이브 read model
 
+> **(hk 6417) `대체됨` — "저장 0, 이력 0, 사건 분류 0" 은 `b7d72f17b` 기준이다.** hk 6787(`1ea80c2f9`)이 별도 수집기
+> `auto_trader@7955ef356 app/services/market_events/crypto_notices.py:1-6` 로 공지를 저장하고 개정을 남긴다. 아래의 라이브
+> read model 과 MCP 소비 경로는 그 저장분을 읽지 않는다.
+
 `app/services/upbit_public_read_model/notices.py:91` `fetch_upbit_notices(days=14)`:
 
 - 엔드포인트는 `https://api-manager.upbit.com/api/v1/announcements`(`notices.py:20`) — **비공식**이며 응답 형태가
@@ -109,11 +133,13 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 `app/services/upbit_market_event.py:99` `parse_market_event` 가 Upbit `/v1/market/all` 의
 `market_event{warning,caution{...}}` 를 엄격 파싱하고, `upbit_symbol_universe_service.py:134-145` 가
-`observed_at = datetime.now(UTC)` 를 붙여 스냅샷에 담는다. `_apply_snapshot`(`:165`)은
-`market_event` 또는 `market_event_observed_at` 이 다르면 갱신한다(`:211-216`) — **값이 같으면 관측 시각도
-갱신되지 않고**, 값이 바뀌면 이전 관측이 사라진다. 즉:
+`observed_at = datetime.now(UTC)` 를 붙여 스냅샷에 담는다. **(hk 6417)** 이 시각은 스냅샷을 만들 때마다 새로
+찍힌다(`:113`, `:145`). `_apply_snapshot`(`:165`)은 `market_event`(`:212-214`)와
+`market_event_observed_at`(`:215-217`)을 따로 비교하므로, **값이 같아도 `market_event_observed_at` 은 매 sync 갱신되어
+변경 시각을 알 수 없고, 값이 바뀌면 이전 관측이 덮인다**(스냅샷에 있는 마켓 기준). 즉:
 
-- 남는 것: 마지막 관측 상태 + 그 관측 시각. 판독은 `upbit_market_event.py:177` `load_market_event_states`.
+- 남는 것: 마지막 관측 상태 + 마지막 sync 시각(상태가 바뀐 시각이 아니다). 판독은
+  `upbit_market_event.py:177` `load_market_event_states`.
 - 없는 것: 유의 지정 시각, 해제 시각, 그 사이 이력, 공지 원문 링크. "언제 처음 알았나"는 회고에 쓸 수 없다.
 - 상태 어휘: `none|warning|caution:<TYPE,…>|unknown|stale`, 36시간 초과는 stale(`upbit_market_event.py:58`).
   `unknown`(Upbit 이 말하지 않음)과 `none`(정상)은 구분된다 — 이 원칙을 6031 저장에도 그대로 쓴다.
@@ -133,7 +159,13 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
   (`models/symbol_news_relevance.py:83`, 쓰기 `symbol_news_store.py:139`). 링크가 새로 생기면 그 시각이다.
 - 없는 것: `revised_at`, 재배포 권한 표시, 사건 유형, direct/sector/market 관련성(링크의
   `relationship` 은 `direct|material_indirect|incidental|unrelated` 로 **기사↔종목** 판단이고
-  사건↔시장 판단이 아니다, `models/symbol_news_relevance.py:36-40`), 원천 article id 저장(URL 해시만).
+  사건↔시장 판단이 아니다, **(hk 6417)** 어휘 CHECK `models/symbol_news_relevance.py:47-49`, 컬럼 `:87`),
+  원천 article id 저장(URL 해시만).
+- **(hk 6417) `대체됨`** — 위 시각·"없는 것" 항목은 `b7d72f17b` 기준이다. 현행 `news_articles` 에는 hk 6674
+  (`fe28b451c`)의 시간대 있는 `published_at`·`published_precision`·`first_received_at` 과 hk 6302(`ebe3d4edd`)의
+  `published_offset`·`revised_at`·`provider_article_id` 가 있다(`auto_trader@7955ef356 app/models/news.py:99-119`).
+  hk 6302 는 기사×종목 `news_article_related_symbols.relation_type` `direct`/`sector`/`market`(NULL 허용)도
+  추가했다(`:163-165`, `:202`).
 
 ### 1.9 Factortrail 타임라인 — 이벤트 없음
 
@@ -147,23 +179,26 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 한 사건(event)은 원천이 달라도 같은 사건이면 하나로 묶이고, 각 원천의 관측은 별도 provenance 행으로 남는다.
 
+**(hk 6417)** "오늘" 열은 `b7d72f17b` 기준이다(`대체됨`: hk 6406 `cdb088116` 이 저장 열을 추가했다. 정본은
+`docs/agent-contracts/market-data-and-screener-contracts.md` 의 "공식 이벤트 공통 형식 v2").
+
 |필드|형식|의미|오늘|
 |---|---|---|---|
 |`event_ref`|불투명 `evt-<sha256 앞 20>`|공개 식별자. 원천 ID·계좌·주문번호 비노출|없음(retro ref 규칙 재사용)|
 |`source`|닫힌 어휘|`dart`, `sec`, `company_ir`, `upbit`, `finnhub`, `benzinga`, …|`market_events/taxonomy.py:41` 일부만|
 |`source_event_id`|text|원천 원문 ID: `rcept_no`, accession number, 공지 ID, article id|`models/market_events.py:94`|
 |`source_url`|text|원문 링크(없으면 null, 추측 생성 금지)|`models/market_events.py:95`|
-|`market`|`kr`/`us`/`crypto`/`global`|`market_events/taxonomy.py:38`|있음|
+|`market`|`kr`/`us`/`crypto`/`global`|**(hk 6417)** `market_events/taxonomy.py:27` (현행 `auto_trader@7955ef356 app/services/market_events/taxonomy.py:44`, `d9c32123d`·`ae7c1300d`·`c9132e1b7` 의 카테고리 추가로 이동)|있음|
 |`instrument_type`|`equity_kr`/`equity_us`/`crypto`/`index`/`fx`|가격 축과 맞추는 단위|없음|
-|`symbols[]`|text[] (0..n)|직접 관련 종목. 0건은 시장 전체 사건|단일 `symbol`(`:76`)뿐|
+|`symbols[]`|text[] (0..n)|직접 관련 종목. 0건은 시장 전체 사건|단일 `symbol`(`models/market_events.py:76`)뿐|
 |`event_type`|닫힌 어휘|`market_events/taxonomy.py:8` 카테고리(`disclosure`,`earnings`,`crypto_exchange_notice`,`regulatory`,…) 확장|있음(원천별 부분 사용)|
 |`relevance`|`direct`/`sector`/`market`|이 사건이 종목에 직접/업종/시장 수준인가|없음|
 |`relevance_state`|`known`/`unknown`|판단이 확정인지 미확인인지 — 모르면 `unknown`|없음|
 |`relevance_basis`|`recorded`/`inferred`|원천이 말했는지 우리가 추론했는지|없음|
-|`published_at`|timestamptz|원천 발표 시각을 **UTC 로 정규화한 값**|`release_time_utc` 있음(`:81`), DART는 null|
-|`published_offset`|text|원본 표기 오프셋/시간대(예: `+09:00`, `America/New_York`)|`source_timezone`(`:85`) 부분|
+|`published_at`|timestamptz|원천 발표 시각을 **UTC 로 정규화한 값**|`release_time_utc` 있음(`models/market_events.py:81`), DART는 null|
+|`published_offset`|text|원본 표기 오프셋/시간대(예: `+09:00`, `America/New_York`)|`source_timezone`(`models/market_events.py:85`) 부분|
 |`published_precision`|`datetime`/`date`|시각까지 아는지 날짜만 아는지|없음(DART 날짜만)|
-|`first_received_at`|timestamptz, **불변**|우리 서버가 처음 관측한 시각|없음 — `fetched_at` 은 upsert 마다 덮인다(`market_events/repository.py:58`)|
+|`first_received_at`|timestamptz, **불변**|우리 서버가 처음 관측한 시각|**(hk 6417)** 없음 — `fetched_at` 은 생산자가 없어 전 행 NULL(최초 수신 시각 없음). 현행은 §0 2행|
 |`revised_at`|timestamptz|원천이 수정을 알린 시각|없음(`status='revised'` 값만 존재)|
 |`effective_at`|timestamptz|효력 시작(유의 지정·입출금 중단 시작·상장폐지일 등)|없음|
 |`status`|닫힌 어휘|`scheduled`/`released`/`revised`/`cancelled`/`tentative`|`market_events/taxonomy.py:31`|
@@ -180,6 +215,10 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
   원천별 provenance 행에 각각 남는다.
 
 ### 2.2 저장 위치(제안)
+
+**(hk 6417) `대체됨`**: 1–3 의 열·표는 hk 6513(`d9c32123d`)·6406(`cdb088116`)이 추가했고 형태는 아래 제안과 다를 수
+있다(계약 문서가 정본). 4 의 유니크 키 전환은 하지 않았다
+(`auto_trader@7955ef356 app/models/market_events.py:47-55`).
 
 `market_events` 를 기준 행으로 유지하고 additive 확장한다(새 저장소 없음):
 
@@ -218,10 +257,27 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 |상태|어디에|의미|
 |---|---|---|
 |`stored`|`market_event_ingestion_partitions.status='succeeded'` + `event_count>0`|조회 성공, 행 저장됨|
-|`no_notice`|`status='succeeded'` + `event_count=0`|조회 성공, **그 원천이 그 범위에 공지가 없음**(실패 아님)|
+|`no_notice`|`status='succeeded'` + `event_count=0` + 아래 zero 규칙|조회 성공, **그 원천이 그 범위에 공지가 없음**(실패 아님)|
 |`incomplete`|`status='pending'`|조회는 됐지만 미완결(오늘 날짜 등) — 0건을 "없음"으로 읽지 않는다|
 |`failed`|`status='failed'`|수집 실패. 사유는 **닫힌 코드**(`http_4xx`/`http_5xx`/`timeout`/`transport`/`bad_response`/`unparseable`/`quota`)|
 |`read_ok_not_stored`|라이브 read 응답(예: Upbit notices 블록, MCP `get_disclosures`)|읽었으나 저장하지 않음 — 응답에 이 상태를 명시|
+
+**zero-filings 규칙 (hk 6417)** — `status`·`event_count` 만으로는 "공지 없음"이 증명되지 않는다.
+
+- 오늘의 DART 는 확정 XKRX **비세션일**의 0건만 `succeeded` 다
+  (`auto_trader@7955ef356 app/services/market_events/ingestion.py:58-64`). 아직 끝나지 않은 세션일의 0건은
+  `pending`(`:65-72`, `:465-477`), 지난 세션일의 0건은 `failed`(`:73-76`), 달력 미상은 `failed`(`:77-81`)다. 즉 세션일의
+  "정상 0건"은 DART 에서 표현되지 않는다. 이 DART 가드는 바꾸지 않는다.
+- Finnhub 실적은 반환 0행뿐 아니라 전 행이 파싱 불가여도 `succeeded` + 0 이 된다
+  (`auto_trader@7955ef356 app/services/market_events/ingestion.py:147-157`, `:263-274`). 이 값만으로 `no_notice` 라고 읽지 않는다.
+- 새 원천(6407·6031)은 **완전한 목록 + 0건** 과 수집 실패를 분리한다. `succeeded` + 0 은 원천 응답이 완전한 목록임이
+  증명되고(정상 응답, 선언된 페이지를 끝까지 읽음, 파싱 실패 0) 그 범위에서 0건이 정상일 때만 쓴다. 완전성을
+  증명하지 못하면 `failed`, 아직 끝나지 않은 범위는 `pending` 이다. 0건이 정상인 원천에 DART 의 세션 가드를 복사하지
+  않는다 — 복사하면 §3.3 `gaps[]` 에 가짜 gap 이 생긴다.
+- 파티션을 쓰지 않는 수집기(`7955ef356` 의 `upbit_notice`·`bithumb_notice`·`naver_disclosure`·`kis_ksd`·`benzinga_pro`)는
+  파티션 투영으로 `no_notice` 를 판정할 수 없다. 위 규칙대로 파티션을 쓰기 전에는 `unknown` 이다.
+- `docs/agent-contracts/market-data-and-screener-contracts.md` 의 v2 "수집 결과" 행은 건수로만
+  `stored`/`no_notice` 를 나눈다. 그 투영을 구현하는 티켓(6409·6410)은 이 규칙을 함께 적용해야 한다.
 
 - `last_error` 는 원문 예외 문자열 대신 닫힌 코드를 저장하고, 원문은 로그/Sentry 로만 보낸다(1.2 누락 5).
 - Upbit notices 블록은 지금 `state=fresh` 만 있고 "저장하지 않음"이 드러나지 않는다(`notices.py:152-157`) —
@@ -287,7 +343,9 @@ scripts/request_market_event_backfill.py \
 Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_event_ingestion_partitions` 의 투영이다:
 
 - `latest_collected`: 원천별 `MAX(partition_date)` where `status='succeeded'`.
-- `gaps[]`: 최근 N일 안에서 `failed`/`pending`/행 자체 없음(`not_yet_run`)을 닫힌 사유로 나열.
+- `gaps[]`: 최근 N일 안에서 `failed`/`pending`/행 자체 없음(`not_yet_run`)을 닫힌 사유로 나열. **(hk 6417)**
+  `succeeded` + `event_count=0` 은 gap 으로 세지 않으며(`no_notice` 여부는 §2.4 zero 규칙), 파티션을 쓰지 않는 원천의
+  행 부재는 `not_yet_run` 으로 세지 않는다.
 - 기대 여부는 `expected_sources.expected_sources_for_date`(세션 달력) 재사용 — 휴장일·주말은 결측이 아니다.
 - **Factortrail 은 잡을 기다리거나 실행하지 않는다.** 읽기는 지금 상태만 답하고, 결측은 사유로만 표현한다.
 
@@ -298,7 +356,7 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
 `GET /trading/api/retro/v1/retro_symbol_events?symbol=<sym>&as_of=<RFC3339>&from=<date>&to=<date>&limit=&cursor=`
 
 - 기존 `retro_timeline` 을 고치지 않는다: 그 operation 은 KST 하루·상태머신·closed source enum 이고, 여기에
-  이벤트를 섞으면 기존 열거와 상태 판정이 바뀐다(`retro_timeline.py:82`, 계약 `:2117-2125`). 새 operation 은
+  이벤트를 섞으면 기존 열거와 상태 판정이 바뀐다(`retro_timeline.py:82`, 계약 `contracts/retro/v1/openapi.yaml:2117-2125`). 새 operation 은
   **추가**이며 기존 경로·필드는 바이트 동일하게 둔다.
 - 인증·게이트는 기존 retro/v1 과 같다: `RETRO_API_ENABLED`(기본 false) → `RETRO_API_READ_TOKEN` 미설정 403 →
   `X-Retro-Read-Token` 401(`app/middleware/auth.py:205`, `app/routers/retro_v1.py`).
@@ -327,9 +385,9 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
     "relevance": "direct",
     "relevance_state": "known",
     "relevance_basis": "recorded",
-    "published_at": "2026-11-21T09:12:00+09:00",
+    "published_at": "2026-11-21T00:12:00Z",
     "published_offset": "+09:00",
-    "published_precision": "date",
+    "published_precision": "datetime",
     "first_received_at": "2026-11-21T00:31:05Z",
     "revised_at": null,
     "effective_at": null,
@@ -347,8 +405,10 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
 }
 ```
 
-- 돈·수량·가격은 정확한 decimal 문자열, 시각은 UTC RFC 3339(단 `published_at` 은 원본 오프셋을 보존한
-  표기), `as_of` 는 호출자 입력 그대로 돌려준다.
+- 돈·수량·가격은 정확한 decimal 문자열, `published_at` 을 포함한 시각은 UTC RFC 3339, `as_of` 는 호출자 입력
+  그대로 돌려준다. **(hk 6417)** 원본 오프셋·시간대는 `published_offset` 으로만 전달한다(retro/v1 규칙
+  `auto_trader@7955ef356 docs/agent-contracts/mcp-and-analysis-contracts.md:419`, 계약 `format: date-time`
+  `auto_trader@7955ef356 contracts/retro/v1/openapi.yaml:1154-1161`).
 - `reason`/`unknowns` 는 닫힌 어휘만. 원문 메시지·계좌번호·브로커 주문번호·원천 payload 는 내보내지 않는다.
 
 ### 4.3 as-of 술어
@@ -423,8 +483,9 @@ graph LR
 1. 저장: `uv run python -m scripts.ingest_market_events --source dart --category disclosure --market kr
    --from-date <D> --to-date <D>` → `ingest_kr_disclosures_for_date`(`market_events/ingestion.py:292`).
 2. 확인(SQL, 읽기 전용): `market_events` 에 `source='dart'`, `source_event_id=<rcept_no>`,
-   `event_date=<D>`, `raw_payload_json.symbol_resolution_reason` 유무, `fetched_at` 값. 같은 `rcept_no` 행이
-   1개인지(카테고리 재분류 중복 여부) 확인.
+   `event_date=<D>`, `raw_payload_json.symbol_resolution_reason` 유무, `first_received_at` 값(**(hk 6417)** hk 6968
+   `540f2cf76` 이후 새로 삽입된 DART 행에만 있다. DART 경로는 `fetched_at` 을 쓰지 않으므로 NULL 이 정상). 같은
+   `rcept_no` 행이 1개인지(카테고리 재분류 중복 여부) 확인.
 3. 조회: `GET /trading/api/market-events/range?...&category=disclosure&market=kr`(`app/routers/market_events.py:66`).
    행에 `release_time_utc=null`, `time_hint="unknown"` 이 보이는지 — 1.2 누락 1 의 증거.
 4. MCP 실제 응답: `get_disclosures(symbol="005930", days=3)` → 같은 `rcept_no` 가 라이브 목록에 있는지.
