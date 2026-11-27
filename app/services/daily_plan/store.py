@@ -399,6 +399,7 @@ async def write_version(
                         seq=None,
                         now=now,
                         max_carries=policy.daily_plan.carry_max_sessions,
+                        market=market,
                     )
                     or {}
                 )

@@ -169,3 +169,34 @@ async def test_executable_mode_is_stored_on_rows():
         if getattr(call.args[0], "table", None) is store.rows
     ]
     assert [params["execution_state"] for params in inserted] == ["executable"]
+
+
+@pytest.mark.asyncio
+async def test_watch_carry_reads_the_previous_plan_of_the_same_market(monkeypatch):
+    seen = []
+
+    async def fake_get_plan(_db, **kwargs):
+        seen.append(kwargs["market"])
+        return None
+
+    monkeypatch.setattr(store, "get_plan", fake_get_plan)
+    now = datetime(2026, 11, 24, 3, tzinfo=UTC)
+    row = _row(
+        market="crypto",
+        symbol="KRW-BTC",
+        venue="UPBIT",
+        session="crypto_24h",
+        action="watch",
+        side=None,
+        trigger={"kind": "price_at_or_below", "value": "100"},
+        carry_allowed=True,
+    )
+    await store.write_version(
+        fake_db(current=0),
+        day=DAY,
+        request=request(market="crypto", asof=now.isoformat(), rows=[row]),
+        now=now,
+        policy=POLICY,
+        policy_hash="hash",
+    )
+    assert seen == ["crypto"]
