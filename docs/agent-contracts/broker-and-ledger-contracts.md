@@ -341,6 +341,15 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
 - 체결은 여기에 기록하지 않는다. `accepted` 는 체결이 아니며, 기존 레저와 reconcile 이 그대로 권한자다.
 - 하위 가드는 우회하지 않는다. KR/US mock place 는 제공된 `idempotency_key` 를 `kis_mock` 범위로 전송 전에 예약하고, 공개 MCP mock 주문은 live와 같은 주문 내용·거래일·`rung` 파생 키도 예약한다. 귀속 신호 커밋과 기존 확인은 유지한다. KR mock 취소는 자기 원장과 확인된 잔량을 요구하며 capability 나 coordinator lease 는 요구하지 않는다. KR mock 정정은 hk 3745까지 거부한다 (`hk:doc decision/2026-11-09/kis-mock-like-live`).
 
+**v3 의도 — daily_plan 행 결속과 행별 대체 (hk 6991, 설계 `docs/design/6939-autonomous-strategy-orders.md` §1.3·§5, N2)**:
+
+- **발급기**: `app/services/execution_intent_gateway/plan_issuer.py`. `daily_plan.executable_markets` 에 있는 시장의 `executable` 헤드, `PUBLISHED` 버전, `execution_state='executable'` 행만 읽고(`daily_plan.store.read_issuable_row`, 닫힌 거부 `market_not_executable`/`version_not_found`/`version_not_published`/`head_not_executable`/`row_not_found`/`row_not_executable`), 불변 v3 의도 하나를 만든다. 진입(`new`/`add`) 행과 익절(`trim`) 행은 각자의 의도이며 값은 결속된 행에서만 복사한다(진입은 `price_at_or_below` 무효화 가격 필수). 🔴 지금 발급 가능한 계좌는 `kis_mock`·KRX 뿐이다 — 다른 계좌·venue 는 `account_not_supported`/`venue_not_supported` 로 거부하며 이 변경은 어떤 live 계좌도 열지 않는다. 예산은 승인 수량 − 원장으로 확인된 이전 체결(`prior_filled_quantity`)이고 v2 로 리셋되지 않는다.
+- **스키마**: `ExecutionIntentV3`(v1 필드 + `plan`: `plan_head_id`·`plan_version`(= `daily_plan_versions.seq`)·`row_key`·`account_ref`·`venue`·`session`·`action`·`invalidation_price_krw`). `LOCKED_ENVELOPE`·`MAX_INTENT_NOTIONAL_KRW`(5,000,000) 와 v1 상한은 그대로 묶는다. 마이그레이션 `20261127_hk6991_intent_v3`(열 추가·CHECK 교체·인덱스, FK 없음 — 헤드는 append-only). downgrade 는 v3 행이 있으면 거부한다.
+- 🔴 **행별 잠금**: (계좌, 정규화 심볼, venue) 키의 트랜잭션 advisory lock(`app/services/daily_plan/row_lock.py`) 을 daily_plan 발행이 **실행 필드를 바꾸는 행**에, E1 예약이 예약 트랜잭션 안에서, pre-send hook 이 첫 송신이 끝날 때까지 잡는다. 순서는 이 잠금 아래 커밋 순서로만 정하며 타임스탬프는 판정에 쓰지 않는다. 다른 행만 바꾸는 발행과 `fill` 버전은 대체가 아니다(`fill` 버전이 실행 필드를 바꾸면 발행이 `fill_version_changes_execution` 으로 거부된다).
+- 🔴 **거부**: 예약(키 재생·충돌 판정 뒤)과 pre-send 재확인 모두 그 행이 바뀐 최신 seq > 의도의 `plan_version` 이면 `plan_version_stale`, 같은 (계좌, 심볼, venue) 의 다른 v3 의도에 `sending`/`uncertain` 이나 원장 종결 증거(`kis_mock_order_ledger` 의 `reconciled`/`cancelled`/`expired`) 없는 주문이 있으면 새 submit 은 `prior_intent_unsettled` 다. 예약 시점 거부는 `refused` 행, pre-send 거부는 `not_sent`(증명된 미전송)이다. cancel 은 이 검사를 받지 않는다(구버전 주문은 계속 취소 가능). hook 이 실행되지 못하면 행은 `sending` 으로 남고 재전송하지 않는다. plan guard 가 없는 게이트웨이·저장소는 v3 submit/amend 를 보내지 않는다(`plan_guard_unavailable`).
+- **저널 트리거**: `not_sent` 는 v2 는 기존 닫힌 목록, v3 는 `plan_version_stale`·`prior_intent_unsettled`(`plan_binding.V3_NOT_SENT_REASONS`, 테스트가 고정) 로만 허용한다. 나머지 트리거 본문은 hk 5441 그대로다.
+- **테스트**: `tests/services/execution_intent_gateway/test_plan_version.py`(§5.2 R1·R1b·R1c·R2, 가짜 브로커 spy), `test_plan_issuer.py`, `test_plan_version_db.py`(CI). 새 forwarder·스케줄러·게이트 완화 없음.
+
 **upbit_live 계좌 (hk 5441, 설계 `docs/design/5438-go-execution-path.md` §2~§4·§8.2, 운영자 결정 `decision/2026-11-20/at-5438-d1-d19`)**:
 
 실계좌다. 하드룰 4 의 예외는 D3 조건으로만 성립한다. 이 절은 무엇이 주문을 막는지의 정본이고, 세부 wire 는 `docs/design/1440-intent-gateway-contract.md` 의 "upbit_live" 절이다.

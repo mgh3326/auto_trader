@@ -21,7 +21,7 @@ Downgrade refuses while any v3 intent exists, then restores the hk 5441 guard
 and CHECKs and drops the columns.
 """
 
-# expand-contract: expand-step 6991
+# expand-contract: contract-step 6991
 
 from __future__ import annotations
 

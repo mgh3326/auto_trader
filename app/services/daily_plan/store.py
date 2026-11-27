@@ -271,8 +271,9 @@ async def write_version(
     """Validate and insert one publication in the caller's transaction.
 
     ``market`` (default kr) and ``mode`` (default plan_only) are explicit
-    request fields. An ``executable`` row is stored as such but nothing reads
-    it yet: the intent issuer is a later ticket (hk 6939 N2).
+    request fields. An ``executable`` row is read only by the E1 intent issuer
+    (hk 6991, ``read_issuable_row``); rows whose execution fields change take
+    the per-row lock (``row_lock``) before they are inserted.
     """
     market = validate_market(request.get("market", "kr"))
     mode = day_mode(market, policy)
