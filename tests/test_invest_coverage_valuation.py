@@ -332,6 +332,41 @@ async def test_default_valuation_fetcher_high_date_opt_in(monkeypatch):
     assert raw2["high_52w_date"] == "2026-05-20"
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_valuation_fetcher_kr_missing_reasons(monkeypatch):
+    # hk 5754: KR valuation NULLs must carry a closed reason in raw_payload.
+    from app.services.market_valuation_snapshots import builder
+
+    async def fake_fetch(code: str) -> dict[str, object]:
+        return {
+            "symbol": code,
+            "per": None,
+            "pbr": 1.2,
+            "roe": None,
+            "dividend_yield": None,
+            "market_cap": 1_000_000_000,
+            "high_52w": None,
+            "low_52w": None,
+        }
+
+    monkeypatch.setattr(
+        "app.services.naver_finance.valuation.fetch_valuation", fake_fetch
+    )
+
+    raw = await builder.default_valuation_fetcher("005930", "kr")
+    reasons = raw["_missing_reasons"]
+
+    assert reasons["per"] == "naver_mobile_totalInfos_missing"
+    assert reasons["roe"] == "naver_finance_not_provided"
+    assert reasons["dividend_yield"] == "naver_mobile_totalInfos_missing"
+    assert reasons["high_52w"] == "naver_mobile_totalInfos_missing"
+    assert reasons["low_52w"] == "naver_mobile_totalInfos_missing"
+    assert "pbr" not in reasons
+    assert "market_cap" not in reasons
+    assert "high_52w_date" not in reasons
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_resolve_us_common_stocks_only(db_session):

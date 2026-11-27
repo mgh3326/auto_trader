@@ -339,6 +339,17 @@ def _load_research_fixture(name: str) -> Any:
     return json.loads((_RESEARCH_FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
+# hk 5754: live captures from 2026-11-27 proving the PC pages are now the same
+# Next.js SPA while m.stock.naver.com still serves the valuation metrics.
+_NAVER_VALUATION_FIXTURE_DIR = (
+    Path(__file__).parent / "fixtures" / "naver_valuation" / "2026-11-27"
+)
+
+
+def _load_naver_valuation_fixture(name: str) -> Any:
+    return json.loads((_NAVER_VALUATION_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
 def _research_list_item(
     research_id: int,
     *,
@@ -1104,6 +1115,48 @@ class TestParseTotalInfos:
         assert result["per"] == pytest.approx(12.5)
         assert result["pbr"] == pytest.approx(1.2)
         assert "unmapped" not in result
+
+    def test_parses_captured_integration_fixture_005930(self) -> None:
+        # hk 5754: live 2026-11-27 capture of m.stock.naver.com integration
+        # totalInfos — the source that still serves PER/PBR after the PC SPA.
+        payload = _load_naver_valuation_fixture("integration_005930.json")
+        result = naver_finance.valuation._parse_total_infos(payload["totalInfos"])
+
+        assert result["per"] == pytest.approx(5.64)
+        assert result["pbr"] == pytest.approx(1.93)
+        assert result["eps"] == pytest.approx(31809)
+        assert result["bps"] == pytest.approx(92903)
+        assert result["market_cap"] == pytest.approx(1_049_407_000_000_000)
+        assert result["dividend_yield"] == pytest.approx(0.0345)
+        assert result["high_52w"] == pytest.approx(380000)
+        assert result["low_52w"] == pytest.approx(99900)
+
+    def test_captured_pc_spa_html_yields_no_legacy_metrics(self) -> None:
+        # hk 5754 cause: main.naver/sise.naver are the same Next.js SPA now, so
+        # the legacy selectors (_per/_pbr/_dvr/wrap_company/52주 rows) match nothing.
+        html = (_NAVER_VALUATION_FIXTURE_DIR / "main_005930.html").read_text(
+            encoding="utf-8"
+        )
+        main_soup = BeautifulSoup(html, "lxml")
+        sise_soup = BeautifulSoup(html, "lxml")
+
+        result = naver_finance.valuation._parse_valuation_from_soups(
+            "005930", main_soup, sise_soup
+        )
+
+        for key in (
+            "name",
+            "current_price",
+            "per",
+            "pbr",
+            "roe",
+            "roe_controlling",
+            "dividend_yield",
+            "high_52w",
+            "low_52w",
+            "current_position_52w",
+        ):
+            assert result[key] is None, key
 
 
 @pytest.mark.asyncio
@@ -1948,6 +2001,49 @@ class TestFetchValuation:
         # HTML-scraped keys untouched by the overlay
         assert result["per"] == pytest.approx(12.5)
         assert result["pbr"] == pytest.approx(1.2)
+
+    async def test_overlays_mobile_metrics_when_pc_html_is_spa(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # hk 5754: the captured PC pages are the Next.js SPA (legacy selectors
+        # dead), so fetch_valuation must take PER/PBR/etc from the mobile
+        # integration payload instead of leaving them None.
+        html = (_NAVER_VALUATION_FIXTURE_DIR / "main_005930.html").read_text(
+            encoding="utf-8"
+        )
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(html, "lxml")
+
+        integration = _load_naver_valuation_fixture("integration_005930.json")
+        integ = dict(
+            naver_finance.valuation._parse_total_infos(integration["totalInfos"])
+        )
+        integ.update({"name": "삼성전자", "current_price": 179500})
+
+        async def fake_integration(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            return integ
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_integration
+        )
+
+        result = await naver_finance.fetch_valuation("005930")
+
+        assert result["name"] == "삼성전자"
+        assert result["current_price"] == pytest.approx(179500)
+        assert result["per"] == pytest.approx(5.64)
+        assert result["pbr"] == pytest.approx(1.93)
+        assert result["eps"] == pytest.approx(31809)
+        assert result["bps"] == pytest.approx(92903)
+        assert result["market_cap"] == pytest.approx(1_049_407_000_000_000)
+        assert result["dividend_yield"] == pytest.approx(0.0345)
+        assert result["high_52w"] == pytest.approx(380000)
+        assert result["low_52w"] == pytest.approx(99900)
+        assert result["current_position_52w"] == pytest.approx(0.28, abs=0.01)
 
     async def test_overlay_fails_open_leaves_keys_none(
         self, monkeypatch: pytest.MonkeyPatch

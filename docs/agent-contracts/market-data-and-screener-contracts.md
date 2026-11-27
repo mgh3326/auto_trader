@@ -1165,6 +1165,16 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - 🔴 `investor_flow_snapshots.close`(18:10 KST job, `app/services/investor_flow_snapshots/builder.py:247-264`)는 같은 공급자 값이 레이블 없이 저장된다. 이 테이블을 읽는 리더는 같은 레이블을 붙이거나 확정 종가를 써야 하며, 현재 MCP 수급 도구는 이 열을 노출하지 않는다.
 - 테스트: `tests/mcp_server/test_investor_flow_close_basis.py`(실제 네이버 trend 페이로드 4행 픽스처 `tests/fixtures/investor_flow/005930_trend_2026-11-24_provider_close.json`).
 
+### KR 밸류에이션 스냅샷 소스 — Naver 모바일 integration API (hk 5754)
+
+`market_valuation_snapshots` 의 `source='naver_finance'` KR 행은 `fetch_valuation`(`app/services/naver_finance/valuation.py`)이 만든다. Naver 가 PC `main.naver`/`sise.naver` 를 같은 Next.js SPA("Npay 증권")로 바꾸면서 레거시 셀렉터(`div.wrap_company`, `em#_per`, `em#_pbr`, `em#_dvr`, `p.no_today`, 52주 표 행)가 전부 0 매치가 되어 PER/PBR 수집이 비었다(스냅샷 결측 ~09-14, 수집 중단 ~11-17). hk 5754 부터는 모바일 JSON 이 지표의 1차 소스다.
+
+- 🔴 `GET https://m.stock.naver.com/api/stock/{code}/integration` 의 `totalInfos` 가 `per`·`pbr`·`eps`·`bps`·`marketValue`·`dividendYieldRatio`·`highPriceOf52Weeks`·`lowPriceOf52Weeks` 를, `/basic` 이 `stockName`·`closePrice`·`fluctuationsRatio` 를 준다. `_parse_total_infos` 가 파싱하고 `_fetch_integration` 이 반환 dict 에 싣는다.
+- PC HTML 파싱은 계속 시도하지만(레거시 응답·다른 소비자 호환) `fetch_valuation` 은 `_INTEGRATION_OVERLAY_KEYS` 로 모바일 값을 HTML 결과 위에 오버레이한다. 모바일 값이 `None` 이거나 skip-zero 키(`per`·`pbr`·`high_52w`·`low_52w`)에서 0 이면 HTML 값을 유지한다. 모바일 API 실패는 fail-open — HTML 값만으로 진행하고 결측은 NULL 로 남는다.
+- 🔴 결측 표기: KR 행의 `per`/`pbr`/`roe`/`dividend_yield`/`market_cap`/`high_52w`/`low_52w` 가 NULL 이면 `raw_payload['_missing_reasons']` 에 필드별 닫힌 사유가 실린다 — `naver_mobile_totalInfos_missing`(응답에 읽을 값이 없음) 또는 `naver_finance_not_provided`(ROE: Naver 가 제공하지 않음). `high_52w_date` 는 KR 에서 설계상 NULL 이라 사유를 달지 않는다. `roe` 는 모바일 `totalInfos` 에도 없어 계속 `naver_finance_not_provided` 다.
+- `market_cap` 은 `marketValue` 문자열("1,049조 4,070억")을 `parse_korean_number` 로 펼친 원화 정수다 — `FOREIGNERS_MIN_MARKET_CAP_KRW` 필터의 `naver_finance` KRW market_cap 계약(#1029)은 그대로다. `dividend_yield` 는 비율로 저장한다(`3.45%`→`0.0345`, `%` 접미사를 파서가 /100 한다).
+- 픽스처·테스트: `tests/fixtures/naver_valuation/2026-11-27/`(실제 캡처 `main_005930.html`·`sise_005930.html`·`basic_005930.json`·`integration_005930.json`), `tests/test_naver_finance.py::TestParseTotalInfos`·`TestFetchValuation`, `tests/test_invest_coverage_valuation.py::test_default_valuation_fetcher_kr_missing_reasons`.
+
 ### Go↔Python 분봉 전환 비교 (hk 6345)
 
 `scripts/compare_go_py_minutes.py` 는 Go `market-tap` JSONL 과 `research.{kr,us}_candles_1m` 을 `(time_utc, symbol, venue)` 로 맞춰 전환 판정을 낸다. 판정 함수는 `app/services/research_candles/go_py_compare.py`(순수, DB·네트워크 없음)이며 막는 조건은 **통째로 없는 종목 또는 (종목, venue, 거래일) 세션**뿐이다. 비교할 근거가 없으면(한쪽 0행, 겹치는 봉 0개, 요청 종목이 양쪽에 없음) PASS 가 아니라 `INCONCLUSIVE`(종료 코드 4)다. Python 쪽은 세션 수집기 행(`batch_id` 접두어 `session-minutes-`)만 본다. 행 수 허용오차 밖, 표본 OHLCV 불일치, value 차이, 부분 결손은 목록에만 남는다. CLI 는 `READ ONLY` 트랜잭션과 `statement_timeout 8s` 안에서 SELECT 만 실행하고 주문·원장·브로커 모듈을 import 하지 않는다(정적 테스트 고정). Go JSONL 에는 수신 시각이 없어 수신 지연은 `unavailable` 로 보고한다. 실패 코드는 hk 6299 어휘로 매핑하는 표(`FAILURE_CODE_MAP`)를 가지며 테스트가 고정한다. 런북 `docs/runbooks/session-minutes.md` §5.
