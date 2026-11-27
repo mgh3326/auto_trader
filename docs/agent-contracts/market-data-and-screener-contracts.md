@@ -92,6 +92,25 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 **안전 경계**: read-mostly 마켓 데이터, 브로커/주문/감시 mutation 없음. `raw_payload_json` 은 저장 전 `_redact_sensitive_keys` 적용. 모든 DB 쓰기는 `MarketEventsRepository` 경유. Prefect 배포는 후속 작업.
 
+**DART 일일 목록 — 공식 OpenDART list.json과 접수번호 식별 (hk 6408)**
+
+- 시장 전체 일일 목록은 공식 `https://opendart.fss.or.kr/api/list.json`(공시검색)을 `bgn_de=end_de=<접수일>`, `page_count=100`으로 페이지를 넘기며 읽는다(`app/services/market_events/dart_helpers.py::fetch_dart_filings_for_date`). 스크래핑(`OpenDartReader.list_date_ex`)은 쓰지 않는다. 각 요청은 `dart_capital._request`의 닫힌 오류 처리 한 곳을 지난다. 한 접수일이 50쪽(`DART_LIST_MAX_PAGES`, 5,000건)을 넘으면 목록을 불완전으로 보고 실패한다. 같은 접수번호는 한 번만 남긴다(페이지 사이 이동 대비).
+- 🔴 **[결론 — 확인됨]** 공식 `list.json`의 `rcept_dt`는 `YYYYMMDD`뿐이고 접수 시각 필드가 없다(공식 필드표, 2026-11-27 확인: https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019001). 행의 출처와 식별은 공식 목록이다.
+- **접수 시각 보강 (hk 6968 보존, hk 6408 라운드 7)**: 시각은 같은 날짜의 `list_date_ex` 스크래핑에서만 온다. 이 보강은 **매일 실행(`ingest_market_events`)에만** 있다. 백필(`scripts/backfill_dart_disclosures.py`)은 공식 행을 날짜 정밀도로만 쓰고 스크래핑을 하지 않는다(`--receipt-times` 없음, 예산 대상 호출 없음). 백필된 과거 행은 날짜 정밀도로 남는다. 저장소의 시각 보존 장치(`_keep_known_receipt_time`)가 백필이 이미 있는 시각을 지우지 않게 한다.
+- 보강 규칙: 접수번호가 정확히 일치하고 접수일이 같은 공식 행에만 `HH:MM`을 붙인다(`join_receipt_times`). 시각은 `raw_payload_json.rcept_dt`에 남고 발행 열(`published_*`)은 비운다. 그래서 `disclosure_timing`은 `dart_receipt_time` 출처·분 정밀도로 읽는다. 같은 접수번호가 여러 번 나오면 모든 등장이 같은 시각일 때만 그 시각을 쓴다. 서로 다른 시각이면 모호하므로 버린다.
+- 🔴 **완전성은 적용 범위(coverage)로 판정한다**: 스크래핑 결과가 그날의 공식 접수번호 전부를 포함하지 않으면 보강은 `None`이고, 그날 파티션은 `pending`(`receipt_time_unavailable`)으로 남아 다음 실행이 다시 읽는다. 스크래핑 실패도 같다. 공식 행은 날짜 정밀도로 저장된다(fail-open, 버리지 않는다).
+- 🔴 **페이지 상한은 설치된 소스에서 읽는다**: `OpenDartReader==0.2.3`(`uv.lock` 고정, `OpenDartReader/dart_utils.py` 57행 `for page in range(1, 100):`)의 `list_date_ex`는 페이지 크기 인자를 보내지 않으며, 페이지 수 상한은 99다(`SCRAPE_CEILING_PAGES = 99`). 페이지 크기는 소스에 없으므로 상수로 두지 않는다. 테스트 `test_the_installed_opendartreader_is_the_pinned_version`과 `test_the_scrape_ceiling_matches_the_installed_source`가 설치 버전과 상한을 고정한다. 버전을 올리면 이 두 테스트가 실패하고 재검토가 필요하다.
+- 🔴 **백필 예산은 DART HTTP 시도를 센다**: `--max-calls`는 목록 페이지 요청뿐 아니라 각 시도(020 재시도 포함)를 센다. `dart_capital._request`가 시도마다 훅을 부르고, 그 훅이 예산을 차감한다. 예산이 다 떨어지면 그 날은 `failed`로 남고(성공 처리하지 않는다) 실행은 `call_budget_exhausted`로 멈춘다. 다음 실행이 그 날을 다시 읽는다.
+- 🔴 **알려진 한계**: 백필로 쓴 과거 행은 날짜 정밀도다. 매일 실행이 그 날을 다시 보강하기 전까지 시각이 없고, 분 정밀도 트리거(`dart_minute_trigger`)는 그 공시를 `receipt_time_unknown`으로 보고한다.
+- 종목: 공식 행의 `stock_code`(6자리, 영문 포함 KRX 단축코드 포함)가 심볼이다. 없으면(비상장) hk 4591 registry 규칙을 따른다. `corp_code`는 심볼이 되지 않는다.
+- 정정 묶음 `group_key`: `dart:<corp_code 또는 심볼>:<보고서명 base>`. base는 선행 정정 태그(`[기재정정]`·`[첨부정정]`·`[첨부추가]`·`[변경등록]`·`[연장결정]`·`[발행조건확정]`·`[정정명령부과]`·`[정정제출요구]`)를 뗀 뒤 공백을 모두 뺀 것이다. 원본과 그 정정들은 같은 키다. 같은 회사가 같은 제목으로 낸 독립 공시도 같은 키를 받는다. 이 키는 제목 기준 묶음이며 정정 관계의 증명이 아니다. 접수번호 행은 각자 따로 남는다.
+- 식별: 접수번호(`rcept_no`, 14자리)가 DART 행의 식별자다. `report_nm` 분류가 바뀌어도 같은 접수번호의 행은 하나이고, 저장소는 그 행의 `category`·`market`만 옮긴다(`MarketEventsRepository._align_dart_identity`). 같은 접수번호의 행이 둘 이상 있으면 `DartIdentityConflict`로 그 날을 실패시키고, 어떤 행도 합치거나 지우지 않는다.
+- 🔴 **유니크 인덱스 전환은 이 변경에 없다.** `(source, category, market, source_event_id)` 인덱스는 그대로다. DART 전용 `(source, source_event_id)` 부분 유니크 인덱스는 기존 DB에 같은 접수번호의 여러 행이 없다는 보고 뒤에만 별도 마이그레이션으로 낸다. 확인은 `uv run python -m scripts.report_dart_identity_conflicts --database-url-env NAME`(읽기 전용 트랜잭션·8초 제한, 개수만 출력, 충돌이 있으면 종료 코드 1)으로 한다. 이 스크립트는 행을 고치지 않으며 충돌을 자동으로 정리하지 않는다. 실행은 pi에서 별도 작업으로 한다.
+- 닫힌 실패 코드: DART 수집 실패는 `market_event_ingestion_partitions.last_error`에 메시지가 아니라 closed v2 코드만 남긴다. `http_4xx`(010/011/012/901 인증·키 거절, 021/100 요청 거절, 키 없음), `http_5xx`(800, 5xx), `quota`(020, 재시도 뒤), `timeout`, `transport`, `bad_response`(900·알 수 없는 상태·형식 오류·쪽 한도 초과). 그 밖의 실패(0건 판정 가드, 식별 충돌, 저장 오류)는 기존처럼 우리가 쓴 문장을 남긴다. 키 값은 어떤 경우에도 로그·저장 문자열에 들어가지 않는다.
+- hk 3845 규칙(오늘·미래 날짜의 빈 결과 = pending, 확정 거래일의 빈 결과 = 실패, 달력 미상 = 실패)은 그대로다. 공식 API에는 디스크 페이지 캐시가 없어 `use_cache` 인자와 캐시 분기는 제거됐다.
+- 구조화 자본 이벤트(hk 6582)는 여전히 접수번호로 결합하며, 공식 목록의 `corp_code`를 그대로 쓴다.
+- 범위 밖: `get_disclosures` 라이브 경로, 경제 이벤트 원천, DART 유니크 인덱스 마이그레이션, 스케줄러 등록.
+
 **DART 공시 — 아직 끝나지 않은 날 (hk 3845)**: 07:00 KST 실행은 대상 날짜가 오늘이고 DART 가 오늘
 목록을 아직 올리지 않아 0건이 정상이다. 규칙은 하나: 대상 날짜 ≥ 실행 시점의 KST 오늘(`today_kst()`, 테스트는
 `today=` 주입)이면 "미완료"다.

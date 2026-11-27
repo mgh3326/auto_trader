@@ -22,7 +22,8 @@ PUBLISHED_FROM_NAVER = "naver_disclosure"
 PUBLISHED_FROM_DART_LIST = "dart_list_date"
 
 _KST_OFFSET = "+09:00"
-# ``list_date_ex`` receipt time: a date followed by HH:MM(:SS), zone-less KST.
+# Legacy scraped receipt time (``list_date_ex``, before hk 6408): a date followed by
+# HH:MM(:SS), zone-less KST. The official list carries a date only.
 _TIMED_RECEIPT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}")
 _HAS_SECONDS_RE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}")
 

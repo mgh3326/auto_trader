@@ -2,6 +2,9 @@
 
 Idempotency strategy:
 * When `source_event_id` is provided, upsert keyed by (source, category, market, source_event_id).
+  DART rows (hk 6408) are identified by the receipt number alone: a category change
+  moves the one existing row first (`_align_dart_identity`), and two rows for one
+  receipt fail closed (`DartIdentityConflict`).
 * Otherwise upsert keyed by (source, category, market, symbol, event_date, fiscal_year, fiscal_quarter).
 Both keys are enforced by partial unique indexes (see migration).
 
@@ -11,6 +14,7 @@ Values are upserted by (event_id, metric_name, period).
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
@@ -90,6 +94,43 @@ def value_keys(values: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
         for value in values
         if value.get("metric_name")
     }
+
+
+DART_SOURCE = "dart"
+
+
+class DartIdentityConflict(RuntimeError):
+    """One DART receipt number already maps to more than one market_events row.
+
+    Raised instead of choosing a row: merging or deleting is an operator decision
+    (hk 6408). The message carries the receipt number only.
+    """
+
+
+_TIMED_RECEIPT_TEXT = re.compile(r"[T ][0-9]{2}:[0-9]{2}")
+
+
+def _keep_known_receipt_time(payload: dict[str, Any], stored_raw: Any) -> None:
+    """Do not let a date-only DART write erase a receipt time already stored (hk 6408).
+
+    The official list has no time. A write without one (an unenriched run, or a
+    scrape that failed) replaces the raw payload, so the time an earlier enriched
+    run stored would be lost. When the stored raw payload holds a timed
+    ``rcept_dt`` and the incoming one does not, keep the stored time and drop the
+    incoming publication tuple, so the timing reader still reports the time.
+    """
+    incoming_raw = payload.get("raw_payload_json") or {}
+    if not isinstance(stored_raw, dict):
+        return
+    stored_text = str(stored_raw.get("rcept_dt") or "")
+    incoming_text = str(incoming_raw.get("rcept_dt") or "")
+    if not _TIMED_RECEIPT_TEXT.search(stored_text):
+        return
+    if _TIMED_RECEIPT_TEXT.search(incoming_text):
+        return
+    payload["raw_payload_json"] = {**incoming_raw, "rcept_dt": stored_text}
+    for key in PUBLICATION_FIELDS:
+        payload.pop(key, None)
 
 
 class MarketEventsRepository:
@@ -190,6 +231,58 @@ class MarketEventsRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none() is not None
 
+    async def _align_dart_identity(self, payload: dict[str, Any]) -> None:
+        """Keep one market_events row per DART receipt number (hk 6408).
+
+        The receipt number is the identity; the category is a classification that
+        can change when the report name does. The unique index still includes
+        category, so a changed category would insert a second row. Before the
+        normal upsert, move the one existing row to the new category/market. The
+        upsert then updates that row. More than one existing row fails closed.
+        """
+        receipt = str(payload["source_event_id"])
+        identity = "\0".join(("dart-identity", receipt)).encode()
+        lock_id = int.from_bytes(
+            hashlib.blake2b(identity, digest_size=8).digest(), "big", signed=True
+        )
+        await self.db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+        table = MarketEvent.__table__
+        rows = (
+            await self.db.execute(
+                select(
+                    table.c.id,
+                    table.c.category,
+                    table.c.market,
+                    table.c.raw_payload_json,
+                )
+                .where(
+                    table.c.source == DART_SOURCE,
+                    table.c.source_event_id == receipt,
+                )
+                .with_for_update()
+            )
+        ).all()
+        if len(rows) > 1:
+            raise DartIdentityConflict(
+                f"DART receipt {receipt} has {len(rows)} market_events rows"
+            )
+        if rows:
+            _keep_known_receipt_time(payload, rows[0].raw_payload_json)
+        if rows and (rows[0].category, rows[0].market) != (
+            payload.get("category"),
+            payload.get("market"),
+        ):
+            await self.db.execute(
+                update(table)
+                .where(table.c.id == rows[0].id)
+                .values(
+                    category=payload.get("category"),
+                    market=payload.get("market"),
+                    updated_at=func.now(),
+                )
+            )
+            await self.db.flush()
+
     async def upsert_event_with_values(
         self,
         event_data: dict[str, Any],
@@ -201,6 +294,8 @@ class MarketEventsRepository:
     ) -> MarketEvent:
         payload = dict(event_data)
         _normalize_publication(payload)
+        if payload.get("source") == DART_SOURCE and payload.get("source_event_id"):
+            await self._align_dart_identity(payload)
         if payload.get("raw_payload_json") is not None:
             payload["raw_payload_json"] = _redact_sensitive_keys(
                 payload["raw_payload_json"]
@@ -254,6 +349,13 @@ class MarketEventsRepository:
                 value = payload.get(column)
                 if value is not None:
                     update_columns[column] = value
+            if payload.get("source") == DART_SOURCE and not payload.get(
+                "published_precision"
+            ):
+                # A timed DART row keeps its time in raw_payload_json.rcept_dt and
+                # no publication tuple. A date-only tuple an earlier write stored
+                # must not outrank that time, so clear it (hk 6408).
+                update_columns.update(dict.fromkeys(PUBLICATION_FIELDS))
             if clear_notice_symbol:
                 if payload.get("source") not in {"upbit_notice", "bithumb_notice"}:
                     raise ValueError("clear_notice_symbol is only valid for notices")

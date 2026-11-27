@@ -17,62 +17,56 @@ from app.services.market_events.normalizers import normalize_dart_disclosure_row
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_fetch_uses_list_date_ex_and_returns_json_safe_records(
+async def test_fetch_returns_json_safe_official_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    frame = pd.DataFrame(
-        [
+    from app.services.market_events import dart_capital
+
+    page = {
+        "status": "000",
+        "list": [
             {
-                "rcept_dt": pd.Timestamp("2026-07-24 07:31:00"),
-                "corp_cls": "Y",
+                "corp_code": "00000001",
                 "corp_name": "테스트",
-                "rcept_no": "20260724000001",
+                "stock_code": "123456",
+                "corp_cls": "Y",
                 "report_nm": "주요사항보고서",
+                "rcept_no": "20260724000001",
                 "flr_nm": "테스트",
+                "rcept_dt": "20260724",
                 "rm": "",
             }
-        ]
-    )
-    client = MagicMock()
-    client.list_date_ex.return_value = frame
-    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
+        ],
+        "total_page": 1,
+    }
+    monkeypatch.setattr(dart_capital, "request_list_page", AsyncMock(return_value=page))
 
     rows = await dart_helpers.fetch_dart_filings_for_date(date(2026, 7, 24))
 
-    client.list_date_ex.assert_called_once_with("2026-07-24", cache=True)
-    assert rows == [
-        {
-            "rcept_dt": "2026-07-24T07:31:00",
-            "corp_cls": "Y",
-            "corp_name": "테스트",
-            "rcept_no": "20260724000001",
-            "report_nm": "주요사항보고서",
-            "flr_nm": "테스트",
-            "rm": "",
-        }
-    ]
+    assert rows == page["list"]
     event, _ = normalize_dart_disclosure_row(rows[0])
     assert event["event_date"] == date(2026, 7, 24)
+    assert event["symbol"] == "123456"
     json.dumps(event["raw_payload_json"])
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_fetch_fails_closed_when_list_date_ex_column_is_missing(
+async def test_fetch_refuses_a_page_without_a_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    frame = pd.DataFrame(
-        columns=sorted(dart_helpers.DART_LIST_DATE_EX_REQUIRED_COLUMNS - {"rcept_no"})
-    )
-    client = MagicMock()
-    client.list_date_ex.return_value = frame
-    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
+    from app.services.market_events import dart_capital
 
-    with pytest.raises(
-        dart_helpers.DartResponseSchemaError,
-        match=r"missing required columns: rcept_no",
-    ):
+    monkeypatch.setattr(
+        dart_capital,
+        "request_list_page",
+        AsyncMock(return_value={"status": "000", "total_page": 1}),
+    )
+
+    with pytest.raises(dart_capital.DartDetailError) as raised:
         await dart_helpers.fetch_dart_filings_for_date(date(2026, 7, 24))
+
+    assert raised.value.failure_code == "bad_response"
 
 
 @pytest.mark.unit

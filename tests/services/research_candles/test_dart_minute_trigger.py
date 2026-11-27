@@ -154,7 +154,7 @@ def test_type_filter_listed_filter_and_symbol_mapping():
         ("7", "unmapped_name"),
         ("8", "unmapped_name"),
         ("9", "midnight_placeholder"),
-        ("10", "no_rcept_time"),
+        ("10", "receipt_time_unknown"),
     }
 
 
@@ -268,3 +268,21 @@ def test_real_xkrx_calendar_matches_the_1054_samsung_case():
         date(2026, 8, 21),
         date(2026, 8, 24),
     )
+
+
+def test_a_date_only_target_disclosure_is_reported_as_receipt_time_unknown():
+    """A date-only target disclosure is reported, not dropped (hk 6408 review)."""
+    plan = _plan([_row("d1", "단일판매ㆍ공급계약체결", dt="20261127")])
+
+    assert plan.requests == []
+    assert [(s.rcept_no, s.reason) for s in plan.skipped] == [
+        ("d1", "receipt_time_unknown")
+    ]
+
+
+def test_a_timed_raw_receipt_is_read_at_minute_precision():
+    """The minute trigger keeps using a stored HH:MM receipt (hk 6408)."""
+    plan = _plan([_row("t1", "단일판매ㆍ공급계약체결", dt="2026-09-24 16:30")])
+
+    assert plan.skipped == []
+    assert len(plan.requests) == 1

@@ -23,6 +23,7 @@ from app.schemas.market_events import IngestionRunResult
 from app.services.market_events.dart_helpers import (
     dart_row_stock_code,
     fetch_dart_corp_registry,
+    join_receipt_times,
 )
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
 from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
@@ -88,11 +89,15 @@ async def _mark_failed_after_exception(
     market: str,
     partition_date: date,
     error: Exception,
+    failure_code: str | None = None,
 ) -> IngestionRunResult:
     """Record a failed partition after any fetch/normalization/upsert exception.
 
     Database exceptions can leave the current transaction unusable, so rollback first
     and then write the failed partition state in a clean transaction.
+
+    ``failure_code`` (a closed v2 code) is recorded instead of the message when a
+    collector supplies one.
     """
     await db.rollback()
     repo = MarketEventsRepository(db)
@@ -102,7 +107,12 @@ async def _mark_failed_after_exception(
         market=market,
         partition_date=partition_date,
     )
-    await repo.mark_partition_failed(partition, error=str(error))
+    if failure_code is not None:
+        await repo.mark_partition_failed(partition, failure_code=failure_code)
+        message = failure_code
+    else:
+        message = str(error)
+        await repo.mark_partition_failed(partition, error=message)
     return IngestionRunResult(
         source=source,
         category=category,
@@ -110,7 +120,7 @@ async def _mark_failed_after_exception(
         partition_date=partition_date,
         status="failed",
         event_count=0,
-        error=str(error),
+        error=message,
     )
 
 
@@ -298,12 +308,20 @@ async def ingest_kr_disclosures_for_date(
     enrich_capital: bool | None = None,
     load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
     | None = None,
+    load_receipt_times: Callable[..., Awaitable[dict[str, str] | None]] | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
     `fetch_rows` is an optional injection point: an async callable taking a date and
     returning a list of dart-row dicts. Default uses
-    `app.services.market_events.dart_helpers.fetch_dart_filings_for_date`.
+    `app.services.market_events.dart_helpers.fetch_dart_filings_for_date` (the
+    official list.json, hk 6408).
+
+    `load_receipt_times` enriches those official rows with the same day's scraped
+    receipt times, joined by exact receipt number (hk 6968). It defaults to the
+    production scrape only when `fetch_rows` is also defaulted, so an injected
+    fetcher never reaches the network. A failing enrichment is fail-open: the
+    official rows store date-only.
 
     With a custom fetcher, typed detail enrichment is opt-in via `enrich_capital`.
 
@@ -322,6 +340,7 @@ async def ingest_kr_disclosures_for_date(
 
     if enrich_capital is None:
         enrich_capital = fetch_rows is None
+    production_fetch = fetch_rows is None
     if fetch_rows is None:
         from app.services.market_events.dart_helpers import (
             fetch_dart_filings_for_date as _default_fetch,
@@ -343,6 +362,36 @@ async def ingest_kr_disclosures_for_date(
 
     try:
         rows = await fetch_rows(target_date)
+        if load_receipt_times is None and production_fetch:
+            from app.services.market_events.dart_helpers import (
+                fetch_dart_receipt_times_for_date,
+            )
+
+            load_receipt_times = fetch_dart_receipt_times_for_date
+        enrichment_failed = False
+        if load_receipt_times is not None:
+            try:
+                expected = frozenset(
+                    str(row.get("rcept_no") or "").strip() for row in rows
+                ) - {""}
+                times = await load_receipt_times(
+                    target_date, expected_receipts=expected
+                )
+            except Exception as exc:
+                logger.warning(
+                    "DART receipt-time enrichment failed (%s); rows stay date-only",
+                    type(exc).__name__,
+                )
+                times = None
+            # A failed lookup is not "no timed rows": keep the day retryable below.
+            enrichment_failed = times is None
+            rows, applied = join_receipt_times(rows, times or {})
+            logger.info(
+                "DART receipt times applied to %d of %d official rows for %s",
+                applied,
+                len(rows),
+                target_date,
+            )
         # Our first-receipt clock, stamped after the provider answered. The
         # repository writes it on insert only, so a re-ingest never moves it.
         received_at = datetime.now(UTC)
@@ -400,7 +449,9 @@ async def ingest_kr_disclosures_for_date(
             upserted += 1
 
         if detail_error is not None:
-            await repo.mark_partition_failed(partition, error=str(detail_error))
+            await repo.mark_partition_failed(
+                partition, failure_code=detail_error.failure_code
+            )
             return IngestionRunResult(
                 source=source,
                 category=partition_category,
@@ -408,7 +459,7 @@ async def ingest_kr_disclosures_for_date(
                 partition_date=target_date,
                 status="failed",
                 event_count=upserted,
-                error=str(detail_error),
+                error=detail_error.failure_code,
             )
 
         day_incomplete = not rows and target_date >= (today or today_kst())
@@ -424,6 +475,20 @@ async def ingest_kr_disclosures_for_date(
                 status="pending",
                 event_count=0,
             )
+        if enrichment_failed and upserted:
+            # The rows are stored date-only, but the receipt times were never
+            # looked up. Leave the day pending so a later run re-collects it, and
+            # the minute trigger does not silently skip its disclosures (hk 6408).
+            await repo.mark_partition_pending(partition)
+            return IngestionRunResult(
+                source=source,
+                category=partition_category,
+                market=market,
+                partition_date=target_date,
+                status="pending",
+                event_count=upserted,
+                error="receipt_time_unavailable",
+            )
         await repo.mark_partition_succeeded(partition, event_count=upserted)
         return IngestionRunResult(
             source=source,
@@ -435,6 +500,8 @@ async def ingest_kr_disclosures_for_date(
         )
     except Exception as exc:
         logger.exception("dart ingestion failed for %s", target_date)
+        # A collection failure records its closed code; other failures keep the
+        # message this module wrote (zero-day guard, identity conflict).
         return await _mark_failed_after_exception(
             db,
             source=source,
@@ -442,6 +509,9 @@ async def ingest_kr_disclosures_for_date(
             market=market,
             partition_date=target_date,
             error=exc,
+            failure_code=(
+                exc.failure_code if isinstance(exc, DartDetailError) else None
+            ),
         )
 
 

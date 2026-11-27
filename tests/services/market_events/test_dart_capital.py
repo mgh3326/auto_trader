@@ -59,6 +59,15 @@ async def test_cb_normal_ingestion_retries_and_stores_exact_dilution(monkeypatch
     )
     repo = AsyncMock()
     monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    # The production default also reads the receipt-time scrape. Stub it to a
+    # successful read with no timed rows (hk 6408): this test is about capital.
+    from app.services.market_events import dart_helpers
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "fetch_dart_receipt_times_for_date",
+        AsyncMock(return_value={}),
+    )
 
     result = await ingestion.ingest_kr_disclosures_for_date(
         AsyncMock(), date(2026, 11, 24)
@@ -180,7 +189,8 @@ async def test_empty_detail_leaves_filing_and_refused_credentials_fail_run(
     else:
         repo.upsert_event_with_values.assert_awaited_once()
         db.rollback.assert_not_awaited()
-        assert result.error == "OpenDART detail status 011"
+        # hk 6408: a detail failure records its closed failure code.
+        assert result.error == "http_4xx"
 
 
 # OpenDART DS005, one response-field projection for each remaining endpoint.
@@ -528,6 +538,8 @@ async def test_dart_list_replay_preserves_typed_event_evidence(monkeypatch, repl
     monkeypatch.setattr(dart_capital, "_get_bytes", transport)
     result = Mock()
     result.scalar_one.return_value = 1
+    # The DART identity lookup reads existing rows: none yet (hk 6408).
+    result.all.return_value = []
     db = AsyncMock(execute=AsyncMock(return_value=result))
     repo = MarketEventsRepository(db)
     monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
@@ -584,6 +596,8 @@ async def test_ordinary_dart_replay_updates_date_payload_and_resolved_symbol(
 
     result = Mock()
     result.scalar_one.return_value = 1
+    # The DART identity lookup reads existing rows: none yet (hk 6408).
+    result.all.return_value = []
     db = AsyncMock(execute=AsyncMock(return_value=result))
     repo = MarketEventsRepository(db)
     monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))

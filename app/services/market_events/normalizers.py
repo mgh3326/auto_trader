@@ -6,6 +6,7 @@ to MarketEventsRepository.upsert_event_with_values.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
@@ -131,15 +132,87 @@ def classify_dart_category(report_nm: str) -> str:
     return "disclosure"
 
 
+# Correction tags OpenDART prefixes to a report name (list.json ``report_nm``
+# legend). They mark a revision of an earlier filing; the family key drops them.
+_DART_CORRECTION_TAGS = (
+    "기재정정",
+    "첨부정정",
+    "첨부추가",
+    "변경등록",
+    "연장결정",
+    "발행조건확정",
+    "정정명령부과",
+    "정정제출요구",
+)
+_DART_CORRECTION_PREFIX_RE = re.compile(
+    r"^\s*(?:\[(?:" + "|".join(_DART_CORRECTION_TAGS) + r")\]\s*)+"
+)
+_TIME_OF_DAY_RE = re.compile(r"[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?")
+
+
+def dart_base_report_name(report_nm: str) -> str:
+    """Return the report name without leading correction tags, spaces removed.
+
+    ``[기재정정]사업보고서 (2025.12)`` and ``사업보고서(2025.12)`` share one base.
+    """
+    stripped = _DART_CORRECTION_PREFIX_RE.sub("", report_nm or "", count=1)
+    return re.sub(r"\s+", "", stripped)
+
+
+def dart_group_key(
+    *,
+    corp_code: str | None,
+    symbol: str | None,
+    corp_name: str,
+    report_nm: str,
+) -> str | None:
+    """Amendment family of one DART filing (hk 6408).
+
+    The original and every correction of the same report by the same issuer
+    share a key. Two independent filings with an identical title by the same
+    issuer also share it, so the key groups by title, not by proof of amendment.
+    """
+    from app.services.market_events.dart_helpers import normalize_dart_corp_name
+
+    base = dart_base_report_name(report_nm)
+    issuer = (
+        (corp_code or "").strip()
+        or (symbol or "")
+        or normalize_dart_corp_name(corp_name)
+    )
+    if not base or not issuer:
+        return None
+    return f"dart:{issuer}:{base}"
+
+
+def _dart_publication(rcept_dt: str, event_date: date) -> dict[str, Any]:
+    """Publication columns for one DART receipt (hk 6408, hk 6968).
+
+    A row with no time of day is date precision: ``published_date`` is the
+    receipt date. A row whose ``rcept_dt`` carries HH:MM (the scraped enrichment)
+    writes NO publication columns. Its time stays in ``raw_payload_json.rcept_dt``,
+    which the timing reader turns into minute precision with the
+    ``dart_receipt_time`` basis, exactly as before this change.
+    """
+    if _TIME_OF_DAY_RE.search(rcept_dt):
+        return {}
+    return {
+        "published_at": None,
+        "published_date": event_date,
+        "published_offset": None,
+        "published_precision": "date",
+    }
+
+
 def normalize_dart_disclosure_row(
     row: dict[str, Any],
     corp_registry: Mapping[str, list[dict[str, str]]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Normalize one DART ``list_date_ex`` row to a MarketEvent.
+    """Normalize one DART ``list.json`` row to a MarketEvent.
 
-    The scraper exposes receipt time, class, company name, receipt number, report
-    name, filer name, and remarks. It does not expose ``stock_code``; keep support
-    for that field for injected/legacy rows, but never substitute ``corp_code``.
+    ``stock_code`` and ``corp_code`` come from the official list. A row without a
+    ``stock_code`` (unlisted issuer) resolves through the corp registry, and
+    ``corp_code`` is never substituted for a symbol.
     """
     from app.services.market_events.dart_helpers import (
         _listed_stock_code,
@@ -188,6 +261,7 @@ def normalize_dart_disclosure_row(
         event_date = date.fromisoformat(rcept_dt[:10])
 
     category = classify_dart_category(report_nm)
+    publication = _dart_publication(rcept_dt, event_date)
 
     event = {
         "category": category,
@@ -197,6 +271,13 @@ def normalize_dart_disclosure_row(
         "company_name": corp_name,
         "title": report_nm or None,
         "event_date": event_date,
+        **publication,
+        "group_key": dart_group_key(
+            corp_code=(row.get("corp_code") or "").strip() or None,
+            symbol=symbol,
+            corp_name=corp_name,
+            report_nm=report_nm,
+        ),
         "release_time_utc": None,
         "release_time_local": None,
         "source_timezone": "Asia/Seoul",

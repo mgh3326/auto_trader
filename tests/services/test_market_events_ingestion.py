@@ -377,25 +377,26 @@ async def test_ingest_kr_disclosures_fails_zero_when_calendar_is_unknown(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_ingest_kr_disclosures_records_scraper_schema_failure(db_session):
+async def test_ingest_kr_disclosures_records_malformed_list_failure(db_session):
+    """A malformed official list page fails the day with a closed code (hk 6408)."""
     from app.models.market_events import MarketEventIngestionPartition
     from app.services.market_events import ingestion
-    from app.services.market_events.dart_helpers import DartResponseSchemaError
+    from app.services.market_events.dart_capital import DartDetailError
 
     target_date = date(2026, 5, 7)
     result = await ingestion.ingest_kr_disclosures_for_date(
         db_session,
         target_date,
         fetch_rows=AsyncMock(
-            side_effect=DartResponseSchemaError(
-                "DART list_date_ex response missing required columns: rcept_no"
+            side_effect=DartDetailError(
+                "OpenDART filing list has no list field", failure_code="bad_response"
             )
         ),
     )
     await db_session.commit()
 
     assert result.status == "failed"
-    assert "missing required columns: rcept_no" in (result.error or "")
+    assert result.error == "bad_response"
     parts = await _load_partitions(
         db_session,
         MarketEventIngestionPartition,
@@ -406,7 +407,7 @@ async def test_ingest_kr_disclosures_records_scraper_schema_failure(db_session):
     )
     assert len(parts) == 1
     assert parts[0].status == "failed"
-    assert "missing required columns: rcept_no" in (parts[0].last_error or "")
+    assert parts[0].last_error == "bad_response"
 
 
 @pytest.mark.asyncio

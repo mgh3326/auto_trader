@@ -165,10 +165,17 @@ def test_transient_classifier_rejects_http_4xx_other_than_429():
 @pytest.mark.unit
 def test_transient_classifier_rejects_schema_and_parse_faults():
     """HTML error pages / contract drift are NOT transient (#1097)."""
-    from app.services.market_events.dart_helpers import DartResponseSchemaError
+    from app.services.market_events.dart_capital import DartDetailError
     from scripts.backfill_dart_disclosures import _transient_dart_error
 
-    assert _transient_dart_error(DartResponseSchemaError("missing column")) is None
+    assert (
+        _transient_dart_error(DartDetailError("bad list", failure_code="bad_response"))
+        is None
+    )
+    assert (
+        _transient_dart_error(DartDetailError("rejected", failure_code="http_4xx"))
+        is None
+    )
     assert _transient_dart_error(AttributeError("no attribute")) is None
     assert _transient_dart_error(KeyError("k")) is None
 
@@ -633,12 +640,14 @@ async def test_max_days_limits_run_and_reports_resume_point(db_session):
 @pytest.mark.integration
 async def test_non_transient_error_fails_day_without_retry(db_session):
     """Schema/parse faults are not retried: 1 call, failed day, run continues."""
-    from app.services.market_events.dart_helpers import DartResponseSchemaError
+    from app.services.market_events.dart_capital import DartDetailError
     from scripts import backfill_dart_disclosures as cli
 
     fetch = AsyncMock(
         side_effect=[
-            DartResponseSchemaError("missing required columns: rcept_no"),
+            DartDetailError(
+                "OpenDART filing list has no list field", failure_code="bad_response"
+            ),
             [dict(DART_ROW)],
         ]
     )

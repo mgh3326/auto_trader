@@ -1,0 +1,44 @@
+{
+  "_note": "SYNTHETIC. Shaped from the OpenDART list.json (공시검색) field table at https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019001 (fetched 2026-11-27). Values are invented; only the key names, value types and the YYYYMMDD receipt-date form are taken from the table. Not a live capture.",
+  "status": "000",
+  "message": "정상",
+  "page_no": 1,
+  "page_count": 100,
+  "total_count": 3,
+  "total_page": 1,
+  "list": [
+    {
+      "corp_code": "00000001",
+      "corp_name": "Synthetic Listed Co",
+      "stock_code": "123456",
+      "corp_cls": "Y",
+      "report_nm": "[기재정정]사업보고서 (2025.12)",
+      "rcept_no": "20261127000001",
+      "flr_nm": "Synthetic Listed Co",
+      "rcept_dt": "20261127",
+      "rm": "유"
+    },
+    {
+      "corp_code": "00000001",
+      "corp_name": "Synthetic Listed Co",
+      "stock_code": "123456",
+      "corp_cls": "Y",
+      "report_nm": "[첨부정정]사업보고서 (2025.12)",
+      "rcept_no": "20261127000002",
+      "flr_nm": "Synthetic Listed Co",
+      "rcept_dt": "20261127",
+      "rm": "유"
+    },
+    {
+      "corp_code": "00000002",
+      "corp_name": "Synthetic Unlisted Co",
+      "stock_code": "",
+      "corp_cls": "E",
+      "report_nm": "주요사항보고서",
+      "rcept_no": "20261127000003",
+      "flr_nm": "Synthetic Unlisted Co",
+      "rcept_dt": "20261127",
+      "rm": ""
+    }
+  ]
+}

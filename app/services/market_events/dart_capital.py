@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException, HTTPSConnection
@@ -58,23 +58,36 @@ _MAX_BODY = 8 * 1024 * 1024
 
 
 class DartDetailError(RuntimeError):
-    """An OpenDART detail request failed."""
+    """An OpenDART request failed.
+
+    ``failure_code`` is one of the closed v2 collection failure codes
+    (``CollectionFailure``: http_4xx, http_5xx, timeout, transport, bad_response,
+    unparseable, quota). It is the only error text that is ever recorded in
+    ``last_error``; the message is for logs and never carries the API key.
+    """
+
+    failure_code: str = "bad_response"
+
+    def __init__(self, message: str = "", *, failure_code: str | None = None) -> None:
+        super().__init__(message)
+        if failure_code is not None:
+            self.failure_code = failure_code
 
 
 class DartCredentialError(DartDetailError):
-    pass
+    failure_code = "http_4xx"
 
 
 class DartRateLimitError(DartDetailError):
-    pass
+    failure_code = "quota"
 
 
 class DartUnavailableError(DartDetailError):
-    pass
+    failure_code = "http_5xx"
 
 
 class DartArgumentError(DartDetailError):
-    pass
+    failure_code = "http_4xx"
 
 
 _ERRORS = {
@@ -125,6 +138,17 @@ def _corp_code(
     return next(iter(matching)) if len(matching) == 1 else None
 
 
+def _http_failure_code(status: int) -> str:
+    """Closed failure code for a non-200 HTTP status.
+
+    429 is rate limiting, so it is ``quota`` and retryable; other 4xx are
+    request errors and 5xx are server errors.
+    """
+    if status == 429:
+        return "quota"
+    return "http_5xx" if status >= 500 else "http_4xx"
+
+
 def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
     api_key = settings.opendart_api_key
     if not api_key:
@@ -137,13 +161,24 @@ def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
         )
         response = connection.getresponse()
         if response.status != 200:
-            raise DartUnavailableError(f"OpenDART HTTP {response.status}")
+            raise DartUnavailableError(
+                f"OpenDART HTTP {response.status}",
+                failure_code=_http_failure_code(response.status),
+            )
         body = response.read(_MAX_BODY + 1)
         if len(body) > _MAX_BODY:
-            raise DartDetailError("OpenDART response exceeds size limit")
+            raise DartDetailError(
+                "OpenDART response exceeds size limit", failure_code="bad_response"
+            )
         return body
+    except TimeoutError:
+        raise DartDetailError(
+            "OpenDART request timed out", failure_code="timeout"
+        ) from None
     except (OSError, HTTPException):
-        raise DartUnavailableError("OpenDART detail transport failed") from None
+        raise DartDetailError(
+            "OpenDART transport failed", failure_code="transport"
+        ) from None
     finally:
         connection.close()
 
@@ -154,8 +189,20 @@ def _parse_xml(body: bytes) -> etree._Element:
     )
 
 
-async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | None:
+async def _request(
+    endpoint: str,
+    *,
+    before_http: Callable[[], Awaitable[None]] | None = None,
+    **params: str,
+) -> dict[str, Any] | bytes | None:
+    """Send one OpenDART request, retrying a 020 (rate limit) up to twice.
+
+    ``before_http`` is awaited before every HTTP attempt, including the 020 retries,
+    so a caller can budget real HTTP requests (hk 6408 round 8).
+    """
     for attempt in range(3):
+        if before_http is not None:
+            await before_http()
         body = await asyncio.to_thread(_get_bytes, endpoint, params)
         try:
             if endpoint == "document.xml":
@@ -168,7 +215,9 @@ async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | Non
                 if status == "000":
                     return payload
         except (ValueError, etree.XMLSyntaxError):
-            raise DartDetailError("OpenDART detail response is malformed") from None
+            raise DartDetailError(
+                "OpenDART detail response is malformed", failure_code="bad_response"
+            ) from None
         if status in ("013", "014"):
             return None
         if status == "020" and attempt < 2:
@@ -176,8 +225,30 @@ async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | Non
             continue
         if isinstance(status, str) and status in _ERRORS:
             raise _ERRORS[status](f"OpenDART detail status {status}")
-        raise DartDetailError("OpenDART detail response has an unexpected status")
+        raise DartDetailError(
+            "OpenDART detail response has an unexpected status",
+            failure_code="bad_response",
+        )
     raise AssertionError("unreachable")
+
+
+async def request_list_page(
+    *,
+    before_http: Callable[[], Awaitable[None]] | None = None,
+    **params: str,
+) -> dict[str, Any] | None:
+    """One OpenDART ``list.json`` page, or ``None`` when DART answers 013/014.
+
+    The market-wide daily collector (hk 6408) pages through this. Every failure
+    raises a :class:`DartDetailError` whose ``failure_code`` is closed.
+    """
+    payload = await _request("list.json", before_http=before_http, **params)
+    if payload is not None and not isinstance(payload, dict):
+        raise DartDetailError(
+            "OpenDART list response has an unexpected shape",
+            failure_code="bad_response",
+        )
+    return payload
 
 
 async def filing_list_is_empty(**params: str) -> bool:

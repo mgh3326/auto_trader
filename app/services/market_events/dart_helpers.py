@@ -1,7 +1,18 @@
-"""Thin wrapper around OpenDartReader.list_date_ex for market-wide DART fetches.
+"""Market-wide DART daily filing list on the official OpenDART API (hk 6408).
 
-``list_date_ex`` scrapes ``dart.fss.or.kr`` rather than using the official API,
-so its response shape is validated before any result can be treated as usable.
+``fetch_dart_filings_for_date`` reads ``list.json`` (공시검색) for one receipt
+day, page by page, through the same closed-error client that the capital detail
+path uses (``dart_capital``). The official list is the source of rows and of the
+receipt-number identity. Its ``rcept_dt`` is a date only (``YYYYMMDD``).
+
+The receipt time (HH:MM) still comes from the same day's ``list_date_ex`` read,
+used as an enrichment only: ``fetch_dart_receipt_times_for_date`` returns the
+scraped times by exact ``rcept_no``, and ``join_receipt_times`` applies them to
+official rows. A failed scrape or a missing match leaves the official row
+date-only (fail-open).
+
+The corp-code registry (``corpCode.xml``) is still used, but only for rows whose
+list entry has no ``stock_code`` (unlisted issuers).
 """
 
 from __future__ import annotations
@@ -11,17 +22,19 @@ import fcntl
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
 from app.core.symbol import KR_SHORT_CODE
-from app.core.timezone import today_kst
 from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
@@ -32,21 +45,17 @@ DART_CORP_REGISTRY_CACHE_PATH = Path(
 )
 DART_CORP_REGISTRY_LOCK_PATH = DART_CORP_REGISTRY_CACHE_PATH.with_suffix(".lock")
 
-DART_LIST_DATE_EX_REQUIRED_COLUMNS = frozenset(
-    {
-        "rcept_dt",
-        "corp_cls",
-        "corp_name",
-        "rcept_no",
-        "report_nm",
-        "flr_nm",
-        "rm",
-    }
+# Columns the receipt-time enrichment needs from ``list_date_ex``.
+DART_LIST_DATE_EX_REQUIRED_COLUMNS = frozenset({"rcept_no", "rcept_dt"})
+# A scraped receipt value that carries a time of day: a date, then HH:MM.
+_TIMED_RECEIPT_RE = re.compile(
+    r"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?$"
 )
 
-
-class DartResponseSchemaError(RuntimeError):
-    """The DART scraping response no longer matches the expected table shape."""
+# OpenDART list.json page size (max 100) and the most pages one receipt day may
+# take before the list is refused as incomplete. 50 pages is 5,000 filings.
+DART_LIST_PAGE_COUNT = 100
+DART_LIST_MAX_PAGES = 50
 
 
 def normalize_dart_corp_name(value: Any) -> str:
@@ -193,56 +202,235 @@ async def fetch_dart_corp_registry() -> dict[str, list[dict[str, str]]] | None:
     return await asyncio.to_thread(_load_dart_corp_registry_sync, api_key)
 
 
+def _list_page_rows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Return ``(rows, total_pages)`` for one validated ``list.json`` page."""
+    from app.services.market_events.dart_capital import DartDetailError
+
+    items = payload.get("list")
+    if not isinstance(items, list):
+        raise DartDetailError(
+            "OpenDART filing list has no list field", failure_code="bad_response"
+        )
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise DartDetailError(
+                "OpenDART filing list row is not an object", failure_code="bad_response"
+            )
+        rows.append({str(key): value for key, value in item.items()})
+    try:
+        total_pages = int(payload.get("total_page"))
+    except (TypeError, ValueError):
+        raise DartDetailError(
+            "OpenDART filing list has no page count", failure_code="bad_response"
+        ) from None
+    if total_pages < 0 or (total_pages == 0 and rows):
+        raise DartDetailError(
+            "OpenDART filing list page count contradicts its rows",
+            failure_code="bad_response",
+        )
+    return rows, total_pages
+
+
 async def fetch_dart_filings_for_date(
     target_date: date,
     *,
-    use_cache: bool = True,
+    before_request: Callable[[], Awaitable[None]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return validated DART filings for one day.
+    """Return every DART filing received on one day, from the official list API.
 
-    The OpenDartReader client is loaded lazily and reused across calls.
+    A day with no filings (status 013) returns ``[]``; the caller decides what an
+    empty day means (hk 3845 pending rule). Each paged request goes through the
+    closed-error client, so failures arrive with a ``failure_code``. Rows are
+    de-duplicated by receipt number: the list can shift while it is paged.
 
-    ``use_cache=True`` (default) preserves OpenDartReader's on-disk
-    ``docs_cache`` behavior — the scheduled daily path relies on it.
-    Backfill-style callers pass ``use_cache=False`` so every attempt is a
-    real network call: a cached error page would otherwise be re-served to
-    every retry of the same date.
+    ``before_request`` is awaited before every list-page request, so a caller can
+    budget and pace the HTTP requests themselves (hk 6408 review), not one call
+    per day.
 
-    A date on or after today (Asia/Seoul) never uses the cache, whatever
-    ``use_cache`` says. OpenDartReader writes each scraped page to
-    ``docs_cache/<url>`` once and serves it forever, so an early "no filings
-    found" page for a day DART has not finished publishing would hide the later
-    filings from every subsequent run.
+    An empty page before the reported last page is a contradiction and fails
+    with ``bad_response``; it is never read as the end of the list.
+
+    The official JSON API has no on-disk page cache, so there is no cache switch
+    to manage here (the scraper's ``docs_cache`` problem no longer exists).
     """
-    use_cache = use_cache and target_date < today_kst()
+    from app.services.market_events.dart_capital import (
+        DartDetailError,
+        request_list_page,
+    )
+
+    day = target_date.strftime("%Y%m%d")
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        # before_request runs before every HTTP attempt inside request_list_page,
+        # including 020 retries, so the budget counts real requests (hk 6408 r8).
+        payload = await request_list_page(
+            bgn_de=day,
+            end_de=day,
+            page_no=str(page),
+            page_count=str(DART_LIST_PAGE_COUNT),
+            before_http=before_request,
+        )
+        if payload is None:
+            if page > 1:
+                # Page 1 declared more pages, so "no data" here is a contradiction.
+                raise DartDetailError(
+                    "OpenDART filing list answered no data past its reported pages",
+                    failure_code="bad_response",
+                )
+            break
+        page_rows, total_pages = _list_page_rows(payload)
+        if not page_rows and page < total_pages:
+            raise DartDetailError(
+                "OpenDART filing list ended before its reported page count",
+                failure_code="bad_response",
+            )
+        rows.extend(page_rows)
+        if page >= total_pages:
+            break
+        if page >= DART_LIST_MAX_PAGES:
+            raise DartDetailError(
+                "OpenDART filing list exceeds the page limit",
+                failure_code="bad_response",
+            )
+        page += 1
+
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = str(row.get("rcept_no") or "").strip()
+        if receipt and receipt in seen:
+            continue
+        seen.add(receipt)
+        unique.append(row)
+    return unique
+
+
+# OpenDartReader's list_date_ex loops ``for page in range(1, 100)`` and makes one
+# request per page; the page size is decided by the server and is not observable
+# here. So a scrape's page count is never inferred. The budget charges the whole
+# worst case (SCRAPE_CEILING_PAGES) for every scrape, and completeness is judged
+# by coverage: every official receipt number must appear in the scrape.
+SCRAPE_CEILING_PAGES = 99
+
+
+@dataclass(frozen=True)
+class ReceiptTimeRead:
+    """One receipt-time scrape of a day.
+
+    ``times`` holds the usable timed receipts. ``receipts`` is every distinct
+    receipt number the scrape returned, timed or not, so the caller can check the
+    scrape covers the official list.
+    """
+
+    times: dict[str, str]
+    receipts: frozenset[str]
+    scrape_rows: int
+
+
+async def read_dart_receipt_times_for_date(target_date: date) -> ReceiptTimeRead | None:
+    """Read the day's list_date_ex scrape once. ``None`` when the read failed.
+
+    Every attempt reads fresh pages (``cache=False``), so a retry never re-serves a
+    cached failing page (hk 6408 review). The exception class name is logged; the
+    message is not, because an OpenDartReader error can carry the request URL and
+    its key.
+    """
     client = await _get_client()
     if client is None:
-        logger.warning("DART client unavailable; skipping fetch for %s", target_date)
-        return []
-
+        logger.warning("DART receipt-time enrichment skipped: client unavailable")
+        return None
     iso = target_date.isoformat()
 
-    def fetch_sync() -> list[dict[str, Any]]:
-        df = client.list_date_ex(iso, cache=use_cache)
-        columns = getattr(df, "columns", None)
-        if columns is None:
-            raise DartResponseSchemaError(
-                "DART list_date_ex returned a non-DataFrame response"
-            )
-        missing = DART_LIST_DATE_EX_REQUIRED_COLUMNS.difference(columns)
-        if missing:
-            raise DartResponseSchemaError(
-                "DART list_date_ex response missing required columns: "
-                + ", ".join(sorted(missing))
-            )
-        if df.empty:
-            return []
-        records = df.to_dict(orient="records")
-        for record in records:
-            receipt_at = record.get("rcept_dt")
-            isoformat = getattr(receipt_at, "isoformat", None)
-            if callable(isoformat):
-                record["rcept_dt"] = isoformat()
-        return records
+    def read_sync() -> ReceiptTimeRead:
+        frame = client.list_date_ex(iso, cache=False)
+        columns = getattr(frame, "columns", None)
+        if columns is None or not DART_LIST_DATE_EX_REQUIRED_COLUMNS.issubset(columns):
+            raise ValueError("list_date_ex response has an unexpected schema")
+        # Occurrences of one receipt number that agree on the usable time are the
+        # same filing seen on two pages (the list shifts while paged). Only
+        # conflicting usable times make a receipt ambiguous.
+        usable_by_receipt: dict[str, set[str]] = {}
+        for record in frame.to_dict(orient="records"):
+            receipt = str(record.get("rcept_no") or "").strip()
+            if not receipt:
+                continue
+            usable_by_receipt.setdefault(receipt, set())
+            value = record.get("rcept_dt")
+            text = (
+                value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+            ).strip()
+            match = _TIMED_RECEIPT_RE.match(text)
+            if match and match.group(1) == iso:
+                usable_by_receipt[receipt].add(text.replace("T", " "))
+        times = {
+            receipt: next(iter(usable))
+            for receipt, usable in usable_by_receipt.items()
+            if len(usable) == 1
+        }
+        return ReceiptTimeRead(
+            times=times,
+            receipts=frozenset(usable_by_receipt),
+            scrape_rows=len(frame),
+        )
 
-    return await asyncio.to_thread(fetch_sync)
+    try:
+        return await asyncio.to_thread(read_sync)
+    except Exception as exc:
+        logger.warning(
+            "DART receipt-time enrichment unavailable (%s); rows stay date-only",
+            type(exc).__name__,
+        )
+        return None
+
+
+def scrape_covers(read: ReceiptTimeRead, expected_receipts: frozenset[str]) -> bool:
+    """True when the scrape saw every official receipt number of the day."""
+    return expected_receipts <= read.receipts
+
+
+async def fetch_dart_receipt_times_for_date(
+    target_date: date,
+    *,
+    expected_receipts: frozenset[str] | None = None,
+) -> dict[str, str] | None:
+    """Timed receipts for the ingestion path; ``None`` when they are not known.
+
+    ``None`` covers a failed read and a scrape that does not cover every expected
+    official receipt (the list was truncated, or the scrape is short). The official
+    rows are still stored date-only, and the caller keeps the day pending
+    (``receipt_time_unavailable``), so the next run re-reads it (hk 6408).
+    """
+    read = await read_dart_receipt_times_for_date(target_date)
+    if read is None:
+        return None
+    if expected_receipts is not None and not scrape_covers(read, expected_receipts):
+        logger.warning(
+            "DART receipt-time scrape does not cover the official list; day stays pending"
+        )
+        return None
+    return read.times
+
+
+def join_receipt_times(
+    rows: list[dict[str, Any]], times: dict[str, str]
+) -> tuple[list[dict[str, Any]], int]:
+    """Apply scraped receipt times to official rows, by exact receipt number.
+
+    Only official ``rows`` are returned: a scraped receipt with no official row is
+    never inserted. A time is applied only when its date equals the row's own
+    official receipt date. Returns ``(rows, applied_count)``.
+    """
+    applied = 0
+    joined: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = str(row.get("rcept_no") or "").strip()
+        official_day = str(row.get("rcept_dt") or "").strip()[:8]
+        timed = times.get(receipt)
+        if timed and timed[:10].replace("-", "") == official_day:
+            joined.append({**row, "rcept_dt": timed})
+            applied += 1
+        else:
+            joined.append(row)
+    return joined, applied
