@@ -290,7 +290,7 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 - **소급(backfill) 행의 `first_received_at` 은 실제 수신 시각**이다. `published_at` 과 다르며, 발표 시각으로
   소급하지 않는다. 소급 행에는 `backfilled=true` 를 남긴다(파생 필드; 표 열 또는 provenance 메타).
-- 결과: 소급해서 채운 과거 이벤트는 `as_of` 가 수집 시점보다 이르면 §4 의 컷오프 규칙에 의해 **그 시점 판단
+- 결과: 소급해서 채운 과거 이벤트는 **(hk 6410)** `known_cutoff` 가 수집 시점보다 이르면 §4 의 컷오프 규칙에 의해 **그 시점 판단
   근거에 나타나지 않는다**. 이것이 정상이고, 회고는 "언제 알 수 있었나"를 그대로 보여준다.
 - 개정: 원천이 수정을 알리면(`revised_at`) 새 `market_event_revisions` 행을 `known_at=now()` 로 append 한다.
   경쟁 규칙은 `(event_id, seq)` 유니크 + advisory lock 이며, 과거 행을 덮어쓰지 않는다.
@@ -369,66 +369,65 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
 
 ## 4. Factortrail 읽기 계약 — `retro_symbol_events`
 
+**(hk 6410)** 이 절의 §4.1–§4.3 은 구현에 맞춰 다시 썼다. 처음 안은 요청의 `as_of` 를 컷오프로 쓰고 그대로
+돌려주었지만, retro/v1 에서 `as_of` 는 **응답 생성 시각**이다. 컷오프는 별도 요청 필드 `known_cutoff` 다. 정본 계약은
+`contracts/retro/v1/openapi.yaml` 과 `docs/agent-contracts/mcp-and-analysis-contracts.md` 의 `retro_symbol_events` 절이다.
+
 ### 4.1 새 operation(호환 확장)
 
-`GET /trading/api/retro/v1/retro_symbol_events?symbol=<sym>&as_of=<RFC3339>&from=<date>&to=<date>&limit=&cursor=`
+`GET /trading/api/retro/v1/retro_symbol_events?symbol=<sym>&known_cutoff=<RFC3339 UTC, Z>&from=<date>&to=<date>&market=&limit=&cursor=`
 
 - 기존 `retro_timeline` 을 고치지 않는다: 그 operation 은 KST 하루·상태머신·closed source enum 이고, 여기에
   이벤트를 섞으면 기존 열거와 상태 판정이 바뀐다(`retro_timeline.py:82`, 계약 `contracts/retro/v1/openapi.yaml:2117-2125`). 새 operation 은
   **추가**이며 기존 경로·필드는 바이트 동일하게 둔다.
+- `known_cutoff` 는 필수이고 `Z` 로 끝나는 RFC 3339 UTC 시각이다(KST 날짜는 받지 않는다). `from`/`to` 는 봉의 시장
+  현지 세션 날짜와 사건의 원천 `event_date` 를 고른다(양끝 포함, 최대 366일).
 - 인증·게이트는 기존 retro/v1 과 같다: `RETRO_API_ENABLED`(기본 false) → `RETRO_API_READ_TOKEN` 미설정 403 →
   `X-Retro-Read-Token` 401(`app/middleware/auth.py:205`, `app/routers/retro_v1.py`).
-- 읽기는 `REPEATABLE READ READ ONLY`·statement timeout 8초 안에서만, `execution_ledger_in_effect()` 규칙과
-  무관한 read-only 투영이다(이벤트 영역은 원장을 읽지 않는다).
+- 읽기는 `REPEATABLE READ READ ONLY`·statement timeout 8초 안의 SELECT 뿐이다(이벤트 영역은 원장을 읽지 않는다).
 
 ### 4.2 응답(닫힌 projection)
 
+retro/v1 공통 envelope 를 쓴다. 봉과 사건은 `data` 한 배열에 날짜·시각 순으로 섞이고 `row_type` 으로 구분한다.
+
 ```json
 {
-  "schema_version": "retro-symbol-events/v1",
+  "as_of": "2026-11-28T00:00:00Z",
+  "known_cutoff": "2026-11-23T00:00:00Z",
   "symbol": "005930",
   "market": "kr",
-  "as_of": "2026-11-25T05:00:00Z",
-  "generated_at": "…",
-  "price": {
-    "bars": [{"date": "2026-11-21", "open": "…", "high": "…", "low": "…", "close": "…", "volume": "…", "source": "KIS"}],
-    "basis": "daily_close",
-    "adjusted": null
-  },
-  "events": [{
-    "event_ref": "evt-…",
-    "event_type": "disclosure",
-    "status": "released",
-    "symbols": ["005930"],
-    "relevance": "direct",
-    "relevance_state": "known",
-    "relevance_basis": "recorded",
-    "published_at": "2026-11-21T00:12:00Z",
-    "published_date": null,
-    "published_offset": "+09:00",
-    "published_precision": "datetime",
-    "first_received_at": "2026-11-21T00:31:05Z",
-    "revised_at": null,
-    "effective_at": null,
-    "version_seq": 1,
-    "superseded_later": false,
-    "sources": [{"source": "dart", "source_event_id": "…", "source_url": "…", "first_received_at": "…"}],
-    "reason": null
-  }],
-  "excluded_after_cutoff": {"count": 3, "by_source": {"dart": 3}},
+  "data": [
+    {"row_type": "event", "date": "2026-11-20", "event_ref": "evt-…", "event_type": "disclosure",
+     "source": "dart", "status": "released", "symbols": ["005930"],
+     "published_at": "2026-11-20T07:31:00Z", "published_date": null, "published_offset": "+09:00",
+     "published_precision": "minute", "first_received_at": "2026-11-20T08:00:00Z",
+     "revised_at": null, "effective_at": null, "relevance": null, "relevance_state": null,
+     "relevance_basis": null, "version_seq": null, "version_state": "unchanged_since_cutoff",
+     "superseded_later": false, "sources": [{"source": "dart", "first_received_at": "…"}], "reason": null},
+    {"row_type": "bar", "date": "2026-11-20", "venue": "KRX", "close_price": "70500", "source": "kis",
+     "adjusted": null, "bar_end_at": "2026-11-20T11:00:00Z", "stored_at": "2026-11-21T01:00:00Z",
+     "availability_basis": "last_stored_write"}
+  ],
+  "excluded_after_cutoff": {"events": 1, "bars": 1},
+  "excluded_unproven": {"events": 0, "bars": 0},
   "collection": {
-    "latest_collected": {"dart": "2026-11-24", "sec": null},
-    "gaps": [{"source": "sec", "date": "2026-11-21", "reason": "not_yet_run"}]
+    "basis": "current_partitions",
+    "latest_collected": {"dart": "2026-11-18", "naver_disclosure": null},
+    "gaps": [{"source": "dart", "category": "disclosure", "date": "2026-11-20", "reason": "not_yet_run"}],
+    "gaps_truncated": false
   },
-  "unknowns": [{"field": "events[0].effective_at", "reason": "not_recorded"}]
+  "unknowns": [{"field": "collection.latest_collected.naver_disclosure", "reason": "no_partition"},
+               {"field": "data.0.effective_at", "reason": "missing_data"}]
 }
 ```
 
-- 돈·수량·가격은 정확한 decimal 문자열, `published_at` 을 포함한 시각은 UTC RFC 3339, `as_of` 는 호출자 입력
-  그대로 돌려준다. **(hk 6417)** 원본 오프셋·시간대는 `published_offset` 으로만 전달한다(retro/v1 규칙
-  `auto_trader@7955ef356 docs/agent-contracts/mcp-and-analysis-contracts.md:419`, 계약 `format: date-time`
-  `auto_trader@7955ef356 contracts/retro/v1/openapi.yaml:1154-1161`).
-- `reason`/`unknowns` 는 닫힌 어휘만. 원문 메시지·계좌번호·브로커 주문번호·원천 payload 는 내보내지 않는다.
+- `as_of` 는 응답 생성 시각이고 `known_cutoff` 는 호출자의 컷오프를 UTC 로 돌려준 값이다.
+- 돈·수량·가격은 정확한 decimal 문자열, 시각은 UTC RFC 3339 다. **(hk 6417)** 원본 오프셋·시간대는 `published_offset`
+  으로만 전달한다(retro/v1 규칙, 계약 `format: date-time`). 날짜 정밀도 발표는 `published_date` 에만 있다.
+- `reason`/`unknowns` 는 닫힌 어휘만. 제목·원문 메시지·계좌번호·브로커 주문번호·원천 payload 는 내보내지 않는다.
+  `source_event_id`·`source_url` 은 공개 문서 ID 모양과 원천 자기 호스트의 https 링크일 때만 키가 있다.
+- 원천은 공식 원천만이다: KR `dart`·`naver_disclosure`, US `sec`·`benzinga`, crypto `upbit_notice`·`bithumb_notice`.
+  종목에 직접 연결된 사건만 싣는다. Finnhub·KIS KSD·Benzinga Pro·경제 캘린더와 시장 전체 사건은 범위 밖이다.
 - **(hk 7091)** `published_date` 는 `published_precision="date"` 일 때만 값이 있는 `YYYY-MM-DD` 문자열이고, 이때
   `published_at` 은 `null` 이다. 저장된 날짜를 그대로 내며 시각을 붙이거나 UTC 로 바꾸지 않는다.
   `datetime`/`minute`/`second` 이면 `published_date` 는 `null` 이다. 정밀도가 기록되지 않은 행은 두 필드가 모두
@@ -439,18 +438,26 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
   `app/services/market_events/sec_edgar.py:483-489`). 접수 시각을 얻은 DART 행은 발행 열을 쓰지 않아
   (`auto_trader@0b05c53b8 app/services/market_events/normalizers.py:197-198`) "정밀도가 기록되지 않은 행"에 해당한다 —
   그 시각을 어떻게 낼지는 여기서 정하지 않는다(hk 6410).
+- **(hk 6410)** 위에서 남긴 DART 접수 시각은 `get_disclosures` 와 같은 규칙으로 `published_at`(UTC)·
+  `published_offset=+09:00`·`published_precision=minute` 로 낸다. `release_time_utc` 는 대신 쓰지 않는다 — 발행 열이
+  없는 다른 행(Upbit·Bithumb 공지, Benzinga)은 두 필드가 모두 null 이고 `not_recorded` 다.
 
-### 4.3 as-of 술어
+### 4.3 컷오프 술어
 
-1. **포함**: `first_received_at <= as_of` 인 사건만 `events` 에 넣는다. 원천 발표 시각이 더 이르더라도 우리가
-   수신한 시점이 컷오프 뒤면 **그때의 판단 근거에 없던 것**이므로 제외한다.
-2. **판본**: 사건의 표현은 `known_at <= as_of` 인 마지막 revision 이다. 그 뒤 개정이 있으면 이전 값을 보여주고
-   `superseded_later=true` 만 표시한다(미래 값은 내보내지 않는다).
-3. **가격**: 봉도 같은 원칙이다. 봉 종료·가용 시각이 `as_of` 뒤인 봉은 넣지 않는다(`retro/v1 get_bars` 의
-   가용성 규칙 재사용, `get_bars.py:104`).
-4. **집계**: `excluded_after_cutoff` 는 **개수만** 낸다. 회고용이며 "당시 알 수 있었다"는 주장의 근거가 아니다
-   (문서에 그렇게 적는다).
+1. **포함**: `first_received_at <= known_cutoff` 인 사건만 넣는다. 원천 발표 시각이 더 이르더라도 우리가 수신한
+   시점이 컷오프 뒤면 **그때의 판단 근거에 없던 것**이므로 제외한다. 수신 시각이 없는 행은 `excluded_unproven` 이다.
+2. **판본**: 사건의 표현은 `known_at`(`market_event_revisions.observed_at`) `<= known_cutoff` 인 마지막 revision 이다.
+   그 뒤 개정이 있으면 `superseded_later=true` 만 표시하고, 저장된 그 revision 이 증명하는 값만 다시 만든다(나머지는
+   null). 미래 판본의 값은 내보내지 않는다. 개정 로그가 없는 원천(`dart`)에서 현재 행이 컷오프 뒤에 다시 쓰였으면
+   바뀔 수 있는 값은 null 이고 `version_state="rewritten_after_cutoff"`, `superseded_later=null` 이다. `naver_disclosure`
+   는 삽입 전용이다. 컷오프 시점의 판본이나 종목 연결을 증명할 수 없으면 `excluded_unproven` 이다.
+3. **가격**: 일봉에는 최초 수신 열이 없다. 마지막 저장 시각 `ingested_at` 만 증거이므로
+   `세션 종료 <= ingested_at <= known_cutoff` 인 봉만 넣는다. KR·US 일봉 동기화는 최근 10개 세션을 다시 쓰므로,
+   과거 컷오프 직전의 봉은 보통 제외되어 개수만 남는다.
+4. **집계**: `excluded_after_cutoff` 와 `excluded_unproven` 은 **개수만** 낸다. 회고용이며 "당시 알 수 있었다"는
+   주장의 근거가 아니다. 셀 수 없으면 0 이 아니라 null 과 `count_unavailable` 이다.
 5. 결손·읽기 실패는 `unknowns` + `collection.gaps` 로 남기고 0 으로 채우지 않는다(`retro/v1` 공통 규칙).
+   `collection` 은 컷오프 시점이 아니라 **생성 시점**의 파티션 상태다(파티션 행은 재실행이 덮어쓴다).
 
 ### 4.4 소비자 핀 절차
 
@@ -484,7 +491,7 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
 |**hk 6407**|US SEC EDGAR + 기업 IR 수집(읽기 전용)|6406|① `source='sec'`, `source_event_id`=accession number, `published_at`(EDGAR acceptance, ET→UTC)+`published_offset` ② `category ∈ {disclosure, regulatory}` ③ 사용자 에이전트·호출 한도 준수 ④ IR 은 공식 API/피드가 없으면 **수집하지 않고** `unsupported` 사유만 남긴다(스크래핑은 운영자 결정) ⑤ §6.2 샘플|
 |**hk 6408**|DART 수집 정본화(접수 시각·정정 판본·공식 API)|6406|① 시장 전체 목록이 공식 API(가능하면)로 바뀌거나, 불가하면 `[unverified]` 근거와 함께 스크래퍼 유지 사유가 기록된다 ② 접수 시각을 얻으면 `published_precision='datetime'`, 못 얻으면 `'date'` + `unknown` ③ 정정공시가 이전 판본과 `group_key` 로 연결된다 ④ 유니크 키에서 `category` 제거 후 재분류가 중복 행을 만들지 않는다 ⑤ `last_error` 가 닫힌 코드다|
 |**hk 6409**|운영: Dagu 사본 + 한정 보충 요청 + 수집 범위/결측 읽기|6406|① `deploy/dagu/at-official-events/*.yaml` 사본(미등록) + 정적 테스트 ② 보충 요청 CLI·표·쿼터·dedupe ③ `collection` 블록(닫힌 사유) ④ 스케줄러 등록 0 ⑤ Factortrail 이 잡을 깨우는 경로 0|
-|**hk 6410**|Factortrail `retro_symbol_events`(symbol+as_of)|6406, 생산자(6407/6408/6031/6302) 중 존재하는 것|① §4 계약대로 새 operation(기존 경로 바이트 동일) ② `first_received_at > as_of` 제외·개정 as-of ③ decimal 문자열·닫힌 ref ④ 계약 테스트 + 소비자 핀 절차 ⑤ §6 의 store→query→retro 추적이 샘플별로 닫힌다|
+|**hk 6410**|Factortrail `retro_symbol_events`(symbol+known_cutoff)|6406, 생산자(6407/6408/6031/6302) 중 존재하는 것|① §4 계약대로 새 operation(기존 경로 바이트 동일) ② `first_received_at > known_cutoff` 제외·개정 판본 컷오프 ③ decimal 문자열·닫힌 ref ④ 계약 테스트 + 소비자 핀 절차 ⑤ §6 의 store→query→retro 추적이 샘플별로 닫힌다|
 
 ```mermaid
 graph LR
@@ -520,7 +527,8 @@ graph LR
 4. MCP 실제 응답: `get_disclosures(symbol="005930", days=3)` → 같은 `rcept_no` 가 라이브 목록에 있는지.
    **저장 행과 라이브 응답은 서로 다른 코드 경로**이므로, 같은 공시가 한쪽에만 있으면 그 자체가 §1.3 의 공백 증거다.
 5. 회고: 오늘은 불가 — `retro_timeline` 에 시장 이벤트가 없다(1.9). 6410 이 생기면 `retro_symbol_events` 로
-   같은 `event_ref` 가 `as_of` 이후 수신이면 제외되는지 확인한다. [unverified]
+   같은 `event_ref` 가 `known_cutoff` 이후 수신이면 제외되는지 확인한다. **(hk 6410)** CI DB 테스트
+   `tests/services/retro_v1/test_retro_symbol_events_db.py` 의 `test_sample_1_…` 이 합성 행으로 이 추적을 닫는다.
 
 ### 6.2 NVDA IR/SEC 1건 — 오늘은 부분만
 
@@ -530,7 +538,8 @@ graph LR
    `get_earnings_calendar(symbol="NVDA")`(Finnhub 실적 + 실패 시 `market_events` 폴백,
    `fundamentals_handlers.py:227-238`). 뉴스 응답에서 `published_at` 이 **host 로컬 naive** 로 흔들리는지
    (`finnhub_news.py:360`) 대조한다 — 6302 의 재현 절차.
-3. 회고: 6410 전에는 없음. [unverified]
+3. 회고: 6410 전에는 없음. **(hk 6410)** `test_sample_2_…`(같은 테스트 파일)가 합성 SEC 제출로 저장→조회→
+   `retro_symbol_events` 개정 컷오프를 닫는다. 운영 NVDA 값은 [unverified].
 
 ### 6.3 Upbit 유의 지정·해제 1건
 
@@ -541,7 +550,8 @@ graph LR
    `observed_at`, `catalysts.upbit_notices`(`notices.py:91`)에서 공지 `id`·`title`·`listed_at`.
 3. 회고: 오늘은 이력이 없다 — 상태 스냅숏이 마지막 관측만 남기므로(1.7) 지정/해제 시각을 복원할 수 없다.
    6031 이 저장을 만들고 6410 이 읽으면 `effective_at`(지정/해제) 과 `first_received_at` 이 분리되어
-   `as_of` 컷오프가 적용되는지 확인한다. [unverified]
+   `known_cutoff` 가 적용되는지 확인한다. **(hk 6410)** `test_sample_3_…`(같은 테스트 파일)가 합성 지정·해제 공지로
+   이 추적을 닫는다. 공지 수집기는 `effective_at` 을 기록하지 않아 null 이다. 운영 값은 [unverified].
 4. 경계 확인: 같은 응답에서 `state="unknown"`(Upbit 미고지)과 `state="none"`(정상)이 구분되는지, 그리고
    공지 없음(`no_notice`)과 수집 실패(`unavailable`)가 구분되는지.
 

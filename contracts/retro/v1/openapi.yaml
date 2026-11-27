@@ -1030,6 +1030,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/retro_symbol_events:
+    get:
+      operationId: retro_symbol_events
+      description: >-
+        One timeline of stored daily bars and stored official events for one
+        symbol, cut off at known_cutoff. as_of stays the response generation
+        time; known_cutoff is the separate knowledge cutoff and is echoed back.
+        from and to select the market's own session date of a bar and the
+        source's event date of an event (inclusive, at most 366 days). Rows are
+        ordered by date, then instant (bar end, event first receipt).
+
+        Events: official sources only - dart and naver_disclosure (kr), sec and
+        benzinga (us), upbit_notice and bithumb_notice (crypto) - linked to the
+        symbol itself; market-wide events are not included. An event is shown
+        only when first_received_at <= known_cutoff. Its representation is the
+        last stored revision observed at or before the cutoff;
+        superseded_later only says that a later revision exists, and no value of
+        a later version is returned. The symbol link is read from the current
+        row, so an event a later revision moved to another symbol is not listed.
+
+        Bars: a daily bar is shown only when bar_end_at <= stored_at <=
+        known_cutoff, stored_at being the last stored write. The KR and US daily
+        sync rewrites its recent sessions, so recent bars before an old cutoff
+        are usually withheld and counted.
+
+        excluded_after_cutoff counts rows received, stored or closed after the
+        cutoff. It is a retrospective count only and is never evidence that the
+        information was available then. excluded_unproven counts rows whose
+        receipt, version, symbol link or bar finality cannot be proven. A null
+        count has a count_unavailable unknown. collection is the ingestion
+        partition state at generation time (not at the cutoff); this operation
+        never starts or waits for a collector. Count and rows share one
+        read-only snapshot.
+      parameters:
+      - name: symbol
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+      - name: market
+        in: query
+        required: false
+        description: Explicit market selection; when omitted, inferred from symbol.
+        schema:
+          type: string
+          enum: [kr, us, crypto]
+      - name: known_cutoff
+        in: query
+        required: true
+        description: >-
+          Knowledge cutoff, an RFC 3339 UTC instant ending in Z. Only what was
+          received or stored at or before it is returned.
+        schema:
+          type: string
+          format: date-time
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetroSymbolEventsResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     DecimalValue:
@@ -1124,6 +1246,8 @@ components:
       - source_mixed
       - incomplete_evidence
       - redacted
+      - no_partition
+      - not_recorded
     Unknown:
       type: object
       additionalProperties: false
@@ -2931,6 +3055,388 @@ components:
       description: total counts every symbol x venue x session row before
         pagination, or null with count_unavailable when a source read failed or
         was cut off. Page length is never total.
+      unevaluatedProperties: false
+    SymbolBarRow:
+      description: >-
+        One stored daily bar that was held at the cutoff. date is the market's
+        own session date (KR the KST day, US the ET trading day, crypto the UTC
+        day). bar_end_at is when the day's bar can no longer move (20:00 KST for
+        KR, the regular session close for US, the next UTC midnight for
+        crypto). stored_at is the last stored write of the row, the only receipt
+        evidence a daily bar has. Values are stored provider data.
+      type: object
+      additionalProperties: false
+      required:
+      - row_type
+      - date
+      - symbol
+      - market
+      - open_price
+      - high_price
+      - low_price
+      - close_price
+      - quantity
+      - currency
+      - unit
+      - source
+      - venue
+      - adjusted
+      - missing_reason
+      - basis
+      - bar_end_at
+      - stored_at
+      - availability_basis
+      properties:
+        row_type:
+          type: string
+          const: bar
+        date:
+          type: string
+          format: date
+        symbol: *id001
+        market:
+          type: string
+          enum: [kr, us, crypto]
+        open_price:
+          $ref: '#/components/schemas/DecimalValue'
+        high_price:
+          $ref: '#/components/schemas/DecimalValue'
+        low_price:
+          $ref: '#/components/schemas/DecimalValue'
+        close_price:
+          $ref: '#/components/schemas/DecimalValue'
+        quantity:
+          $ref: '#/components/schemas/DecimalValue'
+        currency: *id001
+        unit: *id001
+        source: *id002
+        venue: *id002
+        adjusted: *id005
+        missing_reason: *id006
+        basis: *id007
+        bar_end_at: *id004
+        stored_at: *id004
+        availability_basis:
+          type: string
+          const: last_stored_write
+    SymbolEventSource:
+      description: >-
+        One original provider record behind an event, first received at or
+        before the cutoff. source_event_id and source_url are present only when
+        they are a public document id and a link on the source's own host.
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      - first_received_at
+      properties:
+        source:
+          type: string
+          enum:
+          - dart
+          - naver_disclosure
+          - sec
+          - benzinga
+          - upbit_notice
+          - bithumb_notice
+        first_received_at: *id004
+        source_event_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+        source_url:
+          type: string
+          format: uri
+          pattern: ^https://
+          maxLength: 512
+    SymbolEventRow:
+      description: >-
+        One official event as known at the cutoff. version_state says how the
+        version was determined: as_of_revision (the revision log;
+        version_seq is the last revision observed at or before the cutoff),
+        unchanged_since_cutoff (no revision log and the row was not written
+        later, or the source never rewrites rows), rewritten_after_cutoff (no
+        revision log and the row was written later: every value that could have
+        changed is null and superseded_later is null because a later change
+        cannot be told apart). reason reconstructed_from_revision marks a
+        superseded version rebuilt from its stored revision: only the values
+        that revision proves are present. published_at is a UTC instant and
+        published_offset the source's own offset; a date-precision publication
+        has published_date only. A row whose publication precision was never
+        recorded has all four null with not_recorded unknowns (a dart receipt
+        time the collector stored is reported with minute precision). symbol is the requested symbol; symbols are the
+        version's linked symbols. effective_at is when the event takes effect,
+        only where a source recorded it.
+      type: object
+      additionalProperties: false
+      required:
+      - row_type
+      - date
+      - symbol
+      - market
+      - event_ref
+      - event_type
+      - source
+      - status
+      - published_at
+      - published_date
+      - published_offset
+      - published_precision
+      - first_received_at
+      - revised_at
+      - effective_at
+      - relevance
+      - relevance_state
+      - relevance_basis
+      - symbols
+      - version_seq
+      - version_state
+      - superseded_later
+      - sources
+      - reason
+      properties:
+        row_type:
+          type: string
+          const: event
+        date:
+          type: string
+          format: date
+        symbol: *id001
+        market:
+          type: string
+          enum: [kr, us, crypto]
+        event_ref:
+          type: string
+          pattern: ^evt-[0-9a-f]{20}$
+        event_type: *id001
+        source:
+          type: string
+          enum:
+          - dart
+          - naver_disclosure
+          - sec
+          - benzinga
+          - upbit_notice
+          - bithumb_notice
+        status:
+          type:
+          - string
+          - 'null'
+          enum:
+          - scheduled
+          - released
+          - revised
+          - cancelled
+          - tentative
+          - null
+        published_at: *id003
+        published_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        published_offset:
+          type:
+          - string
+          - 'null'
+          pattern: ^[A-Za-z0-9_+\-:/]{1,64}$
+        published_precision:
+          type:
+          - string
+          - 'null'
+          enum: [date, datetime, minute, second, null]
+        first_received_at: *id004
+        revised_at: *id003
+        effective_at: *id003
+        relevance:
+          type:
+          - string
+          - 'null'
+          enum: [direct, sector, market, null]
+        relevance_state:
+          type:
+          - string
+          - 'null'
+          enum: [known, unknown, null]
+        relevance_basis:
+          type:
+          - string
+          - 'null'
+          enum: [recorded, inferred, null]
+        symbols:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+        version_seq:
+          type:
+          - integer
+          - 'null'
+          minimum: 1
+        version_state:
+          type: string
+          enum:
+          - as_of_revision
+          - unchanged_since_cutoff
+          - rewritten_after_cutoff
+        superseded_later:
+          type:
+          - boolean
+          - 'null'
+        sources:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SymbolEventSource'
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - rewritten_after_cutoff
+          - reconstructed_from_revision
+          - null
+    SymbolRowCounts:
+      description: >-
+        Row counts only; nothing about the counted rows is returned. null means
+        the count could not be made and is never 0.
+      type: object
+      additionalProperties: false
+      required:
+      - events
+      - bars
+      properties:
+        events:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        bars:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+    SymbolCollectionGap:
+      description: >-
+        One day of the window whose collection is not complete. date is the
+        partition date (for sec the collector run date).
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      - category
+      - date
+      - reason
+      properties:
+        source: *id001
+        category: *id001
+        date:
+          type: string
+          format: date
+        reason:
+          type: string
+          enum:
+          - not_yet_run
+          - calendar_unknown
+          - pending
+          - running
+          - partial
+          - unproven_zero
+          - failed
+          - http_4xx
+          - http_5xx
+          - timeout
+          - transport
+          - bad_response
+          - unparseable
+          - quota
+    SymbolLatestCollected:
+      description: >-
+        Per official source of the market, the newest partition date that
+        succeeded with at least one stored event (a zero that is not proven
+        complete does not advance it). null means no such partition is recorded,
+        never that nothing happened; the collection.latest_collected.<source>
+        unknown says why (no_partition when the source writes none).
+      type: object
+      additionalProperties: false
+      properties:
+        dart: &id_collected
+          type:
+          - string
+          - 'null'
+          format: date
+        naver_disclosure: *id_collected
+        sec: *id_collected
+        benzinga: *id_collected
+        upbit_notice: *id_collected
+        bithumb_notice: *id_collected
+    SymbolCollection:
+      description: >-
+        Ingestion state at generation time, projected from the ingestion
+        partitions. gaps lists, per partition date in the window: not_yet_run
+        (an expected dart session with no partition), calendar_unknown,
+        pending, running, partial, unproven_zero (succeeded with zero events
+        and no completeness proof), failed or the writer's closed failure code.
+        dart days are listed only on XKRX sessions; for the other sources a
+        missing partition is not listed. gaps is null when the partition read
+        failed; when more than 200 gaps exist the newest 200 are returned and
+        gaps_truncated is true.
+      type: object
+      additionalProperties: false
+      required:
+      - basis
+      - latest_collected
+      - gaps
+      - gaps_truncated
+      properties:
+        basis:
+          type: string
+          const: current_partitions
+        latest_collected:
+          $ref: '#/components/schemas/SymbolLatestCollected'
+        gaps:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/SymbolCollectionGap'
+        gaps_truncated:
+          type: boolean
+    RetroSymbolEventsResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        - symbol
+        - market
+        - known_cutoff
+        - excluded_after_cutoff
+        - excluded_unproven
+        - collection
+        properties:
+          data:
+            type: array
+            items:
+              oneOf:
+              - $ref: '#/components/schemas/SymbolBarRow'
+              - $ref: '#/components/schemas/SymbolEventRow'
+          symbol: *id001
+          market:
+            type: string
+            enum: [kr, us, crypto]
+          known_cutoff: *id004
+          excluded_after_cutoff:
+            $ref: '#/components/schemas/SymbolRowCounts'
+          excluded_unproven:
+            $ref: '#/components/schemas/SymbolRowCounts'
+          collection:
+            $ref: '#/components/schemas/SymbolCollection'
+      description: total counts the shown rows of the window before pagination,
+        or null with count_unavailable when an event or bar read failed or was
+        cut off. Page length is never total.
       unevaluatedProperties: false
   securitySchemes:
     RetroReadToken:

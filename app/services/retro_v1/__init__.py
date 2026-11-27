@@ -17,6 +17,7 @@ from app.services.retro_v1.retro_decisions import read_retro_decisions
 from app.services.retro_v1.retro_funnel import read_retro_funnel
 from app.services.retro_v1.retro_positions import read_retro_positions
 from app.services.retro_v1.retro_symbol import read_retro_symbol
+from app.services.retro_v1.retro_symbol_events import read_retro_symbol_events
 from app.services.retro_v1.retro_timeline import read_retro_timeline
 from app.services.retro_v1.retro_trades import read_retro_trades
 from app.services.retro_v1.session_observation import read_session_observation
@@ -32,6 +33,7 @@ __all__ = [
     "read_retro_funnel",
     "read_retro_positions",
     "read_retro_symbol",
+    "read_retro_symbol_events",
     "read_retro_timeline",
     "read_retro_trades",
     "read_session_observation",

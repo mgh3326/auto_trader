@@ -290,6 +290,36 @@ async def test_retro_timeline_requires_market_and_date_and_allows_symbol(
 
 
 @pytest.mark.asyncio
+async def test_retro_symbol_events_requires_a_utc_cutoff_apart_from_as_of(
+    client, monkeypatch
+):
+    headers = {"X-Retro-Read-Token": "retro-secret"}
+    mock = AsyncMock(return_value={"data": []})
+    monkeypatch.setitem(retro_v1.READERS, "retro_symbol_events", mock)
+    path = f"{retro_v1.PREFIX}/retro_symbol_events"
+    base = {"symbol": "005930", "from": "2026-11-20", "to": "2026-11-20"}
+    cutoff = "2026-11-23T00:00:00Z"
+    for extra in (
+        {},
+        {"as_of": cutoff},
+        {"known_cutoff": cutoff, "as_of": cutoff},
+        {"known_cutoff": "2026-11-23"},
+        {"known_cutoff": "2026-11-23T00:00:00"},
+        {"known_cutoff": "2026-11-23T09:00:00+09:00"},
+        {"known_cutoff": cutoff, "market": "global"},
+        {"known_cutoff": cutoff, "date": "2026-11-20"},
+    ):
+        response = await client.get(path, params={**base, **extra}, headers=headers)
+        assert response.status_code == 422, extra
+    mock.assert_not_awaited()
+    query = {**base, "known_cutoff": cutoff, "market": "kr", "limit": "7"}
+    response = await client.get(path, params=query, headers=headers)
+    assert response.status_code == 200
+    mock.assert_awaited_once()
+    assert mock.await_args.kwargs == {**query, "limit": 7}
+
+
+@pytest.mark.asyncio
 async def test_session_observation_requires_date_and_parses_its_integers(
     client, monkeypatch
 ):

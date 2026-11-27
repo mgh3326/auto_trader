@@ -20,6 +20,7 @@ INTEGER_PARAMS = ("movers", "max_lag_seconds")
 OPERATIONS = {
     "retro_day": ("market", "date"),
     "retro_symbol": ("symbol", "from", "to"),
+    "retro_symbol_events": ("symbol", "known_cutoff", "from", "to"),
     "retro_funnel": ("market", "from", "to"),
     "retro_scoreboard": ("from", "to"),
     "retro_positions": ("cutoff_date",),
@@ -35,6 +36,7 @@ OPERATIONS = {
 READERS = {
     "retro_day": readers.read_retro_day,
     "retro_symbol": readers.read_retro_symbol,
+    "retro_symbol_events": readers.read_retro_symbol_events,
     "retro_funnel": readers.read_retro_funnel,
     "retro_scoreboard": retro_scoreboard.read_retro_scoreboard,
     "retro_positions": readers.read_retro_positions,
@@ -70,7 +72,7 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         allowed.add("strategy_id")
     if operation == "mock_round_trips":
         allowed.update(("strategy_id", "venue"))
-    if operation in {"retro_symbol", "get_bars"}:
+    if operation in {"retro_symbol", "retro_symbol_events", "get_bars"}:
         allowed.add("market")
     if set(params) - allowed or any(k not in params for k in required):
         raise RetroReadError("validation_error")
@@ -114,8 +116,13 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
             raise RetroReadError("validation_error")
     if "tf" in result and result["tf"] not in {"1m", "5m", "60m", "1d"}:
         raise RetroReadError("validation_error")
+    if "known_cutoff" in result and not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z",
+        result["known_cutoff"],
+    ):
+        raise RetroReadError("validation_error")
     if (
-        operation in {"retro_symbol", "get_bars"}
+        operation in {"retro_symbol", "retro_symbol_events", "get_bars"}
         and "market" in result
         and result["market"] not in {"kr", "us", "crypto"}
     ):
