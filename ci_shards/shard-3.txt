@@ -371,6 +371,7 @@ tests/services/test_paper_limit_order_service.py
 tests/services/test_pending_reconciliation_service.py
 tests/services/test_portfolio_overview_currency.py
 tests/services/test_preopen_paper_approval_bridge.py
+tests/services/test_publication_time_and_disclosure_timing.py
 tests/services/test_research_run_service_news_brief_safety.py
 tests/services/test_retrospective_validation_messages.py
 tests/services/test_rob1314_market_events_values_bulk_load.py
@@ -441,6 +442,7 @@ tests/test_hk4734_kiwoom_broker_migration.py
 tests/test_hk4734_kiwoom_broker_schema_db.py
 tests/test_hk6302_news_timing_migration.py
 tests/test_hk6758_kr_mover_source_migration.py
+tests/test_hk6968_news_timing_responses.py
 tests/test_invest_action_readiness.py
 tests/test_invest_benchmark_gap.py
 tests/test_invest_calendar_weekly_summary_router.py

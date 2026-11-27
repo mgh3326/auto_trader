@@ -8,6 +8,7 @@ import pytest
 
 from app.core.timezone import today_kst
 from app.services.disclosures import dart as dart_service
+from app.services.market_events import dart_capital
 
 
 def _filing_dataframe(*rows: dict[str, str]) -> pd.DataFrame:
@@ -44,6 +45,9 @@ class FakeOpenDartClient:
         self._frame = frame if frame is not None else pd.DataFrame()
         self._error = error
         self._capture = capture if capture is not None else []
+
+    def find_corp_code(self, corp: str) -> str | None:
+        return "00126380"
 
     def list(
         self,
@@ -102,6 +106,10 @@ def reset_dart_service_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         "opendart_api_key",
         "test-opendart-key",
         raising=False,
+    )
+    # An empty list read is confirmed against OpenDART status 013 (hk 6968).
+    monkeypatch.setattr(
+        dart_capital, "_get_bytes", lambda endpoint, params: b'{"status":"013"}'
     )
 
 
@@ -549,3 +557,103 @@ def test_build_client_uses_loaded_corp_codes_without_later_read(
     assert client.corp_codes is not None
     pd.testing.assert_frame_equal(client.corp_codes, frame)
     assert client.api_key == "test-opendart-key"
+
+
+class TestEmptyListIsProven:
+    """hk 6968: "no filings" and "the lookup failed" are different outcomes."""
+
+    @pytest.mark.asyncio
+    async def test_confirmed_empty_sends_the_same_query_to_dart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent: list[tuple[str, dict[str, str]]] = []
+
+        def transport(endpoint, params):
+            sent.append((endpoint, dict(params)))
+            return b'{"status":"013"}'
+
+        monkeypatch.setattr(dart_capital, "_get_bytes", transport)
+        _install_future_service_double(monkeypatch, client=FakeOpenDartClient())
+
+        result = await dart_service.list_filings(
+            "005930", days=2, limit=5, report_type="지분"
+        )
+
+        assert result == {"success": True, "filings": []}
+        [(endpoint, params)] = sent
+        assert endpoint == "list.json"
+        assert params["corp_code"] == "00126380"
+        assert params["pblntf_ty"] == "D"
+        assert params["last_reprt_at"] == "Y"
+        assert params["bgn_de"] == f"{today_kst() - dt.timedelta(days=2):%Y%m%d}"
+        assert params["end_de"] == f"{today_kst():%Y%m%d}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"status":"010"}',  # unregistered key
+            b'{"status":"020"}',  # quota exceeded
+            b'{"status":"800"}',  # maintenance
+            b'{"status":"900"}',  # undefined error
+            b"not json",
+            # DART has filings the library read did not return.
+            b'{"status":"000","list":[{}]}',
+        ],
+    )
+    async def test_unproven_empty_list_is_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch, body: bytes
+    ) -> None:
+        monkeypatch.setattr(dart_capital, "_get_bytes", lambda *_: body)
+
+        async def no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(dart_capital.asyncio, "sleep", no_sleep)
+        _install_future_service_double(monkeypatch, client=FakeOpenDartClient())
+
+        result = await dart_service.list_filings("005930", days=1, limit=1)
+
+        assert result["success"] is False
+        assert result["filings"] == []
+        assert result["error"].startswith("DART filing list check failed")
+        assert "test-opendart-key" not in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_transport_error_text_never_carries_the_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = FakeOpenDartClient(
+            error=RuntimeError(
+                "Max retries exceeded with url: "
+                "/api/list.json?crtfc_key=test-opendart-key&corp_code=1"
+            )
+        )
+        _install_future_service_double(monkeypatch, client=client)
+
+        result = await dart_service.list_filings("005930", days=1, limit=1)
+
+        assert result["success"] is False
+        assert "test-opendart-key" not in result["error"]
+        assert "crtfc_key=[redacted]" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_stock_code_is_kept_for_the_event_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = _filing_dataframe(
+            {
+                "rcept_dt": "20260310",
+                "report_nm": "사업보고서",
+                "rcept_no": "20260310000001",
+                "corp_name": "삼성전자",
+                "stock_code": "005930",
+            }
+        )
+        _install_future_service_double(
+            monkeypatch, client=FakeOpenDartClient(frame=rows)
+        )
+
+        result = await dart_service.list_filings("삼성전자", days=3, limit=1)
+
+        assert result["filings"][0]["stock_code"] == "005930"

@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "filings": [
+    {
+      "date": "2026-11-26",
+      "report_nm": "단일판매ㆍ공급계약체결",
+      "rcp_no": "20261126000101",
+      "corp_name": "삼성전자",
+      "published_at": "2026-11-26T17:59:00+09:00",
+      "published_offset": "+09:00",
+      "published_precision": "minute",
+      "published_at_source": "dart_receipt_time",
+      "first_received_at": "2026-11-26T09:01:00+00:00",
+      "first_received_source": "naver_disclosure",
+      "event_key": "ev1:kr:005930:doc:dart:20261126000101",
+      "event_key_basis": "disclosure_id"
+    },
+    {
+      "date": "2026-11-26",
+      "report_nm": "자기주식취득결정",
+      "rcp_no": "20261126000102",
+      "corp_name": "삼성전자",
+      "published_at": "2026-11-26T16:05:09+09:00",
+      "published_offset": "+09:00",
+      "published_precision": "second",
+      "published_at_source": "naver_disclosure",
+      "first_received_at": "2026-11-26T07:06:00+00:00",
+      "first_received_source": "naver_disclosure",
+      "event_key": "ev1:kr:005930:doc:dart:20261126000102",
+      "event_key_basis": "disclosure_id"
+    },
+    {
+      "date": "2026-11-26",
+      "report_nm": "기업설명회(IR)개최",
+      "rcp_no": "20261126000103",
+      "corp_name": "삼성전자",
+      "published_at": "2026-11-26",
+      "published_offset": "+09:00",
+      "published_precision": "date",
+      "published_at_source": "dart_list_date",
+      "first_received_at": null,
+      "first_received_source": null,
+      "event_key": "ev1:kr:005930:doc:dart:20261126000103",
+      "event_key_basis": "disclosure_id"
+    }
+  ],
+  "symbol_state": "ok",
+  "receipt_lookup": "ok"
+}

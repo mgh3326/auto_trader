@@ -363,6 +363,7 @@ tests/services/test_market_events_taxonomy.py
 tests/services/test_market_events_wisefn_helpers.py
 tests/services/test_market_events_wisefn_normalizers.py
 tests/services/test_mirror_counterfactual_execution.py
+tests/services/test_news_event_key.py
 tests/services/test_nxt_preflight.py
 tests/services/test_nxt_preflight_krx_after.py
 tests/services/test_paper_fills.py
@@ -421,6 +422,7 @@ tests/test_forecast_recovery_unit.py
 tests/test_fundamentals_helpers.py
 tests/test_get_ohlcv_end_date_cutoff.py
 tests/test_hk4902_drop_unused_tables_migration.py
+tests/test_hk6968_news_findings.py
 tests/test_intraday_order_review_jobs.py
 tests/test_invest_account_panel_router.py
 tests/test_invest_api_crypto_router.py

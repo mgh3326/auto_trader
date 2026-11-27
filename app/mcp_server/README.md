@@ -103,7 +103,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     provider while using `served_by="news_articles"` / `mode="fallback"`.
     Expired fallback reports `stale` rather than `degraded`.
   - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
-  - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
+  - hk 6968: `symbol_state` is `ok|no_items|stale_copy|fetch_failed` (also
+    `fetch_failed` on the `news_lookup_failed` error payload). Every item has
+    `published_at` (provider offset), `published_offset`,
+    `published_precision`, `first_received_at` (UTC; `null` when unknown) and
+    `event_key` / `event_key_basis`: count items sharing a key as one event.
+    Definitions: `docs/agent-contracts/mcp-and-analysis-contracts.md` (hk 6968).
+  - Returns: `symbol`, `market`, `source`, `symbol_state`, `count`, `excluded_count`, `news`
 
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)` [LEGACY — briefing only, not decision evidence]
   - Fetch recent market news for agent pre-market briefing
@@ -1486,8 +1492,9 @@ Symbol contract:
 Behavior:
 - `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
 - Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
-- Successful responses return the existing `filings` list shape with `date`, `report_nm`, `rcp_no`, and `corp_name`.
-- An empty DataFrame from OpenDartReader is treated as a successful lookup with `filings: []`.
+- Successful responses return `filings` with `date`, `report_nm`, `rcp_no`, and `corp_name`, plus (hk 6968) `published_at`, `published_offset`, `published_precision`, `published_at_source`, `first_received_at`, `first_received_source`, `event_key`, and `event_key_basis`. A non-empty response also has `receipt_lookup` (`ok|failed`) for the stored-time read.
+- Every response has `symbol_state`: `ok`, `no_items`, or `fetch_failed` (`stale_copy` is not emitted: there is no stored-copy fallback).
+- An empty DataFrame from OpenDartReader is a successful empty lookup only when OpenDART `list.json` confirms status `013`; otherwise it is `success: false` (the library also returns an empty frame for quota, key and maintenance errors).
 - The first process-local client initialization still downloads the OpenDART corp-code cache, so cold-start latency can be higher than warm calls.
 
 Error payload:

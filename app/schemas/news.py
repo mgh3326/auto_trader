@@ -1,9 +1,11 @@
 """Pydantic schemas for news analysis requests and responses."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.services.publication_time import is_valid_offset
 
 
 class NewsArticleCreate(BaseModel):
@@ -18,9 +20,11 @@ class NewsArticleCreate(BaseModel):
     published_at: datetime | None = Field(None, description="기사 발행일시")
     published_at_raw: str | None = Field(None, description="제공자 발행 시각 원문")
     published_offset: str | None = Field(
-        None, description="제공자 발행 시각 UTC 오프셋"
+        None, description="제공자 발행 시각 UTC 오프셋 (±HH:MM)"
     )
-    published_precision: str | None = Field(None, description="제공자 발행 시각 정밀도")
+    published_precision: Literal["second", "minute", "date"] | None = Field(
+        None, description="제공자 발행 시각 정밀도"
+    )
     provider_article_id: str | None = Field(None, description="제공자 원문 기사 ID")
     market: str = Field("kr", min_length=1, max_length=20, description="시장 구분")
     feed_source: str | None = Field(
@@ -37,6 +41,14 @@ class NewsArticleCreate(BaseModel):
     @classmethod
     def validate_url(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("published_offset")
+    @classmethod
+    def validate_published_offset(cls, v: str | None) -> str | None:
+        """Reject at the boundary: the column is VARCHAR(6) (hk 6968)."""
+        if v is not None and not is_valid_offset(v):
+            raise ValueError("published_offset must be ±HH:MM")
+        return v
 
     @field_validator("title")
     @classmethod

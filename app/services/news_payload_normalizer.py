@@ -9,17 +9,21 @@ No ORM models or DB sessions are imported here.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.timezone import now_kst_naive, to_kst_naive
+from app.services.publication_time import offset_of, offset_timezone
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _RELATED_SYMBOL_MARKETS = {"kr", "us", "crypto"}
+# Closed relation vocabulary. A relation nobody established is NULL (unknown),
+# never "direct" (hk 6968).
+NEWS_RELATION_TYPES: frozenset[str] = frozenset({"direct", "sector", "market"})
 _URL_METADATA_PREFIXES = (
     "canonical_url:",
     "source_url:",
@@ -58,7 +62,10 @@ def extract_source_document_ids(raw: Any) -> dict[str, list[str]] | None:
                         if entry not in (None, "")
                     ]
                     if ids:
-                        found[normalized_key] = list(dict.fromkeys(ids))
+                        # Nested records repeat a field name: keep every citation.
+                        found[normalized_key] = list(
+                            dict.fromkeys([*found.get(normalized_key, []), *ids])
+                        )
                 elif isinstance(item, (dict, list)):
                     visit(item)
         elif isinstance(value, list):
@@ -86,6 +93,9 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
         if source_time is None and isinstance(raw.get("published_at"), str):
             source_time = raw["published_at"]
     published_raw = getattr(article_data, "published_at_raw", None) or source_time
+    # Offset precedence: explicit field, then the provider's raw time, then the
+    # parsed instant. Derived values pass the same ``±HH:MM`` check as explicit
+    # ones, so nothing malformed reaches the column.
     published_offset = getattr(article_data, "published_offset", None)
     if published_offset is None and isinstance(published_raw, str) and published_raw:
         try:
@@ -93,31 +103,17 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
         except ValueError:
             pass
         else:
-            raw_offset = raw_datetime.strftime("%z")
-            if raw_offset:
-                published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
+            published_offset = offset_of(raw_datetime)
     if published_offset is None and published is not None:
-        raw_offset = published.strftime("%z")
-        if raw_offset:
-            published_offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
+        published_offset = offset_of(published)
     raw_precision = getattr(article_data, "published_precision", None)
     if raw_precision is None and isinstance(published_raw, str) and published_raw:
         raw_precision = "date" if len(published_raw.strip()) == 10 else "second"
     if published is not None and published.utcoffset() is None:
-        if (
-            isinstance(published_offset, str)
-            and len(published_offset) == 6
-            and published_offset[0] in "+-"
-        ):
-            sign = 1 if published_offset[0] == "+" else -1
-            try:
-                hours, minutes = map(int, published_offset[1:].split(":"))
-                source_tz = timezone(sign * timedelta(hours=hours, minutes=minutes))
-            except ValueError:
-                source_tz = None
-            if source_tz is not None:
-                published = published.replace(tzinfo=source_tz)
-        if published.utcoffset() is None:
+        source_tz = offset_timezone(published_offset)
+        if source_tz is not None:
+            published = published.replace(tzinfo=source_tz)
+        else:
             published = published.replace(
                 tzinfo=ZoneInfo("Asia/Seoul") if article_data.market == "kr" else UTC
             )
@@ -345,12 +341,12 @@ def _related_symbol_row_from_candidate(
     if symbol is None:
         return None
     relation_type = candidate.get("relation_type", candidate.get("relation"))
-    if relation_type is None:
-        # Candidate arrays are provider-supplied assertions, not lexical
-        # matches. Preserve that distinction in evidence while keeping the
-        # external judgment state pending.
-        relation_type = "direct"
-    if relation_type not in {"direct", "sector", "market"}:
+    # A candidate that names no relation stays unknown (NULL): being listed by
+    # the provider is not evidence of a direct relation. The isinstance check
+    # keeps unhashable JSON (list/object) out of the set test.
+    if relation_type is not None and (
+        not isinstance(relation_type, str) or relation_type not in NEWS_RELATION_TYPES
+    ):
         return None
     display_name = _candidate_field(
         candidate,

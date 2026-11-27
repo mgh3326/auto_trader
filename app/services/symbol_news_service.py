@@ -67,6 +67,9 @@ class SymbolNewsFetchResult:
     provider_provenance: list[dict[str, str | None]] = field(default_factory=list)
     # Provider-parse drops counted by reason (missing_title, missing_url, ...).
     parser_skips: dict[str, int] | None = None
+    # The provider answered but every row it sent was dropped as unreadable:
+    # a collection failure, not an empty news window (hk 6968).
+    provider_unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,65 @@ def news_fetch_is_stale(
     aware = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=UTC)
     observed = now or _utcnow()
     return (observed - aware).total_seconds() > NEWS_FRESHNESS_MAX_AGE_SECONDS
+
+
+def _all_rows_unreadable(
+    articles: list[SymbolNewsArticle], skipped: dict[str, int]
+) -> bool:
+    return not articles and any(reason != "duplicate" for reason in skipped)
+
+
+def _article_publication(article: SymbolNewsArticle, market: str) -> dict[str, Any]:
+    """Publication columns derived from one provider item (store and response)."""
+    from app.services.kr_news_collector import parse_publish_time
+
+    source_item = article.provider_metadata.get("source_item") or {}
+    raw_time = source_item.get("datetime_raw", source_item.get("datetime"))
+    if market == "kr":
+        parsed = parse_publish_time(raw_time)
+        published_raw = parsed.raw
+        precision = parsed.precision
+        published_at = parsed.value or article.published_at
+        published_offset = "+09:00"
+    else:
+        published_raw = str(raw_time) if raw_time is not None else None
+        precision = "second" if article.published_at else None
+        published_at = article.published_at
+        published_offset = "+00:00" if published_at else None
+    return {
+        "published_at_raw": published_raw,
+        "published_precision": precision,
+        "published_at": published_at,
+        "published_offset": published_offset,
+    }
+
+
+def _uncached_article(
+    article: SymbolNewsArticle, symbol: str, market: str
+) -> SymbolNewsArticle:
+    """Shape a provider article served without the store (DB unavailable).
+
+    First receipt is unknown here: this fetch need not be the first one.
+    """
+    from app.services.news_payload_normalizer import extract_source_document_ids
+
+    publication = _article_publication(article, market)
+    del publication["published_at"]  # ``article.published_at`` already carries it
+    return replace(
+        article,
+        provider_metadata={
+            **article.provider_metadata,
+            **publication,
+            "first_received_at": None,
+            "source_document_ids": extract_source_document_ids(
+                article.provider_metadata.get("source_item") or {}
+            ),
+            "relevance": {
+                **_PENDING_RELEVANCE,
+                "hints": _store_hints(symbol, market, article.title),
+            },
+        },
+    )
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -307,6 +369,7 @@ def _stored_to_article(
             "relevance": row.relevance,
             "published_at_raw": row.published_at_raw,
             "published_offset": row.published_offset,
+            "published_precision": row.published_precision,
             "first_received_at": row.first_received_at.isoformat()
             if row.first_received_at
             else None,
@@ -331,41 +394,25 @@ async def _persist_and_load(
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
-                from app.services.kr_news_collector import parse_publish_time
                 from app.services.news_payload_normalizer import (
                     extract_source_document_ids,
                 )
 
                 def to_feed_input(article: SymbolNewsArticle) -> FeedArticleInput:
                     source_item = article.provider_metadata.get("source_item") or {}
-                    raw_time = source_item.get(
-                        "datetime_raw", source_item.get("datetime")
-                    )
-                    if market == "kr":
-                        parsed = parse_publish_time(raw_time)
-                        published_raw = parsed.raw
-                        precision = parsed.precision
-                        published_at = parsed.value or article.published_at
-                        published_offset = "+09:00"
-                    else:
-                        published_raw = str(raw_time) if raw_time is not None else None
-                        precision = "second" if article.published_at else None
-                        published_at = article.published_at
-                        published_offset = "+00:00" if published_at else None
+                    publication = _article_publication(article, market)
+                    published_at = publication["published_at"]
                     return FeedArticleInput(
                         url=article.canonical_url,
                         title=article.title,
                         source=article.source_name,
-                        published_at=published_at,
                         summary=article.summary,
-                        published_at_raw=published_raw,
-                        published_precision=precision,
                         published_at_reason=None
                         if published_at is not None
                         else "unparseable",
-                        published_offset=published_offset,
                         provider_article_id=article.external_article_id,
                         source_document_ids=extract_source_document_ids(source_item),
+                        **publication,
                     )
 
                 await symbol_news_store.upsert_feed_articles(
@@ -413,10 +460,13 @@ async def _fetch_finnhub(symbol: str, market: str, limit: int) -> _ProviderNewsF
     # Finnhub owns its retry loop; stamp only after its successful final return.
     fetched_at = _utcnow()
     out: list[SymbolNewsArticle] = []
+    skipped: dict[str, int] = {}
     for raw in payload.get("news") or []:
         url = (raw.get("url") or "").strip()
         title = (raw.get("title") or "").strip()
         if not url or not title:
+            reason = "missing_url" if not url else "missing_title"
+            skipped[reason] = skipped.get(reason, 0) + 1
             continue
         related_raw = raw.get("related") or ""
         related = [s for s in str(related_raw).split(",") if s]
@@ -440,7 +490,7 @@ async def _fetch_finnhub(symbol: str, market: str, limit: int) -> _ProviderNewsF
                 },
             )
         )
-    return _ProviderNewsFetch(out, fetched_at)
+    return _ProviderNewsFetch(out, fetched_at, skipped=skipped)
 
 
 async def fetch_symbol_news(
@@ -460,6 +510,7 @@ async def fetch_symbol_news(
         fetched_at: datetime | None = None
         fetch_error: str | None = None
         parser_skips: dict[str, int] | None = None
+        unreadable = False
         try:
             provider_fetch = await asyncio.wait_for(
                 _fetch_naver(symbol, limit), timeout=timeout_s
@@ -467,6 +518,7 @@ async def fetch_symbol_news(
             fetched = provider_fetch.articles
             fetched_at = provider_fetch.fetched_at
             parser_skips = provider_fetch.skipped or None
+            unreadable = _all_rows_unreadable(fetched, provider_fetch.skipped)
         except Exception as exc:  # noqa: BLE001 — fall back to DB cache
             logger.warning(
                 "symbol_news_service: naver fetch failed: symbol=%s err=%s",
@@ -561,6 +613,7 @@ async def fetch_symbol_news(
                     error_code=fetch_error,
                 ),
                 parser_skips=parser_skips,
+                provider_unreadable=unreadable,
             )
         # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
         if fetched is None:
@@ -582,19 +635,7 @@ async def fetch_symbol_news(
                     error_code=fetch_error or "naver_fetch_failed",
                 ),
             )
-        articles = [
-            replace(
-                a,
-                provider_metadata={
-                    **a.provider_metadata,
-                    "relevance": {
-                        **_PENDING_RELEVANCE,
-                        "hints": symbol_news_store_hints(symbol, a.title),
-                    },
-                },
-            )
-            for a in fetched
-        ]
+        articles = [_uncached_article(a, symbol, "kr") for a in fetched]
         status = "ok" if articles else "empty"
         return SymbolNewsFetchResult(
             symbol,
@@ -613,6 +654,7 @@ async def fetch_symbol_news(
                 status=status,
             ),
             parser_skips=parser_skips,
+            provider_unreadable=unreadable,
         )
 
     if market not in ("us", "crypto"):
@@ -638,12 +680,16 @@ async def fetch_symbol_news(
     finnhub_fetched: list[SymbolNewsArticle] | None
     fetched_at = None
     finnhub_error: str | None = None
+    finnhub_skips: dict[str, int] | None = None
+    unreadable = False
     try:
         # ROB-510: 재시도/시도당 타임아웃은 fetch_news_finnhub가 소유 —
         # 외곽 wait_for를 두면 재시도가 무력화된다.
         provider_fetch = await _fetch_finnhub(symbol, market, limit)
         finnhub_fetched = provider_fetch.articles
         fetched_at = provider_fetch.fetched_at
+        finnhub_skips = provider_fetch.skipped or None
+        unreadable = _all_rows_unreadable(finnhub_fetched, provider_fetch.skipped)
     except Exception as exc:  # noqa: BLE001 — fall back to DB cache
         logger.warning(
             "symbol_news_service: finnhub fetch failed: symbol=%s market=%s err=%s",
@@ -737,6 +783,8 @@ async def fetch_symbol_news(
                 status=provenance_status,
                 error_code=finnhub_error,
             ),
+            parser_skips=finnhub_skips,
+            provider_unreadable=unreadable,
         )
     # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
     if finnhub_fetched is None:
@@ -758,19 +806,7 @@ async def fetch_symbol_news(
                 error_code=finnhub_error or "finnhub_fetch_failed",
             ),
         )
-    articles = [
-        replace(
-            a,
-            provider_metadata={
-                **a.provider_metadata,
-                "relevance": {
-                    **_PENDING_RELEVANCE,
-                    "hints": _store_hints(symbol, market, a.title),
-                },
-            },
-        )
-        for a in finnhub_fetched
-    ]
+    articles = [_uncached_article(a, symbol, market) for a in finnhub_fetched]
     status = "ok" if articles else "empty"
     return SymbolNewsFetchResult(
         symbol,
@@ -788,4 +824,6 @@ async def fetch_symbol_news(
             mode="live",
             status=status,
         ),
+        parser_skips=finnhub_skips,
+        provider_unreadable=unreadable,
     )

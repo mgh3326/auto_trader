@@ -7,6 +7,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.fundamentals._helpers import normalize_market_with_crypto
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
@@ -20,7 +21,15 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
+from app.mcp_server.tooling.symbol_state import (
+    SYMBOL_STATE_FETCH_FAILED,
+    SYMBOL_STATE_NO_ITEMS,
+    SYMBOL_STATE_OK,
+    SYMBOL_STATE_STALE_COPY,
+)
 from app.services import symbol_news_service
+from app.services.news_event_key import EventCandidate, assign_event_keys
+from app.services.publication_time import is_valid_offset, render_publication
 
 _INSTRUMENT_BY_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 # Align the on-demand symbol-news envelope with the existing news-readiness
@@ -114,6 +123,87 @@ def _news_freshness_fields(
     }
 
 
+def _news_symbol_state(
+    result: symbol_news_service.SymbolNewsFetchResult,
+    *,
+    observed_at: datetime | None = None,
+) -> str:
+    if result.status in {"error", "unavailable"}:
+        return SYMBOL_STATE_FETCH_FAILED
+    failed = result.degraded or result.provider_unreadable
+    if not result.articles:
+        return SYMBOL_STATE_FETCH_FAILED if failed else SYMBOL_STATE_NO_ITEMS
+    if failed:
+        return SYMBOL_STATE_STALE_COPY
+    # The newest acquisition: older stored rows filling the page do not turn a
+    # successful live lookup into a stale copy.
+    acquired = [
+        value
+        for article in result.articles
+        if (value := _aware_utc(article.fetched_at)) is not None
+    ]
+    newest = max(acquired) if acquired else _aware_utc(result.fetched_at)
+    if symbol_news_service.news_fetch_is_stale(newest, now=observed_at):
+        return SYMBOL_STATE_STALE_COPY
+    return SYMBOL_STATE_OK
+
+
+def _news_items(
+    result: symbol_news_service.SymbolNewsFetchResult,
+    *,
+    symbol: str,
+    market: str,
+) -> list[dict[str, Any]]:
+    key_symbol = to_db_symbol(symbol) if market == "us" else symbol
+    event_keys = assign_event_keys(
+        market,
+        key_symbol,
+        [
+            EventCandidate(
+                title=article.title,
+                url=article.canonical_url,
+                published_at=article.published_at,
+                source_document_ids=article.provider_metadata.get(
+                    "source_document_ids"
+                ),
+            )
+            for article in result.articles
+        ],
+    )
+    news = []
+    for article, event_key in zip(result.articles, event_keys, strict=True):
+        metadata = article.provider_metadata
+        source_item = metadata.get("source_item", {})
+        item = dict(source_item) if isinstance(source_item, dict) else {}
+        if relevance := metadata.get("relevance"):
+            item["relevance"] = relevance
+        for field in (
+            "published_at_raw",
+            "revised_at",
+            "provider_article_id",
+            "source_document_ids",
+        ):
+            value = metadata.get(field)
+            if value is not None:
+                item[field] = value
+        # Always present; null means unknown, never a substitute time.
+        precision = metadata.get("published_precision")
+        offset = metadata.get("published_offset")
+        published = render_publication(
+            article.published_at, offset=offset, precision=precision, market=market
+        )
+        item["published_at"] = published
+        item["published_offset"] = (
+            offset if published and is_valid_offset(offset) else None
+        )
+        item["published_precision"] = precision if published else None
+        item["first_received_at"] = metadata.get("first_received_at")
+        item["event_key"] = event_key.key
+        item["event_key_basis"] = event_key.basis
+        news.append(item)
+    return news
+
+
 async def handle_get_news(
     symbol: str | int,
     market: str | None = None,
@@ -156,30 +246,15 @@ async def handle_get_news(
         # provider/service detail (e.g. TimeoutError).
         payload["error_code"] = "news_lookup_failed"
         payload["error_class"] = result.error_code
+        payload["symbol_state"] = SYMBOL_STATE_FETCH_FAILED
         return payload
 
-    news = []
-    for article in result.articles:
-        source_item = article.provider_metadata.get("source_item", {})
-        item = dict(source_item) if isinstance(source_item, dict) else {}
-        if relevance := article.provider_metadata.get("relevance"):
-            item["relevance"] = relevance
-        for field in (
-            "published_at_raw",
-            "published_offset",
-            "first_received_at",
-            "revised_at",
-            "provider_article_id",
-            "source_document_ids",
-        ):
-            value = article.provider_metadata.get(field)
-            if value is not None:
-                item[field] = value
-        news.append(item)
+    news = _news_items(result, symbol=symbol, market=normalized_market)
     payload: dict[str, Any] = {
         "symbol": symbol,
         "market": normalized_market,
         "source": result.provider,
+        "symbol_state": _news_symbol_state(result),
         "count": len(news),
         "excluded_count": result.excluded_count,
         "news": news,

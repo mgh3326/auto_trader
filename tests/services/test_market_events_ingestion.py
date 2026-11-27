@@ -1126,3 +1126,50 @@ async def test_ingest_us_earnings_for_range_429_is_fail_closed(db_session, monke
         partition_dates=(date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 13)),
     )
     assert parts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_dart_first_receipt_is_insert_only_and_readable_by_receipt(db_session):
+    """hk 6968 — real SQL: receipt clock survives re-ingest; Naver rows link."""
+    from app.services.market_events import ingestion, naver_disclosures
+    from app.services.market_events.query_service import MarketEventsQueryService
+    from app.services.market_events.repository import MarketEventsRepository
+
+    fetch = AsyncMock(return_value=[DART_ROW])
+    day = date(2026, 5, 7)
+    receipt = "20260507000123"
+
+    await ingestion.ingest_kr_disclosures_for_date(db_session, day, fetch_rows=fetch)
+    await db_session.commit()
+    service = MarketEventsQueryService(db_session)
+    first = await service.disclosure_rows_by_receipt([receipt], ["005930"])
+    stamped = first[receipt][0].first_received_at
+    assert stamped is not None
+
+    await ingestion.ingest_kr_disclosures_for_date(db_session, day, fetch_rows=fetch)
+    received = _dt(2026, 5, 7, 9, 0, tzinfo=UTC)
+    raw = {
+        "disclosureId": "hk6968-n1",
+        "title": "분기보고서",
+        "datetime": "2026-05-07T17:30:05",
+    }
+    await MarketEventsRepository(db_session).insert_provider_event(
+        naver_disclosures.disclosure_event(
+            naver_disclosures.parse_disclosure("005930", raw),
+            first_received_at=received,
+            dart_rcept_no=receipt,
+            raw_payload=raw,
+        )
+    )
+    await db_session.commit()
+    db_session.expire_all()
+
+    rows = await service.disclosure_rows_by_receipt([receipt], ["005930"])
+
+    assert [row.source for row in rows[receipt]] == ["dart", "naver_disclosure"]
+    assert rows[receipt][0].first_received_at == stamped
+    assert rows[receipt][1].first_received_at == received
+    assert await service.disclosure_rows_by_receipt([receipt], ["000660"]) == {
+        receipt: rows[receipt][:1]
+    }

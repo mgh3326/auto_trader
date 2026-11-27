@@ -1,0 +1,42 @@
+{
+  "symbol_state": "ok",
+  "news": [
+    {
+      "title": "[속보] 삼성전자 2조원 공급계약 체결",
+      "url": "https://n.news.naver.com/mnews/article/015/0000000002",
+      "datetime_raw": "202611270931",
+      "relevance": {"status": "pending"},
+      "published_at": "2026-11-27T09:31:00+09:00",
+      "published_offset": "+09:00",
+      "published_precision": "minute",
+      "first_received_at": "2026-11-27T00:32:05+00:00",
+      "event_key": "ev1:kr:005930:title:2026-11-27:2560c7f09334ec22",
+      "event_key_basis": "title_day"
+    },
+    {
+      "title": "삼성전자, 2조원 공급계약 체결",
+      "url": "https://n.news.naver.com/mnews/article/001/0000000001",
+      "datetime_raw": "202611270915",
+      "relevance": {"status": "pending"},
+      "published_at": "2026-11-27T09:15:00+09:00",
+      "published_offset": "+09:00",
+      "published_precision": "minute",
+      "first_received_at": "2026-11-27T00:16:40+00:00",
+      "event_key": "ev1:kr:005930:title:2026-11-27:2560c7f09334ec22",
+      "event_key_basis": "title_day"
+    },
+    {
+      "title": "삼성전자 주주총회 일정 안내",
+      "url": "https://n.news.naver.com/mnews/article/009/0000000003",
+      "source": "wire",
+      "datetime": "2026-11-20T03:00:00+00:00",
+      "relevance": {"status": "pending"},
+      "published_at": "2026-11-20T12:00:00+09:00",
+      "published_offset": null,
+      "published_precision": null,
+      "first_received_at": null,
+      "event_key": "ev1:kr:005930:title:2026-11-20:2a1119c9382221ac",
+      "event_key_basis": "title_day"
+    }
+  ]
+}

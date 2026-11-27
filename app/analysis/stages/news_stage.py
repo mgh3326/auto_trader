@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.analysis.stages.base import BaseStageAnalyzer, StageContext
-from app.core.timezone import now_kst_naive
+from app.core.timezone import now_kst_naive, to_kst_naive
 from app.schemas.research_pipeline import (
     NewsSignals,
     SourceFreshness,
@@ -137,10 +137,12 @@ def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:
     }
 
     for article in articles:
-        # Freshness
+        # Freshness. DB rows are aware (UTC) and provider rows may be naive
+        # KST: compare both as KST wall clock, converting before dropping tzinfo.
         if article.article_published_at:
-            if newest_dt is None or article.article_published_at > newest_dt:
-                newest_dt = article.article_published_at
+            published = to_kst_naive(article.article_published_at)
+            if newest_dt is None or published > newest_dt:
+                newest_dt = published
 
         # Sentiment scoring (v1: keyword-based)
         score = 0.0
@@ -173,7 +175,7 @@ def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:
     newest_age_minutes = 0
     if newest_dt:
         now = now_kst_naive()
-        diff = now - newest_dt.replace(tzinfo=None)
+        diff = now - newest_dt
         newest_age_minutes = max(0, int(diff.total_seconds() / 60))
 
     return {
