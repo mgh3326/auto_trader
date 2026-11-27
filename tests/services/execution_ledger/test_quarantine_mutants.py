@@ -299,6 +299,12 @@ IN_EFFECT_READERS: dict[tuple[str, str], str] = {
     ("app/services/retro_v1/chain.py", "read_history"): (
         "test_quarantine_readers_db::READERS[retro_v1.chain.read_history]"
     ),
+    ("app/services/retro_v1/plan_source.py", "read_fills"): (
+        "test_quarantine_readers_db::test_plan_source_fills_drop_the_quarantined_phantom"
+    ),
+    ("app/services/retro_v1/plan_source.py", "read_plan_source"): (
+        "test_quarantine_readers_db::test_plan_source_plan_reason_drops_the_quarantined_phantom"
+    ),
     ("app/services/retro_v1/retro_positions.py", "read_ledger"): (
         "test_quarantine_readers_db::READERS[retro_v1.retro_positions.read_ledger]"
     ),

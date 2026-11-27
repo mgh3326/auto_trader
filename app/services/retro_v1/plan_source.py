@@ -379,7 +379,10 @@ def _identity(child: _Child) -> OrderIdentity | None:
 
 def _scope(intent: Any) -> Scope | None:
     ledger = LEDGER_ACCOUNTS.get(intent.account)
-    market = VENUE_MARKETS.get(intent.venue)
+    # ``intent.venue`` is the execution spelling the ledger stores (``krx``);
+    # the market lookup needs the plan spelling, which the v3 row carries as
+    # the CHECK-pinned ``plan_venue`` (``KRX``).
+    market = VENUE_MARKETS.get(intent.plan_venue)
     if ledger is None or market is None:
         return None
     broker, account_mode = ledger
@@ -629,6 +632,7 @@ async def read_plan_source(
             ExecutionIntent.side,
             ExecutionIntent.account,
             ExecutionIntent.venue,
+            ExecutionIntent.plan_venue,
             ExecutionIntent.plan_row_key,
             ExecutionIntent.plan_version,
         ).where(
