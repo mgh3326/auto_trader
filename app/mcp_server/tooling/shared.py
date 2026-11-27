@@ -15,6 +15,7 @@ from app.core.price_rounding import (
     to_optional_float,
 )
 from app.core.symbol import to_db_symbol
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
@@ -159,21 +160,25 @@ def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
     if market_type == "crypto":
         symbol = symbol.upper()
         if not is_crypto_market(symbol):
-            raise ValueError("crypto symbols must include KRW-/USDT- prefix")
+            raise CallerInputError("crypto symbols must include KRW-/USDT- prefix")
         return "crypto", symbol
 
     if market_type == "equity_kr":
         symbol = _strip_kr_a_prefix(symbol)
         if not is_korean_equity_code(symbol):
-            raise ValueError("korean equity symbols must be 6 alphanumeric characters")
+            raise CallerInputError(
+                "korean equity symbols must be 6 alphanumeric characters"
+            )
         return "equity_kr", symbol
 
     if market_type == "equity_us":
         symbol = symbol.upper()
         if is_crypto_market(symbol):
-            raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
+            raise CallerInputError(
+                "us equity symbols must not include KRW-/USDT- prefix"
+            )
         if not is_us_equity_symbol(symbol):
-            raise ValueError("invalid US equity symbol")
+            raise CallerInputError("invalid US equity symbol")
         return "equity_us", symbol
 
     if is_crypto_market(symbol):
@@ -190,7 +195,7 @@ def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
     if is_us_equity_symbol(symbol):
         return "equity_us", symbol
 
-    raise ValueError("Unsupported symbol format")
+    raise CallerInputError("Unsupported symbol format")
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +408,7 @@ def parse_holdings_market_filter(market: str | None) -> str | None:
         return None
     market_type = normalize_market(market)
     if market_type is None:
-        raise ValueError("market must be one of: kr, us, crypto")
+        raise CallerInputError("market must be one of: kr, us, crypto")
     return market_type
 
 

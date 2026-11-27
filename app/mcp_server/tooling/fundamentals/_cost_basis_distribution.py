@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_volume_profile,
     _fetch_ohlcv_for_volume_profile,
@@ -38,7 +39,7 @@ async def get_cost_basis_distribution_impl(
     """VPVR-based holder cost-basis ESTIMATE for a kr/us/crypto symbol."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}

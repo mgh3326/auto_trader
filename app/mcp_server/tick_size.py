@@ -56,6 +56,8 @@ missing or unrecognised values deliberately retain the stock table.  Note:
 
 import math
 
+from app.services.domain_errors import CallerInputError
+
 _ETP_SECURITY_TYPES = frozenset({"ETF", "ETN"})
 
 
@@ -145,7 +147,7 @@ def adjust_tick_size_kr(
         15720
     """
     if price < 0:
-        raise ValueError(f"Price must be non-negative, got {price}")
+        raise CallerInputError(f"Price must be non-negative, got {price}")
 
     tick_size = _get_tick_size(price, security_type)
 
@@ -157,7 +159,7 @@ def adjust_tick_size_kr(
         # Round UP (ceil) - better for sell orders (higher price)
         adjusted = math.ceil(price / tick_size) * tick_size
     else:
-        raise ValueError(f"side must be 'buy' or 'sell', got '{side}'")
+        raise CallerInputError(f"side must be 'buy' or 'sell', got '{side}'")
 
     # Ensure minimum price of 1 KRW
     adjusted = max(1, int(adjusted))

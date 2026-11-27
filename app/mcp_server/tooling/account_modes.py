@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 
 ACCOUNT_MODE_DB_SIMULATED = "db_simulated"
 ACCOUNT_MODE_KIS_MOCK = "kis_mock"
@@ -88,7 +89,7 @@ def _resolve_selector(
         return None
     if normalized not in aliases:
         allowed = ", ".join(sorted(aliases))
-        raise ValueError(f"{selector_name} must be one of: {allowed}")
+        raise CallerInputError(f"{selector_name} must be one of: {allowed}")
 
     account_mode, deprecated = aliases[normalized]
     warnings: list[str] = []
@@ -129,7 +130,7 @@ def normalize_account_mode(
         mode_value, _, _ = mode_result
         type_value, _, _ = type_result
         if mode_value != type_value:
-            raise ValueError(
+            raise CallerInputError(
                 "conflicting account selectors: "
                 f"account_mode resolves to '{mode_value}' but account_type "
                 f"resolves to '{type_value}'"

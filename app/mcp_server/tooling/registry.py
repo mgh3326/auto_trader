@@ -81,6 +81,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import orders_kiwoom_variants
 from app.mcp_server.tooling.account_routing_registration import (
@@ -234,7 +235,7 @@ class _AccountPinnedMCP:
                 bound = signature.bind_partial(*call_args, **call_kwargs)
                 supplied = bound.arguments.get("account_mode")
                 if supplied is not None and supplied != self._account_mode:
-                    raise ValueError(
+                    raise CallerInputError(
                         "alpaca-paper-clean tools are pinned to "
                         f"account_mode='{self._account_mode}'"
                     )

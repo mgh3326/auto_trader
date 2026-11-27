@@ -13,6 +13,7 @@ from sqlalchemy import desc, select
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
     _close_journals_on_sell,
@@ -59,7 +60,7 @@ async def _resolve_paper_account(
         return account
 
     if not create or (name is not None and name != DEFAULT_PAPER_ACCOUNT_NAME):
-        raise ValueError(f"Paper account '{account_name}' not found")
+        raise CallerInputError(f"Paper account '{account_name}' not found")
 
     return await service.create_account(
         name=DEFAULT_PAPER_ACCOUNT_NAME,

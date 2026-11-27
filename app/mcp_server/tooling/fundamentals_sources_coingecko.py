@@ -14,6 +14,7 @@ import redis.asyncio as redis
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
@@ -329,7 +330,7 @@ async def _choose_coingecko_id_by_market_cap(candidate_ids: list[str]) -> str | 
 async def _resolve_coingecko_coin_id(symbol: str) -> str:
     base_symbol = _normalize_crypto_base_symbol(symbol)
     if not base_symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     override = COINGECKO_SYMBOL_ID_OVERRIDES.get(base_symbol)
     if override:
@@ -338,7 +339,7 @@ async def _resolve_coingecko_coin_id(symbol: str) -> str:
     symbol_to_ids = await _get_coingecko_symbol_to_ids()
     candidates = symbol_to_ids.get(base_symbol.lower(), [])
     if not candidates:
-        raise ValueError(f"CoinGecko id not found for symbol '{base_symbol}'")
+        raise CallerInputError(f"CoinGecko id not found for symbol '{base_symbol}'")
 
     if len(candidates) == 1:
         return candidates[0]

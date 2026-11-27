@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals_sources_binance import (
     _fetch_funding_rate,
     _fetch_funding_rate_batch,
@@ -31,7 +32,7 @@ async def handle_get_kimchi_premium(
         if symbol:
             sym = _normalize_crypto_base_symbol(symbol)
             if not sym:
-                raise ValueError("symbol is required")
+                raise CallerInputError("symbol is required")
             symbols = [sym]
             return await _fetch_kimchi_premium(symbols)
 
@@ -63,7 +64,7 @@ async def handle_get_funding_rate(
     limit: int = 10,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     if symbol is not None and not symbol.strip():
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     try:
         if symbol is None:
@@ -72,7 +73,7 @@ async def handle_get_funding_rate(
 
         normalized_symbol = _normalize_crypto_base_symbol(symbol)
         if not normalized_symbol:
-            raise ValueError("symbol is required")
+            raise CallerInputError("symbol is required")
 
         capped_limit = min(max(limit, 1), 100)
         return await _fetch_funding_rate(normalized_symbol, capped_limit)
@@ -92,15 +93,15 @@ async def handle_get_open_interest(
     limit: int = 30,
 ) -> dict[str, Any]:
     if symbol is None or not symbol.strip():
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     period = (period or "").strip().lower()
     if period not in _ALLOWED_PERIODS:
-        raise ValueError(
+        raise CallerInputError(
             f"period must be one of: {', '.join(sorted(_ALLOWED_PERIODS))}"
         )
     normalized_symbol = _normalize_crypto_base_symbol(symbol)
     if not normalized_symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     capped_limit = min(max(limit, 1), 500)
     try:
         return await _fetch_open_interest(normalized_symbol, period, capped_limit)
@@ -119,15 +120,15 @@ async def handle_get_long_short_ratio(
     limit: int = 30,
 ) -> dict[str, Any]:
     if symbol is None or not symbol.strip():
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     period = (period or "").strip().lower()
     if period not in _ALLOWED_PERIODS:
-        raise ValueError(
+        raise CallerInputError(
             f"period must be one of: {', '.join(sorted(_ALLOWED_PERIODS))}"
         )
     normalized_symbol = _normalize_crypto_base_symbol(symbol)
     if not normalized_symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     capped_limit = min(max(limit, 1), 500)
     try:
         return await _fetch_long_short_ratio(normalized_symbol, period, capped_limit)
@@ -151,11 +152,11 @@ async def handle_get_crypto_order_flow(
     Read-only public Upbit data — source is "upbit" (NOT binance).
     """
     if not symbol or not symbol.strip():
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     try:
         base = _normalize_crypto_base_symbol(symbol)
         if not base:
-            raise ValueError("symbol is required")
+            raise CallerInputError("symbol is required")
         market = f"KRW-{base}"
         # We always fetch 500 trades to calculate all windows derived from a single fetch.
         trades = await fetch_recent_trades(market=market, count=500)
@@ -420,7 +421,7 @@ async def handle_get_crypto_order_flow(
 async def handle_get_crypto_social(symbol: str) -> dict[str, Any]:
     """ROB-452 P2: CoinGecko community/developer social signals for a crypto symbol."""
     if not symbol or not symbol.strip():
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     try:
         coin_id = await _resolve_coingecko_coin_id(symbol)
         data = await _fetch_coingecko_coin_social(coin_id)

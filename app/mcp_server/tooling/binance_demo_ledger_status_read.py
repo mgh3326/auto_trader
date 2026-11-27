@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.models.binance_demo_order_ledger import BLOCKING_ROOT_LIFECYCLE_STATES
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 
@@ -84,9 +85,9 @@ async def binance_demo_ledger_status(
     No broker call. No database write.
     """
     if stale_age_seconds < 0:
-        raise ValueError("stale_age_seconds must be >= 0")
+        raise CallerInputError("stale_age_seconds must be >= 0")
     if recent_limit < 1:
-        raise ValueError("recent_limit must be >= 1")
+        raise CallerInputError("recent_limit must be >= 1")
     recent_limit = min(recent_limit, _MAX_RECENT_LIMIT)
 
     as_of = dt.datetime.now(dt.UTC)

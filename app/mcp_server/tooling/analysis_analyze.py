@@ -12,6 +12,7 @@ import yfinance as yf
 
 from app.core import analyze_cache
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -1024,12 +1025,12 @@ async def analyze_stock_impl(
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     try:
         market_type, normalized_symbol = _resolve_market_type(symbol, market)
     except ValueError:
-        raise ValueError(
+        raise CallerInputError(
             f"Unsupported symbol format: '{symbol}'. "
             "Use ticker codes (e.g., AAPL, 005930, KRW-BTC)."
         )

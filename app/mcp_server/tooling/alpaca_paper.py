@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.alpaca_paper_account_modes import (
     ALPACA_PAPER_ACCOUNT_MODE,
     normalize_alpaca_paper_account_mode,
@@ -93,14 +94,14 @@ def _parse_optional_datetime(value: str | None, *, field_name: str) -> datetime 
     try:
         return datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise ValueError(f"{field_name} must be an ISO-8601 datetime") from exc
+        raise CallerInputError(f"{field_name} must be an ISO-8601 datetime") from exc
 
 
 def _normalize_optional_limit(limit: int | None, *, max_limit: int = 500) -> int | None:
     if limit is None:
         return None
     if limit < 1:
-        raise ValueError("limit must be >= 1")
+        raise CallerInputError("limit must be >= 1")
     return min(limit, max_limit)
 
 
@@ -180,7 +181,7 @@ async def alpaca_paper_get_order(
     """Fetch one Alpaca paper order by id without modifying it."""
 
     if not order_id.strip():
-        raise ValueError("order_id is required")
+        raise CallerInputError("order_id is required")
     selected = normalize_alpaca_paper_account_mode(account_mode)
     order = await _service_for_account_mode(selected).get_order(order_id.strip())
     return {

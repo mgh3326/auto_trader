@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.timezone import today_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 
 
 def _wire(value: Any) -> Any:
@@ -181,9 +182,9 @@ async def handle_get_kr_flow_signals(symbol: str, days: int = 20) -> dict[str, A
 
     symbol = (symbol or "").strip()
     if len(symbol) != 6 or not symbol.isascii() or not symbol.isdigit():
-        raise ValueError("symbol must be a six-digit Korean stock code")
+        raise CallerInputError("symbol must be a six-digit Korean stock code")
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 100:
-        raise ValueError("days must be an integer from 1 to 100")
+        raise CallerInputError("days must be an integer from 1 to 100")
 
     toss = None
     toss_error = None
@@ -273,11 +274,11 @@ async def handle_get_kr_investor_rankings(
         "individual": "individual",
     }.get(investor)
     if investor_key is None:
-        raise ValueError("investor must be foreign, institution, or individual")
+        raise CallerInputError("investor must be foreign, institution, or individual")
     if side not in {"buy", "sell"}:
-        raise ValueError("side must be buy or sell")
+        raise CallerInputError("side must be buy or sell")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-        raise ValueError("limit must be an integer from 1 to 100")
+        raise CallerInputError("limit must be an integer from 1 to 100")
 
     try:
         client = TossReadClient.from_settings()

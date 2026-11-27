@@ -4,6 +4,7 @@ import logging
 from typing import Any, Literal
 
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -31,7 +32,7 @@ async def _resolve_price(
     if price is not None:
         value = float(price)
         if value <= 0:
-            raise ValueError("price must be positive")
+            raise CallerInputError("price must be positive")
         return value, "input"
     if market == "kr":
         quote = await _fetch_quote_equity_kr(symbol)
@@ -50,7 +51,9 @@ def _normalize_market(market: str | None, symbol: str) -> Literal["kr", "us"]:
     if raw in {"us", "equity_us"}:
         return "us"
     if raw:
-        raise ValueError("suggest_order_account supports market='kr' or market='us'")
+        raise CallerInputError(
+            "suggest_order_account supports market='kr' or market='us'"
+        )
     stripped = symbol.strip()
     return "kr" if stripped.isdigit() and len(stripped) == 6 else "us"
 
@@ -65,9 +68,9 @@ async def suggest_order_account_impl(
     usd_krw: float | None = None,
 ) -> dict[str, Any]:
     if side.lower() != "buy":
-        raise ValueError("suggest_order_account supports buy side only")
+        raise CallerInputError("suggest_order_account supports buy side only")
     if quantity <= 0:
-        raise ValueError("quantity must be positive")
+        raise CallerInputError("quantity must be positive")
     normalized_market = _normalize_market(market, symbol)
     resolved_price, price_source = await _resolve_price(
         symbol, normalized_market, price

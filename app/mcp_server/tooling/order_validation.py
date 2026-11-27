@@ -13,6 +13,7 @@ import app.services.market_data as market_data_service
 from app.core.config import settings
 from app.core.symbol import to_upbit_symbol
 from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.kis_mock_ledger import _get_kis_mock_shadow_exposure
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
@@ -494,7 +495,9 @@ async def _validate_defensive_trim_preconditions(
     """Validate defensive_trim gates using middleware-extracted caller identity."""
     if not defensive_trim:
         return None
-    raise ValueError("defensive_trim_direct_path_disabled_use_order_proposal_create")
+    raise CallerInputError(
+        "defensive_trim_direct_path_disabled_use_order_proposal_create"
+    )
 
 
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
@@ -648,16 +651,16 @@ def _resolve_scalping_exit_context(
     if not settings.kis_mock_scalping_enabled:
         raise ValueError("scalping_exit requires KIS_MOCK_SCALPING_ENABLED=true")
     if not is_mock:
-        raise ValueError("scalping_exit is only available for kis_mock orders")
+        raise CallerInputError("scalping_exit is only available for kis_mock orders")
     if side != "sell":
-        raise ValueError("scalping_exit requires side='sell'")
+        raise CallerInputError("scalping_exit requires side='sell'")
     if order_type != "limit":
-        raise ValueError("scalping_exit requires order_type='limit'")
+        raise CallerInputError("scalping_exit requires order_type='limit'")
     if not strategy_id:
-        raise ValueError("scalping_exit requires strategy_id")
+        raise CallerInputError("scalping_exit requires strategy_id")
     resolved_reason = reason or "stop_loss"
     if resolved_reason not in _SCALPING_EXIT_REASONS:
-        raise ValueError(f"invalid scalping_exit reason: {resolved_reason}")
+        raise CallerInputError(f"invalid scalping_exit reason: {resolved_reason}")
     return ScalpingExitContext(strategy_id=strategy_id, reason=resolved_reason)
 
 

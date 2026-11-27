@@ -13,6 +13,7 @@ from app.core.market import (
     KR_MARKET_ALIASES,
     US_MARKET_ALIASES,
 )
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import (
     is_crypto_market,
     is_korean_equity_code,
@@ -34,7 +35,7 @@ def normalize_equity_market(market: str) -> str:
         return "kr"
     if m in _US_ALIASES:
         return "us"
-    raise ValueError("market must be 'us' or 'kr'")
+    raise CallerInputError("market must be 'us' or 'kr'")
 
 
 def normalize_market_with_crypto(market: str) -> str:
@@ -46,7 +47,7 @@ def normalize_market_with_crypto(market: str) -> str:
         return "kr"
     if m in _US_ALIASES:
         return "us"
-    raise ValueError("market must be 'us', 'kr', or 'crypto'")
+    raise CallerInputError("market must be 'us', 'kr', or 'crypto'")
 
 
 def detect_equity_market(symbol: str, market: str | None) -> str:
@@ -57,7 +58,7 @@ def detect_equity_market(symbol: str, market: str | None) -> str:
     if market is not None:
         return normalize_equity_market(market)
     if is_crypto_market(symbol):
-        raise ValueError("not available for cryptocurrencies")
+        raise CallerInputError("not available for cryptocurrencies")
     if is_korean_equity_code(symbol):
         return "kr"
     return "us"

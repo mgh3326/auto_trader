@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.services.external import upbit_index
 
@@ -22,7 +23,7 @@ async def handle_get_upbit_index(
     if category is not None and category.strip():
         normalized_category = category.strip().lower()
         if normalized_category not in _ALLOWED_CATEGORIES:
-            raise ValueError(
+            raise CallerInputError(
                 f"category must be one of: {', '.join(sorted(_ALLOWED_CATEGORIES))}"
             )
 

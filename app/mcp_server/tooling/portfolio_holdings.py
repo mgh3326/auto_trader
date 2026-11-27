@@ -10,6 +10,7 @@ import pandas as pd
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
@@ -1122,12 +1123,12 @@ async def _collect_portfolio_positions(
     account_filter = _normalize_account_filter(account)
     if is_mock:
         if account_filter not in (None, "kis"):
-            raise ValueError(
+            raise CallerInputError(
                 f"account={account_filter!r} is incompatible with "
                 "account_mode='kis_mock'"
             )
         if market_filter == "crypto":
-            raise ValueError(
+            raise CallerInputError(
                 "market='crypto' is incompatible with account_mode='kis_mock'"
             )
 
@@ -1441,9 +1442,9 @@ async def _get_indicators_impl(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if not indicators:
-        raise ValueError("indicators list is required and cannot be empty")
+        raise CallerInputError("indicators list is required and cannot be empty")
 
     market_type, symbol = _resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
@@ -1519,7 +1520,7 @@ async def _get_holdings_impl(
 ) -> dict[str, Any]:
     """Implementation for get_holdings tool."""
     if minimum_value is not None and minimum_value < 0:
-        raise ValueError("minimum_value must be >= 0")
+        raise CallerInputError("minimum_value must be >= 0")
 
     (
         positions,
@@ -1860,7 +1861,7 @@ async def _get_position_impl(
     """
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     routing = normalize_account_mode(
         account_mode=account_mode,

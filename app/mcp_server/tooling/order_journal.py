@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST, now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fx_pnl import (
     FX_PNL_ACCURACY_UNAVAILABLE,
     FX_RATE_SOURCE_UNAVAILABLE,
@@ -240,9 +241,9 @@ def _validate_buy_journal_requirements(
     if side != "buy" or dry_run:
         return
     if not (thesis or "").strip():
-        raise ValueError("thesis is required for buy orders when dry_run=False")
+        raise CallerInputError("thesis is required for buy orders when dry_run=False")
     if not (strategy or "").strip():
-        raise ValueError("strategy is required for buy orders when dry_run=False")
+        raise CallerInputError("strategy is required for buy orders when dry_run=False")
 
 
 async def _create_trade_journal_for_buy(

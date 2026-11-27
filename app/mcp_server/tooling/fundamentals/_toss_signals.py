@@ -13,6 +13,7 @@ import datetime as dt
 from typing import Any
 
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
@@ -24,9 +25,9 @@ async def handle_get_toss_buy_balance(symbol: str) -> dict[str, Any]:
     """Toss orderbook balance rate (buyBalanceRate/sellBalanceRate) and foreigner ratio. Live per-call, operator-gated."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "Toss buy balance rate is only available for Korean stocks "
             "(6-digit codes like '005930')"
         )
@@ -71,9 +72,9 @@ async def handle_get_toss_ai_signal(symbol: str) -> dict[str, Any]:
     """Toss AI signal (direction + reasoning). Live per-call, operator-gated."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "Toss AI signal is only available for Korean stocks "
             "(6-digit codes like '005930')"
         )

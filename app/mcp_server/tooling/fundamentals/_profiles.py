@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals._helpers import (
     normalize_equity_market,
 )
@@ -36,10 +37,10 @@ async def handle_get_company_profile(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if _is_crypto_market(symbol):
-        raise ValueError("Company profile is not available for cryptocurrencies")
+        raise CallerInputError("Company profile is not available for cryptocurrencies")
 
     if market is None:
         if _is_korean_equity_code(symbol):
@@ -67,11 +68,11 @@ async def handle_get_company_profile(
 async def handle_get_crypto_profile(symbol: str) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     normalized_symbol = _normalize_crypto_base_symbol(symbol)
     if not normalized_symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     try:
         coin_id = await _resolve_coingecko_coin_id(normalized_symbol)

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.timezone import KST, now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
@@ -217,7 +218,7 @@ async def handle_get_market_index(
 ) -> dict[str, Any]:
     period = (period or "day").strip().lower()
     if period not in ("day", "week", "month"):
-        raise ValueError("period must be 'day', 'week', or 'month'")
+        raise CallerInputError("period must be 'day', 'week', or 'month'")
 
     capped_count = min(max(count, 1), 100)
 
@@ -225,7 +226,7 @@ async def handle_get_market_index(
         sym = symbol.strip().upper()
         meta = _INDEX_META.get(sym)
         if meta is None:
-            raise ValueError(
+            raise CallerInputError(
                 f"Unknown index symbol '{sym}'. Supported: {', '.join(sorted(_INDEX_META))}"
             )
 
@@ -312,7 +313,7 @@ async def handle_get_market_index_current_only(symbol: str) -> dict[str, Any]:
     sym = (symbol or "").strip().upper()
     meta = _INDEX_META.get(sym)
     if meta is None:
-        raise ValueError(
+        raise CallerInputError(
             f"Unknown index symbol '{sym}'. Supported: {', '.join(sorted(_INDEX_META))}"
         )
     try:

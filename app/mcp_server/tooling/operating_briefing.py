@@ -13,6 +13,7 @@ import sentry_sdk
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.pending_orders_snapshot import (
     DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE,
     collect_pending_orders_snapshot,
@@ -116,7 +117,7 @@ def _default_account_scope(market: str, account_scope: str | None) -> str:
         return account_scope
     default = DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE.get(market)
     if default is None:
-        raise ValueError(f"unsupported market for operating briefing: {market}")
+        raise CallerInputError(f"unsupported market for operating briefing: {market}")
     return default
 
 

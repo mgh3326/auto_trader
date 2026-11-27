@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.caller_identity import get_caller_agent_id
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
     support_reserve_net_consume,
 )
@@ -126,7 +127,7 @@ def _dec(v: str | None) -> Decimal | None:
     try:
         return Decimal(str(v))
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"invalid decimal {v!r}") from exc
+        raise CallerInputError(f"invalid decimal {v!r}") from exc
 
 
 def _group_dict(g: Any) -> dict[str, Any]:
@@ -684,20 +685,20 @@ def _validate_exit_plan_argument(
     if exit_plan is None:
         return
     if side != "buy" or action != "place":
-        raise ValueError("exit_plan is only accepted on a place buy proposal")
+        raise CallerInputError("exit_plan is only accepted on a place buy proposal")
     try:
         parsed = parse_exit_plan_input(exit_plan)
     except ExitPlanInputError as exc:
-        raise ValueError(f"exit_plan invalid: {exc}") from exc
+        raise CallerInputError(f"exit_plan invalid: {exc}") from exc
     # The plan is written at acceptance from the rung's price and quantity. Without
     # both it would be dropped and the lot would get the default stop instead.
     if order_type != "limit" or any(
         rung.limit_price is None or rung.quantity is None for rung in rungs
     ):
-        raise ValueError("exit_plan invalid: exit_plan_needs_limit_and_quantity")
+        raise CallerInputError("exit_plan invalid: exit_plan_needs_limit_and_quantity")
     limits = [rung.limit_price for rung in rungs if rung.limit_price is not None]
     if any(limit <= parsed.stop_price for limit in limits):
-        raise ValueError("exit_plan invalid: exit_plan_stop_not_below_rung")
+        raise CallerInputError("exit_plan invalid: exit_plan_stop_not_below_rung")
 
 
 async def order_proposal_create(
@@ -822,7 +823,9 @@ async def order_proposal_create(
         target_snapshot = None
         if normalized_action in {"replace", "cancel"}:
             if not target_broker_order_id:
-                raise ValueError(f"{normalized_action} requires target_broker_order_id")
+                raise CallerInputError(
+                    f"{normalized_action} requires target_broker_order_id"
+                )
             check_action_capability(
                 action=normalized_action, account_mode=account_mode, market=market
             )
@@ -1081,7 +1084,7 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
         pid = uuid.UUID(proposal_id)
         normalized_reason = reason.strip()
         if not normalized_reason:
-            raise ValueError("void reason is required")
+            raise CallerInputError("void reason is required")
         async with AsyncSessionLocal() as session:
             service = OrderProposalsService(session)
             now = now_kst()

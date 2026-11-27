@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.scoring import calc_composite_score, generate_reason
 from app.mcp_server.strategies import (
     get_strategy_description,
@@ -236,7 +237,7 @@ def _normalize_recommend_market(market: str | None) -> str:
 
     normalized = aliases.get(m)
     if normalized is None:
-        raise ValueError("market must be one of: kr, us, crypto")
+        raise CallerInputError("market must be one of: kr, us, crypto")
     return normalized
 
 
@@ -316,9 +317,9 @@ def _prepare_recommend_request(
     exclude_held: bool,
 ) -> RecommendRequestContext:
     if budget <= 0:
-        raise ValueError("budget must be positive")
+        raise CallerInputError("budget must be positive")
     if max_positions < 1 or max_positions > 20:
-        raise ValueError("max_positions must be between 1 and 20")
+        raise CallerInputError("max_positions must be between 1 and 20")
 
     validated_strategy = validate_strategy(strategy)
     normalized_market = _normalize_recommend_market(market)

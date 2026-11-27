@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_fibonacci,
     _calculate_volume_profile,
@@ -36,7 +37,7 @@ async def get_support_resistance_impl(
 
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}

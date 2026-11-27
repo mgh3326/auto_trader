@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.exchange_rate_service import get_usd_krw_rate_details
 
 
@@ -18,7 +19,7 @@ def _normalize_fx_pair(pair: str | None) -> str:
     raw = (pair or "USDKRW").strip().upper()
     compact = raw.replace("/", "").replace("_", "").replace("-", "").replace(" ", "")
     if compact != "USDKRW":
-        raise ValueError(f"Unsupported FX pair '{raw}'. Supported: USDKRW")
+        raise CallerInputError(f"Unsupported FX pair '{raw}'. Supported: USDKRW")
     return "USDKRW"
 
 

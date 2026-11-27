@@ -21,6 +21,7 @@ import datetime as dt
 from typing import Any
 
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
@@ -39,9 +40,9 @@ async def handle_get_retail_sentiment(
     """Aggregate retail-discussion activity for a KR symbol (Naver 종목토론, gated)."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if (market or "kr").strip().lower() != "kr" or not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "retail sentiment is only available for Korean stocks "
             "(6-digit codes like '005930')"
         )

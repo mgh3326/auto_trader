@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.shared import MCP_USER_ID
 from app.models.user_settings import UserSetting
 from app.services.manual_cash_settings import (
@@ -52,7 +53,7 @@ async def get_user_setting(key: str) -> Any | None:
     Returns the JSON value if found, None otherwise.
     """
     if not key or not key.strip():
-        raise ValueError("key is required")
+        raise CallerInputError("key is required")
 
     row = await _get_setting_row(key.strip())
     if row is None:
@@ -66,7 +67,7 @@ async def set_user_setting(key: str, value: Any) -> dict[str, Any]:
     Returns the serialized setting with key, value, and updated_at.
     """
     if not key or not key.strip():
-        raise ValueError("key is required")
+        raise CallerInputError("key is required")
 
     key = key.strip()
     if key == MANUAL_CASH_KEY:

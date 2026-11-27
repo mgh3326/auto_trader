@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.alpaca_paper_account_modes import (
     ALPACA_PAPER_ACCOUNT_MODE,
     ALPACA_PAPER_LAB_ACCOUNT_MODE,
@@ -125,9 +126,9 @@ class PreviewOrderInput(BaseModel):
     def validate_symbol(cls, v: str) -> str:
         stripped = v.strip()
         if not stripped:
-            raise ValueError("symbol must not be blank")
+            raise CallerInputError("symbol must not be blank")
         if len(stripped) > 10:
-            raise ValueError("symbol must be 1-10 characters")
+            raise CallerInputError("symbol must be 1-10 characters")
         return stripped.upper()
 
     @field_validator("side")
@@ -135,7 +136,7 @@ class PreviewOrderInput(BaseModel):
     def validate_side(cls, v: str) -> str:
         normalized = v.strip().lower()
         if normalized not in {"buy", "sell"}:
-            raise ValueError("side must be 'buy' or 'sell'")
+            raise CallerInputError("side must be 'buy' or 'sell'")
         return normalized
 
     @field_validator("type")
@@ -143,7 +144,7 @@ class PreviewOrderInput(BaseModel):
     def validate_order_type(cls, v: str) -> str:
         normalized = v.strip().lower()
         if normalized not in {"market", "limit"}:
-            raise ValueError("order type must be 'market' or 'limit'")
+            raise CallerInputError("order type must be 'market' or 'limit'")
         return normalized
 
     @field_validator("qty")
@@ -152,9 +153,9 @@ class PreviewOrderInput(BaseModel):
         if v is None:
             return None
         if not v.is_finite():
-            raise ValueError("qty must be a finite number")
+            raise CallerInputError("qty must be a finite number")
         if v <= 0:
-            raise ValueError("qty must be > 0")
+            raise CallerInputError("qty must be > 0")
         return v
 
     @field_validator("notional")
@@ -163,16 +164,16 @@ class PreviewOrderInput(BaseModel):
         if v is None:
             return None
         if not v.is_finite():
-            raise ValueError("notional must be a finite number")
+            raise CallerInputError("notional must be a finite number")
         if v <= 0:
-            raise ValueError("notional must be > 0")
+            raise CallerInputError("notional must be > 0")
         return v
 
     @field_validator("stop_price")
     @classmethod
     def validate_stop_price(cls, v: Decimal | None) -> Decimal | None:
         if v is not None:
-            raise ValueError("stop_price not supported in preview")
+            raise CallerInputError("stop_price not supported in preview")
         return None
 
     @field_validator("time_in_force")
@@ -181,7 +182,7 @@ class PreviewOrderInput(BaseModel):
         normalized = v.strip().lower()
         if normalized not in ALPACA_PAPER_EQUITY_TIME_IN_FORCE:
             allowed = ", ".join(sorted(ALPACA_PAPER_EQUITY_TIME_IN_FORCE))
-            raise ValueError(f"time_in_force must be one of: {allowed}")
+            raise CallerInputError(f"time_in_force must be one of: {allowed}")
         return normalized
 
     @field_validator("client_order_id")
@@ -191,9 +192,9 @@ class PreviewOrderInput(BaseModel):
             return None
         stripped = v.strip()
         if not stripped:
-            raise ValueError("client_order_id must not be blank")
+            raise CallerInputError("client_order_id must not be blank")
         if len(stripped) > ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH:
-            raise ValueError(
+            raise CallerInputError(
                 "client_order_id must be <= "
                 f"{ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH} characters"
             )
@@ -204,7 +205,7 @@ class PreviewOrderInput(BaseModel):
     def validate_asset_class(cls, v: str) -> str:
         normalized = v.strip().lower()
         if normalized not in {"us_equity", "crypto"}:
-            raise ValueError(
+            raise CallerInputError(
                 f"asset_class '{v}' not supported in preview (us_equity or crypto only)"
             )
         return normalized
@@ -213,24 +214,26 @@ class PreviewOrderInput(BaseModel):
     @classmethod
     def validate_limit_price_positive(cls, v: Decimal | None) -> Decimal | None:
         if v is not None and (not v.is_finite() or v <= 0):
-            raise ValueError("limit_price must be > 0")
+            raise CallerInputError("limit_price must be > 0")
         return v
 
     def _validate_quantity_selection(self, has_qty: bool, has_notional: bool) -> None:
         if has_qty == has_notional:
-            raise ValueError("exactly one of qty or notional is required")
+            raise CallerInputError("exactly one of qty or notional is required")
 
     def _validate_crypto_rules(self) -> None:
         if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
             allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
-            raise ValueError(f"crypto symbol must be one of: {allowed}")
+            raise CallerInputError(f"crypto symbol must be one of: {allowed}")
         if self.type != "limit":
-            raise ValueError("crypto preview is limit-only")
+            raise CallerInputError("crypto preview is limit-only")
         if self.time_in_force not in ALPACA_PAPER_CRYPTO_TIME_IN_FORCE:
             allowed_tif = ", ".join(sorted(ALPACA_PAPER_CRYPTO_TIME_IN_FORCE))
-            raise ValueError(f"crypto time_in_force must be one of: {allowed_tif}")
+            raise CallerInputError(
+                f"crypto time_in_force must be one of: {allowed_tif}"
+            )
         if self.limit_price is None:
-            raise ValueError("limit_price is required for crypto limit orders")
+            raise CallerInputError("limit_price is required for crypto limit orders")
 
     def _validate_extended_hours_rules(self) -> None:
         """Refuse extended-hours requests Alpaca would reject, before any network call.
@@ -246,21 +249,23 @@ class PreviewOrderInput(BaseModel):
         if not self.extended_hours:
             return
         if self.asset_class != "us_equity":
-            raise ValueError("extended_hours is supported for us_equity orders only")
+            raise CallerInputError(
+                "extended_hours is supported for us_equity orders only"
+            )
         if self.type != "limit":
-            raise ValueError("extended_hours requires type=limit")
+            raise CallerInputError("extended_hours requires type=limit")
         if self.time_in_force != "day":
-            raise ValueError("extended_hours requires time_in_force=day")
+            raise CallerInputError("extended_hours requires time_in_force=day")
 
     def _validate_equity_rules(self, has_notional: bool) -> None:
         # notional + limit type is rejected for US equities — Alpaca only
         # supports equity notional orders for market orders in this surface.
         if has_notional and self.type == "limit":
-            raise ValueError("notional is not supported for limit orders")
+            raise CallerInputError("notional is not supported for limit orders")
         if self.type == "limit" and self.limit_price is None:
-            raise ValueError("limit_price is required for limit orders")
+            raise CallerInputError("limit_price is required for limit orders")
         if self.type == "market" and self.limit_price is not None:
-            raise ValueError("limit_price is not allowed for market orders")
+            raise CallerInputError("limit_price is not allowed for market orders")
 
     @model_validator(mode="after")
     def validate_cross_field_rules(self) -> PreviewOrderInput:
@@ -318,7 +323,7 @@ async def alpaca_paper_preview_order(
         selected == ALPACA_PAPER_LAB_ACCOUNT_MODE
         and validated.asset_class != "us_equity"
     ):
-        raise ValueError("alpaca_paper_lab supports us_equity orders only")
+        raise CallerInputError("alpaca_paper_lab supports us_equity orders only")
 
     order_request: dict[str, Any] = {
         "symbol": validated.symbol,

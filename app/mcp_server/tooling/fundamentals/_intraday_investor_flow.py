@@ -6,6 +6,7 @@ import datetime
 from typing import Any
 
 from app.core.timezone import KST, now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals._investor_flow_common import (
     build_confirmed_block,
 )
@@ -165,10 +166,10 @@ def _classify_session(
 async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "Intraday investor flow is only available for Korean stocks "
             "(6-digit codes like '005930')"
         )

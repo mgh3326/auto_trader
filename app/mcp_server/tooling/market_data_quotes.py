@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import is_upbit_market_symbol, to_db_symbol
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _calculate_rsi_series,
@@ -493,9 +494,9 @@ def _calculate_orderbook_spread(
 def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
     value = str(symbol).strip().upper()
     if not value:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if not value.startswith("KRW-"):
-        raise ValueError("crypto orderbook only supports KRW-* symbols")
+        raise CallerInputError("crypto orderbook only supports KRW-* symbols")
     return value
 
 
@@ -1563,7 +1564,7 @@ async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     prices = await upbit_service.fetch_multiple_current_prices([symbol])
     price = prices.get(symbol)
     if price is None:
-        raise ValueError(f"Symbol '{symbol}' not found")
+        raise CallerInputError(f"Symbol '{symbol}' not found")
     return {
         "symbol": symbol,
         "instrument_type": "crypto",
@@ -1907,7 +1908,7 @@ async def _fetch_quote_equity_us(
         fast_info = await yahoo_service.fetch_fast_info(normalized_symbol)
     except Exception as exc:
         if _is_yahoo_symbol_not_found_error(exc):
-            raise ValueError(not_found_message) from exc
+            raise CallerInputError(not_found_message) from exc
         raise RuntimeError(
             f"{unavailable_message} (yahoo fallback failed): {exc}"
         ) from exc
@@ -2333,18 +2334,18 @@ async def _get_indicators_impl(
     """
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     normalized_symbol = _normalize_symbol_input(symbol, market)
     market_missing = market is None or not str(market).strip()
     if market_missing and normalized_symbol.isalpha():
-        raise ValueError(
+        raise CallerInputError(
             "market is required for plain alphabetic symbols. Use market='us' "
             "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
         )
 
     if not indicators:
-        raise ValueError("indicators list is required and cannot be empty")
+        raise CallerInputError("indicators list is required and cannot be empty")
 
     valid_indicators = {
         "sma",
@@ -2362,7 +2363,7 @@ async def _get_indicators_impl(
     for ind in indicators:
         ind_lower = ind.lower().strip()
         if ind_lower not in valid_indicators:
-            raise ValueError(
+            raise CallerInputError(
                 f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
             )
         normalized_indicators.append(cast(IndicatorType, ind_lower))
@@ -2482,7 +2483,7 @@ async def _get_quote_impl(
     """
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     market_type, symbol = _resolve_market_type(symbol, market)
 
@@ -2557,7 +2558,7 @@ async def _get_orderbook_impl(
         requested_market = str(market).strip()
     market_type = _normalize_market(requested_market)
     if market_type is None:
-        raise ValueError(f"Unsupported market: {market}")
+        raise CallerInputError(f"Unsupported market: {market}")
 
     source = "kis"
     instrument_type = "equity_kr"
@@ -2565,16 +2566,18 @@ async def _get_orderbook_impl(
     if market_type == "equity_kr":
         symbol = _normalize_symbol_input(symbol, "kr")
         if not symbol:
-            raise ValueError("symbol is required")
+            raise CallerInputError("symbol is required")
         _, symbol = _resolve_market_type(symbol, "kr")
     elif market_type == "crypto":
         if venue is not None and str(venue).strip():
-            raise ValueError("venue is only supported for KR equity orderbook")
+            raise CallerInputError("venue is only supported for KR equity orderbook")
         symbol = _validate_crypto_orderbook_symbol_input(symbol)
         source = "upbit"
         instrument_type = "crypto"
     else:
-        raise ValueError("get_orderbook only supports KR equity and KRW crypto markets")
+        raise CallerInputError(
+            "get_orderbook only supports KR equity and KRW crypto markets"
+        )
 
     try:
         snapshot = await market_data_service.get_orderbook(
@@ -2603,10 +2606,10 @@ async def _get_ohlcv_impl(
     """Implementation for get_ohlcv tool."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     count = int(count)
     if count <= 0:
-        raise ValueError("count must be > 0")
+        raise CallerInputError("count must be > 0")
 
     period = (period or "day").strip().lower()
 
@@ -2630,7 +2633,7 @@ async def _get_ohlcv_impl(
             else:
                 parsed_end_date = datetime.datetime.fromisoformat(end_date)
         except ValueError as exc:
-            raise ValueError(
+            raise CallerInputError(
                 "end_date must be ISO format (e.g., '2024-01-15')"
             ) from exc
 
@@ -2718,7 +2721,7 @@ async def _get_execution_strength_impl(
 
     normalized = _normalize_symbol_input(symbol, "kr")
     if not normalized:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     _, normalized = _resolve_market_type(normalized, "kr")
 
     try:

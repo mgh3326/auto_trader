@@ -9,6 +9,7 @@ import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.core.exceptions import describe_exception
 from app.core.timezone import now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
     logger,
@@ -48,7 +49,7 @@ _KIS_MOCK_CASH_ACCOUNTS = frozenset({"kis", "kis_domestic", "kis_overseas"})
 
 def _validate_kis_mock_cash_account(account_filter: str | None) -> None:
     if account_filter is not None and account_filter not in _KIS_MOCK_CASH_ACCOUNTS:
-        raise ValueError(
+        raise CallerInputError(
             f"account={account_filter!r} is incompatible with account_mode='kis_mock'"
         )
 

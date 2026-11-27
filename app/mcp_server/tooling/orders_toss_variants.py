@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import settings, validate_toss_api_config
 from app.core.timezone import KST, now_kst
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tick_size import (
     adjust_tick_size_kr,
     get_tick_size_kr,
@@ -342,7 +343,9 @@ def _infer_market(
     if market is not None:
         val = str(market).strip().lower()
         if val not in ("kr", "us"):
-            raise ValueError(f"Invalid market: {market!r}. Toss supports 'kr' or 'us'.")
+            raise CallerInputError(
+                f"Invalid market: {market!r}. Toss supports 'kr' or 'us'."
+            )
         return cast(Literal["kr", "us"], val)
     clean_sym = str(symbol).strip()
     if re.match(r"^\d{6}$", clean_sym):
@@ -352,13 +355,13 @@ def _infer_market(
 
 def _decimal_string(value: str | int | float | None, name: str) -> Decimal:
     if value is None:
-        raise ValueError(f"{name} is required")
+        raise CallerInputError(f"{name} is required")
     if isinstance(value, float):
         raise TypeError(f"{name} must be str or int, not float")
     try:
         return Decimal(str(value))
     except Exception as exc:
-        raise ValueError(f"Invalid decimal value for {name}: {value!r}") from exc
+        raise CallerInputError(f"Invalid decimal value for {name}: {value!r}") from exc
 
 
 def _stringify_decimal(value: Decimal | None) -> str | None:
