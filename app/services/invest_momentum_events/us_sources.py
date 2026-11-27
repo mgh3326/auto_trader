@@ -63,8 +63,23 @@ KIS_EXCHANGES = ("NAS", "NYS", "AMS")
 KIS_GUBN_UP = "1"
 KIS_GUBN_DOWN = "0"
 KIS_NDAY_TODAY = "0"
-#: ``VOL_RANG`` 1 = 100 shares or more (drops no-trade rows without hiding size).
-KIS_VOL_RANG = "1"
+#: ``VOL_RANG`` documented codes (official sample comments, read 2026-11-25):
+#: 0 = all, 1 = 100+ shares, 2 = 1,000+, 3 = 10,000+, 4 = 100,000+,
+#: 5 = 1M+, 6 = 10M+ traded shares. ``KIS_VOL_RANG`` is the request floor; the
+#: share count it implies is the defensive client-side floor below.
+KIS_VOL_RANG_MIN_SHARES = {
+    "0": 0,
+    "1": 100,
+    "2": 1_000,
+    "3": 10_000,
+    "4": 100_000,
+    "5": 1_000_000,
+    "6": 10_000_000,
+}
+#: 100,000 shares minimum (``VOL_RANG=4``): liquid movers only. The old ``1``
+#: (100 shares) let ~90 illiquid rows per side fill the KIS surfaces (hk 6572).
+KIS_VOL_RANG = "4"
+KIS_MIN_VOLUME_SHARES = KIS_VOL_RANG_MIN_SHARES[KIS_VOL_RANG]
 #: A single page per exchange, so a surface never paginates mid-run.
 KIS_MAX_ROWS_PER_EXCHANGE = 30
 
@@ -179,7 +194,12 @@ class KisOverseasRankingReader(Protocol):
     ) -> Mapping[str, Any]: ...
 
     async def inquire_overseas_mover_ranking(
-        self, source: str, exchange_code: str, *, side: str
+        self,
+        source: str,
+        exchange_code: str,
+        *,
+        side: str,
+        vol_rang: str = KIS_VOL_RANG,
     ) -> Mapping[str, Any]: ...
 
 
@@ -889,10 +909,15 @@ def derive_asset_type(master: SymbolMaster) -> str:
         return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_ETF
     if security_type in _COMMON_STOCK_SECURITY_TYPES:
         return ASSET_COMMON_STOCK
+    # An unrecognized provider label does not hide positive leverage evidence:
+    # a Toss ``leverageFactor`` != 1 or a leveraged name still means a
+    # leveraged/inverse product (hk 6572).
     if security_type:
-        return ASSET_UNKNOWN
+        return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_UNKNOWN
     if master.is_common_stock is True:
         return ASSET_COMMON_STOCK
+    if _leveraged(master):
+        return ASSET_LEVERAGED_ETF
     if master.is_common_stock is False:
         # "not a common share" is not fund evidence: the NASDAQ Trader flag is
         # also False for preferreds, depositary shares, notes and trusts. Only a
@@ -918,8 +943,10 @@ __all__ = [
     "KIS_GUBN_DOWN",
     "KIS_GUBN_UP",
     "KIS_MAX_ROWS_PER_EXCHANGE",
+    "KIS_MIN_VOLUME_SHARES",
     "KIS_NDAY_TODAY",
     "KIS_VOL_RANG",
+    "KIS_VOL_RANG_MIN_SHARES",
     "KisOverseasRankingReader",
     "REASON_NOT_IN_PAYLOAD",
     "REASON_NOT_IN_SYMBOL_UNIVERSE",

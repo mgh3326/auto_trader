@@ -190,19 +190,25 @@ def test_new_source_missing_fields_stay_null_with_reasons():
 async def test_real_kis_client_facade_delegates_mover_ranking():
     class MarketData:
         async def inquire_overseas_mover_ranking(
-            self, ranking_type, exchange_code, *, side
+            self, ranking_type, exchange_code, *, side, vol_rang="0"
         ):
             return {
                 "ranking_type": ranking_type,
                 "exchange_code": exchange_code,
                 "side": side,
+                "vol_rang": vol_rang,
             }
 
     client = object.__new__(KISClient)
     client._market_data = MarketData()
     assert await client.inquire_overseas_mover_ranking(
-        "price_fluct", "NAS", side="up"
-    ) == {"ranking_type": "price_fluct", "exchange_code": "NAS", "side": "up"}
+        "price_fluct", "NAS", side="up", vol_rang="4"
+    ) == {
+        "ranking_type": "price_fluct",
+        "exchange_code": "NAS",
+        "side": "up",
+        "vol_rang": "4",
+    }
 
 
 @pytest.mark.asyncio
@@ -211,7 +217,9 @@ async def test_kis_ranking_received_time_is_taken_after_all_requests():
     clock_request_counts = []
 
     class TimedKis(FakeKis):
-        async def inquire_overseas_mover_ranking(self, source, exchange_code, *, side):
+        async def inquire_overseas_mover_ranking(
+            self, source, exchange_code, *, side, vol_rang="0"
+        ):
             nonlocal requests
             requests += 1
             return {"output1": {"stat": "R"}, "output2": []}
@@ -267,7 +275,9 @@ async def test_collection_deadline_writes_timeout_status_for_unfinished_surfaces
 @pytest.mark.asyncio
 async def test_one_new_source_failure_does_not_block_other_source_writes(monkeypatch):
     class BrokenOneKis(FakeKis):
-        async def inquire_overseas_mover_ranking(self, source, exchange_code, *, side):
+        async def inquire_overseas_mover_ranking(
+            self, source, exchange_code, *, side, vol_rang="0"
+        ):
             if source == us_sources.SOURCE_KIS_VOLUME_SURGE:
                 raise RuntimeError("fixture failure")
             return {"output1": {"stat": "R"}, "output2": []}

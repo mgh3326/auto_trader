@@ -67,6 +67,7 @@ from app.services.invest_momentum_events.us_sources import (
     KIS_EXCHANGES,
     KIS_GUBN_DOWN,
     KIS_GUBN_UP,
+    KIS_MIN_VOLUME_SHARES,
     KIS_NDAY_TODAY,
     KIS_VOL_RANG,
     REASON_NOT_IN_SYMBOL_UNIVERSE,
@@ -260,6 +261,25 @@ def us_momentum_upsert(
 MAX_COLLECTION_SECONDS = 120.0
 
 
+def _apply_kis_volume_floor(outcome: SurfaceOutcome) -> SurfaceOutcome:
+    """Defensive client-side mirror of the ``VOL_RANG`` request floor (hk 6572).
+
+    The provider filters server-side; this drops a returned row whose reported
+    volume is *below* the floor anyway. A row with unreadable volume stays —
+    NULL + reason is honest, dropping it would hide a provider gap.
+    """
+    if outcome.status != STATUS_OK:
+        return outcome
+    rows = tuple(
+        row
+        for row in outcome.rows
+        if row.volume is None or row.volume >= KIS_MIN_VOLUME_SHARES
+    )
+    if len(rows) == len(outcome.rows):
+        return outcome
+    return SurfaceOutcome(outcome.status, outcome.reason, rows, outcome.source)
+
+
 async def _fetch_alpaca(
     alpaca: AlpacaScreenerReader | None,
     *,
@@ -339,7 +359,9 @@ async def _fetch_kis_side(
                 nday=KIS_NDAY_TODAY,
                 vol_rang=KIS_VOL_RANG,
             )
-            outcomes.append(classify_kis_updown(payload, exchange))
+            outcomes.append(
+                _apply_kis_volume_floor(classify_kis_updown(payload, exchange))
+            )
         received = clock()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -368,10 +390,14 @@ async def _fetch_kis_ranking(
         outcomes = []
         for exchange in KIS_EXCHANGES:
             payload = await kis.inquire_overseas_mover_ranking(
-                source, exchange, side=side
+                source, exchange, side=side, vol_rang=KIS_VOL_RANG
             )
             outcomes.append(
-                classify_kis_mover_ranking(payload, exchange, source=source, side=side)
+                _apply_kis_volume_floor(
+                    classify_kis_mover_ranking(
+                        payload, exchange, source=source, side=side
+                    )
+                )
             )
         received = clock()
     except Exception as exc:  # noqa: BLE001

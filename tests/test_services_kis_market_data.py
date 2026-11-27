@@ -1932,3 +1932,64 @@ async def test_late_expiry_keeps_token_published_by_another_process(monkeypatch)
     )["rt_cd"] == "0"
     assert await manager.get_token(force_redis_check=True) == "new"
     await redis.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "side", "expected"),
+    [
+        (
+            "kis_overseas_price_fluct",
+            "up",
+            {"GUBN": "1", "MINX": "0", "VOL_RANG": "4"},
+        ),
+        (
+            "kis_overseas_price_fluct",
+            "down",
+            {"GUBN": "0", "MINX": "0", "VOL_RANG": "4"},
+        ),
+        ("kis_overseas_volume_surge", "active", {"MINX": "0", "VOL_RANG": "4"}),
+        (
+            "kis_overseas_new_highlow",
+            "down",
+            {"MINX": "0", "VOL_RANG": "4", "GUBN": "0", "GUBN2": "1"},
+        ),
+        ("kis_overseas_volume_power", "active", {"NDAY": "0", "VOL_RANG": "4"}),
+    ],
+)
+async def test_kis_mover_ranking_sends_documented_vol_rang(
+    monkeypatch, source, side, expected
+):
+    """hk 6572: the documented VOL_RANG floor reaches the wire on all four TRs."""
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    request = AsyncMock(return_value={"rt_cd": "0", "output1": {}, "output2": []})
+    monkeypatch.setattr(client._market_data, "_request_with_token_retry", request)
+
+    await client.inquire_overseas_mover_ranking(source, "NAS", side=side, vol_rang="4")
+
+    params = request.await_args.kwargs["params"]
+    assert params["EXCD"] == "NAS"
+    for key, value in expected.items():
+        assert params[key] == value
+
+
+@pytest.mark.asyncio
+async def test_kis_updown_rate_sends_vol_rang(monkeypatch):
+    """hk 6572: HHDFS76290000 also carries the documented VOL_RANG param."""
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    request = AsyncMock(return_value={"rt_cd": "0", "output1": {}, "output2": []})
+    monkeypatch.setattr(client._market_data, "_request_with_token_retry", request)
+
+    await client.inquire_overseas_updown_rate(
+        "NAS", direction="0", nday="0", vol_rang="4"
+    )
+
+    params = request.await_args.kwargs["params"]
+    assert params["EXCD"] == "NAS"
+    assert params["NDAY"] == "0"
+    assert params["GUBN"] == "0"
+    assert params["VOL_RANG"] == "4"
