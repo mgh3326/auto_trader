@@ -24,6 +24,10 @@ from app.services.daily_plan.vocabulary import (
     VENUE_MARKETS,
     VENUE_SESSIONS,
 )
+from app.services.mechanical_loss_cut.rules import is_parking_instrument
+
+#: The market the loss-cut replay evaluates holding rows against.
+LOSS_CUT_MARKET = "equity_kr"
 
 # Upbit KRW market minimum order amount (orders/chance ``market.bid.min_total``).
 # The plan layer reads no live orders/chance; the order path revalidates later.
@@ -185,6 +189,11 @@ def _first_unavailable(value: Any) -> str | None:
     return next(
         (reason for item in children if (reason := _first_unavailable(item))), None
     )
+
+
+def parking_not_applicable(symbol: Any) -> bool:
+    """Parking holdings are cash, so the loss-cut rule does not apply (design §7.2)."""
+    return is_parking_instrument(symbol, LOSS_CUT_MARKET)
 
 
 def risk_input_gap(raw: Any) -> tuple[str, str] | None:
@@ -385,7 +394,7 @@ def prepare_row(
         reason = "input_missing"
     if kind == "holding" and evidence is not None:
         risk_inputs = evidence.get("risk_inputs") or {}
-        if reason is None:
+        if reason is None and not parking_not_applicable(row["symbol"]):
             gap = risk_input_gap(risk_inputs)
             reason = gap[1] if gap else None
         if action in ("add", "trim", "risk_sell") and reason is None:
