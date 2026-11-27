@@ -298,6 +298,9 @@ async def list_filings(
     if not normalized_symbol:
         return _error_payload("", "symbol is required")
 
+    if limit < 1:
+        return _error_payload(normalized_symbol, "limit must be at least 1")
+
     if not settings.opendart_api_key:
         return _error_payload(
             normalized_symbol,
