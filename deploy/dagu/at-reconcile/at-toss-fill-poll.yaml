@@ -5,8 +5,10 @@
 # 스크립트가 시장 게이트(KRX 09:00–20:00 KST 또는 미국 프리·정규·애프터)를 스스로 보고, 밖이면 skipped 로 브로커 호출 없이 끝난다.
 # 스케줄은 그 합집합을 덮는다: 월 09:00 KST 부터 토 10:55 KST(미국 애프터 20:00 ET 종료) 까지 5분 간격.
 # 🔴 동시 실행 금지: 두 reconcile 패스가 겹치면 이중 부기 가능성이 있다(runbook toss-fill-reconcile-poller).
-# 겹침 방지는 컨테이너 이름이 한다: 같은 이름(at-toss-fill-poll)의 컨테이너가 아직 있으면 이 실행은 새 패스를 시작하지 않고
-# 실패로 끝난다(failure 핸들러가 기록). 정상 패스는 수십 초라 5분 뒤에도 남아 있으면 멈춘 패스로 보고 사람에게 알린다.
+# 겹침 방지는 컨테이너 이름이 한다: 정확히 그 이름(at-toss-fill-poll)의 컨테이너가 실행 중이면 이 실행은 새 패스를 시작하지 않고
+# 실패로 끝난다(failure 핸들러가 기록). 실행 중이 아닌 같은 이름의 컨테이너(Created·Exited 등 시작되지 않았거나 끝난 것)는
+# 상태를 기록하고 제거한 뒤 실행을 계속한다 — 11-25 에 Created 컨테이너 하나가 폴러를 약 14시간 막은 사고(hk 6635) 때문이다.
+# 정상 패스는 수십 초라 5분 뒤에도 실행 중이면 멈춘 패스로 보고 사람에게 알린다.
 # 확인과 시작 사이의 경합은 docker 의 이름 충돌(종료 코드 125)이 막는다.
 # 🔴 부기 중인 패스에 신호를 보내지 않는다: 한 행의 부기(fill 저장 → 저널/FIFO → 진척 갱신)는 단계별로 커밋되므로 중간에 죽으면
 # 다음 패스가 같은 델타를 다시 부기할 수 있다. 컨테이너 안 timeout 은 없고, --sig-proxy=false 로 Dagu 의 시간 초과 신호도
@@ -24,7 +26,12 @@ steps:
   - name: poll
     script: |
       rc=0
-      if docker ps -aq --filter name=at-toss-fill-poll | grep -q .; then logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=previous_pass_still_running" || true; exit 1; fi
+      if docker inspect --format '{{.State.Running}}' at-toss-fill-poll >/dev/null 2>&1; then
+        if [ "$(docker inspect --format '{{.State.Running}}' at-toss-fill-poll)" = true ]; then logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=previous_pass_still_running" || true; exit 1; fi
+        stale_state="$(docker inspect --format '{{.State.Status}}' at-toss-fill-poll 2>/dev/null || echo unknown)"
+        if docker rm at-toss-fill-poll >/dev/null 2>&1; then logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=stale_container_removed state=$stale_state" || true
+        else logger -t at-dagu-toss-fill-poll "dag=at-toss-fill-poll status=stale_container_remove_failed state=$stale_state" || true; exit 1; fi
+      fi
       docker run --rm --init --sig-proxy=false --name at-toss-fill-poll --network host --workdir /app --env-file /root/at-secrets/.env.api -e TOSS_FILL_POLL_ENABLED=true "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.toss_fill_reconcile_poller --commit || rc=$?
       exit "$rc"
     timeout_sec: 600
