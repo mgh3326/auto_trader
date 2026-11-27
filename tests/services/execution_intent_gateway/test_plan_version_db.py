@@ -38,7 +38,7 @@ from tests.services.execution_intent_gateway.test_plan_version import KEY, SYMBO
 
 validate_run_owned_database_url(engine.url)
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 @pytest_asyncio.fixture(autouse=True)
