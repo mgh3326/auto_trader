@@ -81,6 +81,7 @@ class FakeRepository:
         self.revisions = {}
         self.sources = {}
         self.partitions = {}
+        self.running_marks = 0
 
     async def get_or_create_partition(
         self, *, source, category, market, partition_date
@@ -96,6 +97,7 @@ class FakeRepository:
         return self.partitions[key]
 
     async def mark_partition_running(self, partition):
+        self.running_marks += 1
         partition.status = "running"
         partition.started_at = datetime.now(UTC)
         partition.last_error = None
@@ -961,40 +963,11 @@ async def test_db_failure_rolls_back_and_records_closed_last_error():
 @pytest.mark.asyncio
 async def test_joint_filing_merges_symbols_without_flipflop():
     """One accession under two CIKs unions symbols; content stays put."""
-
-    def joint_payload(cik: int, ticker: str, name: str, file_no: str, film: str):
-        return {
-            "cik": f"{cik:010d}",
-            "name": name,
-            "tickers": [ticker],
-            "filings": {
-                "recent": {
-                    "accessionNumber": ["0000000001-25-000001"],
-                    "filingDate": ["2025-11-19"],
-                    "reportDate": ["2025-09-30"],
-                    "acceptanceDateTime": ["2025-11-19T21:31:12.000Z"],
-                    "act": ["34-13376"],
-                    "form": ["10-Q"],
-                    "fileNumber": [file_no],
-                    "filmNumber": [film],
-                    "items": [""],
-                    "core_type": [""],
-                    "size": [1234],
-                    "isXBRL": [1],
-                    "isInlineXBRL": [1],
-                    "isForeignPrivateIssuer": [0],
-                    "primaryDocument": [f"{ticker.lower()}-10q.htm"],
-                    "primaryDocDescription": ["10-Q"],
-                },
-                "files": [],
-            },
-        }
-
     repo = FakeRepository()
     client = FakeEdgarClient(
         submissions={
-            111: joint_payload(111, "AAA", "Alpha Corp", "001-1", "111"),
-            222: joint_payload(222, "BBB", "Beta Corp", "001-2", "222"),
+            111: _joint_payload(111, "AAA", "Alpha Corp", "001-1", "111"),
+            222: _joint_payload(222, "BBB", "Beta Corp", "001-2", "222"),
         }
     )
     for cik in (111, 222, 111, 222):
@@ -1018,6 +991,141 @@ async def test_joint_filing_merges_symbols_without_flipflop():
     )
     # Content-identical re-reads append no revisions — no flip-flop.
     assert len(repo.revisions[("sec", "0000000001-25-000001")]) == 1
+
+
+@pytest.mark.asyncio
+async def test_db_session_must_match_repository_session():
+    repo = FakeRepository()
+    with pytest.raises(ValueError, match="db must match the repository session"):
+        await collect_sec_filings(
+            FakeSession(),
+            symbols=["NVDA"],
+            repo=repo,
+            client=_nvda_client(),
+            commit=True,
+            clock=lambda: RECEIVED,
+            run_date=RUN_DATE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_stale_observation_still_merges_symbols():
+    """A co-registrant read that observed earlier must not lose its ticker."""
+    repo = FakeRepository()
+    client = FakeEdgarClient(
+        submissions={
+            111: _joint_payload(111, "AAA", "Alpha Corp", "001-1", "111"),
+            222: _joint_payload(222, "BBB", "Beta Corp", "001-2", "222"),
+        }
+    )
+    later = datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+    earlier = later - timedelta(hours=2)
+    # CIK 111's observation is the newer one and owns the content.
+    await collect_sec_filings(
+        None,
+        ciks=[111],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: later,
+        run_date=RUN_DATE,
+    )
+    # CIK 222 observed the same accession earlier — stale content, but its
+    # symbol must still union into the stored row.
+    report = await collect_sec_filings(
+        None,
+        ciks=[222],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: earlier,
+        run_date=RUN_DATE,
+    )
+    assert report["totals"]["stale"] == 1
+    event = repo.events[("sec", "0000000001-25-000001")]
+    assert event["symbols"] == ["AAA", "BBB"]
+    assert event["symbol"] == "AAA"
+    assert event["company_name"] == "Alpha Corp"
+    # No revision for the stale observation; content untouched.
+    assert len(repo.revisions[("sec", "0000000001-25-000001")]) == 1
+
+
+@pytest.mark.asyncio
+async def test_window_applies_to_normalized_event_date():
+    """A blank filingDate falls back to the acceptance date — the window
+    bound must be checked on the stored event_date, not just the raw row."""
+    repo = FakeRepository()
+    broken = copy.deepcopy(NVDA_SUBMISSIONS)
+    # Row 1 (10-Q) has acceptance 2025-08-27; blank its filingDate so
+    # _in_window keeps it and normalize dates it from acceptance.
+    broken["filings"]["recent"]["filingDate"][1] = ""
+    client = FakeEdgarClient(submissions={1045810: broken})
+    report = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+        from_date=date(2025, 11, 19),
+        to_date=date(2025, 11, 19),
+    )
+    # Only the 8-K filed 2025-11-19 survives; the acceptance-dated 10-Q
+    # (2025-08-27) is outside the window despite the blank filingDate.
+    assert report["issuers"]["NVDA"]["filings"] == 1
+    assert len(repo.events) == 1
+    assert repo.events[("sec", "0001045810-25-000301")]["event_date"] == date(
+        2025, 11, 19
+    )
+
+
+@pytest.mark.asyncio
+async def test_partition_running_claim_is_never_persisted():
+    """Per-issuer commits must not carry a 'running' partition claim — a
+    kill mid-run would leave the day stuck 'running' forever."""
+    repo = FakeRepository()
+    await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=_nvda_client(),
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    assert repo.running_marks == 0
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "pending"
+
+
+def _joint_payload(cik: int, ticker: str, name: str, file_no: str, film: str):
+    return {
+        "cik": f"{cik:010d}",
+        "name": name,
+        "tickers": [ticker],
+        "filings": {
+            "recent": {
+                "accessionNumber": ["0000000001-25-000001"],
+                "filingDate": ["2025-11-19"],
+                "reportDate": ["2025-09-30"],
+                "acceptanceDateTime": ["2025-11-19T21:31:12.000Z"],
+                "act": ["34-13376"],
+                "form": ["10-Q"],
+                "fileNumber": [file_no],
+                "filmNumber": [film],
+                "items": [""],
+                "core_type": [""],
+                "size": [1234],
+                "isXBRL": [1],
+                "isInlineXBRL": [1],
+                "isForeignPrivateIssuer": [0],
+                "primaryDocument": [f"{ticker.lower()}-10q.htm"],
+                "primaryDocDescription": ["10-Q"],
+            },
+            "files": [],
+        },
+    }
 
 
 # -- IR ------------------------------------------------------------------------

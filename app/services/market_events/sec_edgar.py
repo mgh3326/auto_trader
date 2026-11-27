@@ -609,8 +609,7 @@ async def _write_filing(
         source_event_id=source_event_id,
     )
     latest_observed_at = getattr(latest, "observed_at", None)
-    if latest_observed_at is not None and latest_observed_at > observed_at:
-        return "stale"
+    stale = latest_observed_at is not None and latest_observed_at > observed_at
 
     existing = None
     if latest is not None:
@@ -624,11 +623,13 @@ async def _write_filing(
             )
     content_changed = latest is None or latest.content_hash != digest
     symbols_changed = False
+    merged_symbols: list[str] | None = None
     if existing is not None:
         prior_symbols = list(getattr(existing, "symbols", None) or [])
         merged = prior_symbols + [
             item for item in (event.get("symbols") or []) if item not in prior_symbols
         ]
+        merged_symbols = merged
         symbols_changed = merged != prior_symbols
         event = {
             **event,
@@ -644,6 +645,17 @@ async def _write_filing(
             if prior_raw is not None:
                 event["raw_payload_json"] = prior_raw
 
+    if stale:
+        # A newer observation already owns this accession's content, but a
+        # co-registrant read that observed earlier must still union its
+        # symbols — upsert with every stored field preserved except symbols.
+        if existing is not None and symbols_changed and merged_symbols is not None:
+            preserved = {
+                key: getattr(existing, key) for key in event if hasattr(existing, key)
+            }
+            preserved["symbols"] = merged_symbols or None
+            await repository.upsert_event_with_values({**event, **preserved}, [])
+        return "stale"
     if not content_changed and not symbols_changed:
         return "unchanged"
     if content_changed:
@@ -767,7 +779,14 @@ async def collect_sec_filings(
         raise ValueError("commit requires a repository")
     if repo is None and db is not None:
         repo = MarketEventsRepository(db)
-    session = db if db is not None else getattr(repo, "db", None)
+    repository_session = getattr(repo, "db", None)
+    if (
+        db is not None
+        and repository_session is not None
+        and repository_session is not db
+    ):
+        raise ValueError("db must match the repository session")
+    session = db if db is not None else repository_session
     if commit and session is None:
         raise ValueError("commit requires a repository session")
 
@@ -810,7 +829,11 @@ async def collect_sec_filings(
         )
         already_complete = partition.status == "succeeded"
         complete_event_count = partition.event_count
-        await repo.mark_partition_running(partition)
+        # No mark_partition_running: the per-issuer commits below would
+        # persist the "running" claim, and a kill mid-run would leave the
+        # day partition stuck "running" — coverage exempts only "pending".
+        # Benzinga keeps "running" in-transaction only; the terminal mark
+        # is the first persisted status of this run.
 
     first_failure_code: str | None = None
 
@@ -968,6 +991,14 @@ async def collect_sec_filings(
                         )
                     except SecEdgarError:
                         skipped_unparseable += 1
+                        continue
+                    # ``_in_window`` saw only the raw ``filingDate``; when it
+                    # was blank normalize fell back to the acceptance-derived
+                    # date, so the bound is checked again on the stored date.
+                    event_day = event["event_date"]
+                    if (from_date is not None and event_day < from_date) or (
+                        to_date is not None and event_day > to_date
+                    ):
                         continue
                     filings.append((event, row))
 
