@@ -28,13 +28,13 @@ import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
 from app.core.symbol import KR_SHORT_CODE
-from app.core.timezone import today_kst
 from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
@@ -306,30 +306,47 @@ async def fetch_dart_filings_for_date(
     return unique
 
 
-async def fetch_dart_receipt_times_for_date(
-    target_date: date,
-) -> dict[str, str] | None:
-    """Receipt time of the day's filings from the list_date_ex scrape (hk 6968).
+# OpenDartReader's list_date_ex loops ``for page in range(1, 100)`` and returns
+# what it has, so a day that reaches the 99th page is silently truncated. The page
+# size is ASSUMED to be 100 rows (not verified against dsac001); the ceiling rule
+# below depends on it. The budget's hard guarantee does not: the backfill never
+# starts a scrape with fewer than SCRAPE_CEILING_PAGES units left.
+SCRAPE_CEILING_PAGES = 99
+SCRAPE_PAGE_SIZE = 100
+SCRAPE_CEILING_ROWS = SCRAPE_CEILING_PAGES * SCRAPE_PAGE_SIZE
 
-    Returns ``{rcept_no: "YYYY-MM-DD HH:MM[:SS]"}`` for rows whose scraped receipt
-    value carries a time on ``target_date``; a duplicate receipt number is dropped
-    (ambiguous). Returns ``{}`` when the read succeeded and found no timed row.
-    Returns ``None`` when the lookup failed: the official rows are still stored
-    date-only (fail-open), but the caller must keep the day retryable, because
-    the time was never looked up (hk 6408 review). The exception class name is
-    logged; the message is not, because an OpenDartReader error can carry the
-    request URL and its key. A day on or after today is never read from the
-    on-disk page cache (hk 3845).
+
+@dataclass(frozen=True)
+class ReceiptTimeRead:
+    """One receipt-time scrape of a day.
+
+    ``times`` holds the usable timed receipts; ``scrape_rows`` is the raw row
+    count the library returned, which the caller charges against the budget.
+    ``complete`` is False when the scrape reached the page ceiling: the day is
+    then not fully known and must stay pending (hk 6408 review).
+    """
+
+    times: dict[str, str]
+    scrape_rows: int
+    complete: bool
+
+
+async def read_dart_receipt_times_for_date(target_date: date) -> ReceiptTimeRead | None:
+    """Read the day's list_date_ex scrape once. ``None`` when the read failed.
+
+    Every attempt reads fresh pages: ``cache=False`` for every date, so a retry
+    never re-serves a cached failing page (hk 6408 review). The exception class
+    name is logged; the message is not, because an OpenDartReader error can carry
+    the request URL and its key.
     """
     client = await _get_client()
     if client is None:
         logger.warning("DART receipt-time enrichment skipped: client unavailable")
         return None
     iso = target_date.isoformat()
-    use_cache = target_date < today_kst()
 
-    def read_sync() -> dict[str, str]:
-        frame = client.list_date_ex(iso, cache=use_cache)
+    def read_sync() -> ReceiptTimeRead:
+        frame = client.list_date_ex(iso, cache=False)
         columns = getattr(frame, "columns", None)
         if columns is None or not DART_LIST_DATE_EX_REQUIRED_COLUMNS.issubset(columns):
             raise ValueError("list_date_ex response has an unexpected schema")
@@ -350,11 +367,17 @@ async def fetch_dart_receipt_times_for_date(
                 else None
             )
             candidates.setdefault(receipt, []).append(usable)
-        return {
+        times = {
             receipt: values[0]
             for receipt, values in candidates.items()
             if len(values) == 1 and values[0] is not None
         }
+        scrape_rows = len(frame)
+        return ReceiptTimeRead(
+            times=times,
+            scrape_rows=scrape_rows,
+            complete=scrape_rows < SCRAPE_CEILING_ROWS,
+        )
 
     try:
         return await asyncio.to_thread(read_sync)
@@ -364,6 +387,26 @@ async def fetch_dart_receipt_times_for_date(
             type(exc).__name__,
         )
         return None
+
+
+async def fetch_dart_receipt_times_for_date(
+    target_date: date,
+) -> dict[str, str] | None:
+    """Timed receipts for the ingestion path; ``None`` when they are not known.
+
+    ``None`` covers both a failed read and a scrape that reached the page ceiling.
+    The official rows are still stored date-only, and the caller keeps the day
+    pending (``receipt_time_unavailable``), so the next run re-reads it (hk 6408).
+    """
+    read = await read_dart_receipt_times_for_date(target_date)
+    if read is None:
+        return None
+    if not read.complete:
+        logger.warning(
+            "DART receipt-time scrape reached the page ceiling; day stays pending"
+        )
+        return None
+    return read.times
 
 
 def join_receipt_times(

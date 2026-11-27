@@ -596,14 +596,11 @@ async def test_scrape_schema_drift_is_fail_open_and_logs_only_the_class(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("target", "expected_cache"), [(TODAY, False), (YESTERDAY, True)]
+    ("target", "expected_cache"), [(TODAY, False), (YESTERDAY, False)]
 )
-async def test_scrape_never_reads_today_from_the_page_cache(
-    monkeypatch, target, expected_cache
-):
+async def test_scrape_always_reads_fresh_pages(monkeypatch, target, expected_cache):
     client = _FrameClient(_scrape_frame([]))
     monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
-    monkeypatch.setattr(dart_helpers, "today_kst", lambda: TODAY)
 
     await dart_helpers.fetch_dart_receipt_times_for_date(target)
 
@@ -827,11 +824,12 @@ async def test_a_timed_incoming_write_replaces_the_stored_time():
 
 @pytest.mark.asyncio
 async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
+    from app.services.market_events.dart_helpers import ReceiptTimeRead
     from scripts import backfill_dart_disclosures as cli
 
     seen: dict[str, object] = {}
-    scrape = AsyncMock(return_value={})
-    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
+    scrape = AsyncMock(return_value=ReceiptTimeRead({}, 0, True))
+    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", scrape)
 
     async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
         seen["loader"] = load_receipt_times
@@ -969,55 +967,17 @@ def test_backfill_retries_only_transient_dart_failure_codes(code, retryable):
 
 
 @pytest.mark.asyncio
-async def test_backfill_receipt_time_scrape_is_gated_and_skipped_when_budget_is_spent(
-    monkeypatch,
-):
-    """The commit-path scrape spends the run budget like a list page (hk 6408 review)."""
+async def test_backfill_skips_the_scrape_without_ceiling_budget(monkeypatch):
+    """A scrape starts only with 99 units left under --max-calls (hk 6408 review)."""
     from scripts import backfill_dart_disclosures as cli
 
-    scrape = AsyncMock(return_value={})
-    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
-    loaded: list[dict] = []
+    read = AsyncMock()
+    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", read)
+    loaded: list = []
 
     async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        await fetch_rows(target_date)  # the day fetch spends the one budget unit
+        await fetch_rows(target_date)  # the day fetch spends one unit
         loaded.append(await load_receipt_times(target_date))
-        return SimpleNamespace(status="succeeded", event_count=0, error=None)
-
-    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
-    db = MagicMock()
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-
-    await cli.run_backfill(
-        db=db,
-        from_date=DAY,
-        to_date=DAY,
-        commit=True,
-        receipt_times=True,
-        fetch_rows=AsyncMock(return_value=[]),  # one budget unit: the day fetch
-        emit=lambda *_: None,
-        pace_seconds=0.0,
-        max_calls=1,
-    )
-
-    assert scrape.await_count == 0  # budget spent: no scrape request
-    assert loaded == [None]  # lookup not done: the day stays pending, rows date-only
-
-
-@pytest.mark.asyncio
-async def test_backfill_receipt_time_scrape_counts_against_the_budget(monkeypatch):
-    from scripts import backfill_dart_disclosures as cli
-
-    scrape = AsyncMock(return_value={"20261127000001": "2026-11-27 16:30"})
-    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
-
-    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        await fetch_rows(target_date)
-        assert await load_receipt_times(target_date) == {
-            "20261127000001": "2026-11-27 16:30"
-        }
         return SimpleNamespace(status="succeeded", event_count=0, error=None)
 
     monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
@@ -1035,10 +995,55 @@ async def test_backfill_receipt_time_scrape_counts_against_the_budget(monkeypatc
         fetch_rows=AsyncMock(return_value=[]),
         emit=lambda *_: None,
         pace_seconds=0.0,
-        max_calls=2,
+        max_calls=50,  # fewer than 99 units: the worst-case scrape cannot be afforded
     )
 
-    assert scrape.await_count == 1
+    assert read.await_count == 0  # no scrape request was made
+    assert loaded == [None]  # the day stays pending, rows date-only
+
+
+@pytest.mark.asyncio
+async def test_backfill_scrape_at_the_ceiling_stays_pending(monkeypatch):
+    from app.services.market_events.dart_helpers import ReceiptTimeRead
+    from scripts import backfill_dart_disclosures as cli
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "read_dart_receipt_times_for_date",
+        AsyncMock(
+            return_value=ReceiptTimeRead(
+                times={"20261127000001": "2026-11-27 16:30"},
+                scrape_rows=99 * 100,
+                complete=False,
+            )
+        ),
+    )
+    loaded: list = []
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        await fetch_rows(target_date)
+        loaded.append(await load_receipt_times(target_date))
+        return SimpleNamespace(status="pending", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        receipt_times=True,
+        fetch_rows=AsyncMock(return_value=[]),
+        emit=lambda *_: None,
+        pace_seconds=0.0,
+        max_calls=200,
+    )
+
+    assert loaded == [None]  # an incomplete scrape is not usable times
 
 
 @pytest.mark.asyncio
@@ -1094,3 +1099,92 @@ def test_receipt_times_flag_is_off_by_default_and_on_when_given():
 
     assert parse_args(base).receipt_times is False
     assert parse_args([*base, "--receipt-times"]).receipt_times is True
+
+
+def _ceiling_frame(rows: int):
+    return _scrape_frame(
+        [
+            {
+                "rcept_no": f"2026112700{index:06d}",
+                "rcept_dt": "2026-11-27 10:00",
+                "corp_name": "A",
+            }
+            for index in range(rows)
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scrape_at_the_page_ceiling_is_incomplete(monkeypatch):
+    """A scrape that reached the 99-page ceiling may be truncated (hk 6408 review)."""
+    from app.services.market_events.dart_helpers import SCRAPE_CEILING_ROWS
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "_get_client",
+        AsyncMock(return_value=_FrameClient(_ceiling_frame(SCRAPE_CEILING_ROWS))),
+    )
+
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) is None
+
+
+@pytest.mark.asyncio
+async def test_a_scrape_below_the_ceiling_is_complete(monkeypatch):
+    from app.services.market_events.dart_helpers import SCRAPE_CEILING_ROWS
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "_get_client",
+        AsyncMock(return_value=_FrameClient(_ceiling_frame(SCRAPE_CEILING_ROWS - 1))),
+    )
+
+    times = await dart_helpers.fetch_dart_receipt_times_for_date(DAY)
+
+    assert times is not None
+    assert len(times) == SCRAPE_CEILING_ROWS - 1 or times == {}  # no timed rows here
+
+
+@pytest.mark.asyncio
+async def test_backfill_charges_the_scrape_pages_and_reports_them_apart(monkeypatch):
+    from scripts import backfill_dart_disclosures as cli
+    from app.services.market_events.dart_helpers import ReceiptTimeRead
+
+    read = AsyncMock(
+        return_value=ReceiptTimeRead(
+            times={"20261127000001": "2026-11-27 16:30"},
+            scrape_rows=150,
+            complete=True,
+        )
+    )
+    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", read)
+    loaded: list = []
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        await fetch_rows(target_date)
+        loaded.append(await load_receipt_times(target_date))
+        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    emitted: list[str] = []
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        receipt_times=True,
+        fetch_rows=AsyncMock(return_value=[]),
+        emit=emitted.append,
+        pace_seconds=0.0,
+        max_calls=200,
+    )
+
+    assert loaded == [{"20261127000001": "2026-11-27 16:30"}]
+    summary = json.loads(emitted[-1])
+    # 1 day fetch + 1 gate unit + 2 extra scrape pages (ceil(150/100)+1 = 3 pages)
+    assert summary["dart_calls"] == 4
+    assert summary["dart_scrape_requests"] == 3

@@ -58,6 +58,7 @@ import asyncio
 import http.client
 import json
 import logging
+import math
 import random
 import re
 import socket
@@ -187,6 +188,8 @@ class _DartCallBudget:
     def __init__(self) -> None:
         self.calls = 0
         self.retries = 0
+        # Receipt-time scrape requests, charged inside ``calls`` and reported apart.
+        self.scrape_requests = 0
 
 
 def _make_request_gate(
@@ -217,25 +220,40 @@ def _make_request_gate(
 
 
 def _make_gated_receipt_times(
+    *,
+    budget: _DartCallBudget,
+    max_calls: int,
     gate: Callable[[], Awaitable[None]],
 ) -> Callable[[date], Awaitable[dict[str, str] | None]]:
-    """Receipt-time enrichment that spends the same run budget as the list pages.
+    """Receipt-time scrape budgeted by its worst case (hk 6408 review).
 
-    The scrape is a second DART read per day. It is gated like every other
-    request, so --max-calls and the run summary count it and pacing applies. When
-    the budget is spent the scrape is skipped: the lookup did not happen, so the
-    loader answers None and the day stays pending (retryable, hk 6408).
+    OpenDartReader's list_date_ex makes up to 99 HTTP requests inside the library,
+    where this module cannot count them. So a scrape starts only when at least
+    SCRAPE_CEILING_PAGES units remain under --max-calls; otherwise the day stays
+    pending (receipt_time_unavailable). After the call the pages actually fetched
+    are charged (ceil(rows / page size) + 1, capped at the ceiling) and reported
+    separately as scrape_requests, so the budget never exceeds --max-calls.
     """
     from app.services.market_events.dart_helpers import (
-        fetch_dart_receipt_times_for_date,
+        SCRAPE_CEILING_PAGES,
+        SCRAPE_PAGE_SIZE,
+        read_dart_receipt_times_for_date,
     )
 
     async def _gated(target_date: date) -> dict[str, str] | None:
-        try:
-            await gate()
-        except _CallBudgetExhausted:
+        if max_calls - budget.calls < SCRAPE_CEILING_PAGES:
             return None
-        return await fetch_dart_receipt_times_for_date(target_date)
+        await gate()  # the scrape's first request is one budget unit
+        read = await read_dart_receipt_times_for_date(target_date)
+        if read is None:
+            return None
+        pages = min(
+            SCRAPE_CEILING_PAGES,
+            math.ceil(read.scrape_rows / SCRAPE_PAGE_SIZE) + 1,
+        )
+        budget.calls += pages - 1
+        budget.scrape_requests += pages
+        return read.times if read.complete else None
 
     return _gated
 
@@ -514,7 +532,11 @@ async def run_backfill(
                     d,
                     fetch_rows=paced_fetch,
                     load_receipt_times=(
-                        _make_gated_receipt_times(request_gate)
+                        _make_gated_receipt_times(
+                            budget=budget,
+                            max_calls=max_calls,
+                            gate=request_gate,
+                        )
                         if receipt_times
                         else None
                     ),
@@ -603,6 +625,7 @@ async def run_backfill(
         "next_from_date": next_from_date.isoformat() if next_from_date else None,
         "failed_dates": failed_dates,
         "dart_calls": budget.calls,
+        "dart_scrape_requests": budget.scrape_requests,
         "dart_retries": budget.retries,
         "pace_seconds": pace_seconds,
         "max_calls": max_calls,
