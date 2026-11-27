@@ -530,6 +530,9 @@ async def get_orderbook(
         resolved_symbol = _validate_crypto_orderbook_symbol(symbol)
         try:
             raw = await fetch_orderbook(resolved_symbol)
+            # Our receive clock, read right after the provider answers. It is
+            # never used as the exchange timestamp (``as_of``).
+            received_at = now_kst()
             if not raw:
                 raise SymbolNotFoundError(f"Symbol '{resolved_symbol}' not found")
 
@@ -559,6 +562,7 @@ async def get_orderbook(
                 price_as_of_source="broker" if as_of is not None else None,
                 expected_price=None,
                 expected_qty=None,
+                received_at=received_at,
             )
         except Exception as exc:
             raise _map_error(exc) from exc

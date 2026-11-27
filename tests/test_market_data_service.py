@@ -819,6 +819,9 @@ async def test_get_orderbook_parses_crypto_snapshot(
 
     snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
 
+    # Our receive clock is recorded separately and is aware; it never replaces as_of.
+    assert snapshot.received_at is not None
+    assert snapshot.received_at.tzinfo is not None
     assert snapshot == OrderbookSnapshot(
         symbol="KRW-BTC",
         instrument_type="crypto",
@@ -834,6 +837,7 @@ async def test_get_orderbook_parses_crypto_snapshot(
         price_as_of_source="broker",
         expected_price=None,
         expected_qty=None,
+        received_at=snapshot.received_at,
     )
     assert type(snapshot.asks[0].price) is float
     assert type(snapshot.asks[0].quantity) is float

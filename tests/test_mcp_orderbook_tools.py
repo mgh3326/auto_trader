@@ -137,6 +137,13 @@ async def test_get_orderbook_returns_crypto_payload(
         "price_unavailable_reason": "missing_price_asof",
         "bid_walls": [{"price": 9.5, "size": 5.0, "value_krw": 48}],
         "ask_walls": [{"price": 11.0, "size": 5.0, "value_krw": 55}],
+        "event_at": None,
+        "event_at_basis": None,
+        "event_at_reason": "exchange_timestamp_unavailable",
+        "depth_basis_at": None,
+        "depth_basis_reason": "exchange_timestamp_unavailable",
+        "first_received_at": None,
+        "first_received_reason": "receive_time_unavailable",
     }
     assert type(result["asks"][0]["price"]) is float
     assert type(result["asks"][0]["quantity"]) is float

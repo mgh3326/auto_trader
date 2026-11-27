@@ -67,6 +67,9 @@ class OrderbookSnapshot:
     is_empty_book: bool | None = None
     requires_final_recheck: bool | None = None
     empty_reason: str | None = None
+    # Our own clock at the instant the provider response was received (aware).
+    # Set only by the crypto orderbook path; never substituted for ``as_of``.
+    received_at: dt.datetime | None = None
 
 
 __all__ = ["Quote", "Candle", "OrderbookLevel", "OrderbookSnapshot"]
