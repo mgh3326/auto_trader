@@ -6,6 +6,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.invest_momentum_events.repository import (
     InvestMomentumEventSnapshotsRepository,
 )
@@ -232,7 +233,7 @@ async def _get_us_momentum_candidates(
 ) -> dict[str, Any]:
     trading_date = dt.date.fromisoformat(date) if date else dt.datetime.now(_ET).date()
     if min_dollar_volume is not None and min_dollar_volume < 0:
-        raise ValueError("min_dollar_volume must be non-negative")
+        raise CallerInputError("min_dollar_volume must be non-negative")
     minimum = Decimal(str(min_dollar_volume)) if min_dollar_volume is not None else None
     sessions = (session,) if session else _US_SESSIONS
     sides = (side,) if side else _US_SIDES

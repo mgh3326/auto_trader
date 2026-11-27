@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_sector_peers_naver,
 )
@@ -37,10 +38,10 @@ async def handle_get_sector_peers(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if _is_crypto_market(symbol):
-        raise ValueError("Sector peers are not available for cryptocurrencies")
+        raise CallerInputError("Sector peers are not available for cryptocurrencies")
 
     capped_limit = min(max(limit, 1), 20)
 
@@ -55,12 +56,12 @@ async def handle_get_sector_peers(
         elif _is_us_equity_symbol(symbol):
             resolved_market = "us"
         else:
-            raise ValueError(
+            raise CallerInputError(
                 f"Cannot auto-detect market for symbol '{symbol}'. "
                 "Please specify market='kr' or market='us'."
             )
     else:
-        raise ValueError("market must be 'kr' or 'us'")
+        raise CallerInputError("market must be 'kr' or 'us'")
 
     try:
         if resolved_market == "kr":

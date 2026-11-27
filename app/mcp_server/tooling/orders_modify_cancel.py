@@ -14,6 +14,7 @@ import httpx
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.core.symbol import to_db_symbol
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
     _normalize_market_type_to_external,
@@ -537,7 +538,7 @@ def _validate_cancel_inputs(
     """
     order_id = (order_id or "").strip()
     if not order_id:
-        raise ValueError("order_id is required")
+        raise CallerInputError("order_id is required")
 
     symbol = (symbol or "").strip() if symbol else None
     market_type = _parse_holdings_market_filter(market)
@@ -548,7 +549,7 @@ def _validate_cancel_inputs(
         elif "-" in order_id and len(order_id) == 36:
             market_type = "crypto"
         else:
-            raise ValueError(
+            raise CallerInputError(
                 "market must be specified when symbol is not provided "
                 "and order_id is not a UUID"
             )
@@ -1260,11 +1261,13 @@ def _validate_modify_inputs(
         (order_id, symbol, market_type, normalized_symbol)
     """
     if new_price is None and new_quantity is None:
-        raise ValueError("At least one of new_price or new_quantity must be specified")
+        raise CallerInputError(
+            "At least one of new_price or new_quantity must be specified"
+        )
     if new_price is not None and new_price <= 0:
-        raise ValueError("new_price must be a positive number")
+        raise CallerInputError("new_price must be a positive number")
     if new_quantity is not None and new_quantity <= 0:
-        raise ValueError("new_quantity must be a positive number")
+        raise CallerInputError("new_quantity must be a positive number")
 
     order_id = order_id.strip()
     symbol = symbol.strip()

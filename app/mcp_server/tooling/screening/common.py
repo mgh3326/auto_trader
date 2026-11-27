@@ -7,6 +7,7 @@ import logging
 import math
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.screening.market_cap_cache import (
     COINGECKO_MARKETS_URL as COINGECKO_MARKETS_URL,
 )
@@ -284,7 +285,7 @@ def _normalize_instrument_types(values: list[str] | None) -> list[str] | None:
     lowered = [value.casefold() for value in normalized]
     invalid = sorted(set(lowered) - SUPPORTED_INSTRUMENT_TYPES)
     if invalid:
-        raise ValueError(
+        raise CallerInputError(
             "instrument_types must contain only: "
             + ", ".join(sorted(SUPPORTED_INSTRUMENT_TYPES))
         )
@@ -295,7 +296,7 @@ def _normalize_non_negative_int(value: int | None, name: str) -> int | None:
     if value is None:
         return None
     if value < 0:
-        raise ValueError(f"{name} must be >= 0")
+        raise CallerInputError(f"{name} must be >= 0")
     return int(value)
 
 
@@ -317,7 +318,7 @@ def _normalize_min_analyst_buy(value: float | None) -> float | None:
     if value is None:
         return None
     if value < 0:
-        raise ValueError("min_analyst_buy must be >= 0")
+        raise CallerInputError("min_analyst_buy must be >= 0")
     return value
 
 
@@ -344,7 +345,7 @@ def _normalize_min_dividend_value(
             min_dividend_yield
         )
         if normalized_min_dividend != normalized_min_dividend_yield:
-            raise ValueError(
+            raise CallerInputError(
                 "min_dividend and min_dividend_yield cannot specify different values"
             )
         return min_dividend, normalized_min_dividend
@@ -388,7 +389,7 @@ def normalize_screen_request(
         "us",
         "crypto",
     }:
-        raise ValueError(
+        raise CallerInputError(
             "market must be one of: kr, kospi, kosdaq, konex, all, us, crypto"
         )
     normalized_asset_type = _normalize_asset_type(asset_type)
@@ -416,7 +417,7 @@ def normalize_screen_request(
         and normalized_market_cap_max_krw is not None
         and normalized_market_cap_min_krw > normalized_market_cap_max_krw
     ):
-        raise ValueError("market_cap_min_krw must be <= market_cap_max_krw")
+        raise CallerInputError("market_cap_min_krw must be <= market_cap_max_krw")
     normalized_strategy = _normalize_optional_text(strategy)
     normalized_sort_by = _normalize_sort_by(sort_by)
     normalized_sort_order = _normalize_sort_order(sort_order)
@@ -433,7 +434,9 @@ def normalize_screen_request(
             else _normalize_optional_text(normalized_category)
         )
         if category_alias != _normalize_sector_compare_key(normalized_sector):
-            raise ValueError("category and sector cannot specify different values")
+            raise CallerInputError(
+                "category and sector cannot specify different values"
+            )
 
     effective_sector = normalized_sector
     if (
@@ -448,9 +451,9 @@ def normalize_screen_request(
     if effective_sector is not None:
         sector_key = _normalize_sector_compare_key(effective_sector)
         if sector_key is not None and sector_key in exclude_sector_keys:
-            raise ValueError("sector and exclude_sectors cannot overlap")
+            raise CallerInputError("sector and exclude_sectors cannot overlap")
         if normalized_market == "crypto":
-            raise ValueError("crypto market does not support sector filter")
+            raise CallerInputError("crypto market does not support sector filter")
         if normalized_market in {
             "kr",
             "kospi",
@@ -458,33 +461,43 @@ def normalize_screen_request(
             "konex",
             "all",
         } and normalized_asset_type in {"etf", "etn"}:
-            raise ValueError("sector filter is only supported for stock requests")
+            raise CallerInputError("sector filter is only supported for stock requests")
 
     if normalized_asset_type == "etf" and normalized_instrument_types == ["common"]:
-        raise ValueError("asset_type='etf' conflicts with instrument_types=['common']")
+        raise CallerInputError(
+            "asset_type='etf' conflicts with instrument_types=['common']"
+        )
 
     if normalized_min_analyst_buy is not None:
         if normalized_market == "crypto":
-            raise ValueError("crypto market does not support min_analyst_buy filter")
+            raise CallerInputError(
+                "crypto market does not support min_analyst_buy filter"
+            )
         if normalized_asset_type not in {None, "stock"}:
-            raise ValueError("min_analyst_buy is only supported for stock requests")
+            raise CallerInputError(
+                "min_analyst_buy is only supported for stock requests"
+            )
 
     if min_dividend is not None and normalized_market == "crypto":
-        raise ValueError("crypto market does not support min_dividend filter")
+        raise CallerInputError("crypto market does not support min_dividend filter")
 
     if min_consecutive_up_days is not None:
         if not (1 <= min_consecutive_up_days <= 30):
-            raise ValueError("min_consecutive_up_days must be between 1 and 30")
+            raise CallerInputError("min_consecutive_up_days must be between 1 and 30")
 
     if min_week_change_rate is not None:
         try:
             mwcr = float(min_week_change_rate)
         except (TypeError, ValueError) as exc:
-            raise ValueError("min_week_change_rate must be a finite number") from exc
+            raise CallerInputError(
+                "min_week_change_rate must be a finite number"
+            ) from exc
         if mwcr != mwcr or mwcr in (float("inf"), float("-inf")):
-            raise ValueError("min_week_change_rate must be a finite number")
+            raise CallerInputError("min_week_change_rate must be a finite number")
         if not (-100.0 <= mwcr <= 1000.0):
-            raise ValueError("min_week_change_rate must be between -100.0 and 1000.0")
+            raise CallerInputError(
+                "min_week_change_rate must be between -100.0 and 1000.0"
+            )
         min_week_change_rate = mwcr
 
     category_for_filters = normalized_category
@@ -548,41 +561,49 @@ def _validate_screen_filters(
 
     if market == "crypto":
         if adv_krw_min is not None:
-            raise ValueError("crypto market does not support adv_krw_min filter")
+            raise CallerInputError("crypto market does not support adv_krw_min filter")
         if market_cap_min_krw is not None:
-            raise ValueError("crypto market does not support market_cap_min_krw filter")
+            raise CallerInputError(
+                "crypto market does not support market_cap_min_krw filter"
+            )
         if market_cap_max_krw is not None:
-            raise ValueError("crypto market does not support market_cap_max_krw filter")
+            raise CallerInputError(
+                "crypto market does not support market_cap_max_krw filter"
+            )
         if instrument_types is not None:
-            raise ValueError("crypto market does not support instrument_types filter")
+            raise CallerInputError(
+                "crypto market does not support instrument_types filter"
+            )
         if exclude_sectors is not None:
-            raise ValueError("crypto market does not support exclude_sectors filter")
+            raise CallerInputError(
+                "crypto market does not support exclude_sectors filter"
+            )
         if max_per is not None:
-            raise ValueError(
+            raise CallerInputError(
                 "Crypto market does not support 'max_per' filter (no P/E ratio)"
             )
         if min_dividend_yield is not None:
-            raise ValueError(
+            raise CallerInputError(
                 "Crypto market does not support 'min_dividend_yield' filter (no dividends)"
             )
         if sort_by == "volume":
-            raise ValueError(
+            raise CallerInputError(
                 "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
             )
         if sort_by == "dividend_yield":
-            raise ValueError(
+            raise CallerInputError(
                 "Crypto market does not support sorting by 'dividend_yield'"
             )
     else:
         kr_markets = {"kr", "kospi", "kosdaq", "konex", "all"}
         if sort_by == "trade_amount" and market not in kr_markets:
-            raise ValueError(
+            raise CallerInputError(
                 "'trade_amount' sorting is supported for KR and crypto markets; "
                 "for US use 'volume', 'market_cap', or 'change_rate'."
             )
 
     if market in ("kr", "kospi", "kosdaq", "konex", "all") and asset_type == "etn":
-        raise ValueError(
+        raise CallerInputError(
             "Korean market (KR/KOSPI/KOSDAQ) does not support ETN (Exchange Traded Notes) asset_type"
         )
 

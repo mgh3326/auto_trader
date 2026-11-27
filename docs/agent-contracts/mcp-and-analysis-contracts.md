@@ -82,23 +82,38 @@ hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에�
 KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
 true를 유지한다.
 
-### MCP tool error reporting (hk 6805)
+### MCP tool error reporting (hk 6805, hk 7081)
 
 Caller argument mistakes are not Sentry errors. The closed caller-input set is
-`ValueError` (which covers `pydantic.ValidationError`) plus
-`fastmcp.exceptions.ValidationError`; `ToolError`/`FastMCPError`/`McpError` are
-transparent wrappers. `app/mcp_server/caller_input_errors.py` classifies the
+`CallerInputError` — a `ValueError` subclass defined in the import-pure leaf
+`app/services/domain_errors.py` (so shared helpers like `app/mcp_server/tick_size`
+can raise it without pulling the MCP middleware stack into service import
+closures) and raised only at genuine
+argument-validation sites — plus the framework argument-validation errors
+`pydantic.ValidationError` and `fastmcp.exceptions.ValidationError`;
+`ToolError`/`FastMCPError`/`McpError`/`McpToolDeadlineExceeded` are transparent
+wrappers. Plain `ValueError` is a server fault again: internal
+`raise ValueError` sites under `app/mcp_server/` keep their Sentry event.
+`app/mcp_server/caller_input_errors.py` classifies the
 live exception in `McpToolCallSentryMiddleware`: a caller-input failure emits
 one `mcp.tool.caller_input_error` warning plus one
-`mcp_metric metric=mcp_tool_caller_input_error_total ... value=1` counter sample
-and the caller still receives the same `ToolError` response. `app/monitoring/sentry.py`
+`mcp_metric metric=mcp_tool_caller_input_error_total ... value=1` counter sample,
+marks the exception object, and the caller still receives the same `ToolError`
+response. `app/monitoring/sentry.py`
 drops both duplicate Sentry records for such calls — the
 `fastmcp.server.server` "Error calling/validating tool" log record (dropped for
 every tool failure, since the MCP-integration capture carries the same exception
 with `mcp_tool_call` context) and the `ToolError`/`ValidationError` event itself
-when its whole non-wrapper cause is caller input. A server-side exception keeps
-exactly one Sentry event. Keep the live classifier's type set and the serialized
-`_MCP_CALLER_INPUT_ERROR_TYPES`/`_MCP_ERROR_WRAPPER_TYPES` in sync.
+when its whole non-wrapper cause is caller input. The event drop prefers the
+live exception in `hint["exc_info"]`: the middleware marker (set on every
+transport, including stdio/SSE where the `mcp.tool.name` tag /
+`mcp_tool_call` context never reaches the ambient scope) or a
+wrapper-wrapped chain the live classifier accepts. The serialized-type
+fallback still requires the tool-call context. A server-side exception keeps
+exactly one Sentry event. The serialized `_MCP_CALLER_INPUT_ERROR_TYPES`/
+`_MCP_ERROR_WRAPPER_TYPES` are derived from the classifier's
+`CALLER_INPUT_ERROR_TYPES`/`MCP_ERROR_WRAPPER_TYPES` tuples — one definition,
+never a hand-maintained second list.
 
 ### Fundamentals provider availability
 

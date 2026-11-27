@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -418,26 +419,44 @@ def _is_fastmcp_tool_error_log(logger_name: str | None, message: str | None) -> 
     return message.startswith(("Error validating tool ", "Error calling tool '"))
 
 
-# hk 6805: caller-input failure types, mirrored by the live-exception
-# classifier in ``app.mcp_server.caller_input_errors`` (``ValueError`` covers
-# ``pydantic.ValidationError``; fastmcp/pydantic ``ValidationError`` serialize
-# under the same type name). ``ToolError``/``FastMCPError``/``McpError`` are
-# transparent wrappers FastMCP adds and never decide the class alone.
-_MCP_CALLER_INPUT_ERROR_TYPES = frozenset({"ValueError", "ValidationError"})
-_MCP_ERROR_WRAPPER_TYPES = frozenset(
-    {"ToolError", "FastMCPError", "McpError", "McpToolDeadlineExceeded"}
-)
+def _mcp_caller_input_errors() -> ModuleType:
+    """Lazily resolve the MCP caller-input classifier module.
+
+    ``app.monitoring.sentry`` is imported by API, worker, job, and script
+    processes whose import closures are guarded against ``app.mcp_server``
+    edges (daily_plan / krx_official_daily / upbit_intraday_shadow static
+    boundary tests), so the classifier cannot be imported at module level.
+    It is only needed when a Sentry event actually looks like an MCP
+    tool-call failure, so it is resolved on demand — the type sets and the
+    live classifiers still come from the one definition in
+    ``app.mcp_server.caller_input_errors``.
+    """
+    import importlib
+
+    return importlib.import_module("app.mcp_server.caller_input_errors")
 
 
-def _is_mcp_caller_input_error_event(event: Event) -> bool:
+def _is_mcp_caller_input_error_event(event: Event, hint: Hint | None = None) -> bool:
     """True for a tools/call Sentry event whose whole cause is caller input.
 
-    Only fires inside MCP tool-call context (the ``mcp.tool.name`` tag /
-    ``mcp_tool_call`` context the sentry middleware stamps), so a ``ValueError``
-    raised anywhere else still reports. Every non-wrapper exception type in
-    the chain must be in the closed caller-input set — one server-side type
-    (``RuntimeError``, an httpx or DB error) keeps the event.
+    hk 7081: prefer the live exception carried by ``hint['exc_info']``. The
+    MCP middleware marks exactly the caller-input failures it counted, and
+    the marker survives on stdio/SSE where the ``mcp.tool.name`` tag /
+    ``mcp_tool_call`` context (streamable-http request scopes only) never
+    reaches the ambient scope the SDK captures on. A ``ToolError``-wrapped
+    chain the live classifier accepts is dropped the same way — the wrapper
+    types only exist inside MCP tool calls.
+
+    The serialized-type fallback below still requires the tool-call context
+    and only fires when no live exception is available: every non-wrapper
+    exception type in the chain must be in the closed caller-input set — one
+    server-side type (``RuntimeError``, an httpx or DB error) keeps the
+    event.
     """
+    exc_info = hint.get("exc_info") if hint is not None else None
+    has_live_exc = (
+        isinstance(exc_info, tuple) and len(exc_info) >= 2 and exc_info[1] is not None
+    )
     tags = event.get("tags")
     contexts = event.get("contexts")
     has_tool_context = (
@@ -445,6 +464,15 @@ def _is_mcp_caller_input_error_event(event: Event) -> bool:
     ) or (
         isinstance(contexts, dict) and isinstance(contexts.get("mcp_tool_call"), dict)
     )
+    if not has_live_exc and not has_tool_context:
+        return False
+    cie = _mcp_caller_input_errors()
+    if has_live_exc:
+        exc = exc_info[1]
+        if cie.is_marked_mcp_caller_input_error(exc) or (
+            cie.is_mcp_caller_input_error(exc) and cie.has_mcp_error_wrapper(exc)
+        ):
+            return True
     if not has_tool_context:
         return False
     exception = event.get("exception")
@@ -455,8 +483,10 @@ def _is_mcp_caller_input_error_event(event: Event) -> bool:
         value.get("type")
         for value in values
         if isinstance(value, dict) and isinstance(value.get("type"), str)
-    } - _MCP_ERROR_WRAPPER_TYPES
-    return bool(meaningful_types) and meaningful_types <= _MCP_CALLER_INPUT_ERROR_TYPES
+    } - cie.MCP_ERROR_WRAPPER_TYPE_NAMES
+    return (
+        bool(meaningful_types) and meaningful_types <= cie.CALLER_INPUT_ERROR_TYPE_NAMES
+    )
 
 
 # Rules for expected MCP argument noise (client misuse, not server failures)
@@ -652,7 +682,7 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_mcp_deadline_exceeded_event(event):
         return None
-    if _is_mcp_caller_input_error_event(event):
+    if _is_mcp_caller_input_error_event(event, hint):
         return None
     if _is_fastmcp_tool_error_log(logger_name, message):
         return None

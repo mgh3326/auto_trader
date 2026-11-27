@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.symbol import to_db_symbol
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals._helpers import normalize_market_with_crypto
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
@@ -211,7 +212,7 @@ async def handle_get_news(
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if market is None:
         if _is_korean_equity_code(symbol):

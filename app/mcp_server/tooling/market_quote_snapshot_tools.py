@@ -10,6 +10,7 @@ from app.jobs.market_quote_snapshots import (
     MarketQuoteSnapshotBuildRequest,
     run_market_quote_snapshot_build,
 )
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ async def market_quote_snapshot_latest(market: str, symbol: str) -> dict[str, An
     market = str(market).strip().lower()
     symbol = str(symbol).strip().upper()
     if market not in ("kr", "us", "crypto"):
-        raise ValueError("market must be 'kr', 'us', or 'crypto'")
+        raise CallerInputError("market must be 'kr', 'us', or 'crypto'")
 
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -146,7 +147,7 @@ async def market_quote_snapshot_ensure(market: str, symbol: str) -> dict[str, An
     market = str(market).strip().lower()
     symbol = str(symbol).strip().upper()
     if market not in ("kr", "us", "crypto"):
-        raise ValueError("market must be 'kr', 'us', or 'crypto'")
+        raise CallerInputError("market must be 'kr', 'us', or 'crypto'")
 
     async with AsyncSessionLocal() as db:
         stmt = (

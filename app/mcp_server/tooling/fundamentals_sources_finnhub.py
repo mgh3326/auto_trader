@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.finnhub_news import fetch_news_finnhub
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
 
     profile = await asyncio.to_thread(fetch_sync)
     if not profile:
-        raise ValueError(f"Company profile not found for symbol '{symbol}'")
+        raise CallerInputError(f"Company profile not found for symbol '{symbol}'")
 
     return {
         "symbol": symbol,
@@ -71,7 +72,7 @@ async def _fetch_financials_finnhub(
     }
     finnhub_statement = statement_map.get(statement)
     if not finnhub_statement:
-        raise ValueError(
+        raise CallerInputError(
             f"Invalid statement type '{statement}'. Use: income, balance, cashflow"
         )
 

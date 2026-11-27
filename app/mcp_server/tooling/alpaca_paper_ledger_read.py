@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.services.alpaca_paper_account_modes import (
     ALPACA_PAPER_ACCOUNT_MODE,
     normalize_alpaca_paper_account_mode,
@@ -92,7 +93,7 @@ async def alpaca_paper_ledger_list_recent(
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if limit < 1:
-        raise ValueError("limit must be >= 1")
+        raise CallerInputError("limit must be >= 1")
     limit = min(limit, 200)
 
     async with _session_factory()() as db:
@@ -121,7 +122,7 @@ async def alpaca_paper_ledger_get(
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if not client_order_id or not client_order_id.strip():
-        raise ValueError("client_order_id is required")
+        raise CallerInputError("client_order_id is required")
 
     async with _session_factory()() as db:
         svc = _ledger_service(db, selected_account_mode)
@@ -207,12 +208,12 @@ async def alpaca_paper_execution_preflight_check(
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if limit < 1:
-        raise ValueError("limit must be >= 1")
+        raise CallerInputError("limit must be >= 1")
     limit = min(limit, 200)
     if stale_after_minutes < 1:
-        raise ValueError("stale_after_minutes must be >= 1")
+        raise CallerInputError("stale_after_minutes must be >= 1")
     if snapshot_max_age_minutes < 1:
-        raise ValueError("snapshot_max_age_minutes must be >= 1")
+        raise CallerInputError("snapshot_max_age_minutes must be >= 1")
 
     scope = {
         "lifecycle_correlation_id": _clean_scope_value(lifecycle_correlation_id)
@@ -299,7 +300,7 @@ async def alpaca_paper_ledger_get_by_correlation(
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if not lifecycle_correlation_id or not lifecycle_correlation_id.strip():
-        raise ValueError("lifecycle_correlation_id is required")
+        raise CallerInputError("lifecycle_correlation_id is required")
 
     async with _session_factory()() as db:
         svc = _ledger_service(db, selected_account_mode)
@@ -342,9 +343,9 @@ async def alpaca_paper_roundtrip_report(
         briefing_artifact_run_uuid is not None,
     ]
     if sum(supplied) != 1:
-        raise ValueError("exactly one lookup key is required")
+        raise CallerInputError("exactly one lookup key is required")
     if stale_after_minutes < 1:
-        raise ValueError("stale_after_minutes must be >= 1")
+        raise CallerInputError("stale_after_minutes must be >= 1")
 
     candidate_lookup = uuid.UUID(candidate_uuid) if candidate_uuid is not None else None
     briefing_lookup = (

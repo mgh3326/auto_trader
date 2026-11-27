@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     AddReportItemsRequest,
@@ -974,7 +975,7 @@ async def investment_watch_recommend_impl(
             return {"success": True, "committed": False, "recommendation": rec_json}
 
         if item_uuid is None or item is None:
-            raise ValueError("commit=True requires an existing item_uuid")
+            raise CallerInputError("commit=True requires an existing item_uuid")
         gate_error = _watch_recommendation_verdict_error(item, action="commit")
         if gate_error is not None:
             raise ValueError(gate_error)

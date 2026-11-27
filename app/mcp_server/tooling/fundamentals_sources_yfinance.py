@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals_sources_common import (
     _fetch_screen_enrichment_payload,
 )
@@ -236,7 +237,7 @@ async def _fetch_financials_yfinance(
         }
         yf_stmt_name = statement_map.get(statement)
         if not yf_stmt_name:
-            raise ValueError(
+            raise CallerInputError(
                 f"Invalid statement type '{statement}'. Use: income, balance, cashflow"
             )
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Literal, TypedDict
 
+from app.mcp_server.caller_input_errors import CallerInputError
+
 StrategyType = Literal["balanced", "growth", "value", "dividend", "momentum"]
 
 
@@ -115,7 +117,9 @@ def validate_strategy(strategy: str | None) -> StrategyType:
     normalized = strategy.lower().strip() if strategy else "balanced"
     if normalized not in VALID_STRATEGIES:
         valid_list = ", ".join(VALID_STRATEGIES)
-        raise ValueError(f"Invalid strategy '{strategy}'. Must be one of: {valid_list}")
+        raise CallerInputError(
+            f"Invalid strategy '{strategy}'. Must be one of: {valid_list}"
+        )
     return normalized  # type: ignore[return-value]
 
 

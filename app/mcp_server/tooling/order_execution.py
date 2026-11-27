@@ -26,6 +26,7 @@ from app.core.config import settings
 from app.core.exceptions import describe_exception
 from app.core.timezone import KST, now_kst
 from app.mcp_server.caller_identity import get_caller_source
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tick_size import (
     adjust_tick_size_kr,
     get_tick_size_kr,
@@ -224,7 +225,7 @@ async def _execute_order(
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
-            raise ValueError(_MOCK_CRYPTO_ERROR)
+            raise CallerInputError(_MOCK_CRYPTO_ERROR)
         return await _execute_crypto_order(
             symbol,
             side,
@@ -552,27 +553,27 @@ def _validate_inputs(
     """Validate and normalize basic inputs. Returns (symbol, side, order_type)."""
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     side_lower = side.lower().strip()
     if side_lower not in ("buy", "sell"):
-        raise ValueError("side must be 'buy' or 'sell'")
+        raise CallerInputError("side must be 'buy' or 'sell'")
 
     order_type_lower = order_type.lower().strip()
     if order_type_lower not in ("limit", "market"):
-        raise ValueError("order_type must be 'limit' or 'market'")
+        raise CallerInputError("order_type must be 'limit' or 'market'")
 
     if order_type_lower == "limit" and price is None:
-        raise ValueError("price is required for limit orders")
+        raise CallerInputError("price is required for limit orders")
 
     if amount is not None and quantity is not None:
-        raise ValueError(
+        raise CallerInputError(
             "amount and quantity cannot both be specified. "
             "Use amount for notional-based buying or quantity for unit-based buying."
         )
 
     if amount is not None and side_lower != "buy":
-        raise ValueError(
+        raise CallerInputError(
             "amount can only be used for buy orders. Use quantity for sell orders."
         )
 
@@ -652,7 +653,7 @@ async def _build_preview(
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
     if dry_run_result.get("error"):
-        raise ValueError(str(dry_run_result["error"]))
+        raise CallerInputError(str(dry_run_result["error"]))
 
     if (
         side == "sell"
@@ -2284,7 +2285,7 @@ async def _place_order_impl(
         )
 
         if order_type_lower == "limit" and order_quantity is None:
-            raise ValueError("quantity is required for limit orders")
+            raise CallerInputError("quantity is required for limit orders")
 
         cash_funding_ctx: ov.CashFundingContext | None = None
         # §S177: creation stored the target and its create-time shortfall;

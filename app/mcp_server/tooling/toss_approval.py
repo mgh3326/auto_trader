@@ -18,6 +18,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.timezone import KST
+from app.mcp_server.caller_input_errors import CallerInputError
 
 APPROVAL_TOKEN_VERSION = "p6a1"
 APPROVAL_DIGEST_PREFIX = "p6a"
@@ -109,14 +110,14 @@ def encode_approval_token(canonical: dict[str, Any], *, now: datetime) -> str:
 def decode_approval_token(token: str) -> tuple[int, dict[str, Any]]:
     version, _, blob = token.partition(".")
     if version != APPROVAL_TOKEN_VERSION or not blob:
-        raise ValueError("unsupported approval token")
+        raise CallerInputError("unsupported approval token")
     pad = "=" * (-len(blob) % 4)
     raw = base64.urlsafe_b64decode(blob + pad)
     obj = json.loads(raw)
     iat = int(obj["iat"])
     canon = obj["canon"]
     if not isinstance(canon, dict):
-        raise ValueError("malformed approval token payload")
+        raise CallerInputError("malformed approval token payload")
     return iat, canon
 
 

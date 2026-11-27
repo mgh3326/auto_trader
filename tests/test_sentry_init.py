@@ -1268,8 +1268,8 @@ class TestGetOrderHistorySentryNoiseFilter:
         }
         assert sentry_module._before_send(event, {}) is None
 
-    def test_fastmcp_get_order_history_symbol_requirement_valueerror_dropped(self):
-        """ValueError path (direct implementation throw) also dropped."""
+    def test_fastmcp_get_order_history_callerinputerror_dropped(self):
+        """CallerInputError path (direct implementation throw) also dropped."""
         event: Event = {
             "contexts": {
                 "mcp_tool_call": {
@@ -1280,7 +1280,7 @@ class TestGetOrderHistorySentryNoiseFilter:
             "exception": {
                 "values": [
                     {
-                        "type": "ValueError",
+                        "type": "CallerInputError",
                         "value": (
                             "symbol is required when status='filled'. "
                             "Use status='pending' for symbol-free queries, "
@@ -1367,8 +1367,8 @@ class TestGetShortInterestSentryNoiseFilter:
         }
         assert sentry_module._before_send(event, {}) is None
 
-    def test_fastmcp_get_short_interest_kr_only_valueerror_dropped(self):
-        """ValueError path (direct implementation throw) also dropped."""
+    def test_fastmcp_get_short_interest_kr_only_callerinputerror_dropped(self):
+        """CallerInputError path (direct implementation throw) also dropped."""
         event: Event = {
             "contexts": {
                 "mcp_tool_call": {
@@ -1379,7 +1379,7 @@ class TestGetShortInterestSentryNoiseFilter:
             "exception": {
                 "values": [
                     {
-                        "type": "ValueError",
+                        "type": "CallerInputError",
                         "value": (
                             "Short selling data is only available for Korean stocks "
                             "(6-digit codes like '005930')"
@@ -1475,8 +1475,10 @@ class TestStockOnlyFundamentalsSentryNoiseFilter:
             ),
         ],
     )
-    def test_stock_only_crypto_validation_valueerror_dropped(self, tool_name, message):
-        """Direct ValueError path (implementation throw) also dropped."""
+    def test_stock_only_crypto_validation_callerinputerror_dropped(
+        self, tool_name, message
+    ):
+        """Direct CallerInputError path (implementation throw) also dropped."""
         event: Event = {
             "contexts": {
                 "mcp_tool_call": {
@@ -1484,7 +1486,7 @@ class TestStockOnlyFundamentalsSentryNoiseFilter:
                     "arguments": {"symbol": "KRW-BTC"},
                 }
             },
-            "exception": {"values": [{"type": "ValueError", "value": message}]},
+            "exception": {"values": [{"type": "CallerInputError", "value": message}]},
         }
         assert sentry_module._before_send(event, {}) is None
 

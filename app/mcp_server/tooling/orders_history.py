@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.kis_mock_ledger import (
     KIS_MOCK_SHADOW_PENDING_WARNING,
     _list_kis_mock_shadow_pending_orders,
@@ -97,7 +98,7 @@ def _validate_history_inputs(
          limit_val, market_types, normalized_symbol)
     """
     if status in ("filled", "cancelled") and not symbol:
-        raise ValueError(
+        raise CallerInputError(
             f"symbol is required when status='{status}' "
             "(broker fill/cancel history is keyed by symbol). "
             "Use status='pending' or status='all' for symbol-free queries "
@@ -111,12 +112,12 @@ def _validate_history_inputs(
     side = (side or "").strip().lower() or None
 
     if side and side not in ("buy", "sell"):
-        raise ValueError("side must be 'buy' or 'sell'")
+        raise CallerInputError("side must be 'buy' or 'sell'")
 
     if limit is None:
         limit = 50
     elif limit < -1:
-        raise ValueError("limit must be >= -1")
+        raise CallerInputError("limit must be >= -1")
 
     limit_val = limit if limit not in (0, -1) else float("inf")
     effective_days = days

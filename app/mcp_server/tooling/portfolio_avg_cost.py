@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
+
 
 async def simulate_avg_cost_impl(
     holdings: dict[str, float],
@@ -14,16 +16,16 @@ async def simulate_avg_cost_impl(
         h_price = holdings.get("avg_price")
     h_qty = holdings.get("quantity")
     if h_price is None or h_qty is None:
-        raise ValueError(
+        raise CallerInputError(
             "holdings must contain 'price' (or 'avg_price') and 'quantity'"
         )
     h_price = float(h_price)
     h_qty = float(h_qty)
     if h_price < 0 or h_qty < 0:
-        raise ValueError("holdings price and quantity must be >= 0")
+        raise CallerInputError("holdings price and quantity must be >= 0")
 
     if not plans:
-        raise ValueError("plans must contain at least one entry")
+        raise CallerInputError("plans must contain at least one entry")
 
     validated_plans: list[tuple[float, float]] = []
     for i, p in enumerate(plans):
@@ -32,18 +34,18 @@ async def simulate_avg_cost_impl(
             pp = p.get("avg_price")
         pq = p.get("quantity")
         if pp is None or pq is None:
-            raise ValueError(
+            raise CallerInputError(
                 f"plans[{i}] must contain 'price' (or 'avg_price') and 'quantity'"
             )
         pp, pq = float(pp), float(pq)
         if pp <= 0 or pq <= 0:
-            raise ValueError(f"plans[{i}] price and quantity must be > 0")
+            raise CallerInputError(f"plans[{i}] price and quantity must be > 0")
         validated_plans.append((pp, pq))
 
     mkt = float(current_market_price) if current_market_price is not None else None
     tp = float(target_price) if target_price is not None else None
     if tp is not None and tp <= 0:
-        raise ValueError("target_price must be > 0")
+        raise CallerInputError("target_price must be > 0")
 
     total_qty = h_qty
     total_invested_raw = h_price * h_qty

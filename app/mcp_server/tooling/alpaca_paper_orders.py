@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.alpaca_paper_preview import (
     PreviewOrderInput,
 )
@@ -155,11 +156,11 @@ def _validate_exact_order_id(order_id: str) -> str:
     """
     stripped = (order_id or "").strip()
     if not stripped:
-        raise ValueError("order_id is required")
+        raise CallerInputError("order_id is required")
     if stripped.lower() in ORDER_ID_RESERVED_VALUES:
-        raise ValueError("order_id must be an exact Alpaca paper order id")
+        raise CallerInputError("order_id must be an exact Alpaca paper order id")
     if not ORDER_ID_SAFE_SEGMENT_RE.fullmatch(stripped):
-        raise ValueError("order_id must be a safe single path segment")
+        raise CallerInputError("order_id must be a safe single path segment")
     return stripped
 
 
@@ -265,7 +266,7 @@ async def alpaca_paper_submit_order(
         selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE
         and validated.asset_class != "us_equity"
     ):
-        raise ValueError("alpaca_paper_lab supports us_equity orders only")
+        raise CallerInputError("alpaca_paper_lab supports us_equity orders only")
     if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
         # Resolve the dedicated profile before returning even a confirmation
         # preview. Missing/incomplete lab credentials must never be mistaken for
@@ -466,7 +467,7 @@ async def alpaca_paper_reconcile_orders(
     if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
         _service_for_account_mode(selected_account_mode)
     if limit < 1:
-        raise ValueError("limit must be >= 1")
+        raise CallerInputError("limit must be >= 1")
     if not dry_run and not confirm:
         return {
             "success": False,

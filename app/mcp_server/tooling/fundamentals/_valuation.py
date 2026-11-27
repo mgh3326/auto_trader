@@ -9,6 +9,7 @@ import datetime
 from collections import defaultdict
 from typing import Any
 
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals._helpers import normalize_equity_market
 from app.mcp_server.tooling.fundamentals._investor_flow_common import (
     holding_rate_change as _holding_rate_change,
@@ -49,10 +50,12 @@ async def handle_get_valuation(
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if _is_crypto_market(symbol):
-        raise ValueError("Valuation metrics are not available for cryptocurrencies")
+        raise CallerInputError(
+            "Valuation metrics are not available for cryptocurrencies"
+        )
 
     if market is None:
         if _is_korean_equity_code(symbol):
@@ -85,10 +88,12 @@ async def handle_get_investment_opinions(
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if _is_crypto_market(symbol):
-        raise ValueError("Investment opinions are not available for cryptocurrencies")
+        raise CallerInputError(
+            "Investment opinions are not available for cryptocurrencies"
+        )
 
     if market is None:
         if _is_korean_equity_code(symbol):
@@ -97,7 +102,7 @@ async def handle_get_investment_opinions(
             market = "us"
 
     if not market:
-        raise ValueError("market is required")
+        raise CallerInputError("market is required")
 
     normalized_market = normalize_equity_market(str(market))
     capped_limit = min(max(limit, 1), 30)
@@ -129,17 +134,17 @@ async def handle_get_investor_trends(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "Investor trends are only available for Korean stocks "
             "(6-digit codes like '005930')"
         )
 
     period = (period or "day").lower()
     if period not in ("day", "week", "month"):
-        raise ValueError("period must be 'day', 'week', or 'month'")
+        raise CallerInputError("period must be 'day', 'week', or 'month'")
 
     # Fetch more daily data when aggregating to week/month
     if period == "month":
@@ -255,10 +260,10 @@ async def handle_get_short_interest(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     if not _is_korean_equity_code(symbol):
-        raise ValueError(
+        raise CallerInputError(
             "Short selling data is only available for Korean stocks "
             "(6-digit codes like '005930')"
         )

@@ -19,6 +19,7 @@ import yfinance as yf
 
 from app.core.config import settings
 from app.core.symbol import KR_SHORT_CODE
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling import (
     analysis_quick,
     analysis_screening,
@@ -91,9 +92,9 @@ def _looks_like_correlation_company_name(symbol: str) -> bool:
 def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
     normalized_symbol = analysis_screening._normalize_symbol_input(symbol, None)
     if not normalized_symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
     if _looks_like_correlation_company_name(normalized_symbol):
-        raise ValueError(_CORRELATION_COMPANY_NAME_ERROR)
+        raise CallerInputError(_CORRELATION_COMPANY_NAME_ERROR)
     return analysis_screening._resolve_market_type(normalized_symbol, None)
 
 
@@ -743,14 +744,16 @@ async def get_correlation_impl(
     period: int = 60,
 ) -> dict[str, Any]:
     if not symbols or len(symbols) < 2:
-        raise ValueError("symbols must contain at least 2 assets")
+        raise CallerInputError("symbols must contain at least 2 assets")
 
     if len(symbols) > 10:
-        raise ValueError("Maximum 10 symbols supported for correlation calculation")
+        raise CallerInputError(
+            "Maximum 10 symbols supported for correlation calculation"
+        )
 
     period = max(period, 30)
     if period > 365:
-        raise ValueError("period must be between 30 and 365 days")
+        raise CallerInputError("period must be between 30 and 365 days")
 
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
     errors: list[str] = []
@@ -918,10 +921,10 @@ async def _run_batch_analysis(
         ValueError: If symbols list is empty or exceeds 10 entries
     """
     if not symbols:
-        raise ValueError("symbols must contain at least one entry")
+        raise CallerInputError("symbols must contain at least one entry")
 
     if len(symbols) > 10:
-        raise ValueError("symbols must contain at most 10 entries")
+        raise CallerInputError("symbols must contain at most 10 entries")
 
     normalized_symbols = [
         analysis_screening._normalize_symbol_input(s, market) for s in symbols
@@ -1430,9 +1433,9 @@ async def analyze_stock_batch_impl(
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
     if not symbols:
-        raise ValueError("symbols must contain at least one entry")
+        raise CallerInputError("symbols must contain at least one entry")
     if len(symbols) > 10:
-        raise ValueError("symbols must contain at most 10 entries")
+        raise CallerInputError("symbols must contain at most 10 entries")
 
     if quick:
         # ROB-1311: quick is a DB-only projection.  ``include_position`` is
@@ -1609,7 +1612,7 @@ async def screen_stocks_impl(
         strategy_key = strategy.strip().lower()
         if strategy_key not in strategy_presets:
             valid = ", ".join(sorted(strategy_presets.keys()))
-            raise ValueError(f"screen strategy must be one of: {valid}")
+            raise CallerInputError(f"screen strategy must be one of: {valid}")
         preset = strategy_presets[strategy_key]
         strategy_applied = True
         if not (sort_by_specified and str(market).strip().lower() == "crypto"):
@@ -1657,7 +1660,7 @@ async def screen_stocks_impl(
             normalized_sort_order = "asc"
 
     if limit < 1:
-        raise ValueError("limit must be at least 1")
+        raise CallerInputError("limit must be at least 1")
     if limit > 100:
         limit = 100
 
@@ -1763,7 +1766,7 @@ async def recommend_stocks_impl(
 async def get_dividends_impl(symbol: str) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     def fetch_sync(ticker: yf.Ticker) -> dict[str, Any]:
         try:

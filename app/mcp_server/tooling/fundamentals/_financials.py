@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
+from app.mcp_server.caller_input_errors import CallerInputError
 from app.mcp_server.tooling.fundamentals._helpers import (
     normalize_equity_market,
     normalize_market_with_crypto,
@@ -113,18 +114,20 @@ async def handle_get_financials(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     statement = (statement or "income").strip().lower()
     if statement not in ("income", "balance", "cashflow"):
-        raise ValueError("statement must be 'income', 'balance', or 'cashflow'")
+        raise CallerInputError("statement must be 'income', 'balance', or 'cashflow'")
 
     freq = (freq or "annual").strip().lower()
     if freq not in ("annual", "quarterly"):
-        raise ValueError("freq must be 'annual' or 'quarterly'")
+        raise CallerInputError("freq must be 'annual' or 'quarterly'")
 
     if _is_crypto_market(symbol):
-        raise ValueError("Financial statements are not available for cryptocurrencies")
+        raise CallerInputError(
+            "Financial statements are not available for cryptocurrencies"
+        )
 
     if market is None:
         if _is_korean_equity_code(symbol):
@@ -162,14 +165,14 @@ async def handle_get_insider_transactions(
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise CallerInputError("symbol is required")
 
     capped_limit = min(max(limit, 1), 100)
 
     if _is_crypto_market(symbol):
-        raise ValueError("Insider transactions are only available for US stocks")
+        raise CallerInputError("Insider transactions are only available for US stocks")
     if _is_korean_equity_code(symbol):
-        raise ValueError("Insider transactions are only available for US stocks")
+        raise CallerInputError("Insider transactions are only available for US stocks")
 
     try:
         return await _fetch_insider_transactions_finnhub(symbol, capped_limit)
@@ -188,7 +191,7 @@ def _parse_iso_date(value: str | None, *, field_name: str) -> datetime.date | No
     try:
         return datetime.date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(
+        raise CallerInputError(
             f"{field_name} must be ISO format (e.g., '2024-01-15')"
         ) from exc
 
@@ -220,7 +223,7 @@ def _normalize_calendar_date_window(
         start + datetime.timedelta(days=30)
     )
     if start > end:
-        raise ValueError("from_date must be <= to_date")
+        raise CallerInputError("from_date must be <= to_date")
     return start, end
 
 
@@ -229,11 +232,15 @@ def _resolve_earnings_calendar_market(
     market: str | None,
 ) -> str:
     if symbol and _is_crypto_market(symbol):
-        raise ValueError("Earnings calendar is not available for cryptocurrencies")
+        raise CallerInputError(
+            "Earnings calendar is not available for cryptocurrencies"
+        )
     if market is not None:
         normalized = normalize_market_with_crypto(market)
         if normalized == "crypto":
-            raise ValueError("Earnings calendar is not available for cryptocurrencies")
+            raise CallerInputError(
+                "Earnings calendar is not available for cryptocurrencies"
+            )
         return normalized
     if symbol and _is_kr_earnings_calendar_symbol(symbol):
         return "kr"
@@ -263,7 +270,7 @@ async def _fetch_earnings_calendar_market_events_kr(
     if normalized_symbol and not (
         len(normalized_symbol) == 6 and normalized_symbol.isdigit()
     ):
-        raise ValueError("KR earnings calendar requires a Korean equity code")
+        raise CallerInputError("KR earnings calendar requires a Korean equity code")
 
     start, end = _normalize_calendar_date_window(from_date, to_date)
 
@@ -572,7 +579,7 @@ async def handle_get_earnings_calendar(
         )
 
     if symbol and _is_kr_earnings_calendar_symbol(symbol):
-        raise ValueError("Use market='kr' for Korean equities")
+        raise CallerInputError("Use market='kr' for Korean equities")
 
     start, end = _normalize_calendar_date_window(from_date, to_date)
 
