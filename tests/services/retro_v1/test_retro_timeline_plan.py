@@ -23,6 +23,7 @@ from app.services.retro_v1.plan_source import (
 )
 from tests.services.retro_v1.support import (
     FakeSession,
+    WithParams,
     ns,
     operational_error,
     pick,
@@ -36,6 +37,7 @@ HEAD = UUID(int=0x7005)
 VERSION = UUID(int=0x7006)
 BUNDLE = UUID(int=0x7007)
 INTENT = UUID(int=0x7008)
+TRIM_INTENT = UUID(int=0x7009)
 PICK_AT = datetime(2026, 1, 5, 0, 30, tzinfo=UTC)
 PUBLISHED_AT = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
 VALID_UNTIL = datetime(2026, 1, 5, 6, 30, tzinfo=UTC)
@@ -59,6 +61,7 @@ def row(
         execution_state=execution_state,
         body=body if body is not None else {"valid_until": VALID_UNTIL.isoformat()},
         key=ROW_KEY,
+        change_seq=1,
         ref="plan-0123456789abcdef0123",
     )
 
@@ -115,6 +118,18 @@ def row(
             PlanEvidence(row=row(), expired=True, child_accepted=True, filled=False),
             "unfilled",
         ),
+        # a refused amendment after an accepted, unfilled submit is not the
+        # reason: the accepted lineage is the attempt that did not fill
+        (
+            PlanEvidence(
+                row=row(),
+                expired=True,
+                child_accepted=True,
+                filled=False,
+                guard_refused=True,
+            ),
+            "unfilled",
+        ),
         # accepted child, ledger unread: never "unfilled" without evidence
         (
             PlanEvidence(
@@ -122,14 +137,59 @@ def row(
             ),
             "source_unavailable",
         ),
-        # a fill happened: none of the five describes it
+        # a fill happened: none of the five describes it, even with a refusal
         (
-            PlanEvidence(row=row(), expired=True, child_accepted=True, filled=True),
+            PlanEvidence(
+                row=row(),
+                expired=True,
+                child_accepted=True,
+                filled=True,
+                guard_refused=True,
+            ),
+            "source_unavailable",
+        ),
+        # an uncertain send beside an accepted, unfilled child may have filled
+        (
+            PlanEvidence(
+                row=row(),
+                expired=True,
+                child_accepted=True,
+                filled=False,
+                child_unresolved=True,
+            ),
             "source_unavailable",
         ),
         # accepted but not yet expired
         (
             PlanEvidence(row=row(), expired=False, child_accepted=True, filled=False),
+            "source_unavailable",
+        ),
+        # a refused attempt proves the condition was reached; its reason is
+        # outside the five, so it never becomes condition_not_reached
+        (
+            PlanEvidence(row=row(), expired=True, child_refused_other=True),
+            "source_unavailable",
+        ),
+        # a refused non-guard attempt beside an accepted, unfilled submit does
+        # not change that the accepted attempt is the one that did not fill
+        (
+            PlanEvidence(
+                row=row(),
+                expired=True,
+                child_accepted=True,
+                filled=False,
+                child_refused_other=True,
+            ),
+            "unfilled",
+        ),
+        # an unresolved child outranks a refusal
+        (
+            PlanEvidence(
+                row=row(),
+                expired=True,
+                child_unresolved=True,
+                guard_refused=True,
+            ),
             "source_unavailable",
         ),
         # a watch row that never expired is not yet explained
@@ -169,14 +229,29 @@ def test_plan_reasons_are_exactly_the_five_plus_the_unknown_fallback() -> None:
     )
 
 
-def test_guard_refusals_are_a_closed_set_of_gateway_codes() -> None:
-    """Every code is a stored gateway refusal, never a guess at a new one."""
+def test_guard_refusals_are_the_exact_closed_set() -> None:
+    """Deleting a required code or adding an unrelated one must fail here."""
+    assert GUARD_REFUSALS == frozenset(
+        {
+            "quantity_cap_exceeded",
+            "notional_cap_exceeded",
+            "locked_envelope_cap_exceeded",
+            "inventory_constraint_exceeded",
+            "sleeve_budget_exceeded",
+            "sleeve_loss_limit_reached",
+            "max_open_intents_exceeded",
+            "submissions_killed",
+            "forwarder_unavailable",
+            "cooldown_active",
+            "plan_version_stale",
+            "prior_intent_unsettled",
+            "entry_no_fill_window",
+        }
+    )
+    # every code but the design's future forwarder code is a stored Refusal
     from app.services.execution_intent_gateway.decisions import Refusal
 
-    known = {item.value for item in Refusal}
-    # entry_no_fill_window is the design's forwarder code (§2/§6), not a
-    # Refusal member yet; the rest must already be in the closed gateway list.
-    assert GUARD_REFUSALS - {"entry_no_fill_window"} <= known
+    assert GUARD_REFUSALS - {"entry_no_fill_window"} <= {item.value for item in Refusal}
 
 
 # --------------------------------------------------------------------------
@@ -185,24 +260,30 @@ def test_guard_refusals_are_a_closed_set_of_gateway_codes() -> None:
 def plan_row(
     symbol: str = "005930",
     *,
+    row_kind: str = "candidate",
     action: str = "new",
     execution_state: str = "executable",
     body: dict[str, Any] | None = None,
+    account_ref: str | None = None,
+    id_: int = 1,
+    version_id: UUID = VERSION,
 ) -> Any:
+    default = {
+        "valid_until": VALID_UNTIL.isoformat(),
+        "not_executable_reason": None,
+        "side": "buy" if action in ("new", "add") else None,
+        "venue": "KRX",
+    }
     return ns(
-        id=1,
-        version_id=VERSION,
-        row_kind="candidate",
+        id=id_,
+        version_id=version_id,
+        row_kind=row_kind,
         market="kr",
         symbol=symbol,
-        account_ref=None,
+        account_ref=account_ref,
         action=action,
         execution_state=execution_state,
-        body=(
-            body
-            if body is not None
-            else {"valid_until": VALID_UNTIL.isoformat(), "not_executable_reason": None}
-        ),
+        body=body if body is not None else default,
     )
 
 
@@ -211,10 +292,13 @@ def version(
     metadata: dict[str, Any] | None = None,
     bundle_id: UUID | None = None,
     seq: int = 1,
+    kind: str = "premarket",
+    id_: UUID = VERSION,
 ) -> Any:
     return ns(
-        id=VERSION,
+        id=id_,
         seq=seq,
+        kind=kind,
         created_at=PUBLISHED_AT,
         metadata=metadata or {},
         input_bundle_id=bundle_id,
@@ -230,11 +314,22 @@ def bundle(*symbols: str) -> dict[str, Any]:
     }
 
 
-def intent(symbol: str = "005930") -> Any:
+def intent(
+    symbol: str = "005930",
+    *,
+    plan_version: int = 1,
+    side: str = "buy",
+    row_key: str = ROW_KEY,
+    id_: UUID = INTENT,
+) -> Any:
     return ns(
-        id=INTENT,
+        id=id_,
         symbol=symbol,
-        plan_row_key=f'["candidate","kr","{symbol}",null]',
+        side=side,
+        account="kis_mock",
+        venue="KRX",
+        plan_row_key=row_key,
+        plan_version=plan_version,
     )
 
 
@@ -244,13 +339,35 @@ def child(
     refusal_reason: str | None = None,
     broker_order_id: str | None = "0000123456",
     action: str = "submit",
+    intent_id: UUID = INTENT,
+    created_at: datetime = PICK_AT,
 ) -> Any:
     return ns(
-        intent_id=INTENT,
+        intent_id=intent_id,
         action=action,
         state=state,
         refusal_reason=refusal_reason,
         broker_order_id=broker_order_id,
+        created_at=created_at,
+    )
+
+
+def fill(
+    *,
+    order_id: str = "0000123456",
+    filled_at: datetime = PICK_AT,
+    symbol: str = "005930",
+    side: str = "buy",
+) -> Any:
+    return ns(
+        broker="kis",
+        account_mode="mock",
+        venue="KRX",
+        symbol=symbol,
+        side=side,
+        currency="KRW",
+        plan_order_id=order_id,
+        plan_filled_at=filled_at,
     )
 
 
@@ -262,7 +379,7 @@ def plan_session(
     bundle_body: dict[str, Any] | None = None,
     intents: list[Any] | None = None,
     children: list[Any] | None = None,
-    fills: list[str] | None = None,
+    fills: list[Any] | None = None,
     head: Any = HEAD,
 ) -> FakeSession:
     picks = [pick(index, symbol, PICK_AT) for index, symbol in enumerate(symbols, 1)]
@@ -374,6 +491,17 @@ async def test_budget_or_guard_block_is_an_e1_guard_refusal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_non_guard_refusal_is_not_condition_not_reached() -> None:
+    response = await timeline(
+        rows=[plan_row()],
+        versions=[version()],
+        intents=[intent()],
+        children=[child(state="refused", refusal_reason="gateway_disabled")],
+    )
+    assert only(response)["plan_reason"] == "source_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_budget_or_guard_block_is_a_waiting_allocation_too() -> None:
     allocation = {
         "candidates": [],
@@ -407,6 +535,63 @@ async def test_unfilled_is_an_accepted_child_with_no_in_effect_fill() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_matching_fill_means_the_buy_happened() -> None:
+    response = await timeline(
+        rows=[plan_row()],
+        versions=[version()],
+        intents=[intent()],
+        children=[child(state="accepted", broker_order_id="0000123456")],
+        fills=[fill(order_id="0000123456")],
+    )
+    assert only(response)["plan_reason"] == "source_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a_fill_on_another_kst_order_day_does_not_count() -> None:
+    """KIS reuses order numbers across days; only the send's day names the order."""
+    response = await timeline(
+        rows=[plan_row()],
+        versions=[version()],
+        intents=[intent()],
+        children=[child(state="accepted", broker_order_id="0000123456")],
+        fills=[fill(order_id="0000123456", filled_at=datetime(2026, 1, 6, tzinfo=UTC))],
+    )
+    assert only(response)["plan_reason"] == "unfilled"
+
+
+@pytest.mark.asyncio
+async def test_a_fill_under_another_symbol_does_not_count() -> None:
+    response = await timeline(
+        rows=[plan_row()],
+        versions=[version()],
+        intents=[intent()],
+        children=[child(state="accepted", broker_order_id="0000123456")],
+        fills=[fill(order_id="0000123456", symbol="000100")],
+    )
+    assert only(response)["plan_reason"] == "unfilled"
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_amendment_replacement_fill_counts() -> None:
+    """kis_mock amend returns a new order id; the replacement is the same buy."""
+    response = await timeline(
+        rows=[plan_row()],
+        versions=[version()],
+        intents=[intent()],
+        children=[
+            child(state="accepted", broker_order_id="0000111111"),
+            child(
+                state="accepted",
+                action="amend",
+                broker_order_id="0000222222",
+            ),
+        ],
+        fills=[fill(order_id="0000222222")],
+    )
+    assert only(response)["plan_reason"] == "source_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_an_uncertain_child_is_never_one_of_the_five() -> None:
     response = await timeline(
         rows=[plan_row()],
@@ -419,29 +604,156 @@ async def test_an_uncertain_child_is_never_one_of_the_five() -> None:
 
 @pytest.mark.asyncio
 async def test_a_trim_intent_on_the_same_symbol_does_not_decide_the_buy() -> None:
-    trim_intent = UUID(int=0x7009)
     response = await timeline(
         rows=[plan_row()],
         versions=[version()],
         intents=[
-            ns(
-                id=trim_intent,
-                symbol="005930",
-                plan_row_key='["holding","kr","005930","acct_0123456789abcdef0123456789abcdef"]',
+            intent(
+                row_key='["holding","kr","005930","acct_0123456789abcdef0123456789abcdef"]',
+                id_=TRIM_INTENT,
             )
         ],
         children=[
-            ns(
-                intent_id=trim_intent,
-                action="submit",
+            child(
+                intent_id=TRIM_INTENT,
                 state="accepted",
-                refusal_reason=None,
                 broker_order_id="0000999999",
             )
         ],
     )
     # the candidate buy row has no child of its own, so it never fired
     assert only(response)["plan_reason"] == "condition_not_reached"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_intent_does_not_decide_the_new_revision() -> None:
+    first = plan_row(
+        body={"valid_until": VALID_UNTIL.isoformat(), "max_buy_price": "70000"}
+    )
+    second = plan_row(
+        body={"valid_until": VALID_UNTIL.isoformat(), "max_buy_price": "71000"},
+        id_=2,
+        version_id=UUID(int=0x7010),
+    )
+    response = await timeline(
+        rows=[first, second],
+        versions=[version(), version(seq=2, id_=UUID(int=0x7010))],
+        intents=[intent(plan_version=1)],
+        children=[child(state="refused", refusal_reason="quantity_cap_exceeded")],
+    )
+    # seq 2 changed the execution fields, so the seq 1 intent is not this row
+    assert only(response)["plan_reason"] == "condition_not_reached"
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_republication_keeps_the_intent_valid() -> None:
+    first = plan_row()
+    second = plan_row(id_=2, version_id=UUID(int=0x7010))
+    response = await timeline(
+        rows=[first, second],
+        versions=[
+            version(),
+            version(seq=2, kind="session", id_=UUID(int=0x7010)),
+        ],
+        intents=[intent(plan_version=1)],
+        children=[child(state="refused", refusal_reason="quantity_cap_exceeded")],
+    )
+    assert only(response)["plan_reason"] == "budget_or_guard_block"
+
+
+@pytest.mark.asyncio
+async def test_the_reason_uses_the_comparison_of_the_row_version() -> None:
+    """A later publication on another row must not rewrite an earlier row's inputs."""
+    published = {
+        "candidates": [
+            {
+                "symbol": "005930",
+                "inputs": {"rsi_14": {"state": "unknown", "reason": "input_missing"}},
+            }
+        ],
+        "budget": {},
+    }
+    later = {
+        "candidates": [
+            {
+                "symbol": "005930",
+                "inputs": {
+                    "rsi_14": {"state": "present", "reason": None, "value": "50"}
+                },
+            }
+        ],
+        "budget": {},
+    }
+    response = await timeline(
+        rows=[
+            plan_row(action="watch", execution_state="plan_only"),
+            plan_row("000100", id_=2, version_id=UUID(int=0x7010)),
+        ],
+        versions=[
+            version(metadata={"allocation_comparison": published}),
+            version(
+                seq=2,
+                kind="session",
+                metadata={"allocation_comparison": later},
+                id_=UUID(int=0x7010),
+            ),
+        ],
+    )
+    assert only(response)["plan_reason"] == "data_delayed_or_missing"
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_filtered_request_filters_the_plan_rows() -> None:
+    all_rows = [plan_row("005930"), plan_row("000100", id_=2)]
+
+    def filtered(sql: str, params: dict[str, Any]) -> list[Any]:
+        wanted = {
+            symbol
+            for key, value in params.items()
+            if key.startswith("symbol")
+            for symbol in value
+        }
+        return [item for item in all_rows if item.symbol in wanted]
+
+    session = plan_session(symbols=("005930",), rows=[], versions=[version()])
+    session.routes["FROM review.daily_plan_rows"] = WithParams(filtered)
+    response = await read_retro_timeline(
+        session, date=DAY, market="kr", symbol="005930"
+    )
+    validate(response, "RetroTimelineResponse")
+    assert [item["symbol"] for item in response["data"]] == ["005930"]
+    assert response["total"] == 1
+    # the read really carries the normalized symbol predicate
+    rows_sql = [s for s in session.statements if "review.daily_plan_rows" in s]
+    assert rows_sql and all("daily_plan_rows.symbol IN" in s for s in rows_sql)
+
+
+@pytest.mark.asyncio
+async def test_every_in_force_row_of_a_symbol_publishes_its_own_event() -> None:
+    response = await timeline(
+        rows=[
+            plan_row("005930"),
+            plan_row(
+                "005930",
+                row_kind="holding",
+                action="trim",
+                execution_state="plan_only",
+                account_ref="acct_0123456789abcdef0123456789abcdef",
+                id_=2,
+            ),
+        ],
+        versions=[version()],
+    )
+    item = only(response)
+    plan_events = [e for e in item["events"] if e["source"] == "plan"]
+    assert sorted(e["kind"] for e in plan_events) == [
+        "expired",
+        "expired",
+        "published_executable",
+        "published_watch",
+    ]
+    # the candidate buy row still decides the reason
+    assert item["plan_reason"] == "condition_not_reached"
 
 
 @pytest.mark.asyncio
