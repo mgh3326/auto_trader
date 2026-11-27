@@ -7,15 +7,32 @@ request:
 status: 200
 response:
   as_of: '2026-11-24T12:00:00Z'
-  data_as_of: '2026-01-05T02:00:00Z'
+  data_as_of: '2026-01-05T06:30:00Z'
   timezone: KST
-  total: 2
+  total: 3
   truncated: false
   limit: 100
   cursor: null
   next_cursor: null
   unknowns: []
   data:
+  - symbol: '000100'
+    market: kr
+    state: not_observed
+    reason: no_record_in_sources
+    events:
+    - at: '2026-01-05T00:00:00Z'
+      source: plan
+      kind: published_executable
+      reason: new
+      ref: plan-0123456789abcdef0123
+    - at: '2026-01-05T06:30:00Z'
+      source: plan
+      kind: expired
+      reason: null
+      ref: plan-0123456789abcdef0123
+    minute_bars: []
+    plan_reason: condition_not_reached
   - symbol: '000660'
     market: kr
     state: admitted_no_record
@@ -36,6 +53,7 @@ response:
       rows: 390
       first_bar_at: '2026-01-05T00:00:00Z'
       last_bar_at: '2026-01-05T06:29:00Z'
+    plan_reason: source_unavailable
   - symbol: '005930'
     market: kr
     state: proposed_filled
@@ -65,6 +83,7 @@ response:
       rows: 60
       first_bar_at: '2026-01-04T23:00:00Z'
       last_bar_at: '2026-01-04T23:59:00Z'
+    plan_reason: source_unavailable
   coverage:
     observation_log:
       status: runs_recorded
