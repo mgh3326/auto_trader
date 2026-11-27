@@ -373,6 +373,7 @@ tests/services/test_trader_page_service.py
 tests/services/test_trading_decision_service_committee.py
 tests/services/test_underwater_support_net.py
 tests/services/test_upbit_market_event.py
+tests/services/test_upbit_wallet_status.py
 tests/services/test_us_symbol_universe_names.py
 tests/services/upbit_intraday_shadow/test_candidates.py
 tests/services/upbit_intraday_shadow/test_fixture_day.py
