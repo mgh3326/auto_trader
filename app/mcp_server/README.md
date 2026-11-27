@@ -1492,6 +1492,7 @@ Symbol contract:
 Behavior:
 - `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
 - Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
+- `limit` values below 1 are rejected with an in-band error (`success: false`, `error: "limit must be at least 1"`) before any DART call; `no_items` is only returned for an OpenDART `list.json` status `013`-proven empty frame, never for a truncated or rejected query.
 - Successful responses return `filings` with `date`, `report_nm`, `rcp_no`, and `corp_name`, plus (hk 6968) `published_at`, `published_offset`, `published_precision`, `published_at_source`, `first_received_at`, `first_received_source`, `event_key`, and `event_key_basis`. A non-empty response also has `receipt_lookup` (`ok|failed`) for the stored-time read.
 - Every response has `symbol_state`: `ok`, `no_items`, or `fetch_failed` (`stale_copy` is not emitted: there is no stored-copy fallback).
 - An empty DataFrame from OpenDartReader is a successful empty lookup only when OpenDART `list.json` confirms status `013`; otherwise it is `success: false` (the library also returns an empty frame for quota, key and maintenance errors).

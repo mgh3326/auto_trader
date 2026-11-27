@@ -168,11 +168,18 @@ shared `.env.api` is unchanged. The OCI Dagu copy is the registered one; the
 repo file is its copy. To stop the poller, suspend the DAG on OCI.
 
 Overlap is prevented by the container name, not by Dagu. Each pass runs in a
-container named `at-toss-fill-poll`. If one is still there at the next tick,
-that run starts no pass, logs `status=previous_pass_still_running` and fails,
-so the failure handler records it. A normal pass takes tens of seconds, so a
-container still present five minutes later is a stalled pass for a person to
-look at. A race between the check and the start is caught by docker refusing
+container named `at-toss-fill-poll`. Only a container with exactly that name
+that is **running** blocks the next tick: that run starts no pass, logs
+`status=previous_pass_still_running` and fails, so the failure handler records
+it. A normal pass takes tens of seconds, so a running container still present
+five minutes later is a stalled pass for a person to look at. A same-name
+container that is not running (Created, never started, or Exited) is logged
+with `status=stale_container_removed state=<status>`, removed with `docker rm`,
+and the pass proceeds. If that removal fails, the run logs
+`status=stale_container_remove_failed` and fails. (hk 6635: a Created container
+blocked the poller for about 14 hours on 2026-11-25; `docker ps --filter
+name=` also matched longer names by substring, which is why the check now uses
+`docker inspect` on the exact name.) A race between the check and the start is caught by docker refusing
 a second container with the same name (exit 125).
 
 Booking one row is one database transaction (hk 6288): the fill save, the
