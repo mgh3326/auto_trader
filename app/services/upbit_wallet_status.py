@@ -40,7 +40,7 @@ from app.services.brokers.credential_firewall import (
 
 logger = logging.getLogger(__name__)
 
-UPBIT_REST = "https://api.upbit.com/v1"
+UPBIT_REST = "https://api.upbit.com"
 WALLET_STATUS_PATH = "/v1/status/wallet"
 ACCOUNTS_PATH = "/v1/accounts"
 

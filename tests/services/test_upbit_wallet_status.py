@@ -165,6 +165,41 @@ def test_hold_reason_vocabulary_is_closed() -> None:
         assert reason != "working"
 
 
+@pytest.mark.asyncio
+async def test_authed_get_builds_single_v1_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self) -> list:
+            return []
+
+    class _FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+        async def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+            captured.append(url)
+            return _FakeResponse()
+
+    monkeypatch.setattr(ws.httpx, "AsyncClient", _FakeClient)
+    await ws.fetch_wallet_status()
+    await ws.fetch_accounts()
+    assert captured == [
+        "https://api.upbit.com/v1/status/wallet",
+        "https://api.upbit.com/v1/accounts",
+    ]
+
+
 def test_held_currencies_from_accounts() -> None:
     payload = [
         {"currency": "KRW", "balance": "1000", "locked": "0"},
