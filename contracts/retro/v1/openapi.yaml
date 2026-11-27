@@ -819,7 +819,11 @@ paths:
         (first capture, trading_date; KR only), the screener pick log
         (recorded_at), recorded decisions and deferred_no_action forecasts
         (decided_at, created_at), and the chain's proposals, orders and fills —
-        all on the KST calendar day of the request. Minute bars are counts and
+        all on the KST calendar day of the request. The daily plan contributes a
+        plan source: one published event per row in force (published_executable
+        or published_watch) and its expiry, bound to the plan head, seq and row
+        key, plus the closed plan_reason for a candidate that produced no buy.
+        Minute bars are counts and
         first/last bar start only; KR by the KST day, US by the stored ET
         trading day equal to the requested date. A source read that failed or
         was cut off makes the rows it could have changed null with reason
@@ -2467,8 +2471,11 @@ components:
         One piece of evidence. kind and reason are closed codes copied from the
         source vocabularies (pick log admission and reason, decision kind, the
         chain's proposal/order/fill status and reason, the ranking surface of
-        an observation); never raw text. ref is the opaque ref the same record
-        has in retro_day or retro_decisions; the observation log has none.
+        an observation, the daily plan row's execution state and action);
+        never raw text. ref is the opaque ref the same record has in retro_day
+        or retro_decisions; the observation log has none. A plan event is bound
+        to the plan head, published seq and row key, and its kind is
+        published_executable, published_watch or expired.
       type: object
       additionalProperties: false
       required:
@@ -2488,6 +2495,7 @@ components:
           - proposal
           - order
           - fill
+          - plan
         kind: *id001
         reason: *id002
         ref: *id002
@@ -2522,7 +2530,9 @@ components:
         dropped_preselection, reason is the recorded admission reason),
         observed_only (observation log first capture only, or pick rows whose
         admission was never recorded), not_observed (a requested symbol in no
-        source). minute_bars is null with minute_bars_reason when unread.
+        source). plan_reason is the closed no-buy reason of the daily plan row
+        in force and does not change state. minute_bars is null with
+        minute_bars_reason when unread.
       type: object
       additionalProperties: false
       required:
@@ -2570,6 +2580,27 @@ components:
           type: string
           enum:
           - unsupported_market
+          - source_unavailable
+        plan_reason:
+          description: >-
+            The closed no-buy reason of the daily plan row in force for the
+            symbol (design 6939 section 6), derived only from stored evidence:
+            the version's input bundle candidate set, the 6790 score snapshot,
+            the E1 child journal and the in-effect ledger. candidate_not_captured
+            (absent from the bundle candidate set), condition_not_reached (an
+            executable row expired with no child), data_delayed_or_missing (an
+            unavailable input in the score snapshot), budget_or_guard_block (an
+            E1 cap/kill/arming/staleness refusal or a reserved_waiting or
+            skipped_waiting allocation), unfilled (an accepted child with no
+            in-effect fill at expiry). Anything the evidence does not decide is
+            source_unavailable and is never collapsed into one of the five.
+          type: string
+          enum:
+          - candidate_not_captured
+          - condition_not_reached
+          - data_delayed_or_missing
+          - budget_or_guard_block
+          - unfilled
           - source_unavailable
     TimelineCoverage:
       description: >-

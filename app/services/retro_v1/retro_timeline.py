@@ -76,6 +76,11 @@ from app.services.retro_v1.market import (
     resolve_market,
     select_market,
 )
+from app.services.retro_v1.plan_source import (
+    PlanSource,
+    derive_plan_reason,
+    read_plan_source,
+)
 from app.services.retro_v1.retro_decisions import DECISIONS
 
 #: Closed event sources, in the order that breaks ties between equal instants.
@@ -86,6 +91,7 @@ SOURCES: Final = (
     "proposal",
     "order",
     "fill",
+    "plan",
 )
 STATES: Final = (
     "not_observed",
@@ -583,6 +589,7 @@ async def read_retro_timeline(
 
     unavailable: set[str] = set()
     events: dict[str, list[Event]] = defaultdict(list)
+    plan = PlanSource(plan_unread=True)
 
     def take(found: list[tuple[str, Event]]) -> None:
         for key, event in found:
@@ -627,6 +634,25 @@ async def read_retro_timeline(
             runs = await _observation_runs(session, unknowns, day)
         pick_calls = await _pick_calls(session, unknowns, info, lo, hi)
 
+        plan = await read_plan_source(
+            session,
+            unknowns,
+            market=info.key,
+            day=day,
+            symbols=symbols,
+            as_of=as_of,
+        )
+        for symbol, plan_event in plan.events(as_of):
+            events[_key(symbol, info)].append(
+                Event(
+                    at=plan_event.at,
+                    source="plan",
+                    kind=plan_event.kind,
+                    reason=plan_event.reason,
+                    ref=plan_event.ref,
+                )
+            )
+
         population = sorted(set(events) | ({wanted} if wanted else set()))
         minutes: dict[str, list[dict[str, Any]]] | None = None
         if info.key in {"kr", "us"}:
@@ -657,18 +683,22 @@ async def read_retro_timeline(
             "reason": timeline.reason,
             "events": [_event_body(e) for e in timeline.events],
             "minute_bars": bars,
+            "plan_reason": derive_plan_reason(plan.evidence(key, as_of)),
         }
         if bars_reason is not None:
             row["minute_bars_reason"] = bars_reason
         rows.append((row, {}))
 
     all_events = [e for found in events.values() for e in found]
+    # Plan rows add symbols to the population, so an unread plan makes the
+    # population unknown, not just its reasons.
+    total = None if unavailable or plan.plan_unread else len(rows)
     return {
         **build_response(
             as_of=as_of,
             data_as_of=latest(e.at for e in all_events),
             rows=rows,
-            total=None if unavailable else len(rows),
+            total=total,
             limit=limit,
             cursor=cursor,
             digest=digest,
