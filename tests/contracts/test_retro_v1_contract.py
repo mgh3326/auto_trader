@@ -19,6 +19,7 @@ OPERATIONS = {
     "retro_trades",
     "retro_decisions",
     "retro_timeline",
+    "session_observation",
     "mock_experiments",
     "mock_round_trips",
     "get_bars",
@@ -63,7 +64,7 @@ def walk(value):
 def test_operations_and_envelopes():
     spec = document()
     operations = [v for p in spec["paths"].values() for v in p.values()]
-    assert len(operations) == 12
+    assert len(operations) == 13
     assert {o["operationId"] for o in operations} == OPERATIONS
     assert spec["security"] == [{"RetroReadToken": []}]
     assert spec["components"]["securitySchemes"]["RetroReadToken"] == {

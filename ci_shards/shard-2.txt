@@ -323,6 +323,7 @@ tests/services/retro_v1/test_mock_round_trips.py
 tests/services/retro_v1/test_retro_decisions.py
 tests/services/retro_v1/test_retro_timeline.py
 tests/services/retro_v1/test_retro_trades.py
+tests/services/retro_v1/test_session_observation.py
 tests/services/retro_v1/test_trade_evidence.py
 tests/services/screener_evidence/test_builder.py
 tests/services/shadow_replay/test_scoring.py
