@@ -1022,3 +1022,19 @@ async def test_backfill_receipt_time_scrape_counts_against_the_budget(monkeypatc
     )
 
     assert scrape.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_no_data_answer_on_a_later_page_fails_closed(monkeypatch):
+    """Page 2 answering 013 contradicts page 1's total_page=2 (hk 6408 review)."""
+    pages = {"1": {"list": [{"rcept_no": "1"}], "total_page": 2}, "2": None}
+
+    async def fake_page(**params):
+        return pages[params["page_no"]]
+
+    monkeypatch.setattr(dart_capital, "request_list_page", fake_page)
+
+    with pytest.raises(DartDetailError) as raised:
+        await dart_helpers.fetch_dart_filings_for_date(DAY)
+
+    assert raised.value.failure_code == "bad_response"

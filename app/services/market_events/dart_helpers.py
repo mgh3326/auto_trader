@@ -272,6 +272,12 @@ async def fetch_dart_filings_for_date(
             page_count=str(DART_LIST_PAGE_COUNT),
         )
         if payload is None:
+            if page > 1:
+                # Page 1 declared more pages, so "no data" here is a contradiction.
+                raise DartDetailError(
+                    "OpenDART filing list answered no data past its reported pages",
+                    failure_code="bad_response",
+                )
             break
         page_rows, total_pages = _list_page_rows(payload)
         if not page_rows and page < total_pages:
