@@ -207,6 +207,7 @@ tests/services/daily_candles/test_us_daily_lanes.py
 tests/services/daily_plan/test_allocation.py
 tests/services/daily_plan/test_bundle.py
 tests/services/daily_plan/test_bundle_builder.py
+tests/services/daily_plan/test_executable_bundle_db.py
 tests/services/daily_plan/test_market_widening.py
 tests/services/daily_plan/test_publish.py
 tests/services/decision_evidence/test_migration_db.py
