@@ -580,3 +580,68 @@ def test_unsettled_prior_intent_rule() -> None:
         [child("a", ChildState.ACCEPTED)], {"a": True}
     )
     assert not plan_binding.intent_unsettled([child("a", ChildState.REFUSED)], {})
+
+
+class _Rows:
+    def __init__(self, records: list[Any]) -> None:
+        self.records = records
+
+    def __iter__(self) -> Any:
+        return iter(self.records)
+
+
+@pytest.mark.asyncio
+async def test_soft_cancelled_prior_order_is_not_settled() -> None:
+    from types import SimpleNamespace
+
+    corr = forwarder_module.order_correlation_id("root-0001")
+
+    class Session:
+        def __init__(self, detail: Any) -> None:
+            self.detail = detail
+
+        async def execute(self, _stmt: Any) -> _Rows:
+            return _Rows([(corr, "cancelled", self.detail)])
+
+    reader = plan_binding.KisMockLedgerSettlement()
+    soft = {
+        "broker_cancel_confirmed": False,
+        "reason": "soft_cancel_broker_unsupported",
+    }
+    assert await reader.terminal(Session(soft), ["root-0001"]) == {"root-0001": False}
+    assert await reader.terminal(Session(None), ["root-0001"]) == {"root-0001": False}
+    confirmed = {"broker_cancel_confirmed": True}
+    assert await reader.terminal(Session(confirmed), ["root-0001"]) == {
+        "root-0001": True
+    }
+    assert plan_binding.ledger_row_settled("expired", None)
+    assert not plan_binding.ledger_row_settled("fill", None)
+
+
+@pytest.mark.asyncio
+async def test_an_adoption_replay_that_restores_an_old_body_is_a_change() -> None:
+    from types import SimpleNamespace as NS
+
+    from app.services.daily_plan.store import row_change_seq
+
+    a, b = _row(), _row(would_be_quantity="8")
+    rid_a, rid_b = uuid4(), uuid4()
+    v1, v2, v3 = uuid4(), uuid4(), uuid4()
+    row_records = [
+        NS(id=rid_a, version_id=v1, body=a),
+        NS(id=rid_b, version_id=v2, body=b),
+    ]
+    version_records = [
+        NS(id=v1, seq=1, kind="premarket", metadata={}),
+        NS(id=v2, seq=2, kind="event", metadata={}),
+        NS(id=v3, seq=3, kind="event", metadata={"adoption_replay_rows": [str(rid_a)]}),
+    ]
+
+    class Db:
+        calls = 0
+
+        async def execute(self, _stmt: Any) -> _Rows:
+            Db.calls += 1
+            return _Rows(row_records if Db.calls == 1 else version_records)
+
+    assert await row_change_seq(Db(), head_id=HEAD, key=KEY) == 3

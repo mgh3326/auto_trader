@@ -563,22 +563,36 @@ async def row_change_seq(
     Read-only. The E1 gateway calls it under the row lock (design 6939 §5.1).
     """
     row_kind, market, symbol, account_ref = key
-    result = await db.execute(
-        select(versions.c.seq, versions.c.kind, rows.c.body)
-        .join(rows, rows.c.version_id == versions.c.id)
-        .where(
-            versions.c.head_id == head_id,
-            versions.c.status == "PUBLISHED",
-            rows.c.row_kind == row_kind,
-            rows.c.market == market,
-            rows.c.symbol == symbol,
-            rows.c.account_ref.is_not_distinct_from(account_ref),
-        )
-        .order_by(versions.c.seq, rows.c.id)
+    matches = (
+        rows.c.row_kind == row_kind,
+        rows.c.market == market,
+        rows.c.symbol == symbol,
+        rows.c.account_ref.is_not_distinct_from(account_ref),
     )
-    return latest_change_seq(
-        (record.seq, record.kind, record.body) for record in result
+    inserted = await db.execute(
+        select(rows.c.id, rows.c.version_id, rows.c.body)
+        .join(versions, versions.c.id == rows.c.version_id)
+        .where(versions.c.head_id == head_id, *matches)
     )
+    by_id = {str(r.id): r for r in inserted}
+    by_version = {r.version_id: r.body for r in by_id.values()}
+    version_rows = await db.execute(
+        select(versions.c.id, versions.c.seq, versions.c.kind, versions.c.metadata)
+        .where(versions.c.head_id == head_id, versions.c.status == "PUBLISHED")
+        .order_by(versions.c.seq)
+    )
+    history = []
+    for version in version_rows:
+        body = by_version.get(version.id)
+        if body is None:
+            # An adoption replay puts an earlier row back in force without
+            # inserting one (``_fold``); it is this version's row for the key.
+            for replay_id in (version.metadata or {}).get("adoption_replay_rows", []):
+                if replay_id in by_id:
+                    body = by_id[replay_id].body
+        if body is not None:
+            history.append((version.seq, version.kind, body))
+    return latest_change_seq(history)
 
 
 class RowNotIssuable(ValueError):

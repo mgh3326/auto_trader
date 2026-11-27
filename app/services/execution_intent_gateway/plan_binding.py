@@ -24,7 +24,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,23 @@ V3_NOT_SENT_REASONS: Final[frozenset[str]] = frozenset(
 #: kis_mock ledger lifecycle states that prove an order is finished and its
 #: fills reconciled. Anything else (open, stale, failed, anomaly, absent) is not.
 SETTLED_LEDGER_STATES: Final = frozenset({"reconciled", "cancelled", "expired"})
+
+
+def ledger_row_settled(state: str | None, detail: Any) -> bool:
+    """A ledger row that proves its order finished.
+
+    A soft cancel also writes ``cancelled`` but may leave the order live at the
+    broker; only ``broker_cancel_confirmed is True`` makes a cancel terminal
+    (the same rule as ``query._ledger_proves_gone``).
+    """
+    if state not in SETTLED_LEDGER_STATES:
+        return False
+    if state == "cancelled":
+        return (
+            isinstance(detail, Mapping)
+            and detail.get("broker_cancel_confirmed") is True
+        )
+    return True
 
 
 def row_key_text(key: Sequence[str | None]) -> str:
@@ -164,13 +181,17 @@ class KisMockLedgerSettlement:
             return {}
         result = await session.execute(
             select(
-                KISMockOrderLedger.correlation_id, KISMockOrderLedger.lifecycle_state
+                KISMockOrderLedger.correlation_id,
+                KISMockOrderLedger.lifecycle_state,
+                KISMockOrderLedger.last_reconcile_detail,
             ).where(KISMockOrderLedger.correlation_id.in_(list(by_correlation)))
         )
         terminal: dict[str, bool] = {}
-        for correlation, state in result:
+        for correlation, state, detail in result:
             root = by_correlation[correlation]
-            terminal[root] = terminal.get(root, True) and state in SETTLED_LEDGER_STATES
+            terminal[root] = terminal.get(root, True) and ledger_row_settled(
+                state, detail
+            )
         return terminal
 
 
