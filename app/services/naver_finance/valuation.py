@@ -48,17 +48,25 @@ _OVERLAY_SKIP_ZERO_KEYS = {"per", "pbr", "high_52w", "low_52w"}
 
 
 def _set_current_position_52w(valuation: dict[str, Any]) -> None:
-    if (
-        valuation.get("current_price") is None
-        or valuation.get("high_52w") is None
-        or valuation.get("low_52w") is None
-    ):
+    """Derive ``current_position_52w`` from the current 52-week bounds.
+
+    Recomputed on every call so a value from an earlier pass cannot survive
+    when the bounds change (hk 7069): the overlay can replace the HTML bounds
+    with a range that is no longer valid, and the position must then be None
+    with the reason, not the stale number.
+    """
+    valuation["current_position_52w"] = None
+    valuation["current_position_52w_reason"] = None
+    high = valuation.get("high_52w")
+    low = valuation.get("low_52w")
+    current = valuation.get("current_price")
+    if current is None or high is None or low is None:
+        valuation["current_position_52w_reason"] = "missing_input"
         return
-    high = valuation["high_52w"]
-    low = valuation["low_52w"]
-    current = valuation["current_price"]
-    if high > low:
-        valuation["current_position_52w"] = round((current - low) / (high - low), 2)
+    if high <= low:
+        valuation["current_position_52w_reason"] = "invalid_52w_bounds"
+        return
+    valuation["current_position_52w"] = round((current - low) / (high - low), 2)
 
 
 def _parse_valuation_from_soups(
@@ -66,18 +74,24 @@ def _parse_valuation_from_soups(
     main_soup: BeautifulSoup,
     sise_soup: BeautifulSoup,
 ) -> dict[str, Any]:
+    # The valuation shape is defined here once; the mobile overlay only fills
+    # these keys (hk 7069: the KR snapshot path reuses the same overlay).
     valuation: dict[str, Any] = {
         "symbol": code,
         "name": None,
         "current_price": None,
         "per": None,
         "pbr": None,
+        "eps": None,
+        "bps": None,
+        "market_cap": None,
         "roe": None,
         "roe_controlling": None,
         "dividend_yield": None,
         "high_52w": None,
         "low_52w": None,
         "current_position_52w": None,
+        "current_position_52w_reason": None,
     }
 
     name_elem = main_soup.select_one("div.wrap_company h2 a")
@@ -279,32 +293,46 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
         _fetch_html(sise_url, params={"code": code}),
     )
     valuation = _parse_valuation_from_soups(code, main_soup, sise_soup)
+    apply_integration_metrics(valuation, await fetch_integration_metrics(code))
+    return valuation
 
-    # hk 5754 / ROB-448: overlay the mobile basic+integration metrics. The PC
-    # main/sise pages are now the same Next.js SPA, so the HTML selectors above
-    # return all-None; the mobile endpoints still serve name/current_price,
-    # per/pbr/eps/bps/market_cap, dividend_yield and 52-week high/low.
-    # fail-open — a mobile-API hiccup leaves the HTML-scraped values untouched.
-    valuation.setdefault("eps", None)
-    valuation.setdefault("bps", None)
-    valuation.setdefault("market_cap", None)
+
+async def fetch_integration_metrics(code: str) -> dict[str, Any] | None:
+    """Fetch the mobile integration metrics for the valuation overlay (hk 7069).
+
+    hk 5754 / ROB-448: the PC main/sise pages are now the same Next.js SPA, so
+    the HTML selectors return all-None; the mobile endpoints still serve
+    name/current_price, per/pbr/eps/bps/market_cap, dividend_yield and 52-week
+    high/low. Fail-open: a mobile-API failure returns None and the HTML-scraped
+    values stay untouched.
+    """
     try:
         async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=10) as client:
-            integ = await _fetch_integration(code, client)
-        for key in _INTEGRATION_OVERLAY_KEYS:
-            value = integ.get(key)
-            if value is None:
-                continue
-            if key in _OVERLAY_SKIP_ZERO_KEYS and value == 0:
-                continue
-            valuation[key] = value
+            return await _fetch_integration(code, client)
     except Exception as exc:  # noqa: BLE001 — additive overlay; degrade to None
-        logger.debug(
-            "fetch_valuation: integration overlay failed for %s: %s", code, exc
-        )
-    _set_current_position_52w(valuation)
+        logger.debug("valuation integration overlay failed for %s: %s", code, exc)
+        return None
 
-    return valuation
+
+def apply_integration_metrics(
+    valuation: dict[str, Any],
+    integ: dict[str, Any] | None,
+) -> None:
+    """Overlay mobile integration metrics onto an HTML-parsed valuation.
+
+    The single overlay path for both ``fetch_valuation`` and the KR analysis
+    snapshot (hk 7069). ``None`` means the fetch failed and is a no-op.
+    """
+    if integ is None:
+        return
+    for key in _INTEGRATION_OVERLAY_KEYS:
+        value = integ.get(key)
+        if value is None:
+            continue
+        if key in _OVERLAY_SKIP_ZERO_KEYS and value == 0:
+            continue
+        valuation[key] = value
+    _set_current_position_52w(valuation)
 
 
 def _parse_total_infos(total_infos: list[dict[str, Any]]) -> dict[str, Any]:

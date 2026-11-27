@@ -28,7 +28,11 @@ from app.services.naver_finance.parser import (
     _fetch_json,
     _parse_naver_date,
 )
-from app.services.naver_finance.valuation import _parse_valuation_from_soups
+from app.services.naver_finance.valuation import (
+    _parse_valuation_from_soups,
+    apply_integration_metrics,
+    fetch_integration_metrics,
+)
 
 # Naver research list/detail JSON API (task #930). The legacy
 # finance.naver.com/research/company_list.naver page now 302-redirects to the
@@ -672,6 +676,10 @@ async def _fetch_kr_snapshot(
             # dropped the itemCode filter (#930); the m.stock research JSON
             # API replaces it — (items, skipped) tuple or an exception.
             _fetch_research_list_with_client(client, code, opinion_limit),
+            # hk 7069: the PC pages are an SPA with no valuation metrics; the
+            # mobile integration endpoints serve them (same overlay as
+            # fetch_valuation). Fail-open — None leaves the HTML values as-is.
+            fetch_integration_metrics(code),
             return_exceptions=True,
         )
         main_soup = (
@@ -686,6 +694,7 @@ async def _fetch_kr_snapshot(
             else None
         )
         research_outcome = page_results[3]
+        integration = page_results[4] if isinstance(page_results[4], dict) else None
 
         snapshot: dict[str, Any] = {
             "valuation": None,
@@ -694,9 +703,9 @@ async def _fetch_kr_snapshot(
         }
 
         if main_soup is not None and sise_soup is not None:
-            snapshot["valuation"] = _parse_valuation_from_soups(
-                code, main_soup, sise_soup
-            )
+            valuation = _parse_valuation_from_soups(code, main_soup, sise_soup)
+            apply_integration_metrics(valuation, integration)
+            snapshot["valuation"] = valuation
 
         if news_result is not None:
             snapshot["news"] = news_result.items
