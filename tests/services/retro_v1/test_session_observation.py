@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from app.services.kis_futures_mock import session_calendar as real_futures
 from app.services.kis_futures_mock.session_calendar import (
     second_thursday as real_second_thursday,
 )
@@ -68,9 +69,21 @@ def test_us_windows_equal_the_stored_labels_incl_the_early_close(day: date) -> N
     }
     if day == date(2026, 11, 27):  # the day after Thanksgiving closes 13:00 ET
         assert found["US_REGULAR"].end == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+    # The exchange's extended session ends at 17:00 ET on an early close day
+    # (hk 7002: Nasdaq ETA #2026-69, NYSE holidays page), so the reader's
+    # after-market window is narrower than the stored label after that close.
+    cut = datetime(2026, 11, 27, 22, 0, tzinfo=UTC)
     start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=support.ET)
     for minute in _minutes(start.astimezone(UTC), 24):
+        if minute >= cut:
+            assert _containing(found, minute) == UNKNOWN
+            assert day == date(2026, 11, 27)
+            continue
         assert _containing(found, minute) == session_segment_of("us", "NASD", minute)
+    if day == date(2026, 11, 27):
+        after = datetime(2026, 11, 27, 17, 30, tzinfo=support.ET).astimezone(UTC)
+        assert session_segment_of("us", "NASD", after) == "US_POST"
+        assert _containing(found, after) == UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -114,6 +127,77 @@ def test_contract_expiry_uses_the_second_thursday_of_its_month() -> None:
     assert not windows.contract_expired("MF200.2611", date(2026, 11, 12))
     assert windows.contract_expired("MF200.2611", date(2026, 11, 13))
     assert not windows.contract_expired("F200.2612", DAY)
+
+
+#: Second Thursday of the December 2026 contract (hk 7002).
+LAST_TRADE_DAY = date(2026, 12, 10)
+#: The day after Thanksgiving: the regular session closes 13:00 ET.
+EARLY_CLOSE_DAY = date(2026, 11, 27)
+
+
+def test_the_futures_day_session_ends_at_1520_on_the_last_trading_day() -> None:
+    last = windows.session_window("futures", "FUT_DAY", LAST_TRADE_DAY, "MF200.2612")
+    earlier = windows.session_window(
+        "futures", "FUT_DAY", date(2026, 12, 9), "MF200.2612"
+    )
+    next_month = windows.session_window(
+        "futures", "FUT_DAY", LAST_TRADE_DAY, "MF200.2703"
+    )
+    unknown_symbol = windows.session_window("futures", "FUT_DAY", LAST_TRADE_DAY)
+    assert last.end == datetime(2026, 12, 10, 6, 20, tzinfo=UTC)  # 15:20 KST
+    assert earlier.end == datetime(2026, 12, 9, 6, 45, tzinfo=UTC)  # 15:45 KST
+    assert next_month.end == datetime(2026, 12, 10, 6, 45, tzinfo=UTC)
+    assert unknown_symbol.end == next_month.end
+    assert last.start == next_month.start == unknown_symbol.start
+
+
+def test_the_copied_futures_rule_matches_the_order_calendar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert windows.FUTURES_DAY == (
+        real_futures.REGULAR_OPEN,
+        real_futures.REGULAR_CLOSE,
+    )
+    assert windows.FUTURES_LAST_TRADE_DAY_CLOSE == real_futures.LAST_TRADE_DAY_CLOSE
+    assert real_futures.last_trade_date("2026-12") == LAST_TRADE_DAY
+    assert windows.last_trade_date("2026-12") == LAST_TRADE_DAY
+    assert (
+        real_futures.session_close_for(LAST_TRADE_DAY, "2026-12")
+        == windows.futures_day_close("MF200.2612", LAST_TRADE_DAY)
+        == real_futures.LAST_TRADE_DAY_CLOSE
+    )
+    assert (
+        windows.futures_day_close("MF200.2612", date(2026, 12, 9))
+        == real_futures.REGULAR_CLOSE
+    )
+    # The rule source answers only inside its hand-maintained range; the copy
+    # reads the shared exchange calendar, so it also answers before that range.
+    assert real_futures.last_trade_date("2026-11") is None
+    assert windows.last_trade_date("2026-11") == date(2026, 11, 12)
+    # A closed second Thursday moves both rules to the same earlier day.
+    thursday = real_second_thursday(2026, 12)
+    monkeypatch.setattr(
+        real_futures, "day_state", lambda d: "closed" if d == thursday else "open"
+    )
+    monkeypatch.setattr(
+        windows,
+        "trading_session_status",
+        lambda _market, d: "closed" if d == thursday else "open",
+    )
+    assert real_futures.last_trade_date("2026-12") == thursday - timedelta(days=1)
+    assert windows.last_trade_date("2026-12") == thursday - timedelta(days=1)
+    assert (
+        windows.futures_day_close("MF200.2612", thursday - timedelta(days=1))
+        == real_futures.LAST_TRADE_DAY_CLOSE
+    )
+
+
+def test_us_post_ends_at_17_et_on_the_confirmed_early_close() -> None:
+    early = windows.session_window("us", "US_POST", EARLY_CLOSE_DAY)
+    normal = windows.session_window("us", "US_POST", DAY)
+    assert early.start == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)  # 13:00 ET
+    assert early.end == datetime(2026, 11, 27, 22, 0, tzinfo=UTC)  # 17:00 ET
+    assert normal.end == datetime(2026, 11, 26, 1, 0, tzinfo=UTC)  # 20:00 ET
 
 
 # --------------------------------------------------------------------------
@@ -217,6 +301,46 @@ def test_an_ended_session_is_judged_against_its_end_not_against_now() -> None:
     assert state(bars=complete, as_of=later) == ("observed", "trade_bars_received")
     cut = bars(support.kst(12, 0))
     assert state(bars=cut, as_of=later) == (
+        "delayed",
+        "latest_bar_older_than_threshold",
+    )
+
+
+def test_collection_after_the_last_trading_day_close_is_not_delayed() -> None:
+    window = windows.session_window("futures", "FUT_DAY", LAST_TRADE_DAY, "MF200.2612")
+    after = datetime(2026, 12, 10, 15, 32, tzinfo=support.KST)
+    # The newest bar starts 15:19 and closes at the 15:20 session end.
+    found = bars(datetime(2026, 12, 10, 15, 19, tzinfo=support.KST))
+    assert state(bars=found, window=window, as_of=after) == (
+        "observed",
+        "trade_bars_received",
+    )
+    assert so.phase_of(window, "open", after) == "ended"
+    # Judged against the regular 15:45 close the same bar is 12 minutes old.
+    uncut = windows.Window(
+        window.start, datetime(2026, 12, 10, 15, 45, tzinfo=support.KST)
+    )
+    assert state(bars=found, window=uncut, as_of=after) == (
+        "delayed",
+        "latest_bar_older_than_threshold",
+    )
+
+
+def test_collection_after_the_early_close_is_not_delayed() -> None:
+    window = windows.session_window("us", "US_POST", EARLY_CLOSE_DAY)
+    after = datetime(2026, 11, 27, 17, 30, tzinfo=support.ET)
+    # The newest after-market bar starts 16:59 and closes at the 17:00 end.
+    found = bars(datetime(2026, 11, 27, 16, 59, tzinfo=support.ET))
+    assert state(bars=found, window=window, as_of=after) == (
+        "observed",
+        "trade_bars_received",
+    )
+    assert so.phase_of(window, "open", after) == "ended"
+    # Judged against 20:00 ET the same bar would be half an hour old.
+    uncut = windows.Window(
+        window.start, datetime(2026, 11, 27, 20, 0, tzinfo=support.ET)
+    )
+    assert state(bars=found, window=uncut, as_of=after) == (
         "delayed",
         "latest_bar_older_than_threshold",
     )
@@ -504,6 +628,42 @@ async def test_us_sessions_of_an_ended_day_and_the_unresolved_symbol() -> None:
     assert ("QQQ", "NASD", "US_REGULAR") not in found
     assert found[("NOPE", None, "US_REGULAR")]["reason"] == "symbol_not_in_universe"
     assert found[("SMH", "TOSS_INTEGRATED", "US_DAY")]["reason"] == "window_unknown"
+
+
+@pytest.mark.asyncio
+async def test_the_early_close_day_row_reports_the_exchange_end() -> None:
+    later = datetime(2026, 11, 27, 17, 30, tzinfo=support.ET)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(so, "_now", lambda: later)
+        rows = index(
+            await read(support.scenario(), date=EARLY_CLOSE_DAY, market="us", movers=0)
+        )
+    post = rows[("SPY", "US_POST")]
+    assert (post["session_end"], post["phase"]) == ("2026-11-27T22:00:00Z", "ended")
+    assert post["state"] == "not_collected" and post["reason"] == "no_stored_bars"
+
+
+@pytest.mark.asyncio
+async def test_a_last_trading_day_row_uses_the_contract_close() -> None:
+    later = datetime(2026, 12, 10, 15, 32, tzinfo=support.KST)
+    session = support.scenario(
+        **{
+            support.FUT_BARS: [
+                support.agg(
+                    "MF200.2612",
+                    "KRX",
+                    "FUT_DAY",
+                    datetime(2026, 12, 10, 15, 19, tzinfo=support.KST),
+                )
+            ]
+        }
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(so, "_now", lambda: later)
+        rows = index(await read(session, date=LAST_TRADE_DAY, symbols="MF200.2612"))
+    day = rows[("MF200.2612", "FUT_DAY")]
+    assert (day["session_end"], day["phase"]) == ("2026-12-10T06:20:00Z", "ended")
+    assert (day["state"], day["reason"]) == ("observed", "trade_bars_received")
 
 
 @pytest.mark.asyncio

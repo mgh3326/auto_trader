@@ -695,7 +695,7 @@ def _row(
     max_lag_seconds: int,
 ) -> Row:
     window = (
-        session_window(subject.market, session, day)
+        session_window(subject.market, session, day, subject.symbol)
         if data.status == "open"
         else UNKNOWN_WINDOW
     )

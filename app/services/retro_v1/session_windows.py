@@ -7,6 +7,19 @@ are written here (a copy, like ``daily_bars.is_first_receipt_batch``) and
 ``test_session_observation.py`` pins every minute of them against
 ``session_segment_of``. Trading days and the XNYS regular bounds come from the
 shared calendar; an unclassifiable day is unknown, never guessed.
+
+Two windows are narrower than the stored labels, because the stored label of a
+bar is not the window in which a bar can still arrive (hk 7002):
+
+* the futures day session ends at 15:20 on the contract's last trading day
+  (15:45 otherwise), so normal collection after that close is not ``delayed``;
+* the US after-market ends at 17:00 ET when the exchange closes early (13:00 ET
+  regular close), not at 20:00 ET — Nasdaq Equity Trader Alert #2026-69 and the
+  NYSE holidays/trading-hours page both end their extended sessions at 5:00 p.m.
+  ET on such a day.
+
+Only the delay rule and ``session_end`` use these cuts: the stored
+``session_segment`` of a bar keeps its own windows.
 """
 
 from __future__ import annotations
@@ -45,10 +58,17 @@ US_DAY: Final = "US_DAY"
 TOSS_US_VENUE: Final = "TOSS_INTEGRATED"
 US_PRE_OPEN_ET: Final = time(4, 0)
 US_POST_CLOSE_ET: Final = time(20, 0)
+#: After-market close on an early-close day (Nasdaq ETA #2026-69, NYSE holidays
+#: page: both extended sessions end at 5:00 p.m. ET when the regular session
+#: closes at 13:00 ET).
+US_EARLY_CLOSE_POST_CLOSE_ET: Final = time(17, 0)
+_US_REGULAR_CLOSE_ET: Final = time(16, 0)
 
 FUTURES_VENUE: Final = "KRX"
 FUTURES_SESSIONS: Final = ("FUT_DAY", "FUT_NIGHT")
 FUTURES_DAY: Final = (time(8, 45), time(15, 45))
+#: Day-session close on the contract's last trading day (KRX 15:20).
+FUTURES_LAST_TRADE_DAY_CLOSE: Final = time(15, 20)
 FUTURES_NIGHT: Final = (time(18, 0), time(6, 0))
 FUTURES_SYMBOL: Final = re.compile(r"^M?F200\.[0-9]{2}(?:0[1-9]|1[0-2])$")
 
@@ -141,19 +161,29 @@ def us_window(session: str, day: date) -> Window:
     if session == "US_REGULAR":
         return Window(opened, closed)
     if session == "US_POST":
-        return Window(closed, _at(day, US_POST_CLOSE_ET, _ET))
+        return Window(closed, _at(day, us_post_close_et(closed), _ET))
     return UNKNOWN_WINDOW
 
 
-def futures_window(session: str, day: date) -> Window:
+def us_post_close_et(regular_close: datetime) -> time:
+    """After-market end of that ET date: 17:00 on an early close, else 20:00."""
+    if regular_close.astimezone(_ET).time() < _US_REGULAR_CLOSE_ET:
+        return US_EARLY_CLOSE_POST_CLOSE_ET
+    return US_POST_CLOSE_ET
+
+
+def futures_window(session: str, day: date, symbol: str | None = None) -> Window:
     """Day session of ``day``, or the night session whose trading date is ``day``.
 
     The night session starts on the previous trading day and ends the next
-    morning (hk 6148: ``session_date`` is the next trading day).
+    morning (hk 6148: ``session_date`` is the next trading day). ``symbol`` is
+    the contract: its last trading day ends the day session at 15:20.
     """
     if session == "FUT_DAY":
-        start, end = FUTURES_DAY
-        return Window(_at(day, start, _KST), _at(day, end, _KST))
+        return Window(
+            _at(day, FUTURES_DAY[0], _KST),
+            _at(day, futures_day_close(symbol, day), _KST),
+        )
     if session == "FUT_NIGHT":
         started = previous_session_date("futures", day)
         if started is None:
@@ -165,13 +195,19 @@ def futures_window(session: str, day: date) -> Window:
     return UNKNOWN_WINDOW
 
 
-def session_window(market: str, session: str, day: date) -> Window:
-    """Window of a session on a date the calendar confirms as a trading day."""
+def session_window(
+    market: str, session: str, day: date, symbol: str | None = None
+) -> Window:
+    """Window of a session on a date the calendar confirms as a trading day.
+
+    ``symbol`` names the futures contract whose last trading day shortens the
+    day session; the other markets ignore it.
+    """
     if market == "kr":
         return kr_window(session, day)
     if market == "us":
         return us_window(session, day)
-    return futures_window(session, day)
+    return futures_window(session, day, symbol)
 
 
 def phase_of(window: Window, status: SessionStatus, as_of: datetime) -> Phase:
@@ -204,3 +240,46 @@ def contract_expired(symbol: str, day: date) -> bool:
         return False
     yymm = symbol.rsplit(".", 1)[1]
     return day > second_thursday(2000 + int(yymm[:2]), int(yymm[2:]))
+
+
+def contract_month_of(symbol: str) -> str | None:
+    """``YYYY-MM`` of a contract symbol, or ``None`` when it is not one."""
+    if not FUTURES_SYMBOL.fullmatch(symbol):
+        return None
+    yymm = symbol.rsplit(".", 1)[1]
+    return f"20{yymm[:2]}-{yymm[2:]}"
+
+
+def last_trade_date(contract_month: str) -> date | None:
+    """Last trading day of a contract month (``YYYY-MM``); ``None`` if unknown.
+
+    The second Thursday, moved earlier over a closed day (KRX specification).
+    This is a copy of ``kis_futures_mock.session_calendar.last_trade_date``,
+    which the retro/v1 import guard forbids; it reads the day from the shared
+    exchange calendar instead of that module's hand-maintained table, and a
+    test pins the two rules against each other.
+    """
+    year_text, _, month_text = contract_month.partition("-")
+    candidate = second_thursday(int(year_text), int(month_text))
+    for _ in range(7):
+        status = trading_session_status("kr", candidate)
+        if status == "unknown":
+            return None
+        if status == "open":
+            return candidate
+        candidate -= timedelta(days=1)
+    return None
+
+
+def futures_day_close(symbol: str | None, day: date) -> time:
+    """Close of the futures day session of ``day`` for one contract.
+
+    ``FUTURES_LAST_TRADE_DAY_CLOSE`` on the contract's last trading day,
+    ``FUTURES_DAY[1]`` otherwise. A calendar that cannot confirm the last
+    trading day keeps the regular close: not shortening the window can report a
+    delay, never hide one.
+    """
+    month = contract_month_of(symbol) if symbol is not None else None
+    if month is not None and last_trade_date(month) == day:
+        return FUTURES_LAST_TRADE_DAY_CLOSE
+    return FUTURES_DAY[1]
