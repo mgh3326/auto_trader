@@ -34,8 +34,8 @@ class InvestmentStagesRepository:
     ) -> InvestmentStageRun:
         """Create a run row. ``run_uuid`` is optional — when omitted, the
         DB ``gen_random_uuid()`` server default fills it in. Pass an
-        explicit UUID for the Hermes stage-artifacts ingest path where
-        Hermes generates the run id client-side (ROB-287 §D1)."""
+        explicit UUID when the caller generates the run id client-side
+        (the Hermes stage-artifacts ingest that did so is retired, hk 6950)."""
         kwargs: dict[str, object] = {
             "snapshot_bundle_uuid": snapshot_bundle_uuid,
             "market": market,

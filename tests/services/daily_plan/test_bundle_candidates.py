@@ -7,7 +7,7 @@ from app.services.daily_plan import bundle_builder as builder
 from tests.services.daily_plan import bundle_fixtures as f
 
 # The rule itself is stored and hashed; changing it must be visible.
-RULE_SHA256 = "7a7f69c01bc6a74d0d49ae78df2bbcdeda42ae72e47e2262c82b924c8124a4c2"
+RULE_SHA256 = "890300b40f62d0fa38d9526b9a85f3211338b9834b635b105cf67427e078e31d"
 
 
 def select(**changes):
@@ -62,14 +62,27 @@ def test_each_screener_rank_is_capped_in_its_own_order():
 def test_excluded_symbols_do_not_use_up_a_cap():
     rows = screener_rows(41)
     rows[0] = replace(rows[0], symbol="459580")
-    rows[1] = replace(rows[1], symbol="0000D0")
+    rows[1] = replace(rows[1], symbol="00000")
     selection = select(screener_partition=rows)
     assert selection.excluded == {
         "non_six_digit_symbol": 1,
         "parking_instrument": 1,
     }
-    assert not {"459580", "0000D0"} & set(selection.symbols)
+    assert not {"459580", "00000"} & set(selection.symbols)
     assert len(symbols_in(selection, "screener:turnover_leaders")) == 39
+
+
+def test_alphanumeric_kr_short_code_is_a_candidate_and_malformed_is_not():
+    # KRX new-format short codes contain letters (hk 6959); they are candidates.
+    rows = [
+        f.screener(1, "0256C0", "9000"),
+        f.screener(2, "02560", "7000"),
+        f.screener(3, "0256-0", "6000"),
+    ]
+    selection = select(screener_partition=rows)
+    assert symbols_in(selection, "screener:turnover_leaders") == ["0256C0"]
+    assert selection.excluded["non_six_digit_symbol"] == 2
+    assert not {"02560", "0256.0"} & set(selection.symbols)
 
 
 def pick(row_id, symbol, source="screen_stocks", **changes):

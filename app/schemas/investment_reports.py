@@ -341,7 +341,7 @@ class IngestReportItem(BaseModel):
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[str] = Field(default_factory=list)
     # ROB-693 — advisory narrative bullets: "what would invalidate this
-    # thesis". Hermes-authored, list[str] like reasons/warnings/
+    # thesis". Caller-authored, list[str] like reasons/warnings/
     # trigger_checklist (no typed block — that would overlap the
     # scanner-executable WatchInvalidation/WatchConditionPayload). auto_trader
     # only persists (evidence_snapshot["invalidation_triggers"]) + renders;
@@ -392,7 +392,7 @@ class IngestReportItem(BaseModel):
             conflicts.append("target_price")
         if self.linked_order_ids and "linked_order_ids" in self.evidence_snapshot:
             conflicts.append("linked_order_ids")
-        # ROB-693 — invalidation_triggers is caller(Hermes)-authored, like
+        # ROB-693 — invalidation_triggers is caller-authored, like
         # structured_evidence/entry_plan above: reject only when the caller
         # ALSO stuffs the same key into evidence_snapshot directly (duplicate
         # source of truth), not unconditionally like trade_setup below (which

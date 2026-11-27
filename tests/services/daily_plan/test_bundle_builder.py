@@ -28,7 +28,7 @@ ITEM_INPUTS = ("news", "disclosures")
 CANDLE_INPUTS = ("dist_to_support_pct", "rsi_14")
 # The fixture's canonical bytes. A change here is a change of the stored format
 # or of a computed value; say so in the change that moves it.
-GOLDEN_SHA256 = "5c26ecd30481a512923cffe1171b0e7a8d829a36eb298909ab3ce4f617719f2a"
+GOLDEN_SHA256 = "2bd1c200afc72c24744e9120937c34de083605fc69d651e30db40df9b1aa5b5f"
 
 
 def comparison(body, rows=None, max_adopt=10):

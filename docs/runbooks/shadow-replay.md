@@ -19,7 +19,8 @@ document).
 would be "my (Claude-authored) decisions with a frozen evidence
 bundle." Grounding found these are in tension: `investment_report_create`
 (plain human/API authoring) never sets `snapshot_bundle_uuid`; non-null
-bundles are only produced by `generate_from_bundle` / Hermes ingest. So
+bundles are only produced by `generate_from_bundle` (the Hermes ingest that
+also produced them is retired, hk 6933). So
 `created_by_profile='CLAUDE_ADVISOR' AND snapshot_bundle_uuid IS NOT NULL`
 may be nearly empty in production. This section is the read-only census
 an operator runs against the **real** production DB (not the test DB)

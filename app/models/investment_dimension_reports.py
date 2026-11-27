@@ -1,14 +1,14 @@
 """Investment per-dimension analyst reports ORM (ROB-306).
 
-Hermes-authored analyst reports on the DIMENSION axis (market/news/fundamentals/
-sentiment), mirroring the symbol axis in
+Analyst reports on the DIMENSION axis (market/news/fundamentals/
+sentiment; originally Hermes-authored), mirroring the symbol axis in
 ``app.models.investment_symbol_intermediate_reports``. ``symbol`` is nullable:
 NULL = market-wide (Market); set = per-symbol (future News/Fundamentals).
 
     UNIQUE(run_uuid, dimension, market, symbol, artifact_version)
 
-Hermes writes the prose (push-only, no in-process LLM); auto_trader validates,
-caps confidence by freshness, and persists.
+The prose came from the retired Hermes ingest path (hk 6950); the table is
+frozen read-only history with no writer in this repository.
 """
 
 from __future__ import annotations

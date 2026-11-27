@@ -52,7 +52,7 @@ Writer entrypoints, all of them:
 |---|---|---|
 | `investment_report_create` (MCP) | none — out-of-process caller | 0 calls / 30d |
 | `investment_report_generate_from_bundle` | none | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` default **false** |
-| Hermes HTTP ingest (`/trading/api/investment-reports/hermes/`) | none | gate default off + `retired-hermes-ingest-token`; `review.investment_snapshot_*` tables **empty** in this measurement; prior runs are not proved |
+| Hermes HTTP ingest (removed, hk 6933) | none | route and token branch removed; `review.investment_snapshot_*` tables **empty** in this measurement; prior runs are not proved |
 | `scripts/invest_reports_us_schedule.py` | none — default-disabled manual CLI (`INVEST_REPORTS_US_SCHEDULE_ENABLED`) | not referenced by any TaskIQ/Prefect flow or systemd timer (the former `ops/ncp/systemd/*.timer` units were retired, hk 6441) |
 
 There is no TaskIQ task, Prefect flow, or desk timer that writes these tables. The 68 rows are

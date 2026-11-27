@@ -16,6 +16,7 @@ from app.services.daily_plan.vocabulary import (
     ACTION_BASES,
     ACTIONS,
     DISPOSITIONS,
+    KR_SHORT_CODE,
     REASON_CODES,
     ROW_KINDS,
     TRIGGER_KINDS,
@@ -26,7 +27,6 @@ from app.services.daily_plan.vocabulary import (
 
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
-_KR_SYMBOL = re.compile(r"[0-9A-Z]{6}")
 _US_SYMBOL = re.compile(r"[A-Z][A-Z0-9]{0,9}(?:\.[A-Z0-9]{1,4})?")
 _CRYPTO_SYMBOL = re.compile(r"KRW-[A-Z0-9]{1,20}")
 # Loss-cut replay inputs, with the skip an unknown one means (design §7.2).
@@ -66,7 +66,7 @@ def normalize_symbol(symbol: str, market: str, venue: str, session: str) -> str:
     """
     stripped = symbol.strip()
     if market == "kr":
-        normalized, shape = to_db_symbol(stripped.upper()), _KR_SYMBOL
+        normalized, shape = to_db_symbol(stripped.upper()), KR_SHORT_CODE
     elif market == "us" and stripped == stripped.upper():
         normalized, shape = to_db_symbol(stripped), _US_SYMBOL
     elif market == "crypto" and stripped == stripped.upper():
