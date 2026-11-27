@@ -62,7 +62,7 @@
 - **응답 해석**: 성공 본문 `{"OutBlock_1": [...]}`와 필드명(`ISU_CD`, `TDD_CLSPRC`, `ACC_TRDVOL` 등)은 2026-11-27 운영자가 승인된 키로 받은 실제 응답에서 확인했다(픽스처 `tests/fixtures/krx_official_daily/*_captured_20261125.json`은 실제 행을 줄인 것이다; 출처 `handoffkeep reference/2026-11-27/krx-openapi-real-fixture`). `ISU_CD`는 KRX 6자리 단축코드다: 숫자와 대문자 ASCII 영문자로만 이뤄진다(예: 005930, 060310, 0256C0 — 2026-11-27 첫 실행에서 KOSPI 27·KOSDAQ 69건이 영문 포함 코드로 확인됐다). 소문자나 6자가 아닌 값은 `symbol_not_short_code`로 거부하고 추측하지 않는다. ASCII 문자 집합은 `kr_symbol_universe`의 KR 종목 코드 규칙(6자, 영숫자)과 같다. 다만 그쪽은 입력을 대문자로 바꾼 뒤 보고, 이쪽은 소문자를 그대로 거부한다. DB CHECK도 `^[0-9A-Z]{6}$`다(마이그레이션 `20261127_hk6959_krx_alnum`이 `20261127_hk6586`의 6자리 CHECK를 교체했다). `session_date`는 응답 `BAS_DD`와 같아야 한다.
 - **아직 공개되지 않은 날**: HTTP 200에 `OutBlock_1`이 빈 배열이면 `not_published_yet`이다(예: 2026-11-27 06:40 KST에 basDd 20261126을 요청했을 때). 거래 없음이 아니다. 그 실행은 아무것도 쓰지 않고 종료 코드 4를 낸다. 시장 하나라도 빈 목록이면 실행 전체가 쓰지 않는다.
 - **0거래일 행은 정상 데이터다**: 2026-11-25에 KOSPI 935행 중 26행, KOSDAQ 1837행 중 87행이 `ACC_TRDVOL = 0`이었다. 그 행의 `TDD_OPNPRC`·`TDD_HGPRC`·`TDD_LWPRC`는 거래소가 보고한 0이고 `TDD_CLSPRC`는 전일 종가다. 0 거래량은 증거일 뿐 거래정지가 아니다.
-- **숫자와 NULL**: 쉼표를 제거한 정확한 `Decimal` 문자열만 쓴다. 필드가 없으면 `missing`, 빈 값·`-`이면 `empty`, 해석 불가이면 `unparsable`, 음수이면 `negative`로 NULL을 두고 `field_reasons`에 사유를 남긴다. 0으로 채우지 않는다. 행 수준 거부(`bas_dd_missing`·`bas_dd_mismatch`·`symbol_not_short_code`·`duplicate_symbol`)는 건수만 보고하고 저장하지 않는다. 시장의 행이 있었는데 하나도 통과하지 못하면(`all_rows_rejected`) 그 실행은 아무것도 쓰지 않고 종료 코드 1로 실패한다(hk 6925). 빈 `OutBlock_1`만 종료 코드 4 `not_published_yet`이다.
+- **숫자와 NULL**: 쉼표를 제거한 정확한 `Decimal` 문자열만 쓴다. 필드가 없으면 `missing`, 빈 값·`-`이면 `empty`, 해석 불가이면 `unparsable`, 음수이면 `negative`로 NULL을 두고 `field_reasons`에 사유를 남긴다. 0으로 채우지 않는다. 행 수준 거부(`bas_dd_missing`·`bas_dd_mismatch`·`symbol_not_short_code`·`duplicate_symbol`)는 건수만 보고하고 저장하지 않는다. 시장의 행이 있었는데 하나도 통과하지 못하면(`all_rows_rejected`) 그 실행은 아무것도 쓰지 않고 종료 코드 1로 실패한다(hk 6925). 이 실행의 시장별 라벨은 all-rejected 시장이 `failed`, 빈 `OutBlock_1` 시장이 `not_published_yet`, 나머지가 `ok`다(hk 7059). 빈 `OutBlock_1`만 종료 코드 4 `not_published_yet`이다.
 - **거래 없음 사실 (증거이지 거래정지 확인이 아니다)**: `full_day_zero_volume`은 `ACC_TRDVOL == 0`일 때 참이고, 거래량이 NULL이면 NULL이다. `read_zero_volume_fact(session, symbol=, session_date=)`는 상태(`full_day_zero_volume`·`traded`·`unknown`), 기준 날짜, 출처, 최초 수신 시각을 돌려주며 `is_halt_confirmation`은 항상 false다. 행이 없으면 `unknown`이다. `halted_suspect`(ROB-1236)의 판정, 스크리너, 일봉 동기화는 이 테이블을 읽지 않으며 바뀌지 않았다.
 - **쓰기 규율**: 유일한 writer는 `app/services/krx_official_daily/store.py`이고 `ON CONFLICT (symbol, session_date) DO NOTHING`만 쓴다. 테이블은 UPDATE·DELETE·TRUNCATE를 모든 역할에서 거부하는 트리거가 있다(하드룰 18: `at_app`에는 조건부 `SELECT, INSERT`). downgrade는 행이 하나라도 있으면 거부한다.
 - **종료 코드**: 0 = 성공, 1 = 조회·해석 실패(네트워크·리다이렉트·형식 오류 포함), 2 = 키 없음 또는 `Unauthorized Key`(401), 3 = `Unauthorized API Call`(401, 키는 유효하나 서비스 미승인), 4 = 아직 공개되지 않음(빈 `OutBlock_1`, 쓰기 없음). 한 시장이라도 실패하거나 빈 목록이면 그 실행은 아무것도 쓰지 않는다.
@@ -289,6 +289,9 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
   파티션은 `pending` 으로 남고(이미 완료된 파티션을 `pending` 으로 내리지는 않는다) 다음 전체 읽기가 그 날을
   다시 받는다. AAPL 전용 읽기가 `succeeded` 를 찍으면 이후 MSFT 전용·전체 읽기가 fetch 전에 건너뛰어
   결손이 영구화된다. `first_received_at` 은 **fetch 가 돌아온 뒤**의 시계다(요청 시각이 아니다).
+  `requires_symbols` 카테고리(현재 `short_interest`)는 클라이언트가 symbols 없는 fetch 를 거부하므로
+  전체 읽기 경로가 없고 모든 쓰기가 symbol-scoped라 파티션이 영구 `pending`으로 남는다 — invest coverage 의
+  stuck 집계는 spec 의 `requires_symbols` 에서 도출한 그 카테고리들의 `pending` 파티션을 제외한다(hk 7059).
 - **CLI**: `scripts/ingest_benzinga_calendars.py` — `--category`(콤마/반복, 필수), `--date` 또는
   `--from-date/--to-date`, `--symbols`(short_interest 필수, 그 밖에는 선택 필터), `--commit`(없으면 dry-run,
   네트워크 0), `--force`(succeeded 파티션 재수집 — 개정 포착에 필요), `--max-pages`,

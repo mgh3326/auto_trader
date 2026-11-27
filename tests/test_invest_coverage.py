@@ -104,6 +104,31 @@ async def _owned_kr_calendar_partitions(db_session):
         await _clear_kr_partitions()
 
 
+@pytest_asyncio.fixture
+async def _owned_us_calendar_partitions(db_session):
+    """Own the US calendar partitions this test asserts against (hk 7059).
+
+    Same shared-table hazard as ``_owned_kr_calendar_partitions``: the
+    coverage query counts every ``market_event_ingestion_partitions`` row
+    for the market, so clear US partitions under the market-events lock
+    before seeding and again afterwards.
+    """
+
+    async def _clear_us_partitions() -> None:
+        await db_session.rollback()
+        await db_session.execute(
+            sa.delete(MarketEventIngestionPartition).where(
+                MarketEventIngestionPartition.market == "us"
+            )
+        )
+        await db_session.commit()
+
+    async with market_events_test_lock():
+        await _clear_us_partitions()
+        yield
+        await _clear_us_partitions()
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_owned_kr_calendar_partitions")
 async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
@@ -483,6 +508,61 @@ async def test_calendar_events_unfinished_past_partition_counts(db_session):
 
     assert calendar.counts.partial == 1
     assert calendar.state == "partial"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_us_calendar_partitions")
+async def test_calendar_events_excludes_symbol_required_benzinga_pending(
+    db_session,
+):
+    """hk 7059: `pending` partitions of requires_symbols Benzinga categories
+    (e.g. short_interest) have no unfiltered read and stay pending by design,
+    so they are not counted as stuck; other unfinished partitions still are.
+    """
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="test",
+                category="economic",
+                market="us",
+                partition_date=trading_day,
+                status="succeeded",
+                event_count=3,
+                finished_at=now,
+            ),
+            MarketEventIngestionPartition(
+                source="benzinga",
+                category="short_interest",
+                market="us",
+                partition_date=trading_day,
+                status="pending",
+            ),
+            MarketEventIngestionPartition(
+                source="benzinga",
+                category="earnings",
+                market="us",
+                partition_date=trading_day,
+                status="pending",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="us", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "us"
+    )
+
+    # Only the `earnings` pending partition counts: `short_interest` requires
+    # symbols, so its pending partition is the designed resting state.
+    assert calendar.counts.partial == 1
+    assert calendar.state == "partial"
+    assert any("symbol-required Benzinga" in warning for warning in calendar.warnings)
 
 
 @pytest.mark.asyncio
