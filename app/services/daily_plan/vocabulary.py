@@ -1,5 +1,7 @@
 """Closed vocabulary shared by daily-plan validation and persistence."""
 
+import re
+
 ACTIONS = ("new", "add", "trim", "risk_sell", "hold", "watch")
 ACTION_BASES = ("rule", "scored")
 ROW_KINDS = ("holding", "candidate")
@@ -122,3 +124,6 @@ PARKING_UNUSABLE_REASONS = (
 PARKING_SALE_REASONS = ("cash_short",)
 # Recorded text only; nothing in this service enforces or executes it.
 PARKING_PRECONDITION = "buy_must_not_proceed_until_broker_orderable_cash_has_increased"
+
+# KR short code: exactly six digits or upper-case ASCII letters (hk 6769, hk 6959).
+KR_SHORT_CODE = re.compile(r"[0-9A-Z]{6}")

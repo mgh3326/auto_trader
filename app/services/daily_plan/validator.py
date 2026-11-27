@@ -15,6 +15,7 @@ from app.services.daily_plan.vocabulary import (
     ACTION_BASES,
     ACTIONS,
     DISPOSITIONS,
+    KR_SHORT_CODE,
     REASON_CODES,
     ROW_KINDS,
     TRIGGER_KINDS,
@@ -24,8 +25,6 @@ from app.services.daily_plan.vocabulary import (
 
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
-# KR short code: exactly six digits or upper-case ASCII letters (hk 6769, hk 6959).
-KR_SHORT_CODE = re.compile(r"[0-9A-Z]{6}")
 # Loss-cut replay inputs, with the skip an unknown one means (design §7.2).
 # Open-sell, protected quantity and bar volume are absent on purpose: the rule
 # already reads an unknown one as unknown.

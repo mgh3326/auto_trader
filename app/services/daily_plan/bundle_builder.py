@@ -30,8 +30,8 @@ from app.services.daily_plan.bundle import (
     canonical_json,
     decimal_string,
 )
-from app.services.daily_plan.validator import KR_SHORT_CODE
 from app.services.daily_plan.vocabulary import (
+    KR_SHORT_CODE,
     RANKING_A_INPUTS,
     RANKING_B_ADDED_INPUTS,
 )
