@@ -116,6 +116,7 @@ async def test_backfill_fills_symbol_and_keeps_first_received_at(db_session):
     before = await _stored(db_session, "20261028000301")
     assert before.symbol is None
     raw_before = dict(before.raw_payload_json)
+    updated_before = before.updated_at
 
     report = await _run(
         db_session,
@@ -127,6 +128,8 @@ async def test_backfill_fills_symbol_and_keeps_first_received_at(db_session):
     assert after.symbol == "000660"
     assert after.first_received_at == FIRST_RECEIVED
     assert after.raw_payload_json == raw_before
+    # Regression (mergewake high): onupdate=func.now() must not move updated_at.
+    assert after.updated_at == updated_before
     assert report.filled == 1
     assert report.reasons == {"resolved": 1}
 

@@ -136,8 +136,13 @@ class MarketEventsRepository:
         """Set ``symbol`` on a stored KR DART row that has none; return rows changed.
 
         Touches only the ``symbol`` column. ``first_received_at``, the raw payload,
-        and every other stored value stay as they are (hk 5623). A row that already
-        has a symbol is never overwritten, so a repeat call changes nothing.
+        ``updated_at``, and every other stored value stay as they are (hk 5623).
+        A row that already has a symbol is never overwritten, so a repeat call
+        changes nothing.
+
+        ``updated_at`` carries ``onupdate=func.now()``, which SQLAlchemy applies to
+        any UPDATE that leaves the column out of SET. Assigning the column to
+        itself keeps the stored timestamp and suppresses that default.
         """
         result = await self.db.execute(
             update(MarketEvent)
@@ -147,7 +152,7 @@ class MarketEventsRepository:
                 MarketEvent.source_event_id == source_event_id,
                 MarketEvent.symbol.is_(None),
             )
-            .values(symbol=symbol)
+            .values(symbol=symbol, updated_at=MarketEvent.updated_at)
             .execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0)

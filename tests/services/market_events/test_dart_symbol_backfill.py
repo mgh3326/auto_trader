@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -301,3 +302,34 @@ async def test_non_null_symbol_is_never_overwritten():
     assert store.rows["20261028000012"].symbol == "999999"
     assert report.candidate_rows == 0
     assert store.writes == []
+
+
+class _CapturingDb:
+    """Records the executed statement; no database involved."""
+
+    def __init__(self) -> None:
+        self.statements: list[Any] = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return SimpleNamespace(rowcount=1)
+
+
+@pytest.mark.asyncio
+async def test_fill_statement_does_not_bump_updated_at():
+    # Regression (mergewake high, repository.py:150): MarketEvent.updated_at has
+    # onupdate=func.now(), which SQLAlchemy applies to any UPDATE that leaves the
+    # column out of SET. The compiled statement must keep the stored value.
+    from sqlalchemy.dialects import postgresql
+
+    from app.services.market_events.repository import MarketEventsRepository
+
+    db = _CapturingDb()
+    changed = await MarketEventsRepository(db).fill_dart_symbol_if_null(
+        source_event_id="20261028000001", symbol="000660"
+    )
+
+    assert changed == 1
+    sql = str(db.statements[0].compile(dialect=postgresql.dialect()))
+    assert "updated_at=market_events.updated_at" in sql
+    assert "now()" not in sql
