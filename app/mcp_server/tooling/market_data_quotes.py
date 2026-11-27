@@ -22,7 +22,7 @@ import app.services.brokers.yahoo.client as yahoo_service
 import app.services.market_data as market_data_service
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.core.symbol import to_db_symbol
+from app.core.symbol import is_upbit_market_symbol, to_db_symbol
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
@@ -1286,6 +1286,43 @@ def _build_orderbook_walls(
     )
 
 
+def _utc_iso_or_none(value: datetime.datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return None
+    return value.astimezone(datetime.UTC).isoformat()
+
+
+def _annotate_crypto_orderbook_times(
+    payload: dict[str, Any],
+    snapshot: market_data_service.OrderbookSnapshot,
+) -> None:
+    """Add exchange, receive and depth-basis times for a crypto orderbook.
+
+    ``event_at`` and ``depth_basis_at`` come only from the exchange timestamp
+    (``snapshot.as_of``); they are never filled from our clock.  Upbit documents
+    that timestamp as the query request time (조회 요청 시각), so it is labelled
+    ``event_at_basis="upbit_query_time"`` rather than a per-book change time.
+    ``first_received_at`` is our own receive clock, reported separately.
+    """
+    event_at = _utc_iso_or_none(snapshot.as_of)
+    payload["event_at"] = event_at
+    payload["event_at_basis"] = "upbit_query_time" if event_at is not None else None
+    payload["event_at_reason"] = (
+        None if event_at is not None else "exchange_timestamp_unavailable"
+    )
+    payload["depth_basis_at"] = event_at
+    payload["depth_basis_reason"] = (
+        None if event_at is not None else "exchange_timestamp_unavailable"
+    )
+    first_received_at = _utc_iso_or_none(snapshot.received_at)
+    payload["first_received_at"] = first_received_at
+    payload["first_received_reason"] = (
+        None if first_received_at is not None else "receive_time_unavailable"
+    )
+
+
 def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
@@ -1337,6 +1374,7 @@ def _build_orderbook_payload(
             snapshot.as_of,
             require_trading_date=False,
         )
+        _annotate_crypto_orderbook_times(payload, snapshot)
     if snapshot.venue is not None:
         payload["venue"] = snapshot.venue
     if snapshot.venue_label is not None:
@@ -2504,11 +2542,19 @@ async def _get_quote_impl(
 
 async def _get_orderbook_impl(
     symbol: str | int,
-    market: str = "kr",
+    market: str | None = None,
     venue: str | None = None,
 ) -> dict[str, Any]:
-    """Implementation for get_orderbook tool."""
-    requested_market = str(market or "kr").strip() or "kr"
+    """Implementation for get_orderbook tool.
+
+    When ``market`` is omitted, an Upbit quote-market symbol (KRW-/BTC-/USDT-
+    prefix) resolves to crypto; anything else keeps the historical KR default.
+    An explicit ``market`` always wins.
+    """
+    if market is None or not str(market).strip():
+        requested_market = "crypto" if is_upbit_market_symbol(symbol) else "kr"
+    else:
+        requested_market = str(market).strip()
     market_type = _normalize_market(requested_market)
     if market_type is None:
         raise ValueError(f"Unsupported market: {market}")
@@ -2761,11 +2807,16 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             "Supports KR equity and KRW crypto markets. "
             "For KR equity, use venue to select the trading venue: "
             "'krx' (default, KRX regular session), 'nxt' (NXT after-hours), "
-            "'unified' or '통합' (통합시장). venue applies only to KR equity."
+            "'unified' or '통합' (통합시장). venue applies only to KR equity. "
+            "Crypto responses add event_at (exchange timestamp, UTC ISO; Upbit's "
+            "'조회 요청 시각' field), first_received_at (our receive time), and "
+            "depth_basis_at (bid/ask depth basis, same exchange instant); a missing "
+            "exchange time is null with a *_reason. When market is omitted, a KRW-, "
+            "BTC- or USDT- symbol resolves to crypto."
         ),
     )
     async def get_orderbook(
-        symbol: str | int, market: str = "kr", venue: str | None = None
+        symbol: str | int, market: str | None = None, venue: str | None = None
     ) -> dict[str, Any]:
         return await _get_orderbook_impl(symbol, market, venue)
 

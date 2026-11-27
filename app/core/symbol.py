@@ -52,6 +52,18 @@ def to_upbit_symbol(symbol: str) -> str:
     return f"KRW-{normalized}"
 
 
+# Upbit quote-market prefixes. A symbol carrying one of these is a crypto
+# market code, not a KR equity code, when a caller omits the market argument.
+UPBIT_QUOTE_MARKET_PREFIXES: tuple[str, ...] = ("KRW-", "BTC-", "USDT-")
+
+
+def is_upbit_market_symbol(symbol: str | int | None) -> bool:
+    """Return True when ``symbol`` is an Upbit quote-market code (e.g. KRW-BTC)."""
+    if symbol is None:
+        return False
+    return str(symbol).strip().upper().startswith(UPBIT_QUOTE_MARKET_PREFIXES)
+
+
 # --- 파생(선물) 계약 심볼 (hk 5946, docs/design/5939-futures-model.md §7) ---------
 # DB 정본은 ``<상품 짧은 코드>.<YYMM>`` (예: MF200.2612). 주식의 거래소 접미 `.`
 # 과 의미가 다르다. KIS 단축종목코드(``SHTN_PDNO``)와의 대응은 연도 문자 규칙을

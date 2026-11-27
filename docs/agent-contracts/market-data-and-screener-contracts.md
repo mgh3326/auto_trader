@@ -4,6 +4,7 @@
 
 ## 목차
 
+- get_orderbook 암호화폐 시각·시장 추론 (hk 6371)
 - KRX Open API 일별 매매 — 공식 종가·거래 없음 사실 (hk 6586)
 - KR/US Category Normalization & Lazy Fill (ROB-512)
 - Save+ 뉴스 그림자 비교 소스·개인 관심도 스냅샷 (hk 6694)
@@ -966,6 +967,20 @@ KRX 애프터마켓 중 `krx_prev_close`는 현재 quote의 `price`나 혼합 �
 NXT 애프터 중 `venues`는 NXT와 KRX 각각의 best bid/ask, 관측 시각, 예상체결가, 제공된 경우 세션 내 마지막 체결을 담는다. KRX venue의 마지막 체결은 KST 당일 16:00 이상, 현재 시각 이하인 경우에만 낸다. KRX 호가 조회 실패는 quote 전체 실패가 아니다. quote 시간 분류는 KRX 애프터 16:00–20:00, NXT 연속 애프터 15:40–20:00이다. research `session_segment_of`의 NXT 분봉 라벨은 KIS 분봉에서 15:40–16:00 KRX 종가매매와 구별할 수 없어 16:00부터 시작한다. 정규장 quote 결과와 필드는 바이트 동일하게 유지한다. 세션 OHLCV는 독립 `get_quote` 호출에서만 가져오고, 각 venue의 분봉 조회는 해당 세션 창과 페이지 상한으로 제한되며 총 읽기 시간도 제한한다.
 
 ROB-888 주석도 같은 근거를 설명한다: 장후 KRX 종가는 overlay 전 `price`를 보존해 얻지 않고 15:30 J 분봉에서 얻는다.
+
+### get_orderbook 암호화폐 시각·시장 추론 (hk 6371)
+
+`get_orderbook(symbol, market=None, venue=None)`의 `market`을 생략하면, KRW-·BTC-·USDT-로 시작하는 심볼은 암호화폐로 해석한다(`app/core/symbol.py::is_upbit_market_symbol`). 그 밖의 심볼은 기존처럼 KR 주식이다. 명시한 `market`은 항상 우선한다. 따라서 `market`을 생략한 `KRW-BTC`가 KR 주식 검증으로 가지 않는다. BTC-·USDT- 심볼은 암호화폐로 해석된 뒤 기존 KRW-only 검증으로 거부된다(`crypto orderbook only supports KRW-* symbols`).
+
+암호화폐 응답(`source="upbit"`)은 다음 시각 필드를 추가로 담는다. KR·US 응답에는 추가되지 않는다.
+
+- `event_at`: Upbit 응답의 `timestamp`(ms)를 UTC ISO 8601로 바꾼 값이다. Upbit 공식 문서(https://docs.upbit.com/kr/reference/list-orderbooks)는 이 필드를 "조회 요청 시각"으로 정의하므로 호가가 바뀐 시각이 아니다. 그래서 `event_at_basis="upbit_query_time"`을 함께 낸다. 값이 없거나 0 이하이거나 파싱할 수 없으면 `event_at=null`, `event_at_basis=null`, `event_at_reason="exchange_timestamp_unavailable"`이다. 우리 시계로 채우지 않는다.
+- `depth_basis_at`: 매수·매도 잔량(depth)이 기준으로 한 시각이다. Upbit은 호가를 한 응답 안에 묶어 주므로 `event_at`과 같은 거래소 시각이다. 거래소 시각이 없으면 `null`이고 `depth_basis_reason="exchange_timestamp_unavailable"`이다.
+- `first_received_at`: 우리가 제공자 응답을 받은 시각(UTC ISO)이다. 거래소 시각과 별도 필드이며 `event_at`이나 `as_of`를 대신하지 않는다. 수신 시계가 없으면 `null`이고 `first_received_reason="receive_time_unavailable"`이다.
+
+기존 `as_of`(KST)와 `price_as_of_source`, `price_freshness`는 그대로다. 신선도 판정은 `as_of`만 쓴다.
+
+테스트: `tests/test_crypto_orderbook_timestamps.py`(공식 문서 예시 응답 `tests/fixtures/upbit_orderbook/list_orderbooks_KRW-BTC_doc_example.json`을 쓰는 시각 테스트, 시각 누락·잘못된 값, 시장 생략 KRW-BTC, KR 출력에 암호화폐 시각 키가 없음).
 
 ## 유지 규약
 
