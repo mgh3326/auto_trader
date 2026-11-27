@@ -712,6 +712,12 @@ class Settings(BaseSettings):
     # Default False until the upstream contract is confirmed; CI never calls live.
     wisefn_earnings_enabled: bool = False
 
+    # SEC EDGAR collector (hk 6407). SEC fair access requires a declared
+    # User-Agent on every request; empty refuses all requests before any
+    # network call. The operator sets the value — never commit a personal
+    # name or email into code, tests, fixtures, or docs.
+    sec_edgar_user_agent: str = ""
+
     # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
     invest_screener_snapshots_commit_enabled: bool = False
 

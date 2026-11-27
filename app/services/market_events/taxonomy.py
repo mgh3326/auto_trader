@@ -70,6 +70,8 @@ SOURCES: frozenset[str] = frozenset(
         "benzinga",
         "benzinga_pro",
         "kis_ksd",
+        # hk 6407: SEC EDGAR official disclosures (manual collector, no schedule)
+        "sec",
         "upbit_notice",
         "bithumb_notice",
     }

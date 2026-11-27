@@ -1,0 +1,946 @@
+"""Read-only SEC EDGAR disclosure collector (hk 6407).
+
+Fetches only official EDGAR endpoints — ``data.sec.gov`` submissions JSON and
+``www.sec.gov`` ``company_tickers.json`` — and writes ``market_events`` rows in
+the v2 common event form through ``MarketEventsRepository``. There is no IR page
+scraping: an IR request returns ``unsupported`` with a closed reason and makes
+no network call.
+
+SEC fair access requires a declared ``User-Agent`` on every request and a
+bounded request rate. ``SEC_EDGAR_USER_AGENT``
+(``settings.sec_edgar_user_agent``) is set by the operator; an empty value
+refuses every request before any network call. The value never appears in
+logs, errors, or this module.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import re
+import time
+from collections.abc import Callable, Sequence
+from datetime import UTC, date, datetime
+from typing import Any
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.symbol import to_db_symbol
+from app.services.market_events.repository import MarketEventsRepository
+
+logger = logging.getLogger(__name__)
+
+SEC_SOURCE = "sec"
+CATEGORY = "disclosure"
+MARKET = "us"
+COUNTRY = "US"
+USER_AGENT_ENV = "SEC_EDGAR_USER_AGENT"
+
+COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+ALLOWED_HOSTS = frozenset({"www.sec.gov", "data.sec.gov"})
+
+# SEC fair access allows up to 10 requests/second; this collector stays at or
+# below 5 requests/second (one request every 0.2 s).
+REQUEST_INTERVAL_SECONDS = 0.2
+DEFAULT_TIMEOUT_S = 15.0
+_MAX_BODY_BYTES = 32 * 1024 * 1024
+
+_ET = ZoneInfo("America/New_York")
+
+# Disclosure forms stored as ``category='disclosure'``. Amendments carry their
+# own accession numbers and belong to the same disclosure family.
+SEC_FORMS = frozenset({"8-K", "10-Q", "10-K", "8-K/A", "10-Q/A", "10-K/A"})
+
+# Parallel arrays inside ``filings.recent`` of the submissions JSON.
+_RECENT_FIELDS = (
+    "accessionNumber",
+    "filingDate",
+    "reportDate",
+    "acceptanceDateTime",
+    "act",
+    "form",
+    "fileNumber",
+    "filmNumber",
+    "items",
+    "core_type",
+    "size",
+    "isXBRL",
+    "isInlineXBRL",
+    "isForeignPrivateIssuer",
+    "primaryDocument",
+    "primaryDocDescription",
+)
+
+IR_UNSUPPORTED_REASON = (
+    "no official API/feed; IR page scraping requires an operator decision"
+)
+
+
+class SecEdgarUserAgentMissing(Exception):
+    """``SEC_EDGAR_USER_AGENT`` is empty — no request may be made."""
+
+
+class SecEdgarError(RuntimeError):
+    """A sanitized EDGAR failure carrying a closed ``CollectionFailure`` code.
+
+    ``failure_code`` is one of ``http_4xx``, ``http_5xx``, ``timeout``,
+    ``transport``, ``bad_response``, ``unparseable`` or ``quota`` — the only
+    text ever recorded in ``last_error``. Messages never carry the User-Agent.
+    """
+
+    failure_code: str = "bad_response"
+
+    def __init__(self, message: str = "", *, failure_code: str | None = None) -> None:
+        super().__init__(message)
+        if failure_code is not None:
+            self.failure_code = failure_code
+
+
+def _http_failure_code(status: int) -> str:
+    """Closed failure code for a non-200 HTTP status."""
+    if status == 429:
+        return "quota"
+    if status >= 500:
+        return "http_5xx"
+    if 400 <= status < 500:
+        return "http_4xx"
+    # Redirects are refused (follow_redirects=False); anything else unexpected
+    # is a response-shape problem, not a client error.
+    return "bad_response"
+
+
+class SecEdgarClient:
+    """Paced, allowlisted, read-only EDGAR JSON client.
+
+    The declared User-Agent is required at construction: an empty value raises
+    :class:`SecEdgarUserAgentMissing` before any request can be made.
+    """
+
+    def __init__(
+        self,
+        *,
+        user_agent: str | None = None,
+        client_factory: Callable[..., Any] = httpx.AsyncClient,
+        sleep: Callable[[float], Any] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        min_interval: float = REQUEST_INTERVAL_SECONDS,
+    ) -> None:
+        agent = settings.sec_edgar_user_agent if user_agent is None else user_agent
+        agent = (agent or "").strip()
+        if not agent:
+            raise SecEdgarUserAgentMissing(
+                f"{USER_AGENT_ENV} is empty; refusing SEC EDGAR requests"
+            )
+        self._user_agent = agent
+        self._client_factory = client_factory
+        self._sleep = sleep or asyncio.sleep
+        self._monotonic = monotonic or time.monotonic
+        self._min_interval = min_interval
+        self._last_request_at: float | None = None
+
+    async def _pace(self) -> None:
+        now = self._monotonic()
+        if self._last_request_at is not None:
+            wait = self._min_interval - (now - self._last_request_at)
+            if wait > 0:
+                await self._sleep(wait)
+        self._last_request_at = self._monotonic()
+
+    async def _get_json(self, url: str) -> Any:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
+            raise SecEdgarError(
+                "SEC EDGAR URL is outside the host allowlist",
+                failure_code="bad_response",
+            )
+        await self._pace()
+        try:
+            async with self._client_factory(
+                timeout=DEFAULT_TIMEOUT_S, follow_redirects=False
+            ) as client:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": self._user_agent,
+                        "Accept": "application/json",
+                    },
+                )
+        except httpx.TimeoutException:
+            raise SecEdgarError(
+                "SEC EDGAR request timed out", failure_code="timeout"
+            ) from None
+        except httpx.HTTPError:
+            raise SecEdgarError(
+                "SEC EDGAR transport failed", failure_code="transport"
+            ) from None
+
+        status = response.status_code
+        if status != 200:
+            raise SecEdgarError(
+                f"SEC EDGAR HTTP {status}", failure_code=_http_failure_code(status)
+            )
+        content_type = (
+            response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        )
+        if content_type != "application/json":
+            raise SecEdgarError(
+                "SEC EDGAR response is not JSON", failure_code="bad_response"
+            )
+        body = response.content
+        if len(body) > _MAX_BODY_BYTES:
+            raise SecEdgarError(
+                "SEC EDGAR response exceeds size limit", failure_code="bad_response"
+            )
+        try:
+            return json.loads(body)
+        except (ValueError, json.JSONDecodeError):
+            raise SecEdgarError(
+                "SEC EDGAR response contains invalid JSON",
+                failure_code="unparseable",
+            ) from None
+
+    async def fetch_company_tickers(self) -> Any:
+        """GET the official ticker→CIK map (``www.sec.gov``)."""
+        return await self._get_json(COMPANY_TICKERS_URL)
+
+    async def fetch_submissions(self, cik: int) -> Any:
+        """GET one company's submissions JSON (``data.sec.gov``)."""
+        if type(cik) is not int or cik <= 0:
+            raise ValueError("cik must be a positive int")
+        return await self._get_json(SUBMISSIONS_URL.format(cik=f"{cik:010d}"))
+
+
+def _norm_ticker(ticker: str) -> str:
+    return to_db_symbol(ticker.strip().upper())
+
+
+def index_company_tickers(payload: Any) -> dict[str, tuple[int, str]]:
+    """Index ``company_tickers.json`` as normalized ticker → (CIK, title)."""
+    if not isinstance(payload, dict):
+        raise SecEdgarError(
+            "SEC EDGAR company_tickers response has an invalid shape",
+            failure_code="unparseable",
+        )
+    index: dict[str, tuple[int, str]] = {}
+    for entry in payload.values():
+        if not isinstance(entry, dict):
+            raise SecEdgarError(
+                "SEC EDGAR company_tickers row has an invalid shape",
+                failure_code="unparseable",
+            )
+        cik = entry.get("cik_str")
+        ticker = entry.get("ticker")
+        title = entry.get("title")
+        if type(cik) is not int or cik <= 0 or not isinstance(ticker, str):
+            raise SecEdgarError(
+                "SEC EDGAR company_tickers row has an invalid shape",
+                failure_code="unparseable",
+            )
+        index[_norm_ticker(ticker)] = (cik, title if isinstance(title, str) else "")
+    return index
+
+
+def _filing_rows(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Split ``filings.recent`` parallel arrays into per-filing row dicts.
+
+    Returns ``(rows, meta)`` where ``meta`` carries ``older_history_uncollected``
+    (``filings.files`` non-empty → older chunks exist that this collector does
+    not fetch) and ``recent_earliest`` (oldest ``filingDate`` present, or None).
+    """
+    if not isinstance(payload, dict):
+        raise SecEdgarError(
+            "SEC EDGAR submissions response has an invalid shape",
+            failure_code="unparseable",
+        )
+    filings = payload.get("filings")
+    if not isinstance(filings, dict):
+        raise SecEdgarError(
+            "SEC EDGAR submissions response has an invalid shape",
+            failure_code="unparseable",
+        )
+    recent = filings.get("recent")
+    if not isinstance(recent, dict):
+        raise SecEdgarError(
+            "SEC EDGAR submissions response has an invalid shape",
+            failure_code="unparseable",
+        )
+    accessions = recent.get("accessionNumber")
+    older_files = filings.get("files")
+    older_uncollected = isinstance(older_files, list) and bool(older_files)
+    if accessions == []:
+        return [], {"older_history_uncollected": older_uncollected}
+    if not isinstance(accessions, list) or not all(
+        isinstance(item, str) and item.strip() for item in accessions
+    ):
+        raise SecEdgarError(
+            "SEC EDGAR submissions recent accessionNumber is invalid",
+            failure_code="unparseable",
+        )
+    count = len(accessions)
+    columns: dict[str, list[Any]] = {}
+    for field in _RECENT_FIELDS:
+        values = recent.get(field)
+        if values is None:
+            values = [""] * count
+        if not isinstance(values, list) or len(values) != count:
+            raise SecEdgarError(
+                f"SEC EDGAR submissions recent {field} length mismatch",
+                failure_code="unparseable",
+            )
+        columns[field] = values
+    rows = [
+        {field: columns[field][index] for field in _RECENT_FIELDS}
+        for index in range(count)
+    ]
+    dates = []
+    for row in rows:
+        raw_date = row.get("filingDate")
+        if isinstance(raw_date, str):
+            try:
+                dates.append(date.fromisoformat(raw_date.strip()))
+            except ValueError:
+                continue
+    meta = {
+        "older_history_uncollected": older_uncollected,
+        "recent_earliest": min(dates) if dates else None,
+    }
+    return rows, meta
+
+
+def _window_complete(
+    *,
+    older_history_uncollected: bool,
+    recent_earliest: date | None,
+    from_date: date | None,
+    to_date: date | None,
+) -> bool:
+    """Whether the collected scope provably covers the requested window (§2.4).
+
+    ``filings.recent`` is the complete *recent* listing; ``filings.files``
+    points at older chunks this collector never fetches. A run with no explicit
+    date bounds collects the recent scope only, which is complete by
+    definition. An explicit bound reaching before the oldest recent filing
+    date leaves the older part unproven → ``False`` (partition stays pending).
+    """
+    if from_date is None and to_date is None:
+        return True
+    if not older_history_uncollected:
+        return True
+    if recent_earliest is None:
+        return False
+    lower = from_date or date.min
+    return lower >= recent_earliest
+
+
+_ACCEPTANCE_RE = re.compile(r"^\d{14}$")
+
+
+def _parse_acceptance(raw: Any) -> tuple[datetime, str, datetime] | None:
+    """Parse EDGAR ``acceptanceDateTime`` (``YYYYMMDDHHMMSS``, US Eastern).
+
+    Returns ``(aware_utc, offset_text, local_naive)`` or ``None`` when the
+    value is missing or malformed — the caller then falls back to date
+    precision from ``filingDate``.
+    """
+    if not isinstance(raw, str) or not _ACCEPTANCE_RE.fullmatch(raw.strip()):
+        return None
+    try:
+        local = datetime.strptime(raw.strip(), "%Y%m%d%H%M%S").replace(tzinfo=_ET)
+    except ValueError:
+        return None
+    offset = local.utcoffset()
+    if offset is None:
+        return None
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    hours, remainder = divmod(abs(total), 3600)
+    offset_text = f"{sign}{hours:02d}:{remainder // 60:02d}"
+    return local.astimezone(UTC), offset_text, local.replace(tzinfo=None)
+
+
+def _safe_primary_document(value: Any) -> str | None:
+    """Return a safe relative document path or ``None``."""
+    if not isinstance(value, str):
+        return None
+    doc = value.strip()
+    if not doc or doc.startswith("/") or ".." in doc:
+        return None
+    if any(char.isspace() or ord(char) < 32 for char in doc):
+        return None
+    return doc
+
+
+def _filing_url(cik: int, accession: str, primary_document: Any) -> str:
+    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+    doc = _safe_primary_document(primary_document)
+    return f"{base}/{doc}" if doc else f"{base}/"
+
+
+def normalize_sec_filing(
+    row: dict[str, Any],
+    *,
+    cik: int,
+    symbol: str | None,
+    symbols: list[str] | None,
+    company_name: str | None,
+    received_at: datetime,
+) -> dict[str, Any]:
+    """Normalize one ``filings.recent`` row into a ``market_events`` payload.
+
+    ``source_event_id`` is the accession number. ``published_at`` comes from
+    ``acceptanceDateTime`` (Eastern → UTC, ``published_precision='second'``);
+    a missing/malformed acceptance time degrades to ``published_date`` from
+    ``filingDate`` with ``published_precision='date'``.
+    """
+    accession = row.get("accessionNumber")
+    if not isinstance(accession, str) or not accession.strip():
+        raise SecEdgarError(
+            "SEC filing row missing accessionNumber", failure_code="unparseable"
+        )
+    accession = accession.strip()
+    form = row.get("form")
+    if form not in SEC_FORMS:
+        raise SecEdgarError(
+            f"SEC filing form {form!r} is outside the collected set",
+            failure_code="unparseable",
+        )
+
+    filing_date_raw = row.get("filingDate")
+    event_date: date | None = None
+    if isinstance(filing_date_raw, str):
+        try:
+            event_date = date.fromisoformat(filing_date_raw.strip())
+        except ValueError:
+            event_date = None
+
+    acceptance = _parse_acceptance(row.get("acceptanceDateTime"))
+    if event_date is None and acceptance is not None:
+        event_date = acceptance[2].date()
+    if event_date is None:
+        raise SecEdgarError(
+            "SEC filing row has no usable filing date",
+            failure_code="unparseable",
+        )
+
+    if acceptance is not None:
+        published_at, published_offset, published_local = acceptance
+        publication = {
+            "published_at": published_at,
+            "published_date": None,
+            "published_offset": published_offset,
+            "published_precision": "second",
+        }
+        release_time_utc = published_at
+        release_time_local = published_local
+        provider_created_raw = (
+            row.get("acceptanceDateTime")
+            if isinstance(row.get("acceptanceDateTime"), str)
+            else None
+        )
+    else:
+        publication = {
+            "published_at": None,
+            "published_date": event_date,
+            "published_offset": None,
+            "published_precision": "date",
+        }
+        release_time_utc = None
+        release_time_local = None
+        provider_created_raw = None
+
+    items = row.get("items")
+    items_text = items.strip() if isinstance(items, str) else ""
+    title = form if not items_text else f"{form} (items {items_text})"
+
+    return {
+        "category": CATEGORY,
+        "market": MARKET,
+        "country": COUNTRY,
+        "symbol": symbol,
+        "company_name": company_name or None,
+        "title": title,
+        "event_date": event_date,
+        "release_time_utc": release_time_utc,
+        "release_time_local": release_time_local,
+        "source_timezone": "America/New_York",
+        "time_hint": "unknown",
+        "importance": None,
+        "status": "released",
+        "source": SEC_SOURCE,
+        "source_event_id": accession,
+        "source_url": _filing_url(cik, accession, row.get("primaryDocument")),
+        "fiscal_year": None,
+        "fiscal_quarter": None,
+        "raw_payload_json": {**row, "edgar_cik": f"{cik:010d}"},
+        "provider_created_at": release_time_utc,
+        "provider_created_raw": provider_created_raw,
+        "provider_updated_at": None,
+        "provider_updated_raw": None,
+        "first_received_at": received_at,
+        "fetched_at": received_at,
+        **publication,
+        "revised_at": None,
+        "effective_at": None,
+        "relevance": "direct" if symbol else None,
+        "relevance_state": "known" if symbol else "unknown",
+        "relevance_basis": "recorded" if symbol else None,
+        "instrument_type": "equity_us" if symbol else None,
+        "group_key": None,
+        "redistributable": True,
+        "symbols": symbols,
+        "backfilled": True,
+    }
+
+
+def _content_digest(raw: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            raw, sort_keys=True, separators=(",", ">"), ensure_ascii=True
+        ).encode()
+    ).hexdigest()
+
+
+async def _write_filing(
+    repository: MarketEventsRepository,
+    event: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    observed_at: datetime,
+) -> str:
+    """Compare-and-append one filing, then upsert the current row.
+
+    Returns ``inserted`` / ``revised`` / ``unchanged`` / ``stale``. The
+    provenance row is written once per accession via ``append_source``
+    (``ON CONFLICT DO NOTHING`` keeps re-collection duplicate-free).
+    """
+    source = event["source"]
+    source_event_id = event["source_event_id"]
+    digest = _content_digest(raw)
+    lock_revision = getattr(repository, "lock_revision_identity", None)
+    if lock_revision is not None:
+        await lock_revision(
+            source=source,
+            category=CATEGORY,
+            market=MARKET,
+            source_event_id=source_event_id,
+        )
+    latest = await repository.latest_revision(
+        source=source,
+        category=CATEGORY,
+        market=MARKET,
+        source_event_id=source_event_id,
+    )
+    latest_observed_at = getattr(latest, "observed_at", None)
+    if latest_observed_at is not None and latest_observed_at > observed_at:
+        return "stale"
+    if latest is not None and latest.content_hash == digest:
+        return "unchanged"
+    if not await repository.append_revision(
+        source=source,
+        category=CATEGORY,
+        market=MARKET,
+        source_event_id=source_event_id,
+        content_hash=digest,
+        observed_at=observed_at,
+        provider_created_at=event["provider_created_at"],
+        provider_updated_at=event["provider_updated_at"],
+        raw_payload_json=event["raw_payload_json"],
+    ):
+        raise RuntimeError("SEC filing revision was not recorded")
+    stored = await repository.upsert_event_with_values(event, [])
+    await repository.append_source(
+        {
+            "event_id": stored.id,
+            "source": source,
+            "source_event_id": source_event_id,
+            "source_url": event["source_url"],
+            "published_at": event["published_at"],
+            "published_date": event["published_date"],
+            "published_offset": event["published_offset"],
+            "published_precision": event["published_precision"],
+            "first_received_at": event["first_received_at"],
+            "revised_at": None,
+            "raw_hash": digest,
+        }
+    )
+    return "inserted" if latest is None else "revised"
+
+
+def _issuer_identity(
+    payload: dict[str, Any], fallback_symbol: str | None, fallback_name: str | None
+) -> tuple[str | None, list[str] | None, str | None]:
+    """Resolve (symbol, symbols, company_name) from a submissions payload."""
+    tickers_raw = payload.get("tickers")
+    tickers: list[str] = []
+    if isinstance(tickers_raw, list):
+        for item in tickers_raw:
+            if isinstance(item, str) and item.strip():
+                tickers.append(_norm_ticker(item))
+    symbol = fallback_symbol or (tickers[0] if tickers else None)
+    symbols = tickers or ([symbol] if symbol else None)
+    name = payload.get("name")
+    company_name = name if isinstance(name, str) and name.strip() else fallback_name
+    return symbol, symbols, company_name
+
+
+def _in_window(
+    row: dict[str, Any], from_date: date | None, to_date: date | None
+) -> bool:
+    raw_date = row.get("filingDate")
+    if not isinstance(raw_date, str):
+        # No usable date → cannot prove it is outside the window; keep it.
+        return True
+    try:
+        filing_day = date.fromisoformat(raw_date.strip())
+    except ValueError:
+        return True
+    if from_date is not None and filing_day < from_date:
+        return False
+    if to_date is not None and filing_day > to_date:
+        return False
+    return True
+
+
+async def collect_sec_filings(
+    db: AsyncSession | None = None,
+    *,
+    symbols: Sequence[str] | None = None,
+    ciks: Sequence[int | str] | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    commit: bool = False,
+    client: SecEdgarClient | None = None,
+    repo: MarketEventsRepository | None = None,
+    clock: Callable[[], datetime] | None = None,
+    run_date: date | None = None,
+) -> dict[str, Any]:
+    """Collect recent EDGAR filings for a symbol/CIK list.
+
+    ``commit=False`` (default) performs the fetches and normalization only —
+    no repository or session is required and nothing is written. ``commit=True``
+    writes through ``MarketEventsRepository`` and records one
+    ``(sec, disclosure, us, run_date)`` ingestion partition: ``failed`` with a
+    closed ``failure_code`` on collection errors, ``pending`` when an explicit
+    date window reaches into unfetched older history, ``succeeded`` otherwise
+    (``event_count=0`` is a proven "no filings", distinct from ``failed``).
+    """
+    symbols = [item for item in (symbols or []) if str(item).strip()]
+    parsed_ciks: list[int] = []
+    for item in ciks or []:
+        try:
+            cik = int(str(item).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid CIK value: {item!r}") from None
+        if cik <= 0:
+            raise ValueError(f"invalid CIK value: {item!r}")
+        parsed_ciks.append(cik)
+    if not symbols and not parsed_ciks:
+        raise ValueError("at least one symbol or CIK is required")
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise ValueError("from_date must be <= to_date")
+
+    # SEC fair access: refuse before any network call when the declared
+    # User-Agent is not configured. This check precedes repository use so a
+    # misconfigured run never touches the database either.
+    user_agent = (settings.sec_edgar_user_agent or "").strip()
+    if not user_agent:
+        raise SecEdgarUserAgentMissing(
+            f"{USER_AGENT_ENV} is empty; refusing SEC EDGAR requests"
+        )
+
+    if commit and repo is None:
+        raise ValueError("commit requires a repository")
+    if repo is None and db is not None:
+        repo = MarketEventsRepository(db)
+    session = db if db is not None else getattr(repo, "db", None)
+    if commit and session is None:
+        raise ValueError("commit requires a repository session")
+
+    fetcher = client or SecEdgarClient(user_agent=user_agent)
+    capture_now = clock or (lambda: datetime.now(UTC))
+    now = capture_now()
+    partition_day = run_date or now.astimezone(_ET).date()
+
+    report: dict[str, Any] = {
+        "source": SEC_SOURCE,
+        "category": CATEGORY,
+        "market": MARKET,
+        "run_date": partition_day.isoformat(),
+        "dry_run": not commit,
+        "issuers": {},
+        "totals": {
+            "filings": 0,
+            "written": 0,
+            "inserted": 0,
+            "revised": 0,
+            "unchanged": 0,
+            "stale": 0,
+            "unresolved": 0,
+            "failed": 0,
+        },
+        "partition": None,
+    }
+
+    partition = None
+    if commit:
+        assert repo is not None
+        partition = await repo.get_or_create_partition(
+            source=SEC_SOURCE,
+            category=CATEGORY,
+            market=MARKET,
+            partition_date=partition_day,
+        )
+        await repo.mark_partition_running(partition)
+
+    first_failure_code: str | None = None
+    first_unexpected: str | None = None
+    window_incomplete = False
+    total_written = 0
+
+    def _finish_partition() -> None:
+        if partition is None:
+            return
+        assert repo is not None
+        status: str
+        if first_failure_code is not None or first_unexpected is not None:
+            status = "failed"
+        elif window_incomplete:
+            status = "pending"
+        else:
+            status = "succeeded"
+        report["partition"] = {
+            "partition_date": partition_day.isoformat(),
+            "status": status,
+            "event_count": total_written,
+            "persisted": True,
+        }
+
+    try:
+        # Resolve requested symbols through the official ticker map once.
+        requests: list[dict[str, Any]] = []
+        ticker_index: dict[str, tuple[int, str]] | None = None
+        if symbols:
+            ticker_index = index_company_tickers(await fetcher.fetch_company_tickers())
+        for raw_symbol in symbols:
+            label = raw_symbol.strip().upper()
+            entry = (ticker_index or {}).get(_norm_ticker(raw_symbol))
+            if entry is None:
+                report["issuers"][label] = {
+                    "status": "unresolved",
+                    "reason": "ticker_not_listed",
+                }
+                report["totals"]["unresolved"] += 1
+                continue
+            cik, map_title = entry
+            requests.append(
+                {
+                    "label": label,
+                    "cik": cik,
+                    "fallback_symbol": _norm_ticker(raw_symbol),
+                    "fallback_name": map_title or None,
+                }
+            )
+        for cik in parsed_ciks:
+            requests.append(
+                {
+                    "label": f"CIK{cik:010d}",
+                    "cik": cik,
+                    "fallback_symbol": None,
+                    "fallback_name": None,
+                }
+            )
+
+        if not requests:
+            # Nothing resolvable was requested — not a "no filings" result.
+            if commit and partition is not None:
+                assert repo is not None
+                await repo.mark_partition_failed(
+                    partition, error="no_resolvable_symbols"
+                )
+                if session is not None:
+                    await session.commit()
+            report["partition"] = {
+                "partition_date": partition_day.isoformat(),
+                "status": "failed" if commit else "unresolved",
+                "event_count": 0,
+                "persisted": bool(commit),
+            }
+            return report
+
+        for request in requests:
+            label = request["label"]
+            try:
+                payload = await fetcher.fetch_submissions(request["cik"])
+                if not isinstance(payload, dict):
+                    raise SecEdgarError(
+                        "SEC EDGAR submissions response has an invalid shape",
+                        failure_code="unparseable",
+                    )
+                rows, meta = _filing_rows(payload)
+                symbol, symbols_list, company_name = _issuer_identity(
+                    payload,
+                    request["fallback_symbol"],
+                    request["fallback_name"],
+                )
+                observed_at = capture_now()
+                filings: list[tuple[dict[str, Any], dict[str, Any]]] = []
+                skipped_unparseable = 0
+                for row in rows:
+                    form = row.get("form")
+                    if not isinstance(form, str) or form not in SEC_FORMS:
+                        continue
+                    if not _in_window(row, from_date, to_date):
+                        continue
+                    try:
+                        event = normalize_sec_filing(
+                            row,
+                            cik=request["cik"],
+                            symbol=symbol,
+                            company_name=company_name,
+                            symbols=symbols_list,
+                            received_at=observed_at,
+                        )
+                    except SecEdgarError:
+                        skipped_unparseable += 1
+                        continue
+                    filings.append((event, row))
+
+                complete = _window_complete(
+                    older_history_uncollected=meta["older_history_uncollected"],
+                    recent_earliest=meta.get("recent_earliest"),
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+                if not complete:
+                    window_incomplete = True
+
+                counts = {
+                    "inserted": 0,
+                    "revised": 0,
+                    "unchanged": 0,
+                    "stale": 0,
+                }
+                if commit:
+                    assert repo is not None
+                    for event, raw in filings:
+                        outcome = await _write_filing(
+                            repo, event, raw, observed_at=observed_at
+                        )
+                        counts[outcome] += 1
+                        if outcome in {"inserted", "revised"}:
+                            total_written += 1
+                else:
+                    counts["inserted"] = len(filings)
+
+                report["issuers"][label] = {
+                    "status": "collected",
+                    "cik": f"{request['cik']:010d}",
+                    "symbol": symbol,
+                    "filings": len(filings),
+                    "written": (
+                        sum(counts[key] for key in ("inserted", "revised"))
+                        if commit
+                        else len(filings)
+                    ),
+                    "inserted": counts["inserted"],
+                    "revised": counts["revised"],
+                    "unchanged": counts["unchanged"],
+                    "stale": counts["stale"],
+                    "skipped_unparseable": skipped_unparseable,
+                    "older_history_uncollected": meta["older_history_uncollected"],
+                    "window_complete": complete,
+                }
+                report["totals"]["filings"] += len(filings)
+                report["totals"]["written"] += report["issuers"][label]["written"]
+                for key in ("inserted", "revised", "unchanged", "stale"):
+                    report["totals"][key] += counts[key]
+            except SecEdgarError as exc:
+                logger.warning(
+                    "SEC EDGAR collection failed for %s: %s (%s)",
+                    label,
+                    exc.failure_code,
+                    exc,
+                )
+                report["issuers"][label] = {
+                    "status": "failed",
+                    "failure_code": exc.failure_code,
+                    "error": str(exc),
+                }
+                report["totals"]["failed"] += 1
+                if first_failure_code is None:
+                    first_failure_code = exc.failure_code
+            except Exception as exc:  # noqa: BLE001 - recorded, run continues
+                logger.exception("SEC EDGAR collection crashed for %s", label)
+                report["issuers"][label] = {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                report["totals"]["failed"] += 1
+                if first_unexpected is None:
+                    first_unexpected = f"{type(exc).__name__}: {exc}"
+
+        _finish_partition()
+        if commit and partition is not None:
+            assert repo is not None
+            if first_failure_code is not None:
+                await repo.mark_partition_failed(
+                    partition, failure_code=first_failure_code
+                )
+            elif first_unexpected is not None:
+                await repo.mark_partition_failed(partition, error=first_unexpected)
+            elif window_incomplete:
+                await repo.mark_partition_pending(partition)
+            else:
+                await repo.mark_partition_succeeded(
+                    partition, event_count=total_written
+                )
+            if session is not None:
+                await session.commit()
+    except SecEdgarError as exc:
+        # Run-level failure (e.g. the ticker map fetch) — no per-issuer entry.
+        report["error"] = {"failure_code": exc.failure_code, "error": str(exc)}
+        report["totals"]["failed"] += 1
+        first_failure_code = exc.failure_code
+        if commit and partition is not None:
+            assert repo is not None
+            await repo.mark_partition_failed(partition, failure_code=exc.failure_code)
+            if session is not None:
+                await session.commit()
+        _finish_partition()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("SEC EDGAR collection crashed")
+        report["error"] = {"error": f"{type(exc).__name__}: {exc}"}
+        first_unexpected = f"{type(exc).__name__}: {exc}"
+        if commit and partition is not None:
+            assert repo is not None
+            await repo.mark_partition_failed(
+                partition, error=f"{type(exc).__name__}: {exc}"
+            )
+            if session is not None:
+                await session.commit()
+        _finish_partition()
+
+    return report
+
+
+def collect_ir_requests(symbols: Sequence[str]) -> dict[str, dict[str, str]]:
+    """IR feed requests — always ``unsupported``, never scraped.
+
+    Enterprise IR pages have no official API/feed in scope; per the task
+    contract the only recorded outcome is the closed ``unsupported`` reason.
+    """
+    return {
+        str(symbol).strip().upper(): {
+            "status": "unsupported",
+            "reason": IR_UNSUPPORTED_REASON,
+        }
+        for symbol in symbols
+        if str(symbol).strip()
+    }
