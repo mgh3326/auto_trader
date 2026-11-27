@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from app.core.symbol import to_db_symbol
+from app.core.symbol import KR_SHORT_CODE, to_db_symbol
 from app.services.daily_plan.allocation import CURRENCY, build_comparison
 from app.services.daily_plan.bundle import (
     SCHEMA_VERSION,
@@ -31,7 +31,6 @@ from app.services.daily_plan.bundle import (
     decimal_string,
 )
 from app.services.daily_plan.vocabulary import (
-    KR_SHORT_CODE,
     RANKING_A_INPUTS,
     RANKING_B_ADDED_INPUTS,
 )

@@ -11,6 +11,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from app.core.symbol import KR_SHORT_CODE
+
 _FINNHUB_HOUR_TO_TIME_HINT = {
     "bmo": "before_open",
     "amc": "after_close",
@@ -150,7 +152,7 @@ def normalize_dart_disclosure_row(
     corp_name = (row.get("corp_name") or "").strip()
     report_nm = (row.get("report_nm") or "").strip()
     stock_code = dart_row_stock_code(row)
-    symbol = stock_code if stock_code and stock_code.isdigit() else None
+    symbol = stock_code if stock_code and KR_SHORT_CODE.fullmatch(stock_code) else None
     symbol_resolution_reason: str | None = None
     if not stock_code:
         normalized_name = normalize_dart_corp_name(corp_name)

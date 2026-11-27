@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.symbol import KR_SHORT_CODE
 from app.core.timezone import today_kst
 from app.services.disclosures.dart import _get_client
 
@@ -59,8 +60,13 @@ def normalize_dart_corp_name(value: Any) -> str:
 
 
 def _listed_stock_code(value: Any) -> str | None:
+    """Return the registry's KRX short code when it is well formed, else None.
+
+    A listed issuer can carry an alphanumeric short code (e.g. 0256C0), so the
+    shared ``KR_SHORT_CODE`` rule decides, not a digit-only check (hk 7031).
+    """
     code = normalize_dart_corp_name(value)
-    return code if len(code) == 6 and code.isascii() and code.isdigit() else None
+    return code if KR_SHORT_CODE.fullmatch(code) else None
 
 
 def dart_row_stock_code(row: dict[str, Any]) -> str:

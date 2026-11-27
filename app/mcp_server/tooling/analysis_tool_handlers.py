@@ -18,6 +18,7 @@ import httpx
 import yfinance as yf
 
 from app.core.config import settings
+from app.core.symbol import KR_SHORT_CODE
 from app.mcp_server.tooling import (
     analysis_quick,
     analysis_screening,
@@ -705,7 +706,7 @@ async def _timed_filings(
     ``receipt_lookup="failed"`` so a null receipt is not read as "never seen".
     """
     fallback = symbol.strip()
-    if not (len(fallback) == 6 and fallback.isdigit()):
+    if not KR_SHORT_CODE.fullmatch(fallback):
         fallback = "-"
     codes = [filing.get("stock_code") or fallback for filing in filings]
     receipt_lookup = "ok"

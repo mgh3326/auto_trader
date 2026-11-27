@@ -6,6 +6,13 @@ DB 기준 형식: `.` (예: BRK.B)
 - KIS API: `/` (예: BRK/B)
 """
 
+import re
+
+# KRX 단축코드(국내 종목) 규칙: 숫자 6자리 또는 대문자 ASCII 영문을 포함한 6자리
+# (예: 005930, 0256C0). 이 패턴이 단일 원천이다 — 다른 곳에서 새 패턴을 만들지 않고
+# 이 상수를 import 한다 (hk 6769, hk 6959, hk 7031). 소문자는 거부한다.
+KR_SHORT_CODE = re.compile(r"[0-9A-Z]{6}")
+
 
 def to_kis_symbol(symbol: str) -> str:
     """DB 심볼(.)을 KIS API 형식(/)으로 변환

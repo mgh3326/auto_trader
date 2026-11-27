@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal, localcontext
 from typing import Any
 
-from app.core.symbol import to_db_symbol, to_upbit_symbol
+from app.core.symbol import KR_SHORT_CODE, to_db_symbol, to_upbit_symbol
 from app.core.upbit_tick import is_on_upbit_krw_tick
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.daily_plan.vocabulary import (
@@ -16,7 +16,6 @@ from app.services.daily_plan.vocabulary import (
     ACTION_BASES,
     ACTIONS,
     DISPOSITIONS,
-    KR_SHORT_CODE,
     REASON_CODES,
     ROW_KINDS,
     TRIGGER_KINDS,
