@@ -10,6 +10,7 @@
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - TREND-TSMOM-v1 Futures Demo 추세추종 패키지 — 상태 코어·실행기·CLI (hk 4702 CT-3, hk 4719 CT-4, hk 4753 CT-5a)
+- 자율 주문 Discord 알림 (hk 7004, 6939 N7)
 - Execution Intent Gateway (ROB-1440)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - Execution Ledger Quarantine (#1175)
@@ -311,6 +312,37 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
 - **테스트**: `tests/services/brokers/binance/trend/`(순수 판정·상수 잠금·정적 경계·마이그레이션 형태는 로컬 실행, DB 트리거·예약 경쟁·마이그레이션 왕복은 CI의 run-owned test DB). CT-5a: `test_alerting_control.py`(에피소드·kill switch 버킷·heartbeat 정책·잠금), `test_truth_gate.py`(판정·실패 격리·읽기 전용 AST), `test_cli.py`(모드별 게이트 거부·manage-only·알림 non-blocking), `test_executor.py`의 manage-only 단언, `tests/scripts/test_binance_trend_ncp_playbook.py`(런북 플래그 대조).
 - **틱 사유·알림 (hk 6785)**: `TrendTickResult.decisions` 및 `scripts/binance_trend_demo.py`의 tick JSON은 심볼별 `signal_none`·`data_missing_bars`(누락된 필수 bucket epoch ms)·`data_fetch_failed`(예외 클래스)·`data_incomplete_minutes`(hard-stop 1m continuity 실패)·`signal_entry`·`signal_exit`를 구분한다. 기존 `review.binance_trend_signals`는 실제 진입 시도만 저장하고 no-signal 행/사유 컬럼이 없으므로 스키마는 바꾸지 않는다. 두 runner의 foreground `--loop` 알림은 심볼별 `data_missing_bars`/`data_fetch_failed`가 2 tick 연속일 때 기존 Discord ops episode 경로로 전달하고, 회복 시 episode를 닫는다. 기존 gate 및 규칙대로 최초 1회 및 최대 6시간 간격 reminder이며 `signal_none`·`data_incomplete_minutes`는 이 알림에 들지 않는다. 결정 투영은 주문·상태 게이트를 바꾸지 않는다.
 - **forecast (hk 4760)**: `trend/forecast.py`가 H5와 같은 학습 척추를 잇는다 — forecast id는 `uuid5(correlation_id)`로 결정적이고, 브로커가 증명한 진입 체결(`holding`, 진입 의도 `settled`) 후에만 `review.trade_forecasts`에 저장하며, 실제 held close(`closed`) 후에만 실현 손익에서 추정 테이커 수수료(`fees_usdt`, 체결 증거마다 `executed*avg*TAKER_FEE_RATE` 적립 — H5와 같은 비용 모형)를 뺀 값으로 해소한다. 트렌드 상태 테이블에는 forecast 열이 없으므로 forecast 행 자체가 멱등 기록이다(기존 행=저장 완료, `open` 아님=해소 완료). 저장·해소 실패는 틱 결과·주문·전송 수를 바꾸지 않는 fail-open이며 매 틱 관리 구간의 복구 스캔(`list_forecast_recovery_signals` 후보를 `repair_forecasts`가 세션 하나·SELECT 하나로 일괄 대조)이 놓친 쓰기를 재시도한다.
+
+### 자율 주문 Discord 알림 (hk 7004, 6939 N7)
+
+`app/services/autonomous_order_alerts.py` 는 6939 §3 I12 의 알림 표면이다(운영자 결정
+`decision/2026-11-27/at-autonomous-strategy-orders` 항목 7). 주문 경로가 **자기 커밋 뒤에**
+호출하며, 이 PR 은 emitter·이벤트 어휘·메시지 형태와 그 테스트만 더한다 — 호출자 배선은 N10+ 다.
+닫힌 이벤트 여섯: `order_accepted`·`order_refused`·`order_uncertain`(live 주문),
+`fill_booked`(체결), `stop_loss_sent`(자동 손절 전송), `kill_freeze`(계좌 킬 동결).
+
+- **게이트**: `AUTONOMOUS_ORDER_ALERTS_ENABLED` 가 정확히 `"true"` 일 때만 동작한다(기본 false,
+  그 밖의 값은 전부 off). off 면 태스크를 만들지 않고 아무것도 보내지 않는다.
+- **채널**: 기존 ops Discord 웹훅 `settings.discord_webhook_alerts` 하나뿐이다. 미설정이면 전송 없이
+  False 를 돌려준다. 새 provider·Telegram 경로·스케줄러 연결은 없다.
+- **멱등**: `event_key`(호출자가 이미 가진 내구 신원 — 저널 키·원장 체결·킬 행) 하나당 메시지 하나.
+  전송 중이거나 이미 전송된 키는 버린다. 멱등성의 근거는 **프로세스 전역 인스턴스**
+  (`get_default_alerter()`/`emit_order_alert()`)의 기억이므로 이벤트마다 새 인스턴스를 만들지 마라.
+  최근 `MAX_REMEMBERED_KEYS`(2048)개만 기억하며, 그보다 오래된 키의 재시도는 다시 보낼 수 있다.
+- **fail-open**: 전송은 백그라운드 태스크이고 5초 타임아웃·예외 삼킴이다. 호출자의 결과·exit code·
+  지연을 바꾸지 않는다. 실패·타임아웃한 키는 풀려서 재시도가 다시 시도할 수 있다 — 모호한
+  타임아웃은 한 메시지를 중복시킬 수 있고 그 대가를 택한다(TREND 알림과 같은 선택). 종료 시
+  `drain()` 이 상한 안에서 기다린다.
+- **메시지**: 한국어 제목과 계좌(마스킹)·종목·구분(매수/매도)·수량·가격·계획(head/seq/row_key)·
+  사유 코드·이벤트 키. 계좌 필드는 계좌 모드(`kis_live`·`toss_live`·`upbit_live`·모의 계좌)이고,
+  두 자리 이상 연속 숫자가 있으면 계좌번호로 보고 고정 `[MASKED]` 로 바꾼다(접미 노출 없음).
+  수량·가격은 정확한 decimal 문자열이다.
+- **경계**: 이 모듈은 브로커·주문·원장·DB 모듈을 import 하지 않는다(정적 테스트
+  `tests/services/test_autonomous_order_alerts.py::test_module_imports_no_broker_order_or_ledger_surface`).
+  원장 커밋이 권한자이고 알림은 그 뒤의 다운스트림이다 — 알림 실패는 커밋된 체결·주문 결과를
+  되돌리거나 바꾸지 않는다. `accepted` 는 체결이 아니다.
+- **테스트**: `tests/services/test_autonomous_order_alerts.py` — 이벤트별 메시지, 중복 억제,
+  웹훅 오류·타임아웃 fail-open, 게이트 off 무전송, 정적 경계.
 
 ### Execution Intent Gateway (ROB-1440)
 

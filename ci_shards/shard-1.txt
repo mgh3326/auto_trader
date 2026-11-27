@@ -353,6 +353,7 @@ tests/services/test_alpaca_paper_final_review.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py
 tests/services/test_alpaca_paper_market_evidence.py
 tests/services/test_analyst_consensus_snapshot_builder.py
+tests/services/test_autonomous_order_alerts.py
 tests/services/test_decision_history.py
 tests/services/test_kis_mock_preopen_approval_bridge.py
 tests/services/test_kis_us_inference_expiry.py
