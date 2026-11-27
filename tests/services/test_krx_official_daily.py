@@ -513,6 +513,35 @@ async def test_a_market_whose_rows_are_all_rejected_fails_the_run_and_writes_not
 
 
 @pytest.mark.asyncio
+async def test_an_all_rejected_run_labels_an_empty_market_not_published_yet() -> None:
+    """hk 7059: an empty OutBlock_1 market is not_published_yet, not ok."""
+    session = FakeSession()
+    all_bad = {
+        "OutBlock_1": [
+            {"BAS_DD": "20261125", "ISU_CD": "00593", "ACC_TRDVOL": "1"},
+            {"BAS_DD": "20261125", "ISU_CD": "0256c0", "ACC_TRDVOL": "1"},
+        ]
+    }
+    api = FakeApi(
+        {
+            "kospi": all_bad,
+            "kosdaq": {"OutBlock_1": []},
+        }
+    )
+    result = await collect_official_daily(
+        session_date=SESSION, client=api, session=session
+    )
+    assert result["status"] == "failed"
+    assert result["error_code"] == "all_rows_rejected"
+    assert result["exit_code"] == 1
+    assert result["markets"]["kospi"]["status"] == "failed"
+    assert result["markets"]["kosdaq"]["status"] == "not_published_yet"
+    assert result["markets"]["kosdaq"]["rows"] == 0
+    assert result["inserted"] is None
+    assert session.executed == [] and session.commits == 0
+
+
+@pytest.mark.asyncio
 async def test_an_all_published_run_is_ok_with_exit_zero() -> None:
     api = FakeApi(
         {

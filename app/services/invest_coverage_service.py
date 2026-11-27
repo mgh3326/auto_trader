@@ -34,6 +34,10 @@ from app.schemas.invest_coverage import (
     InvestCoverageSurface,
     InvestCoverageSymbol,
 )
+from app.services.benzinga_calendars.normalizers import (
+    SOURCE as _BENZINGA_SOURCE,
+)
+from app.services.benzinga_calendars.spec import CALENDAR_ENDPOINTS
 from app.services.invest_screener_snapshots.freshness import expected_baseline_date
 from app.services.market_data_coverage.ohlcv_freshness import (
     kr_candles_freshness,
@@ -65,9 +69,36 @@ SUPPORTED_STATES: list[CoverageState] = [
 # finished; writers leave `pending` only for the current day
 # (market_events.ingestion `day_incomplete`), so an unfinished partition
 # dated before today is stuck rather than in flight.
+#
+# Exception (hk 7059): Benzinga calendar categories whose endpoint sets
+# `requires_symbols` (derived from spec.CALENDAR_ENDPOINTS — e.g.
+# short_interest) have no unfiltered read; the client refuses a fetch
+# without symbols, so every write is symbol-scoped and the partition stays
+# `pending` permanently by design (benzinga_calendars/ingestion.py). Those
+# pending partitions are excluded from the stuck count in
+# `_calendar_surfaces`; `failed` and other unfinished statuses still count.
 _PARTITION_UNFINISHED_STATUSES = tuple(
     sorted(PARTITION_STATUSES - {"succeeded", "failed"})
 )
+
+_BENZINGA_SYMBOL_REQUIRED_CATEGORIES = frozenset(
+    category
+    for category, endpoint in CALENDAR_ENDPOINTS.items()
+    if endpoint.requires_symbols
+)
+
+
+def _benzinga_symbol_required_pending_clause(
+    current_kst_date: dt.date,
+) -> sa.ColumnElement[bool]:
+    return sa.and_(
+        MarketEventIngestionPartition.source == _BENZINGA_SOURCE,
+        MarketEventIngestionPartition.category.in_(
+            _BENZINGA_SYMBOL_REQUIRED_CATEGORIES
+        ),
+        MarketEventIngestionPartition.status == "pending",
+        MarketEventIngestionPartition.partition_date < current_kst_date,
+    )
 
 
 async def build_invest_coverage(
@@ -638,22 +669,38 @@ async def _calendar_surfaces(
                                 ),
                                 MarketEventIngestionPartition.partition_date
                                 < current_kst_date,
+                                sa.not_(
+                                    _benzinga_symbol_required_pending_clause(
+                                        current_kst_date
+                                    )
+                                ),
                             ),
                         )
                     )
                     .label("partial"),
+                    sa.func.count()
+                    .filter(_benzinga_symbol_required_pending_clause(current_kst_date))
+                    .label("excluded_pending"),
                 ).where(MarketEventIngestionPartition.market == m)
             )
         ).one()
         fresh = int(row.fresh or 0)
         stale = int(row.stale or 0)
         partial = int(row.partial or 0)
+        excluded_pending = int(row.excluded_pending or 0)
         latest_at = row.latest_at
         state = _state_from_counts(fresh=fresh, stale=stale)
         warnings: list[str] = []
         if partial:
             state = "partial" if fresh else "error"
             warnings.append("One or more calendar partitions failed or are incomplete.")
+        if excluded_pending:
+            warnings.append(
+                f"{excluded_pending} pending partition(s) for symbol-required "
+                "Benzinga calendar categories are excluded from the stuck "
+                "count; those categories have no unfiltered read and stay "
+                "pending by design."
+            )
         if latest_at and latest_at < stale_cutoff:
             state = "stale" if state == "fresh" else state
             warnings.append(
