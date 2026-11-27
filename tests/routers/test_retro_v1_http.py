@@ -287,3 +287,47 @@ async def test_retro_timeline_requires_market_and_date_and_allows_symbol(
         "symbol": "005930",
         "limit": 7,
     }
+
+
+@pytest.mark.asyncio
+async def test_session_observation_requires_date_and_parses_its_integers(
+    client, monkeypatch
+):
+    headers = {"X-Retro-Read-Token": "retro-secret"}
+    mock = AsyncMock(return_value={"data": []})
+    monkeypatch.setitem(retro_v1.READERS, "session_observation", mock)
+    path = f"{retro_v1.PREFIX}/session_observation"
+    for query in (
+        "",
+        "?market=kr",
+        "?date=2026-1-5",
+        "?date=2026-01-05&symbol=005930",
+        "?date=2026-01-05&movers=-1",
+        "?date=2026-01-05&movers=1.5",
+        "?date=2026-01-05&movers=100000",
+        "?date=2026-01-05&max_lag_seconds=",
+        "?date=2026-01-05&symbols=SPY&symbols=QQQ",
+    ):
+        response = await client.get(path + query, headers=headers)
+        assert response.status_code == 422, query
+    mock.assert_not_awaited()
+    response = await client.get(
+        path + "?date=2026-01-05&market=us&movers=0&max_lag_seconds=120&limit=7",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert mock.await_args.kwargs == {
+        "date": "2026-01-05",
+        "market": "us",
+        "movers": 0,
+        "max_lag_seconds": 120,
+        "limit": 7,
+    }
+    response = await client.get(
+        path + "?date=2026-01-05&symbols=005930,BRK.B", headers=headers
+    )
+    assert response.status_code == 200
+    assert mock.await_args.kwargs == {
+        "date": "2026-01-05",
+        "symbols": "005930,BRK.B",
+    }

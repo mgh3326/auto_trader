@@ -15,6 +15,8 @@ from app.services.account_value import retro_scoreboard
 from app.services.retro_v1 import RetroReadError
 
 PREFIX = "/trading/api/retro/v1"
+#: ``session_observation`` integers; their ranges are the reader's to check.
+INTEGER_PARAMS = ("movers", "max_lag_seconds")
 OPERATIONS = {
     "retro_day": ("market", "date"),
     "retro_symbol": ("symbol", "from", "to"),
@@ -24,6 +26,7 @@ OPERATIONS = {
     "retro_trades": ("from", "to"),
     "retro_decisions": ("from", "to"),
     "retro_timeline": ("market", "date"),
+    "session_observation": ("date",),
     "mock_experiments": (),
     "mock_round_trips": (),
     "get_bars": ("symbol", "tf", "from", "to"),
@@ -38,6 +41,7 @@ READERS = {
     "retro_trades": readers.read_retro_trades,
     "retro_decisions": readers.read_retro_decisions,
     "retro_timeline": readers.read_retro_timeline,
+    "session_observation": readers.read_session_observation,
     "mock_experiments": readers.read_mock_experiments,
     "mock_round_trips": readers.read_mock_round_trips,
     "get_bars": readers.read_get_bars,
@@ -60,6 +64,8 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         allowed.update(("market", "symbol"))
     if operation == "retro_timeline":
         allowed.add("symbol")
+    if operation == "session_observation":
+        allowed.update(("market", "symbols", *INTEGER_PARAMS))
     if operation == "mock_experiments":
         allowed.add("strategy_id")
     if operation == "mock_round_trips":
@@ -94,6 +100,11 @@ def _query(request: Request, operation: str) -> dict[str, Any]:
         if len(significant) > 3 or not significant or int(significant) > 500:
             raise RetroReadError("validation_error")
         result["limit"] = int(significant)
+    for key in INTEGER_PARAMS:
+        if key in result:
+            if not re.fullmatch(r"[0-9]{1,5}", result[key]):
+                raise RetroReadError("validation_error")
+            result[key] = int(result[key])
     if "cursor" in result and not re.fullmatch(
         r"[A-Za-z0-9_.:\-]{1,128}", result["cursor"]
     ):

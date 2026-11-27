@@ -902,6 +902,130 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /trading/api/retro/v1/session_observation:
+    get:
+      operationId: session_observation
+      description: >-
+        What can be seen, per market, venue and session, for one session date
+        (KR the KST day, US the ET trading day, futures the trading date). It
+        reports only what is stored: no broker or exchange is called. Without
+        symbols the population is the fixed list (005930, 000660, 278470, SPY,
+        QQQ, SMH) plus up to movers symbols per market ranked in the date's
+        mover observation log, and the index futures contracts stored in the
+        last 7 days. Bars are the research one-minute tables, first receipts
+        only (backfill and promotion batches are not read); a volume-0 bar is
+        stored but is never a trade. The reference close is the previous
+        session's close: KRX official when present, else the stored daily
+        candle. state is decided by the first rule that applies, in this order:
+        source_unavailable (a read failed, state null); with stored bars,
+        receive_lag_over_threshold (first receipt of the newest bar minus its
+        close exceeds max_lag_seconds, delayed), latest_bar_older_than_threshold
+        (the newest bar ended more than max_lag_seconds before the earlier of
+        as_of and the session end, delayed; not applied when the session hours
+        are unknown), only_zero_volume_bars (no_trades), trade_bars_received
+        (observed); without stored bars, not_trading_day (closed),
+        calendar_unknown (null), symbol_not_nxt_eligible (closed),
+        window_unknown (null, no first possible start), session_not_started
+        (closed), source_unavailable or eligibility_unknown (null),
+        collection_unsupported (not_collected, no feed exists), window_unknown
+        (null, US day market hours are not stored), awaiting_first_receipt
+        (null, the first bar is not yet late), symbol_not_in_universe or
+        no_stored_bars (not_collected). Observation only: nothing here opens or
+        permits an order.
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: market
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - kr
+          - us
+          - futures
+      - name: symbols
+        in: query
+        required: false
+        description: >-
+          Comma-separated symbols replacing the default population, at most 50.
+          Not combinable with movers.
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}(,[A-Za-z0-9_.:/\-]{1,32}){0,49}$
+      - name: movers
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 50
+          default: 10
+      - name: max_lag_seconds
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          default: 600
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+          description: Code or opaque reference only; no raw exception or broker message.
+      responses:
+        '200':
+          description: Read-only result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionObservationResponse'
+        '401':
+          description: auth_missing or auth_invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: scope_denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: feature_off
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: validation_error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: timeout, upstream_unavailable or schema_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     DecimalValue:
@@ -2538,6 +2662,242 @@ components:
           coverage:
             $ref: '#/components/schemas/TimelineCoverage'
       description: total counts the symbols in the date's population before
+        pagination, or null with count_unavailable when a source read failed or
+        was cut off. Page length is never total.
+      unevaluatedProperties: false
+    SessionObservationRow:
+      description: >-
+        One symbol in one session of one venue. reason is the rule that decided
+        state and also explains the row's nulls. state is closed (not a trading
+        day, not started, or not traded on that venue), no_trades (bars are
+        stored, none with volume), not_collected (no bar is stored for a session
+        that should have one, or no feed exists), delayed (a stored bar arrived
+        late, or the newest one is old), observed (trade bars arrived in time),
+        or null when it cannot be decided. Counts and sources are null when the
+        bar read failed, never 0. venue is null when a US symbol has no known
+        exchange. session_start and session_end are null for the US day market
+        (its hours are not stored) and outside trading days.
+      type: object
+      additionalProperties: false
+      required:
+      - market
+      - symbol
+      - origin
+      - venue
+      - session
+      - session_start
+      - session_end
+      - phase
+      - state
+      - reason
+      - source
+      - sources
+      - stored_bar_count
+      - trade_bar_count
+      - last_bar_at
+      - last_trade_bar_at
+      - last_received_at
+      - receive_lag_seconds
+      - reference_close_price
+      - reference_close_date
+      - reference_close_basis
+      - reference_close_source
+      - reference_close_reason
+      - currency
+      properties:
+        market:
+          type: string
+          enum:
+          - kr
+          - us
+          - futures
+        symbol:
+          type: string
+          pattern: ^[A-Za-z0-9_.:/\-]{1,32}$
+        origin:
+          description: Why the symbol is listed.
+          type: string
+          enum:
+          - fixed
+          - mover
+          - requested
+          - stored_contract
+        venue: *id002
+        session:
+          type: string
+          enum:
+          - KRX_REGULAR
+          - KRX_AFTER
+          - NXT_PRE
+          - NXT_OVERLAP
+          - NXT_POST
+          - US_DAY
+          - US_PRE
+          - US_REGULAR
+          - US_POST
+          - FUT_DAY
+          - FUT_NIGHT
+        session_start: *id003
+        session_end: *id003
+        phase:
+          description: Where as_of stands against the session.
+          type: string
+          enum:
+          - before_open
+          - open
+          - ended
+          - not_trading_day
+          - unknown
+        state:
+          type:
+          - string
+          - 'null'
+          enum:
+          - closed
+          - no_trades
+          - not_collected
+          - delayed
+          - observed
+          - null
+        reason:
+          type: string
+          enum:
+          - trade_bars_received
+          - only_zero_volume_bars
+          - receive_lag_over_threshold
+          - latest_bar_older_than_threshold
+          - no_stored_bars
+          - symbol_not_in_universe
+          - collection_unsupported
+          - not_trading_day
+          - session_not_started
+          - symbol_not_nxt_eligible
+          - awaiting_first_receipt
+          - eligibility_unknown
+          - window_unknown
+          - calendar_unknown
+          - source_unavailable
+        source:
+          description: Stored provider of the last trade bar, else of the newest bar.
+          type:
+          - string
+          - 'null'
+          pattern: ^[A-Za-z0-9_.:\-]+$
+          maxLength: 128
+        sources:
+          description: Every stored provider of the session's bars.
+          type:
+          - array
+          - 'null'
+          items: *id001
+        stored_bar_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        trade_bar_count:
+          description: Stored bars with volume above 0.
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+        last_bar_at:
+          description: Start of the newest stored bar, volume 0 included.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        last_trade_bar_at:
+          description: Start of the newest stored bar with volume above 0.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        last_received_at:
+          description: Latest first receipt among the session's bars.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        receive_lag_seconds:
+          description: Seconds from the close of the newest bar to its first receipt,
+            rounded up.
+          type:
+          - integer
+          - 'null'
+        reference_close_price:
+          $ref: '#/components/schemas/DecimalValue'
+        reference_close_date:
+          description: Session date the reference close was looked up for (the previous
+            session).
+          type:
+          - string
+          - 'null'
+          format: date
+        reference_close_basis:
+          type:
+          - string
+          - 'null'
+          enum:
+          - krx_official
+          - stored_daily
+          - null
+        reference_close_source: *id002
+        reference_close_reason:
+          description: Why reference_close_price is null.
+          type:
+          - string
+          - 'null'
+          enum:
+          - no_stored_close
+          - source_mixed
+          - source_unavailable
+          - calendar_unknown
+          - unsupported
+          - null
+        currency:
+          type:
+          - string
+          - 'null'
+          enum:
+          - KRW
+          - USD
+          - null
+    SessionObservationRules:
+      description: The inputs of the state rules used for this response.
+      type: object
+      additionalProperties: false
+      required:
+      - session_date
+      - max_lag_seconds
+      - movers_per_market
+      properties:
+        session_date:
+          type: string
+          format: date
+        max_lag_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+        movers_per_market:
+          type: integer
+          minimum: 0
+          maximum: 50
+    SessionObservationResponse:
+      allOf:
+      - $ref: '#/components/schemas/Envelope'
+      - type: object
+        required:
+        - data
+        - rule_parameters
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/SessionObservationRow'
+          rule_parameters:
+            $ref: '#/components/schemas/SessionObservationRules'
+      description: total counts every symbol x venue x session row before
         pagination, or null with count_unavailable when a source read failed or
         was cut off. Page length is never total.
       unevaluatedProperties: false

@@ -19,6 +19,7 @@ from app.services.retro_v1.retro_positions import read_retro_positions
 from app.services.retro_v1.retro_symbol import read_retro_symbol
 from app.services.retro_v1.retro_timeline import read_retro_timeline
 from app.services.retro_v1.retro_trades import read_retro_trades
+from app.services.retro_v1.session_observation import read_session_observation
 
 __all__ = [
     "RetroReadError",
@@ -33,4 +34,5 @@ __all__ = [
     "read_retro_symbol",
     "read_retro_timeline",
     "read_retro_trades",
+    "read_session_observation",
 ]

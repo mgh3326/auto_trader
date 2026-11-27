@@ -20,8 +20,12 @@ from app.services.retro_v1 import (
     read_retro_symbol,
     read_retro_timeline,
     read_retro_trades,
+    read_session_observation,
 )
 from app.services.retro_v1.envelope import dec, read_snapshot
+from tests.services.retro_v1.session_observation_support import (
+    scenario as observation_session,
+)
 from tests.services.retro_v1.support import FakeSession, kr_day_session, validate
 from tests.services.retro_v1.test_other_readers import gap_session
 from tests.services.retro_v1.test_retro_timeline import timeline_session
@@ -202,8 +206,10 @@ async def test_every_reader_runs_in_a_read_only_repeatable_read_snapshot_with_se
         ),
         (read_data_gaps, {}, gap_session),
         (read_retro_timeline, {"market": "kr", "date": day}, timeline_session),
+        # every source read of the default population: KR, US and futures
+        (read_session_observation, {"date": date(2026, 11, 25)}, observation_session),
     ]
-    assert len(calls) == 10
+    assert len(calls) == 11
     for reader, kwargs, make in calls:
         session = make()
         response = await reader(session, **kwargs)
