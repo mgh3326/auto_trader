@@ -355,8 +355,9 @@ class SnapshotBackedReportGenerator:
             )
 
         # ROB-287 — the in-process LLM composition branch (auto_compose=True)
-        # was removed; LLM reasoning/composition is owned by Hermes via the
-        # context-export + ingest contract. ``ReportGenerationRequest``
+        # was removed; LLM reasoning/composition is owned out of process by
+        # the MCP consumer (the Hermes context-export + ingest contract is
+        # retired, hk 6930). ``ReportGenerationRequest``
         # rejects ``auto_compose=True`` at validation time, so we always
         # take the deterministic path here.
         #
@@ -365,7 +366,7 @@ class SnapshotBackedReportGenerator:
         # runs. The classifier then enforces operation/apply_policy +
         # quote-evidence gates on whatever the proposer produced. This
         # proposer remains a deterministic, explicit-flag-only path
-        # and is never co-mingled with Hermes composition against the
+        # and is never co-mingled with out-of-process composition against the
         # same bundle.
         if request.auto_emit_from_evidence:
             proposed = await self._auto_emit_items_from_bundle(
@@ -407,7 +408,7 @@ class SnapshotBackedReportGenerator:
         # ingest request so they persist on the report row (PR-B). why_no_action
         # tells a genuine hold from a data-blocked / stale-gated one; the bundle
         # also carries data_sufficiency_by_source + report_quality_summary. All
-        # deterministic — Hermes composes the prose. Action items are item_kind
+        # deterministic — prose is composed out of process. Action items are item_kind
         # 'action' (watch/risk are not buy/sell actions).
         why_no_action = classify_why_no_action(
             freshness_summary=freshness_summary,

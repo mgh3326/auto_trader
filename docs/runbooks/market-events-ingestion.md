@@ -241,7 +241,7 @@ approval gate.
 
 ### Open follow-ups specific to economic events
 
-- Hermes-side production `--dry-run` smoke from a deployed runner before any
+- Production `--dry-run` smoke from a deployed runner before any
   non-dry-run ingestion.
 - Prefect deployment for the rolling window (today-7 .. today+60). Activation
   is approval-gated per ROB-184 runbook section above.

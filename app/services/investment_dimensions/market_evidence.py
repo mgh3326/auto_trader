@@ -2,7 +2,7 @@
 
 Assembles breadth + top movers + freshness from the populated KR/US
 ``invest_screener_snapshots`` (reusing ROB-304 ``screener_evidence``). No prose,
-no LLM — this is the raw material Hermes reads to write the Market report.
+no LLM — this is the raw material for an out-of-process Market report.
 """
 
 from __future__ import annotations

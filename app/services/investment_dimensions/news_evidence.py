@@ -1,7 +1,7 @@
 """Deterministic News dimension evidence bundle (ROB-310).
 
 Assembles a market-wide News evidence bundle, mirroring ``market_evidence``. No
-prose, no LLM — raw material for the Hermes News dimension report.
+prose, no LLM — raw material for an out-of-process News dimension report.
 
 Source preference (ROB-374 B3): when the snapshot bundle carries a news-article
 snapshot — the *same* articles ``NewsStage`` summarizes for ``stage_inputs`` —

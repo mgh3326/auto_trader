@@ -1,9 +1,9 @@
 # app/services/investment_reports/investment_report_news_service.py
-"""ROB-423 PR2 — persist Hermes-marked news citations + fetch_run audit.
+"""ROB-423 PR2 — persist caller-marked news citations + fetch_run audit.
 
 auto_trader-side: validation + persistence only (no LLM, no fetch). Reads the
 bundle's news snapshot ``articles``/``fetch_records`` (written by the PR1
-collector), matches Hermes ``news_citations`` against them, and writes fetch_run
+collector), matches caller-supplied ``news_citations`` against them, and writes fetch_run
 + citation rows keyed by ``report_uuid``. Unmatched refs are dropped + recorded
 in the report's ``unavailable_sources`` metadata (fail-open).
 """
