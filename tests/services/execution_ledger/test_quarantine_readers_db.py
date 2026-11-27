@@ -15,10 +15,11 @@ while a test runs; every row uses a random ``Q`` symbol and is deleted after.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -26,9 +27,11 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-from sqlalchemy import delete
+from sqlalchemy import delete, insert
 
 from app.core.db import AsyncSessionLocal
+from app.models import daily_plan as daily_plan_tables
+from app.models.execution_intent import ExecutionChildRequest, ExecutionIntent
 from app.models.execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from app.services import journal_exit_correction
@@ -53,6 +56,7 @@ from app.services.mechanical_loss_cut.positions import load_held_lots
 from app.services.order_proposals import kis_leftover_inference_service as inference
 from app.services.quotes_consumer import repository as quotes_repository
 from app.services.retro_v1 import chain as retro_chain
+from app.services.retro_v1 import plan_source as plan_source_module
 from app.services.retro_v1 import retro_positions
 from app.services.retro_v1.envelope import Unknowns
 from app.services.retro_v1.market import MARKETS
@@ -881,3 +885,270 @@ async def test_us_inference_excludes_quarantined_fill(db_session, seed, monkeypa
     assert await read_counts() == (0, 0)
     _drop_filter(monkeypatch, us_inference)
     assert await read_counts() == (1, 1)
+
+
+# ------------------------------------------------- retro_v1 plan_source (hk 7013)
+
+
+_PLAN_SOURCE_DAYS = {
+    "fills": date(2099, 11, 10),
+    "reason": date(2099, 11, 11),
+}
+
+
+async def _seed_plan_source(
+    db, *, symbol: str, order_no: str, day: date
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, int]:
+    """Plan head→version→row + v3 intent + accepted child for ``symbol``.
+
+    Returns ``(head_id, version_id, intent_id, phantom_ledger_id)``. The
+    journal guard admits child rows only as ``sending``/``refused``, so the
+    fixture moves the row to ``accepted`` through the allowed transition; the
+    intent ``expires_at`` stays inside the guard's real-clock window, and the
+    phantom fill shares the child's KST trade day.
+    """
+    now = datetime.now(UTC)
+    head_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    intent_id = uuid.uuid4()
+    row_key = json.dumps(["candidate", "kr", symbol, None], separators=(",", ":"))
+    await db.execute(
+        insert(daily_plan_tables.heads).values(
+            id=head_id, market="kr", session_date=day, cutoff_at=now
+        )
+    )
+    await db.execute(
+        insert(daily_plan_tables.versions).values(
+            id=version_id,
+            head_id=head_id,
+            seq=1,
+            kind="premarket",
+            idempotency_key=f"hk7013-{symbol}",
+            request_sha256="0" * 64,
+            strategy_id="hk7013",
+            strategy_rule_version="v1",
+            policy_version="p1",
+            policy_content_hash="h1",
+            metadata={},
+        )
+    )
+    await db.execute(
+        insert(daily_plan_tables.rows).values(
+            id=uuid.uuid4(),
+            version_id=version_id,
+            row_kind="candidate",
+            market="kr",
+            symbol=symbol,
+            action="new",
+            action_basis="rule",
+            execution_state="executable",
+            body={"side": "buy", "valid_until": "2020-01-01T00:00:00+00:00"},
+        )
+    )
+    phantom = ExecutionLedger(
+        **ExecutionLedgerUpsert(
+            **row_kwargs(
+                symbol=symbol,
+                order_no=order_no,
+                account_mode="mock",
+                filled_at=now.isoformat(),
+            )
+        ).model_dump()
+    )
+    db.add(phantom)
+    db.add(
+        ExecutionIntent(
+            id=intent_id,
+            schema_version=3,
+            strategy="hk7013",
+            account="kis_mock",
+            venue="krx",
+            symbol=symbol,
+            side="buy",
+            max_quantity=1,
+            max_notional_krw=50_000,
+            limit_price_krw=5_000,
+            max_slippage_bps=0,
+            position_at_authorization=0,
+            min_position_after=0,
+            max_position_after=1,
+            plan_head_id=head_id,
+            plan_version=1,
+            plan_row_key=row_key,
+            plan_account_ref="acct_7013",
+            plan_venue="KRX",
+            plan_session="regular",
+            plan_action="new",
+            invalidation_price_krw=4_900,
+            policy_version="p1",
+            authorization_ref="hk7013:probe",
+            expires_at=now + timedelta(hours=1),
+            intent_digest="hk7013",
+            created_at=now,
+        )
+    )
+    await db.flush()
+    child = ExecutionChildRequest(
+        intent_id=intent_id,
+        idempotency_key=f"hk7013-{symbol}",
+        request_digest="d",
+        action="submit",
+        quantity=1,
+        limit_price_krw=5_000,
+        state="sending",
+        created_at=now,
+    )
+    db.add(child)
+    await db.flush()
+    child.state = "accepted"
+    child.broker_order_id = order_no
+    child.finished_at = now
+    await db.commit()
+    return head_id, version_id, intent_id, int(phantom.id)
+
+
+async def _plan_source(db, *, symbol: str, day: date):
+    source = await plan_source_module.read_plan_source(
+        db,
+        Unknowns(),
+        market="kr",
+        day=day,
+        symbols=[symbol],
+        as_of=datetime.now(UTC),
+    )
+    await db.rollback()
+    return source
+
+
+async def _purge_plan_source(
+    db, *, symbol: str, head_id, version_id, intent_id
+) -> None:
+    """Remove the fixture; the plan/intent tables refuse DELETE outright."""
+    await purge_test_ledger_rows(db, ExecutionLedger.symbol == symbol)
+    await db.rollback()
+    await db.execute(sa.text("SET LOCAL session_replication_role = replica"))
+    await db.execute(
+        delete(ExecutionChildRequest).where(
+            ExecutionChildRequest.intent_id == intent_id
+        )
+    )
+    await db.execute(delete(ExecutionIntent).where(ExecutionIntent.id == intent_id))
+    await db.execute(
+        delete(daily_plan_tables.rows).where(daily_plan_tables.rows.c.symbol == symbol)
+    )
+    await db.execute(
+        delete(daily_plan_tables.versions).where(
+            daily_plan_tables.versions.c.id == version_id
+        )
+    )
+    await db.execute(
+        delete(daily_plan_tables.heads).where(daily_plan_tables.heads.c.id == head_id)
+    )
+    await db.commit()
+
+
+async def test_plan_source_fills_drop_the_quarantined_phantom(
+    db_session, monkeypatch
+) -> None:
+    """hk 7013: ``read_fills`` never counts a quarantined ledger row.
+
+    The reader is nested in ``read_plan_source``; the probe drives the public
+    entry point and reads ``filled_orders``. The ``kis_mock`` scope means only
+    a ``mock`` ledger row can match, and ``mark_quarantined`` (not the
+    eligibility-checked CLI) marks it — the same path the US-lots proof uses.
+    """
+    tag = uuid.uuid4().hex[:5].upper()
+    symbol = f"Q{tag}"
+    order_no = f"P{tag}0001"
+    ids = None
+    try:
+        ids = await _seed_plan_source(
+            db_session, symbol=symbol, order_no=order_no, day=_PLAN_SOURCE_DAYS["fills"]
+        )
+
+        async def counted() -> bool:
+            source = await _plan_source(
+                db_session, symbol=symbol, day=_PLAN_SOURCE_DAYS["fills"]
+            )
+            return len(source.filled_orders) == 1
+
+        assert await counted() is True, "the phantom fill is counted before"
+        assert (
+            await ExecutionLedgerRepository(db_session).mark_quarantined(
+                [ids[3]], at=datetime.now(UTC), reason=REASON, actor=ACTOR
+            )
+            == 1
+        )
+        await db_session.commit()
+        assert await counted() is False, "the quarantined phantom is excluded"
+        _drop_filter(monkeypatch, plan_source_module)
+        assert await counted() is True, "dropping the filter re-admits it"
+    finally:
+        if ids is not None:
+            await _purge_plan_source(
+                db_session,
+                symbol=symbol,
+                head_id=ids[0],
+                version_id=ids[1],
+                intent_id=ids[2],
+            )
+
+
+async def test_plan_source_plan_reason_drops_the_quarantined_phantom(
+    db_session, monkeypatch
+) -> None:
+    """hk 7013: through ``read_fills``, quarantine flips the derived reason.
+
+    With the phantom counted the accepted child reads as filled
+    (``source_unavailable`` — the buy happened); quarantined, the same child
+    is ``unfilled`` at expiry. The "filter dropped" mutant restores the fill.
+    """
+    tag = uuid.uuid4().hex[:5].upper()
+    symbol = f"Q{tag}"
+    order_no = f"P{tag}0001"
+    as_of = datetime.now(UTC)
+    ids = None
+    try:
+        ids = await _seed_plan_source(
+            db_session,
+            symbol=symbol,
+            order_no=order_no,
+            day=_PLAN_SOURCE_DAYS["reason"],
+        )
+
+        source = await _plan_source(
+            db_session, symbol=symbol, day=_PLAN_SOURCE_DAYS["reason"]
+        )
+        evidence = source.evidence(symbol, as_of)
+        assert evidence.filled is True
+        assert plan_source_module.derive_plan_reason(evidence) == "source_unavailable"
+
+        assert (
+            await ExecutionLedgerRepository(db_session).mark_quarantined(
+                [ids[3]], at=datetime.now(UTC), reason=REASON, actor=ACTOR
+            )
+            == 1
+        )
+        await db_session.commit()
+
+        source = await _plan_source(
+            db_session, symbol=symbol, day=_PLAN_SOURCE_DAYS["reason"]
+        )
+        evidence = source.evidence(symbol, as_of)
+        assert evidence.filled is False
+        assert plan_source_module.derive_plan_reason(evidence) == "unfilled"
+
+        _drop_filter(monkeypatch, plan_source_module)
+        source = await _plan_source(
+            db_session, symbol=symbol, day=_PLAN_SOURCE_DAYS["reason"]
+        )
+        assert source.evidence(symbol, as_of).filled is True
+    finally:
+        if ids is not None:
+            await _purge_plan_source(
+                db_session,
+                symbol=symbol,
+                head_id=ids[0],
+                version_id=ids[1],
+                intent_id=ids[2],
+            )

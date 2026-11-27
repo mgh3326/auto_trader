@@ -16,6 +16,16 @@ FORBIDDEN = (
     "app.tasks",
 )
 
+#: Read-only retro readers allowed to import the plan tables for SELECTs.
+#: Each value names the test that proves the module issues no writes; the
+#: write rule itself is unchanged — ``store.py`` stays the only writer, and
+#: any other importer still fails unless it is declared here with a proof.
+READ_ONLY_PLAN_TABLE_READERS = {
+    "app/services/retro_v1/plan_source.py": (
+        "test_guards.py::test_no_retro_module_calls_a_write_or_transaction_ending_method"
+    ),
+}
+
 
 def _imports(module):
     for node in ast.walk(ast.parse(module.read_text())):
@@ -56,4 +66,17 @@ def test_only_plan_service_imports_plan_tables_for_writes():
             continue
         if "app.models.daily_plan" in _imports(path):
             model_users.append(path.relative_to(ROOT).as_posix())
-    assert model_users == ["app/services/daily_plan/store.py"]
+    assert sorted(model_users) == sorted(
+        ["app/services/daily_plan/store.py", *READ_ONLY_PLAN_TABLE_READERS]
+    )
+
+
+def test_every_declared_plan_table_reader_has_a_no_writes_proof():
+    guards = (ROOT / "tests/services/retro_v1/test_guards.py").read_text()
+    for reader, proof in READ_ONLY_PLAN_TABLE_READERS.items():
+        module_name, test_name = proof.split("::", 1)
+        assert module_name == "test_guards.py", proof
+        assert f"def {test_name}(" in guards, proof
+        # The proof scans ``app/services/retro_v1/*.py`` non-recursively, so a
+        # reader declared here must live directly in that package.
+        assert Path(reader).parent == Path("app/services/retro_v1"), reader

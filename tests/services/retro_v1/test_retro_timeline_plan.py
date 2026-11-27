@@ -14,12 +14,14 @@ from uuid import UUID
 import pytest
 
 from app.services.retro_v1 import read_retro_timeline
+from app.services.retro_v1.envelope import Unknowns
 from app.services.retro_v1.plan_source import (
     GUARD_REFUSALS,
     PLAN_REASONS,
     PlanEvidence,
     PlanRow,
     derive_plan_reason,
+    read_plan_source,
 )
 from tests.services.retro_v1.support import (
     FakeSession,
@@ -322,12 +324,15 @@ def intent(
     row_key: str = ROW_KEY,
     id_: UUID = INTENT,
 ) -> Any:
+    # the stored spellings: ``venue`` is the execution vocabulary the ledger
+    # shares (``krx``); ``plan_venue`` is the CHECK-pinned plan spelling
     return ns(
         id=id_,
         symbol=symbol,
         side=side,
         account="kis_mock",
-        venue="KRX",
+        venue="krx",
+        plan_venue="KRX",
         plan_row_key=row_key,
         plan_version=plan_version,
     )
@@ -362,7 +367,7 @@ def fill(
     return ns(
         broker="kis",
         account_mode="mock",
-        venue="KRX",
+        venue="krx",
         symbol=symbol,
         side=side,
         currency="KRW",
@@ -544,6 +549,30 @@ async def test_a_matching_fill_means_the_buy_happened() -> None:
         fills=[fill(order_id="0000123456")],
     )
     assert only(response)["plan_reason"] == "source_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_v3_intent_reaches_read_fills() -> None:
+    """hk 7027: the stored ``venue`` is the execution spelling ``krx`` and the
+    market lookup reads the CHECK-pinned ``plan_venue`` ``KRX``. Before the
+    fix the scope lookup missed, ``read_fills`` never ran and no fill could
+    be attributed to the accepted child."""
+    source = await read_plan_source(
+        plan_session(
+            rows=[plan_row()],
+            versions=[version()],
+            intents=[intent()],
+            children=[child(state="accepted", broker_order_id="0000123456")],
+            fills=[fill(order_id="0000123456")],
+        ),
+        Unknowns(),
+        market="kr",
+        day=DAY,
+        symbols=["005930"],
+        as_of=PICK_AT,
+    )
+    assert len(source.filled_orders) == 1
+    assert source.evidence("005930", PICK_AT).filled is True
 
 
 @pytest.mark.asyncio
