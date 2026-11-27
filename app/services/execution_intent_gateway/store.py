@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
 from sqlalchemy import select, text, update
@@ -23,7 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_intent import ExecutionChildRequest, ExecutionIntent
-from app.schemas.execution_intent import ExecutionIntentV1, contract_digest
+from app.schemas.execution_intent import (
+    ExecutionIntentV1,
+    ExecutionIntentV3,
+    contract_digest,
+)
 from app.services.execution_intent_gateway.decisions import (
     Child,
     ChildSnapshot,
@@ -32,6 +36,9 @@ from app.services.execution_intent_gateway.decisions import (
     IntentSnapshot,
     Refusal,
 )
+
+if TYPE_CHECKING:
+    from app.services.execution_intent_gateway.plan_binding import PlanGuard
 
 #: An authorization that outlives a trading day is a standing permission.
 MAX_INTENT_LIFETIME: Final = timedelta(hours=24)
@@ -92,6 +99,7 @@ class GatewayStore(Protocol):
         broker_order_id: str | None,
         result: dict[str, Any],
         now: datetime,
+        refusal_reason: str | None = None,
     ) -> bool: ...
 
 
@@ -118,8 +126,22 @@ async def lock_child_key(session: AsyncSession, idempotency_key: str) -> None:
 
 
 def _intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
-    if row.schema_version != 1:
+    if row.schema_version == 2:
         return _v2_intent_snapshot(row)
+    plan: dict[str, Any] = {}
+    if row.schema_version == 3:
+        plan = {
+            "schema_version": 3,
+            "plan_head_id": row.plan_head_id,
+            "plan_version": row.plan_version,
+            "plan_row_key": row.plan_row_key,
+            "plan_account_ref": row.plan_account_ref,
+            "plan_venue": row.plan_venue,
+            "plan_session": row.plan_session,
+            "plan_action": row.plan_action,
+            "invalidation_price_krw": row.invalidation_price_krw,
+            "created_at": row.created_at,
+        }
     return IntentSnapshot(
         intent_id=row.id,
         strategy=row.strategy,
@@ -135,6 +157,7 @@ def _intent_snapshot(row: ExecutionIntent) -> IntentSnapshot:
         min_position_after=row.min_position_after,
         max_position_after=row.max_position_after,
         expires_at=row.expires_at,
+        **plan,
     )
 
 
@@ -203,10 +226,20 @@ def _replay_or_conflict(existing: ChildSnapshot, request_digest: str) -> Reserva
 
 
 class SqlAlchemyGatewayStore:
-    def __init__(self, session_factory: Callable[[], AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], AsyncSession],
+        *,
+        plan_guard: PlanGuard | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        # hk 6991: decides a v3 child under the plan row lock, inside the
+        # reservation transaction. Without it every v3 submit/amend is refused.
+        self._plan_guard = plan_guard
 
-    async def store_intent(self, intent: ExecutionIntentV1, *, now: datetime) -> None:
+    async def store_intent(
+        self, intent: ExecutionIntentV1 | ExecutionIntentV3, *, now: datetime
+    ) -> None:
         """Insert an authorized intent. Same contents again is a no-op.
 
         This is Python's side of the contract: no child request and no executor
@@ -216,10 +249,28 @@ class SqlAlchemyGatewayStore:
             raise IntentNotStorable("intent expiry is outside the allowed window")
         digest = contract_digest(intent)
         inventory = intent.inventory
+        plan_values: dict[str, Any] = {}
+        if isinstance(intent, ExecutionIntentV3):
+            from app.services.execution_intent_gateway.plan_binding import (
+                row_key_text,
+            )
+
+            plan = intent.plan
+            plan_values = {
+                "plan_head_id": plan.plan_head_id,
+                "plan_version": plan.plan_version,
+                "plan_row_key": row_key_text(plan.row_key),
+                "plan_account_ref": plan.account_ref,
+                "plan_venue": plan.venue,
+                "plan_session": plan.session,
+                "plan_action": plan.action,
+                "invalidation_price_krw": plan.invalidation_price_krw,
+            }
         async with self._session_factory() as session:
             await session.execute(
                 insert(ExecutionIntent)
                 .values(
+                    **plan_values,
                     id=intent.intent_id,
                     schema_version=intent.schema_version,
                     strategy=intent.strategy,
@@ -292,7 +343,10 @@ class SqlAlchemyGatewayStore:
                 .where(ExecutionChildRequest.intent_id == request.intent_id)
                 .order_by(ExecutionChildRequest.id)
             )
-            decision = decide(intent, [_child_snapshot(row) for row in rows])
+            children = [_child_snapshot(row) for row in rows]
+            decision = await self._plan_decision(session, intent, request.action)
+            if decision is None:
+                decision = decide(intent, children)
             refused = decision.refusal is not None
             row = ExecutionChildRequest(
                 intent_id=request.intent_id,
@@ -323,6 +377,21 @@ class SqlAlchemyGatewayStore:
             return Reservation(
                 intent=intent, child=reserved, is_new=True, decision=decision
             )
+
+    async def _plan_decision(
+        self, session: AsyncSession, intent: IntentSnapshot, action: str
+    ) -> Decision | None:
+        """hk 6991: the v3 refusal, decided under the plan row lock, or ``None``.
+
+        Taken after the key lock, the intent row lock and the replay check, so a
+        retry of a known key still replays its first answer (design 6939 R1).
+        """
+        if intent.schema_version != 3 or action == "cancel":
+            return None
+        if self._plan_guard is None:
+            return Decision(refusal=Refusal.PLAN_GUARD_UNAVAILABLE)
+        refusal = await self._plan_guard.at_reservation(session, intent, action)
+        return None if refusal is None else Decision(refusal=refusal)
 
     async def read_intent_journal(self, intent_id: UUID) -> IntentJournal | None:
         """The recorded state of one intent. Takes no lock and cannot write."""
@@ -369,8 +438,17 @@ class SqlAlchemyGatewayStore:
         broker_order_id: str | None,
         result: dict[str, Any],
         now: datetime,
+        refusal_reason: str | None = None,
     ) -> bool:
-        """Record the outcome once; a row that left ``sending`` is never rewritten."""
+        """Record the outcome once; a row that left ``sending`` is never rewritten.
+
+        ``refusal_reason`` is written only with ``not_sent`` (hk 6991, v3).
+        """
+        if (state is ChildState.NOT_SENT) != (refusal_reason is not None):
+            raise ValueError("not_sent needs a reason and only not_sent has one")
+        values: dict[str, Any] = {}
+        if refusal_reason is not None:
+            values["refusal_reason"] = refusal_reason
         async with self._session_factory() as session:
             outcome = await session.execute(
                 update(ExecutionChildRequest)
@@ -383,6 +461,7 @@ class SqlAlchemyGatewayStore:
                     broker_order_id=broker_order_id,
                     result=result,
                     finished_at=now,
+                    **values,
                 )
             )
             await session.commit()

@@ -22,6 +22,13 @@ from app.services.daily_plan.bundle import (
     canonical_json,
 )
 from app.services.daily_plan.risk import replay_risk
+from app.services.daily_plan.row_lock import (
+    OBSERVATION_KINDS,
+    changes_execution,
+    latest_change_seq,
+    lock_identity,
+    lock_plan_row,
+)
 from app.services.daily_plan.validator import (
     parse_positive_decimal,
     parse_time,
@@ -264,8 +271,9 @@ async def write_version(
     """Validate and insert one publication in the caller's transaction.
 
     ``market`` (default kr) and ``mode`` (default plan_only) are explicit
-    request fields. An ``executable`` row is stored as such but nothing reads
-    it yet: the intent issuer is a later ticket (hk 6939 N2).
+    request fields. An ``executable`` row is read only by the E1 intent issuer
+    (hk 6991, ``read_issuable_row``); rows whose execution fields change take
+    the per-row lock (``row_lock``) before they are inserted.
     """
     market = validate_market(request.get("market", "kr"))
     mode = day_mode(market, policy)
@@ -514,10 +522,137 @@ async def write_version(
         else:
             inserts.append(item)
     version["metadata"]["adoption_replay_rows"] = replay_ids
+    await _lock_changed_rows(db, kind, prepared, current_rows or {})
     await db.execute(versions.insert().values(**version))
     for item in inserts:
         await db.execute(rows.insert().values(**item))
     return await _write_result(db, version)
+
+
+async def _lock_changed_rows(
+    db: AsyncSession, kind: str, prepared: list[dict], current: dict
+) -> None:
+    """hk 6991 (design 6939 §5.1): lock every row this publication supersedes.
+
+    A row changes when its execution fields differ from the row in force. Its
+    lock (account, symbol, venue) is taken for the identity before and after,
+    in one sorted order, so a publication and an E1 reservation or pre-send of
+    an intent bound to that row are serialized. An observation (``fill``)
+    version may not change execution fields at all.
+    """
+    identities = set()
+    for row in prepared:
+        previous = current.get(row_key(row))
+        if not changes_execution(previous, row):
+            continue
+        if kind in OBSERVATION_KINDS:
+            raise ValueError("fill_version_changes_execution")
+        for body in (previous, row):
+            identity = lock_identity(body) if body else None
+            if identity is not None:
+                identities.add(identity)
+    for account, symbol, venue in sorted(identities):
+        await lock_plan_row(db, account, symbol, venue)
+
+
+async def row_change_seq(
+    db: AsyncSession, *, head_id: UUID, key: tuple[str, str, str, str | None]
+) -> int | None:
+    """The latest published seq in which this row key's execution fields changed.
+
+    Read-only. The E1 gateway calls it under the row lock (design 6939 §5.1).
+    """
+    row_kind, market, symbol, account_ref = key
+    matches = (
+        rows.c.row_kind == row_kind,
+        rows.c.market == market,
+        rows.c.symbol == symbol,
+        rows.c.account_ref.is_not_distinct_from(account_ref),
+    )
+    inserted = await db.execute(
+        select(rows.c.id, rows.c.version_id, rows.c.body)
+        .join(versions, versions.c.id == rows.c.version_id)
+        .where(versions.c.head_id == head_id, *matches)
+    )
+    by_id = {str(r.id): r for r in inserted}
+    by_version = {r.version_id: r.body for r in by_id.values()}
+    version_rows = await db.execute(
+        select(versions.c.id, versions.c.seq, versions.c.kind, versions.c.metadata)
+        .where(versions.c.head_id == head_id, versions.c.status == "PUBLISHED")
+        .order_by(versions.c.seq)
+    )
+    history = []
+    for version in version_rows:
+        body = by_version.get(version.id)
+        if body is None:
+            # An adoption replay puts an earlier row back in force without
+            # inserting one (``_fold``); it is this version's row for the key.
+            for replay_id in (version.metadata or {}).get("adoption_replay_rows", []):
+                if replay_id in by_id:
+                    body = by_id[replay_id].body
+        if body is not None:
+            history.append((version.seq, version.kind, body))
+    return latest_change_seq(history)
+
+
+class RowNotIssuable(ValueError):
+    """The requested daily_plan row cannot be turned into an intent."""
+
+
+async def read_issuable_row(
+    db: AsyncSession,
+    *,
+    market: str,
+    day: date,
+    seq: int,
+    key: tuple[str, str, str, str | None],
+    policy: Any,
+) -> dict:
+    """The row in force at ``seq`` of a PUBLISHED executable version, or refuse.
+
+    Refusals (closed): ``market_not_executable`` (the policy key
+    ``daily_plan.executable_markets`` does not list the market),
+    ``version_not_found``, ``version_not_published``, ``head_not_executable``,
+    ``row_not_found``, ``row_not_executable``. Read-only.
+    """
+    market = validate_market(market)
+    if day_mode(market, policy) != "executable":
+        raise RowNotIssuable("market_not_executable")
+    found = (
+        (
+            await db.execute(
+                select(versions, heads.c.mode)
+                .join(heads, heads.c.id == versions.c.head_id)
+                .where(
+                    heads.c.market == market,
+                    heads.c.session_date == day,
+                    versions.c.seq == seq,
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if found is None:
+        raise RowNotIssuable("version_not_found")
+    version = dict(found)
+    if version["status"] != "PUBLISHED":
+        raise RowNotIssuable("version_not_published")
+    if version.pop("mode") != "executable":
+        raise RowNotIssuable("head_not_executable")
+    row = next(
+        (
+            item
+            for item in await _fold(db, version["head_id"], seq)
+            if row_key(item) == tuple(key)
+        ),
+        None,
+    )
+    if row is None:
+        raise RowNotIssuable("row_not_found")
+    if row["execution_state"] != "executable":
+        raise RowNotIssuable("row_not_executable")
+    return {"version": _session_view(version), "row": row}
 
 
 async def _current_rows(db: AsyncSession, head_id: UUID, seq: int) -> dict:

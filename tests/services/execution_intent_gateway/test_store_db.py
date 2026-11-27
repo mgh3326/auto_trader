@@ -68,13 +68,21 @@ def _load_hk5441_guards() -> tuple[str, ...]:
     spec.loader.exec_module(module)
     # Only the two functions this fixture's 20261101 statements just replaced:
     # no trigger of another table is dropped or created from a test fixture.
-    return tuple(
+    replaced = tuple(
         statement
         for statement in module.GUARD_DDL
         if "CREATE OR REPLACE FUNCTION review.execution_intents_guard()" in statement
         or "CREATE OR REPLACE FUNCTION review.execution_child_requests_guard()"
         in statement
     )
+    # hk 6991 replaced the child guard again (v3 not_sent); the current body is
+    # its revision's, so install it last.
+    path = _MIGRATION.with_name("20261127_hk6991_intent_v3.py")
+    spec = importlib.util.spec_from_file_location("hk6991_migration", path)
+    assert spec is not None and spec.loader is not None
+    hk6991 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hk6991)
+    return (*replaced, *hk6991.GUARD_DDL)
 
 
 def _now() -> datetime:

@@ -36,7 +36,8 @@ from app.models.base import Base
 #: slip a CHECK through as UNKNOWN.
 INTENT_ACCOUNT_BY_VERSION_SQL = (
     "(schema_version = 1 AND account = 'kis_mock' AND venue = 'krx') "
-    "OR (schema_version = 2 AND account = 'upbit_live' AND venue = 'upbit')"
+    "OR (schema_version = 2 AND account = 'upbit_live' AND venue = 'upbit') "
+    "OR (schema_version = 3 AND account = 'kis_mock' AND venue = 'krx')"
 )
 INTENT_V1_SHAPE_SQL = (
     "schema_version <> 1 OR ("
@@ -77,6 +78,41 @@ INTENT_V2_SHAPE_SQL = (
     "AND min_position_after_decimal >= 0 "
     "AND min_position_after_decimal <= max_position_after_decimal)"
 )
+#: hk 6991. A v3 row is a v1-shaped kis_mock KRX intent bound to one published
+#: daily_plan row (design 6939 §1.3): the v1 bounds, none of the v2 columns, and
+#: every plan column. An entry (new/add) buys and carries its invalidation price
+#: below the limit; a trim sells and carries none.
+INTENT_V3_SHAPE_SQL = (
+    "schema_version <> 3 OR ("
+    "max_quantity IS NOT NULL AND max_quantity BETWEEN 1 AND 1000000 "
+    "AND max_notional_krw BETWEEN 1 AND 5000000 "
+    "AND limit_price_krw BETWEEN 1 AND 10000000 "
+    "AND position_at_authorization IS NOT NULL "
+    "AND min_position_after IS NOT NULL AND max_position_after IS NOT NULL "
+    "AND position_at_authorization >= 0 AND min_position_after >= 0 "
+    "AND min_position_after <= max_position_after "
+    "AND mandate_id IS NULL AND sleeve_id IS NULL AND execution_mode IS NULL "
+    "AND strategy_code_sha IS NULL AND decision_ref IS NULL AND origin IS NULL "
+    "AND operator_exit_id IS NULL AND max_quantity_decimal IS NULL "
+    "AND position_at_authorization_decimal IS NULL "
+    "AND min_position_after_decimal IS NULL "
+    "AND max_position_after_decimal IS NULL "
+    "AND plan_head_id IS NOT NULL AND plan_version IS NOT NULL "
+    "AND plan_version > 0 AND plan_row_key IS NOT NULL "
+    "AND plan_account_ref IS NOT NULL AND plan_venue IS NOT NULL "
+    "AND plan_venue = 'KRX' AND plan_session IS NOT NULL "
+    "AND plan_action IS NOT NULL AND plan_action IN ('new', 'add', 'trim') "
+    "AND (plan_action = 'trim') = (side = 'sell') "
+    "AND (plan_action = 'trim') = (invalidation_price_krw IS NULL) "
+    "AND (invalidation_price_krw IS NULL "
+    "OR invalidation_price_krw BETWEEN 1 AND limit_price_krw - 1))"
+)
+INTENT_PLAN_COLUMNS_V3_ONLY_SQL = (
+    "schema_version = 3 OR (plan_head_id IS NULL AND plan_version IS NULL "
+    "AND plan_row_key IS NULL AND plan_account_ref IS NULL "
+    "AND plan_venue IS NULL AND plan_session IS NULL AND plan_action IS NULL "
+    "AND invalidation_price_krw IS NULL)"
+)
 CHILD_ORDER_VALUES_SQL = (
     "(action = 'cancel' AND quantity IS NULL AND quantity_decimal IS NULL "
     "AND limit_price_krw IS NULL) "
@@ -90,7 +126,7 @@ CHILD_ORDER_VALUES_SQL = (
 class ExecutionIntent(Base):
     __tablename__ = "execution_intents"
     __table_args__ = (
-        CheckConstraint("schema_version IN (1, 2)", name="schema_version"),
+        CheckConstraint("schema_version IN (1, 2, 3)", name="schema_version"),
         CheckConstraint(INTENT_ACCOUNT_BY_VERSION_SQL, name="account_by_version"),
         CheckConstraint("side IN ('buy', 'sell')", name="side"),
         CheckConstraint("max_slippage_bps BETWEEN 0 AND 500", name="slippage"),
@@ -102,6 +138,11 @@ class ExecutionIntent(Base):
         ),
         CheckConstraint(INTENT_V1_SHAPE_SQL, name="v1_shape"),
         CheckConstraint(INTENT_V2_SHAPE_SQL, name="v2_shape"),
+        CheckConstraint(INTENT_V3_SHAPE_SQL, name="v3_shape"),
+        CheckConstraint(INTENT_PLAN_COLUMNS_V3_ONLY_SQL, name="plan_columns_v3_only"),
+        Index(
+            "ix_execution_intents_plan_lock", "plan_account_ref", "symbol", "plan_venue"
+        ),
         Index("ix_execution_intents_sleeve", "sleeve_id"),
         {"schema": "review"},
     )
@@ -143,6 +184,17 @@ class ExecutionIntent(Base):
     )
     min_position_after_decimal: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
     max_position_after_decimal: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
+    # v3 only (hk 6991): the bound daily_plan row; NULL on v1 and v2 rows.
+    # No foreign key: daily_plan heads are append-only (never deleted), and a
+    # constraint would tie the plan tables' DDL to the journal's.
+    plan_head_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    plan_version: Mapped[int | None] = mapped_column(Integer)
+    plan_row_key: Mapped[str | None] = mapped_column(Text)
+    plan_account_ref: Mapped[str | None] = mapped_column(Text)
+    plan_venue: Mapped[str | None] = mapped_column(Text)
+    plan_session: Mapped[str | None] = mapped_column(Text)
+    plan_action: Mapped[str | None] = mapped_column(Text)
+    invalidation_price_krw: Mapped[int | None] = mapped_column(BigInteger)
     policy_version: Mapped[str] = mapped_column(Text, nullable=False)
     model_version: Mapped[str | None] = mapped_column(Text)
     authorization_ref: Mapped[str] = mapped_column(Text, nullable=False)

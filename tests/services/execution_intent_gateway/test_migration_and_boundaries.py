@@ -57,6 +57,18 @@ def _hk5441_alters(table: str) -> str:
     )
 
 
+def _hk6991_alters(table: str) -> str:
+    """What hk 6991 adds to or replaces on one table (the v3 plan binding)."""
+    path = MIGRATION.with_name("20261127_hk6991_intent_v3.py")
+    spec = importlib.util.spec_from_file_location("hk6991_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return "\n".join(
+        statement for statement in module.ALTER_DDL if f"review.{table} " in statement
+    )
+
+
 def _render_upgrade() -> str:
     module = _load_migration()
     buffer = io.StringIO()
@@ -156,8 +168,12 @@ def test_intent_expiry_guard_matches_the_store_window() -> None:
 @pytest.mark.parametrize("model", [ExecutionIntent, ExecutionChildRequest])
 def test_migration_columns_and_checks_match_the_model(model: type) -> None:
     table: sa.Table = model.__table__  # type: ignore[attr-defined]
-    # The table as created (20261101) plus what hk 5441 altered on it.
-    block = _table_block(_render_upgrade(), table.name) + _hk5441_alters(table.name)
+    # The table as created (20261101) plus what hk 5441 and hk 6991 altered.
+    block = (
+        _table_block(_render_upgrade(), table.name)
+        + _hk5441_alters(table.name)
+        + _hk6991_alters(table.name)
+    )
     for column in table.columns:
         assert f"{column.name} " in block, column.name
     checks = [c for c in table.constraints if isinstance(c, sa.CheckConstraint)]

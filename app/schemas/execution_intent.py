@@ -41,6 +41,7 @@ from app.services.kis_mock_attribution import InvalidStrategy, validate_strategy
 
 SCHEMA_VERSION: Final = 1
 SCHEMA_VERSION_V2: Final = 2
+SCHEMA_VERSION_V3: Final = 3
 UPBIT_LIVE_ACCOUNT: Final = "upbit_live"
 
 #: Equal to ``LOCKED_ENVELOPE.max_single_notional_krw``; a test pins the two.
@@ -135,6 +136,62 @@ class ExecutionIntentV1(_Contract):
     policy_version: _Reference
     model_version: _Reference | None = None
     authorization_ref: _Reference
+
+
+_PlanAccountRef = Annotated[
+    str, StringConstraints(strict=True, pattern=r"^(?:acct_[0-9a-f]{32}|[0-9a-f]{64})$")
+]
+_PlanText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=64)]
+
+
+class PlanBinding(_Contract):
+    """hk 6991 (design 6939 §1.3): the daily_plan row a v3 intent was issued from.
+
+    ``row_key`` is the daily_plan row key ``(row_kind, market, symbol,
+    account_ref)``; ``account_ref``/``venue`` with the intent's ``symbol`` form
+    the per-row lock identity (design §5.1). Every value is a copy of the bound
+    row only; the row stays the source.
+    """
+
+    plan_head_id: UUID
+    plan_version: Annotated[StrictInt, Field(ge=1)]
+    row_key: tuple[
+        Literal["holding", "candidate"], Literal["kr"], _KrxSymbol, str | None
+    ]
+    account_ref: _PlanAccountRef
+    venue: Literal["KRX"]
+    session: _PlanText
+    action: Literal["new", "add", "trim"]
+    #: The entry row's invalidation price; ``None`` on a trim (target) intent.
+    invalidation_price_krw: _PriceKrw | None = None
+
+
+class ExecutionIntentV3(ExecutionIntentV1):
+    """A v1-shaped kis_mock KRX intent bound to one published daily_plan row.
+
+    Only the AT intent issuer (``plan_issuer``) builds one. ``LOCKED_ENVELOPE``
+    and ``MAX_INTENT_NOTIONAL_KRW`` bound it exactly as they bound v1.
+    """
+
+    schema_version: Literal[3]  # type: ignore[assignment]
+    plan: PlanBinding
+
+    @model_validator(mode="after")
+    def _plan_is_consistent(self) -> ExecutionIntentV3:
+        plan = self.plan
+        if plan.row_key[2] != self.symbol:
+            raise ValueError("plan row symbol differs from the intent symbol")
+        entry = plan.action in ("new", "add")
+        if entry != (self.side == "buy"):
+            raise ValueError("an entry intent buys and a trim intent sells")
+        if entry != (plan.invalidation_price_krw is not None):
+            raise ValueError("only an entry intent carries an invalidation price")
+        if (
+            plan.invalidation_price_krw is not None
+            and plan.invalidation_price_krw >= self.limit_price_krw
+        ):
+            raise ValueError("invalidation price must be below the entry limit")
+        return self
 
 
 class SubmitChild(_Contract):

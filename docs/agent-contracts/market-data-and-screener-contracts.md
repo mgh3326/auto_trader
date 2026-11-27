@@ -1366,7 +1366,7 @@ US·crypto 는 소문자 입력을 거부한다. venue·세션: `NASD`/`NYSE`/`A
 (장전 버전 상한 04:00 ET, `us_pre` 종료=정규장 개장, `us_post` 종료=마감+4시간), crypto=UTC 하루(장전
 상한 00:00). 호가 단위는 US 0.01(1 USD 미만 0.0001), crypto `app/core/upbit_tick.py`. 서버 입력 번들은
 KR 전용이라 다른 시장의 번들 참조는 `bundle_market_unsupported`다. `ACCOUNT_MODES` 에 `upbit_live` 와
-결정이 이름 붙인 모의 계좌가 더해졌다. 🔴 `executable` 행을 읽는 코드는 아직 없다(의도 발급기는 N2).
+결정이 이름 붙인 모의 계좌가 더해졌다. 🔴 `executable` 행을 읽는 코드는 E1 의도 발급기(hk 6991, `read_issuable_row`) 하나뿐이며, 실행 필드를 바꾸는 발행은 그 행의 (계좌, 심볼, venue) advisory lock 을 잡고 `fill` 버전은 실행 필드를 바꿀 수 없다(브로커·레저 계약 "v3 의도" 절).
 주문·E1 경로 import 는 여전히 없고 경계 테스트는 그대로다.
 
 ### 순위 입력·예산 배분 비교 (hk 6790)
