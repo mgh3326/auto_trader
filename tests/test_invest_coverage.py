@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -25,6 +26,7 @@ from app.schemas.invest_coverage import (
     InvestCoverageSurface,
 )
 from app.services.invest_coverage_service import build_invest_coverage
+from tests.market_events_test_helpers import market_events_test_lock
 
 
 def test_coverage_surface_accepts_source_candidates_and_references_list():
@@ -70,7 +72,39 @@ def app(db_session) -> FastAPI:
     return app
 
 
+@pytest_asyncio.fixture
+async def _owned_kr_calendar_partitions(db_session):
+    """Own the KR calendar partitions this test asserts ``fresh`` against.
+
+    ``_calendar_surfaces`` counts every ``market_event_ingestion_partitions``
+    row for market ``kr`` regardless of its partition date: a row dated before
+    the trading day is counted as stale, and fresh plus stale reports
+    ``partial``. Rows are committed by earlier tests on the same xdist worker
+    database and are never removed by their owners. For example, the last test
+    in tests/services/test_market_events_ingestion.py leaves a ``succeeded`` KR
+    DART partition dated 2026-05-07. Whether that row is still present depends
+    on which files the worker ran first, so the test cleared only its own seed
+    row before. Clear the KR partitions under the same market-events lock that
+    the owning suites use, then seed this test's rows.
+    """
+
+    async def _clear_kr_partitions() -> None:
+        await db_session.rollback()
+        await db_session.execute(
+            sa.delete(MarketEventIngestionPartition).where(
+                MarketEventIngestionPartition.market == "kr"
+            )
+        )
+        await db_session.commit()
+
+    async with market_events_test_lock():
+        await _clear_kr_partitions()
+        yield
+        await _clear_kr_partitions()
+
+
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_kr_calendar_partitions")
 async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     db_session,
 ):
