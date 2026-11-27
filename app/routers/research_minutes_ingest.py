@@ -98,7 +98,11 @@ def _is_kis_day(venue: object) -> bool:
 def _kst_date(item: ResearchMinuteBarItem) -> date | None:
     if item.time_utc.tzinfo is None:
         return None
-    return item.time_utc.astimezone(_KST).date()
+    try:
+        return item.time_utc.astimezone(_KST).date()
+    except (OverflowError, ValueError):
+        # Refused per item by decide_bar (bar_time_invalid); never fails the batch.
+        return None
 
 
 async def _kis_day_calendars(

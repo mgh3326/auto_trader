@@ -209,6 +209,13 @@ def _check_start(time_utc: object) -> tuple[datetime | None, str | None]:
         return None, REASON_BAR_TIME_NOT_MINUTE_ALIGNED
     if start < MIN_BAR_START:
         return None, REASON_BAR_TIME_INVALID
+    try:
+        # The KST date is needed for the KIS_DAY calendar lookup and the session
+        # date; a start whose KST conversion overflows is refused per item here,
+        # before any calendar gate can answer for it (hk 7044 review).
+        start.astimezone(_KR)
+    except (OverflowError, ValueError):
+        return None, REASON_BAR_TIME_INVALID
     return start, None
 
 

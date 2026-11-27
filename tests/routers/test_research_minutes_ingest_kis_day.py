@@ -243,3 +243,29 @@ async def test_a_batch_without_kis_day_never_reads_the_calendar(
     assert response["inserted"] == 1
     assert reader.days == []
     assert session.rows[0]["session_segment"] != "US_DAY"
+
+
+async def test_an_overflowing_kis_day_start_is_refused_per_item(
+    reader: _Reader,
+) -> None:
+    """hk 7044 review: one overflowing start never fails the batch.
+
+    ``9999-12-31T23:00Z`` is a valid UTC instant but its KST conversion
+    overflows. The bar is refused as ``bar_time_invalid`` for that item only, and
+    the valid bar beside it is still stored. Before the fix the batch scan raised
+    OverflowError (a 500 for the whole request).
+    """
+    session = _FakeSession()
+    overflowing = _us_bar(time_utc="9999-12-31T23:00:00Z")
+    overflowing["received_at"] = "9999-12-31T23:02:00Z"
+    response = await _post(
+        [overflowing, _us_bar(time_utc=f"{_DATE}T01:00:00Z")], session
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0] == {"status": "rejected", "reason": "bar_time_invalid"}
+    assert body["results"][1]["status"] == "inserted"
+    assert body["inserted"] == 1
+    assert [row["symbol"] for row in session.rows] == ["AAPL"]
+    assert reader.days == [date(2026, 11, 25)]
