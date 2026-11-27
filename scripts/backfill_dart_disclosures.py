@@ -75,9 +75,6 @@ from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
 from app.models.market_events import MarketEventIngestionPartition
 from app.monitoring.sentry import capture_exception
-from app.services.market_events.dart_helpers import (
-    fetch_dart_receipt_times_for_date,
-)
 from app.services.market_events.ingestion import ingest_kr_disclosures_for_date
 from app.services.market_events.normalizers import normalize_dart_disclosure_row
 from app.services.market_events.session_calendar import trading_session_status
@@ -219,6 +216,30 @@ def _make_request_gate(
     return _gate
 
 
+def _make_gated_receipt_times(
+    gate: Callable[[], Awaitable[None]],
+) -> Callable[[date], Awaitable[dict[str, str]]]:
+    """Receipt-time enrichment that spends the same run budget as the list pages.
+
+    The scrape is a second DART read per day. It is gated like every other
+    request, so --max-calls and the run summary count it and pacing applies. When
+    the budget is spent the scrape is skipped and the day stays date-only, which
+    the enrichment's fail-open contract already allows.
+    """
+    from app.services.market_events.dart_helpers import (
+        fetch_dart_receipt_times_for_date,
+    )
+
+    async def _gated(target_date: date) -> dict[str, str]:
+        try:
+            await gate()
+        except _CallBudgetExhausted:
+            return {}
+        return await fetch_dart_receipt_times_for_date(target_date)
+
+    return _gated
+
+
 def _make_paced_fetch(
     fetch_rows: FetchRows,
     *,
@@ -232,6 +253,7 @@ def _make_paced_fetch(
     rng: Callable[[], float],
     emit: Callable[[str], None],
     per_request: bool = False,
+    gate: Callable[[], Awaitable[None]] | None = None,
 ) -> FetchRows:
     """Wrap ``fetch_rows`` with pacing, a call budget, and bounded retry.
 
@@ -244,12 +266,13 @@ def _make_paced_fetch(
     (``retry_base_seconds * 2**(attempt-1)``, capped at
     ``retry_max_seconds``) scaled by ``[0.5, 1.5)`` jitter.
     """
-    gate = _make_request_gate(
-        budget=budget,
-        max_calls=max_calls,
-        pace_seconds=pace_seconds,
-        sleep=sleep,
-    )
+    if gate is None:
+        gate = _make_request_gate(
+            budget=budget,
+            max_calls=max_calls,
+            pace_seconds=pace_seconds,
+            sleep=sleep,
+        )
 
     async def _paced_fetch(target_date: date) -> list[dict[str, Any]]:
         attempt = 0
@@ -403,6 +426,12 @@ async def run_backfill(
         rng = random.random
 
     budget = _DartCallBudget()
+    request_gate = _make_request_gate(
+        budget=budget,
+        max_calls=max_calls,
+        pace_seconds=pace_seconds,
+        sleep=sleep,
+    )
     paced_fetch = _make_paced_fetch(
         fetch_rows,
         per_request=per_request,
@@ -415,6 +444,7 @@ async def run_backfill(
         sleep=sleep,
         rng=rng,
         emit=emit,
+        gate=request_gate,
     )
 
     planned_dates = list(iter_partition_dates(effective_from, to_date))
@@ -482,7 +512,7 @@ async def run_backfill(
                     db,
                     d,
                     fetch_rows=paced_fetch,
-                    load_receipt_times=fetch_dart_receipt_times_for_date,
+                    load_receipt_times=_make_gated_receipt_times(request_gate),
                 )
                 await db.commit()
             except Exception as exc:

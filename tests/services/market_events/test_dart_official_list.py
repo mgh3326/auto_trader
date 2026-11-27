@@ -816,6 +816,8 @@ async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
     from scripts import backfill_dart_disclosures as cli
 
     seen: dict[str, object] = {}
+    scrape = AsyncMock(return_value={})
+    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
 
     async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
         seen["loader"] = load_receipt_times
@@ -838,7 +840,9 @@ async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
         pace_seconds=0.0,
     )
 
-    assert seen["loader"] is dart_helpers.fetch_dart_receipt_times_for_date
+    # The loader is gated: it reaches the production scrape only through the run budget.
+    await seen["loader"](DAY)
+    scrape.assert_awaited_once_with(DAY)
 
 
 # -- review findings on PR #2694 (pagination, 429, per-request budget) ----------
@@ -947,3 +951,74 @@ def test_backfill_retries_only_transient_dart_failure_codes(code, retryable):
     tag = _transient_dart_error(DartDetailError("x", failure_code=code))
 
     assert (tag is not None) is retryable
+
+
+@pytest.mark.asyncio
+async def test_backfill_receipt_time_scrape_is_gated_and_skipped_when_budget_is_spent(
+    monkeypatch,
+):
+    """The commit-path scrape spends the run budget like a list page (hk 6408 review)."""
+    from scripts import backfill_dart_disclosures as cli
+
+    scrape = AsyncMock(return_value={})
+    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
+    loaded: list[dict] = []
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        await fetch_rows(target_date)  # the day fetch spends the one budget unit
+        loaded.append(await load_receipt_times(target_date))
+        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        fetch_rows=AsyncMock(return_value=[]),  # one budget unit: the day fetch
+        emit=lambda *_: None,
+        pace_seconds=0.0,
+        max_calls=1,
+    )
+
+    assert scrape.await_count == 0  # budget spent: no scrape request
+    assert loaded == [{}]  # fail-open: the day stays date-only
+
+
+@pytest.mark.asyncio
+async def test_backfill_receipt_time_scrape_counts_against_the_budget(monkeypatch):
+    from scripts import backfill_dart_disclosures as cli
+
+    scrape = AsyncMock(return_value={"20261127000001": "2026-11-27 16:30"})
+    monkeypatch.setattr(dart_helpers, "fetch_dart_receipt_times_for_date", scrape)
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        await fetch_rows(target_date)
+        assert await load_receipt_times(target_date) == {
+            "20261127000001": "2026-11-27 16:30"
+        }
+        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        fetch_rows=AsyncMock(return_value=[]),
+        emit=lambda *_: None,
+        pace_seconds=0.0,
+        max_calls=2,
+    )
+
+    assert scrape.await_count == 1

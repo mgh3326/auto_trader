@@ -94,10 +94,11 @@ async def test_amendment_rows_share_a_group_key_and_stay_separate_receipts(db_se
     from app.services.market_events.repository import MarketEventsRepository
 
     repo = MarketEventsRepository(db_session)
+    # 사업보고서 is an earnings report by the shared classifier.
     await repo.upsert_event_with_values(
-        _dart_event("사업보고서 (2025.12)", "disclosure"), []
+        _dart_event("사업보고서 (2025.12)", "earnings"), []
     )
-    correction = _dart_event("[기재정정]사업보고서 (2025.12)", "disclosure")
+    correction = _dart_event("[기재정정]사업보고서 (2025.12)", "earnings")
     correction["source_event_id"] = "20261127000778"
     await repo.upsert_event_with_values(correction, [])
     await db_session.commit()
@@ -202,7 +203,17 @@ async def test_timed_write_clears_an_earlier_date_only_publication(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_date_only_write_after_a_timed_one_stores_the_date(db_session):
+async def test_date_only_write_after_a_timed_one_keeps_the_stored_time(db_session):
+    """A later date-only write does not erase the time stored by an earlier timed write.
+
+    The alignment keeps the stored timed raw rcept_dt and drops the incoming date
+    tuple (hk 6408 review). The timing reader therefore still reports the time.
+    """
+    from app.services.disclosures.timing import (
+        PUBLISHED_FROM_DART_RECEIPT,
+        StoredDisclosureRow,
+        disclosure_timing,
+    )
     from app.services.market_events.repository import MarketEventsRepository
 
     repo = MarketEventsRepository(db_session)
@@ -213,8 +224,19 @@ async def test_date_only_write_after_a_timed_one_stores_the_date(db_session):
     await db_session.commit()
 
     row = await _one_row(db_session)
-    assert row.published_precision == "date"
-    assert row.published_date == date(2026, 11, 27)
+    assert row.published_precision is None
+    assert row.raw_payload_json["rcept_dt"] == "2026-11-27 16:30"
+    timing = disclosure_timing(
+        "2026-11-27",
+        [
+            StoredDisclosureRow(
+                source="dart",
+                receipt_text=row.raw_payload_json["rcept_dt"],
+            )
+        ],
+    )
+    assert timing["published_precision"] == "minute"
+    assert timing["published_at_source"] == PUBLISHED_FROM_DART_RECEIPT
 
 
 @pytest.mark.asyncio
