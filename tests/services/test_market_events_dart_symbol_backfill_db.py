@@ -72,9 +72,14 @@ async def _seed_pre_4591_row(db_session, rcept_no: str, corp_name: str) -> dict:
 async def _stored(db_session, rcept_no: str):
     from app.models.market_events import MarketEvent
 
+    # The backfill writes with a Core UPDATE (synchronize_session=False), so the
+    # session's identity map still holds the pre-fill instance. Repopulate it so
+    # the re-read reflects the database row rather than the cached object.
     return (
         await db_session.execute(
-            select(MarketEvent).where(MarketEvent.source_event_id == rcept_no)
+            select(MarketEvent)
+            .where(MarketEvent.source_event_id == rcept_no)
+            .execution_options(populate_existing=True)
         )
     ).scalar_one()
 
