@@ -15,6 +15,7 @@ from app.services.daily_plan.vocabulary import (
     ACTION_BASES,
     ACTIONS,
     DISPOSITIONS,
+    KR_SHORT_CODE,
     REASON_CODES,
     ROW_KINDS,
     TRIGGER_KINDS,
@@ -24,7 +25,6 @@ from app.services.daily_plan.vocabulary import (
 
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
-_KR_SYMBOL = re.compile(r"[0-9A-Z]{6}")
 # Loss-cut replay inputs, with the skip an unknown one means (design §7.2).
 # Open-sell, protected quantity and bar volume are absent on purpose: the rule
 # already reads an unknown one as unknown.
@@ -56,7 +56,7 @@ def parse_positive_decimal(value: Any) -> Decimal:
 
 def normalize_symbol(symbol: str, market: str, venue: str, session: str) -> str:
     normalized = to_db_symbol(symbol.strip().upper())
-    if market != "kr" or not _KR_SYMBOL.fullmatch(normalized):
+    if market != "kr" or not KR_SHORT_CODE.fullmatch(normalized):
         raise ValueError("invalid_symbol")
     if session not in VENUE_SESSIONS.get(venue, ()):
         raise ValueError("invalid_venue_session")

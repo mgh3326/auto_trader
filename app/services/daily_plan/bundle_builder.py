@@ -12,7 +12,6 @@ out and the comparison reports ``direction_unclassified``.
 
 import hashlib
 import json
-import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from app.services.daily_plan.bundle import (
     decimal_string,
 )
 from app.services.daily_plan.vocabulary import (
+    KR_SHORT_CODE,
     RANKING_A_INPUTS,
     RANKING_B_ADDED_INPUTS,
 )
@@ -119,10 +119,14 @@ CANDIDATE_RULE: dict[str, Any] = {
         "brokers": ["kis", "toss"],
         "cap": None,
     },
+    "symbol": {
+        "kind": "kr_short_code",
+        "pattern": "[0-9A-Z]{6}",
+        "applied_to": "stripped_uppercased_symbol",
+    },
     "exclude": ["non_six_digit_symbol", "parking_instrument"],
 }
 
-_SYMBOL = re.compile(r"[0-9]{6}")
 _TIMED_PRECISION = frozenset({"second", "minute", "datetime"})
 # Writer reasons that make an account row's cash untrustworthy.
 _BAD_CASH_REASONS = frozenset(
@@ -388,7 +392,7 @@ def select_candidates(
     status: dict[str, dict[str, Any]] = {}
 
     def eligible(symbol: str) -> bool:
-        if not _SYMBOL.fullmatch(symbol):
+        if not KR_SHORT_CODE.fullmatch(symbol):
             excluded["non_six_digit_symbol"].add(symbol)
         elif is_parking_instrument(symbol, _MARKET_TYPE):
             excluded["parking_instrument"].add(symbol)
