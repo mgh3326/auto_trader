@@ -1298,7 +1298,9 @@ page 를 무시하는 고정 목록(기본 15건)을 함께 읽는다. 매 run �
 `created_at_desc`, `created_at_asc`, `view_count_desc` 다. 요청은 timeout, redirect 금지, 고정
 User-Agent 와 요청 간 최소 0.5초 간격을 쓴다. 출력 폴더의 bounded seen-ID sidecar 는 article 행
 중복만 막는다. 이미 본 ID도 검색된 페이지에서 attention 을 관측하며, item 당 run 별 attention 행은
-하나만 기록한다.
+하나만 기록한다. 관측된 ID 는 sidecar 의 최근성을 갱신하므로 지속 관측 항목은 10,000개 제한에서
+밀려나지 않는다. 검색은 심볼마다 별도 `poll_status`(`query_symbol` 기록)를 남기며, 한 심볼의 실패가
+다른 심볼의 검색을 막지 않는다. `view_count_desc` 에서 새로 찾은 기사는 그 `poll_status.count` 에 합산된다.
 
 - 목록 응답은 `news_list` 배열이어야 한다. 항목은 유효한 `id`, `title`, timezone 포함 `created_at` 을
   요구한다. `created_at` 원문과 UTC 파싱값을 모두 보존한다. 잘못된 항목은 버리고 `malformed_count` 를

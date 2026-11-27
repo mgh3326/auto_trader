@@ -1255,3 +1255,180 @@ def test_saveticker_summary_appears_in_coverage_first_seen_and_overlap(
         save_summary["headline_overlap"]["cross_source_pairs_by_source"]["benzinga"]
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_saveticker_search_failure_is_isolated_per_symbol(
+    monkeypatch, tmp_path
+) -> None:
+    """hk 6705: one symbol's search error records its own status and others run."""
+    searched: list[str] = []
+    ok_item = {
+        "id": "bbb-1",
+        "title": "비 기사",
+        "created_at": "2026-11-26T00:00:00Z",
+        "tickers": [{"symbol": "BBB"}],
+    }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, *_args, **_kwargs):
+            return {"news_list": [], "total_count": 0, "page": 1, "page_size": 10}
+
+        async def search_page(self, search, page, page_size):
+            searched.append(search)
+            if search == "AAA":
+                raise RuntimeError("upstream exploded")
+            return {
+                "news_list": [ok_item],
+                "total_count": 1,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _Client)
+    rows, _attention, errors, _state = await cli._saveticker_poll(
+        poll_id="p-isolate",
+        out_dir=tmp_path,
+        polled_symbols=["AAA", "BBB"],
+        pages=1,
+        page_size=10,
+    )
+    assert searched == ["AAA", "BBB"]
+    search_statuses = {
+        row["query_symbol"]: row
+        for row in rows
+        if row.get("record_type") == "poll_status"
+        and row.get("query_param") == "search"
+    }
+    assert search_statuses["AAA"]["status"] == "error"
+    assert search_statuses["AAA"]["error_class"] == "RuntimeError"
+    assert search_statuses["BBB"]["status"] == "ok"
+    assert search_statuses["BBB"]["count"] == 1
+    assert "saveticker [search:AAA]: RuntimeError" in errors
+    assert any(
+        row.get("record_type") == "article" and row["provider_id"] == "bbb-1"
+        for row in rows
+    )
+
+
+@pytest.mark.asyncio
+async def test_saveticker_observed_seen_id_refreshes_recency(
+    monkeypatch, tmp_path
+) -> None:
+    """hk 6705: re-observing a known ID keeps it inside the bounded seen state."""
+    monkeypatch.setattr(cli, "SAVETICKER_SEEN_STATE_LIMIT", 3)
+    (tmp_path / cli.SAVETICKER_SEEN_STATE).write_text(
+        json.dumps({"ids": ["keep", "idle-1", "idle-2"]}), encoding="utf-8"
+    )
+    keep = {"id": "keep", "title": "계속 관측", "created_at": "2026-11-26T00:00:00Z"}
+    fresh = {"id": "fresh", "title": "새 기사", "created_at": "2026-11-26T00:01:00Z"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, page, page_size, *, sort="created_at_desc"):
+            if sort == "view_count_desc":
+                return {"news_list": [], "total_count": 0, "page": 1, "page_size": 50}
+            return {
+                "news_list": [keep, fresh],
+                "total_count": 2,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def search_page(self, search, page, page_size):
+            return {
+                "news_list": [],
+                "total_count": 0,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _Client)
+    _rows, _attention, _errors, state_ids = await cli._saveticker_poll(
+        poll_id="p-recency",
+        out_dir=tmp_path,
+        polled_symbols=[],
+        pages=1,
+        page_size=10,
+    )
+    cli._save_saveticker_seen_ids(tmp_path, state_ids)
+    assert cli._load_saveticker_seen_ids(tmp_path) == ["idle-2", "keep", "fresh"]
+
+
+@pytest.mark.asyncio
+async def test_saveticker_view_count_new_articles_are_counted(
+    monkeypatch, tmp_path
+) -> None:
+    """hk 6705: articles found only via view_count_desc appear in its poll_status count."""
+    viewed = {
+        "id": "viral-1",
+        "title": "조회수 기사",
+        "created_at": "2026-11-26T00:00:00Z",
+    }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def news_page(self, page, page_size, *, sort="created_at_desc"):
+            if sort == "view_count_desc":
+                return {
+                    "news_list": [viewed],
+                    "total_count": 1,
+                    "page": 1,
+                    "page_size": 50,
+                }
+            return {
+                "news_list": [],
+                "total_count": 0,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def search_page(self, search, page, page_size):
+            return {
+                "news_list": [],
+                "total_count": 0,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        async def top_stories(self):
+            return {"news_list": []}
+
+    monkeypatch.setattr(st, "SaveTickerClient", _Client)
+    rows, _attention, _errors, _state = await cli._saveticker_poll(
+        poll_id="p-viewcount",
+        out_dir=tmp_path,
+        polled_symbols=[],
+        pages=1,
+        page_size=10,
+    )
+    status = next(
+        row
+        for row in rows
+        if row.get("record_type") == "poll_status"
+        and row.get("query_param") == "view_count_desc"
+    )
+    assert status["status"] == "ok"
+    assert status["count"] == 1

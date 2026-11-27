@@ -461,7 +461,8 @@ async def _saveticker_poll(
         raise ValueError(f"Save+ 제한: 페이지 수 1..{st.MAX_PAGES}, 페이지 크기 1..100")
     state_ids = _load_saveticker_seen_ids(out_dir)
     old_ids = set(state_ids)
-    state_id_set = set(state_ids)
+    # Insertion-ordered recency: the last key is the most recently observed ID.
+    recency: dict[str, None] = dict.fromkeys(state_ids)
     articles_by_id: dict[str, list[dict]] = {}
     attention_by_id: dict[str, dict] = {}
     records: list[dict] = []
@@ -477,9 +478,10 @@ async def _saveticker_poll(
     ) -> bool:
         """Record a fresh article once and an attention observation once per run."""
         provider_id = item["provider_id"]
-        if provider_id not in state_id_set:
-            state_id_set.add(provider_id)
-            state_ids.append(provider_id)
+        # Re-observing a known ID refreshes its recency so the bounded state
+        # keeps continuously observed items and drops only idle ones.
+        recency.pop(provider_id, None)
+        recency[provider_id] = None
         previous_attention = attention_by_id.get(provider_id)
         if previous_attention is None or attention_priority:
             attention_by_id[provider_id] = _saveticker_attention_row(
@@ -509,7 +511,17 @@ async def _saveticker_poll(
         return True
 
     async with st.SaveTickerClient() as client:
-        for source_name in ("news", "search", "top_stories", "view_count_desc"):
+        # One unit per feed; search is one unit per symbol so a failing symbol
+        # records its own error and the remaining symbols still run.
+        search_units = [("search", sym) for sym in polled_symbols] or [("search", None)]
+        units: list[tuple[str, str | None]] = [
+            ("news", None),
+            *search_units,
+            ("top_stories", None),
+            ("view_count_desc", None),
+        ]
+        for source_name, symbol in units:
+            label = source_name if symbol is None else f"{source_name}:{symbol}"
             malformed = 0
             fetched_count = 0
             new_count = 0
@@ -532,27 +544,26 @@ async def _saveticker_poll(
                             )
                         if not _saveticker_has_next_page(payload, page, page_size):
                             break
-                elif source_name == "search":
-                    for symbol in polled_symbols:
-                        for page in range(1, pages + 1):
-                            payload = await client.search_page(symbol, page, page_size)
-                            seen_at = datetime.now(UTC)
-                            normalized, dropped = st.normalize_envelope(payload)
-                            malformed += dropped
-                            fetched_count += len(normalized)
-                            for item in normalized:
-                                new_count += observe_item(
-                                    item,
-                                    seen_at=seen_at,
-                                    query_param=source_name,
-                                    is_top_story=False,
-                                )
-                            if not _saveticker_has_next_page(
-                                payload,
-                                page,
-                                st.effective_search_page_size(page_size),
-                            ):
-                                break
+                elif source_name == "search" and symbol is not None:
+                    for page in range(1, pages + 1):
+                        payload = await client.search_page(symbol, page, page_size)
+                        seen_at = datetime.now(UTC)
+                        normalized, dropped = st.normalize_envelope(payload)
+                        malformed += dropped
+                        fetched_count += len(normalized)
+                        for item in normalized:
+                            new_count += observe_item(
+                                item,
+                                seen_at=seen_at,
+                                query_param=source_name,
+                                is_top_story=False,
+                            )
+                        if not _saveticker_has_next_page(
+                            payload,
+                            page,
+                            st.effective_search_page_size(page_size),
+                        ):
+                            break
                 elif source_name == "top_stories":
                     payload = await client.top_stories()
                     seen_at = datetime.now(UTC)
@@ -565,13 +576,13 @@ async def _saveticker_poll(
                             query_param=source_name,
                             is_top_story=True,
                         )
-                else:
+                elif source_name == "view_count_desc":
                     payload = await client.news_page(1, 50, sort="view_count_desc")
                     seen_at = datetime.now(UTC)
                     normalized, malformed = st.normalize_envelope(payload)
                     fetched_count = len(normalized)
                     for item in normalized:
-                        observe_item(
+                        new_count += observe_item(
                             item,
                             seen_at=seen_at,
                             query_param=source_name,
@@ -581,22 +592,20 @@ async def _saveticker_poll(
             except Exception as exc:  # noqa: BLE001 - other feeds continue independently
                 seen_at = datetime.now(UTC)
                 error_class = _saveticker_error_class(exc)
-                errors.append(f"saveticker [{source_name}]: {error_class}")
-                logger.warning(
-                    "saveticker poll failed [%s]: %s", source_name, error_class
-                )
+                errors.append(f"saveticker [{label}]: {error_class}")
+                logger.warning("saveticker poll failed [%s]: %s", label, error_class)
                 fetch_error = error_class
             malformed_only = (
                 malformed > 0 and fetched_count == 0 and fetch_error is None
             )
             if malformed_only:
                 fetch_error = "MalformedRows"
-                errors.append(f"saveticker [{source_name}]: MalformedRows")
+                errors.append(f"saveticker [{label}]: MalformedRows")
             status_time = datetime.now(UTC)
             records.append(
                 _status_row(
                     source="saveticker",
-                    symbol=None,
+                    symbol=symbol,
                     poll_id=poll_id,
                     status="error"
                     if fetch_error
@@ -613,7 +622,7 @@ async def _saveticker_poll(
             )
     records[:0] = [row for rows in articles_by_id.values() for row in rows]
     records.extend(attention_by_id.values())
-    return records, list(attention_by_id.values()), errors, state_ids
+    return records, list(attention_by_id.values()), errors, list(recency)
 
 
 def _saveticker_error_class(exc: Exception) -> str:
