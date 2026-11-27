@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -348,6 +349,29 @@ _NAVER_VALUATION_FIXTURE_DIR = (
 
 def _load_naver_valuation_fixture(name: str) -> Any:
     return json.loads((_NAVER_VALUATION_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+class _JsonResponse:
+    def __init__(self, payload: Any) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+def _routed_json_get(routes: dict[str, Any]) -> Any:
+    """httpx-shaped ``get`` that serves a captured payload by URL suffix (hk 7069)."""
+
+    async def get(url: str, **_kwargs: Any) -> _JsonResponse:
+        for suffix, payload in routes.items():
+            if url.endswith(suffix):
+                return _JsonResponse(payload)
+        raise AssertionError(f"unexpected integration url: {url}")
+
+    return get
 
 
 def _research_list_item(
@@ -1748,6 +1772,7 @@ class TestFetchKrSnapshot:
         *,
         research_stub: Any,
         sise_fails: bool = False,
+        integration_routes: dict[str, Any] | None = None,
     ) -> None:
         async def mock_fetch_html_with_client(
             client: Any, url: str, params: dict[str, Any] | None = None
@@ -1780,6 +1805,17 @@ class TestFetchKrSnapshot:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
+        if integration_routes is None:
+            # hk 7069: hermetic default — no mobile overlay unless a test routes it.
+            async def no_integration(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+                return {}
+
+            monkeypatch.setattr(
+                naver_finance.valuation, "_fetch_integration", no_integration
+            )
+        else:
+            # Real _fetch_integration runs against the captured m.stock payloads.
+            mock_client.get = _routed_json_get(integration_routes)
 
         import httpx
 
@@ -1910,6 +1946,160 @@ class TestFetchKrSnapshot:
         assert "error" in snapshot["opinions"]
         assert "0 reports" in snapshot["opinions"]["error"]
         assert snapshot["opinions"]["consensus"] is None
+
+    async def test_snapshot_valuation_overlays_mobile_integration_metrics(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # hk 7069: the KR analysis snapshot reads the PC pages, which are the SPA
+        # and carry no metrics. The captured m.stock payloads must supply PER/PBR
+        # and the rest through the same overlay fetch_valuation uses.
+        request_counts = {"main": 0, "sise": 0, "news": 0, "list": 0, "detail": 0}
+        self._install_snapshot_stubs(
+            monkeypatch,
+            request_counts,
+            research_stub=_research_json_stub(list_payload=[], details={}),
+            integration_routes={
+                "/005930/basic": _load_naver_valuation_fixture("basic_005930.json"),
+                "/005930/integration": _load_naver_valuation_fixture(
+                    "integration_005930.json"
+                ),
+            },
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        valuation = snapshot["valuation"]
+        assert valuation["name"] == "삼성전자"
+        assert valuation["current_price"] == pytest.approx(179500)
+        assert valuation["per"] == pytest.approx(5.64)
+        assert valuation["pbr"] == pytest.approx(1.93)
+        assert valuation["eps"] == pytest.approx(31809)
+        assert valuation["bps"] == pytest.approx(92903)
+        assert valuation["market_cap"] == pytest.approx(1_049_407_000_000_000)
+        assert valuation["dividend_yield"] == pytest.approx(0.0345)
+        # The HTML sise bounds (90000/60000) are replaced by the integration bounds.
+        assert valuation["high_52w"] == pytest.approx(380000)
+        assert valuation["low_52w"] == pytest.approx(99900)
+        assert valuation["current_position_52w"] == pytest.approx(
+            (179500 - 99900) / (380000 - 99900), abs=0.01
+        )
+        assert valuation["current_position_52w_reason"] is None
+
+    async def test_snapshot_valuation_survives_integration_outage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A mobile-API failure degrades to the HTML values (fail-open), never a
+        # snapshot with no valuation at all.
+        request_counts = {"main": 0, "sise": 0, "news": 0, "list": 0, "detail": 0}
+        self._install_snapshot_stubs(
+            monkeypatch,
+            request_counts,
+            research_stub=_research_json_stub(list_payload=[], details={}),
+        )
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", _raising_integration
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        assert snapshot["valuation"]["current_price"] == 75000
+        assert snapshot["valuation"]["per"] == pytest.approx(12.5)  # HTML value kept
+        assert snapshot["valuation"]["eps"] is None
+
+
+async def _raising_integration(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+    raise RuntimeError("mobile api down")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchIntegrationFromCapturedPayloads:
+    async def test_fetch_integration_returns_every_overlay_key(self) -> None:
+        # hk 7069: exercise the real _fetch_integration on the captured basic +
+        # integration payloads; the overlay reads these keys, so each must exist.
+        client = SimpleNamespace(
+            get=_routed_json_get(
+                {
+                    "/005930/basic": _load_naver_valuation_fixture("basic_005930.json"),
+                    "/005930/integration": _load_naver_valuation_fixture(
+                        "integration_005930.json"
+                    ),
+                }
+            )
+        )
+
+        result = await naver_finance.valuation._fetch_integration("005930", client)
+
+        for key in naver_finance.valuation._INTEGRATION_OVERLAY_KEYS:
+            assert key in result, key
+        assert result["name"] == "삼성전자"
+        assert result["current_price"] == pytest.approx(179500)
+        assert result["per"] == pytest.approx(5.64)
+        assert result["pbr"] == pytest.approx(1.93)
+        assert result["high_52w"] == pytest.approx(380000)
+        assert result["low_52w"] == pytest.approx(99900)
+
+
+@pytest.mark.unit
+class TestCurrentPosition52w:
+    def test_invalid_overlay_bounds_clear_stale_position_with_reason(self) -> None:
+        # hk 7069: the HTML pass computes 0.5 from 90000/60000. An overlay that
+        # supplies an inverted range must not leave that stale 0.5 behind.
+        main_soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+        sise_soup = BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+        valuation = naver_finance.valuation._parse_valuation_from_soups(
+            "005930", main_soup, sise_soup
+        )
+        assert valuation["current_position_52w"] == pytest.approx(0.5)
+
+        naver_finance.valuation.apply_integration_metrics(
+            valuation, {"high_52w": 50000.0, "low_52w": 60000.0}
+        )
+
+        assert valuation["current_position_52w"] is None
+        assert valuation["current_position_52w_reason"] == "invalid_52w_bounds"
+
+    def test_equal_bounds_are_invalid_not_division(self) -> None:
+        valuation: dict[str, Any] = {
+            "current_price": 75000,
+            "high_52w": 60000,
+            "low_52w": 60000,
+            "current_position_52w": 0.5,
+        }
+
+        naver_finance.valuation._set_current_position_52w(valuation)
+
+        assert valuation["current_position_52w"] is None
+        assert valuation["current_position_52w_reason"] == "invalid_52w_bounds"
+
+    def test_missing_input_reports_reason(self) -> None:
+        valuation: dict[str, Any] = {
+            "current_price": None,
+            "high_52w": 90000,
+            "low_52w": 60000,
+        }
+
+        naver_finance.valuation._set_current_position_52w(valuation)
+
+        assert valuation["current_position_52w"] is None
+        assert valuation["current_position_52w_reason"] == "missing_input"
+
+    def test_valid_bounds_compute_and_clear_reason(self) -> None:
+        valuation: dict[str, Any] = {
+            "current_price": 75000,
+            "high_52w": 90000,
+            "low_52w": 60000,
+            "current_position_52w_reason": "missing_input",
+        }
+
+        naver_finance.valuation._set_current_position_52w(valuation)
+
+        assert valuation["current_position_52w"] == pytest.approx(0.5)
+        assert valuation["current_position_52w_reason"] is None
 
 
 @pytest.mark.asyncio
