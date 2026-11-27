@@ -234,12 +234,12 @@ def _kr_short_code(value: Any) -> str | None:
     """KRX 6-character short code: digits or upper-case ASCII letters (hk 7092)."""
     if not isinstance(value, str):
         return None
-    code = value.strip().upper()
-    if len(code) != 6:
+    code = value.strip()
+    # Validate ASCII alnum before upper(): Unicode uppercasing can turn one
+    # input char into another ("ß" -> "SS") and smuggle a non-code through.
+    if len(code) != 6 or not all(ch.isascii() and ch.isalnum() for ch in code):
         return None
-    if not all(ch.isdigit() or "A" <= ch <= "Z" for ch in code):
-        return None
-    return code
+    return code.upper()
 
 
 def classify_kis_payload(payload: Any) -> SurfaceOutcome:

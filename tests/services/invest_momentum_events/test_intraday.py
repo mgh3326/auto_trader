@@ -389,6 +389,10 @@ def test_kis_payload_accepts_alphanumeric_short_codes() -> None:
         {"mksc_shrn_iscd": "0009K0", "hts_kor_isnm": "알파", "stck_prpr": "2000"},
         {"stck_shrn_iscd": "bad!", "hts_kor_isnm": "무효"},
         {"stck_shrn_iscd": "12345", "hts_kor_isnm": "짧은코드"},
+        # Unicode upper() can rewrite a non-ASCII char into ASCII ("ı" ->
+        # "I"); the raw input must be six ASCII alphanumerics before
+        # normalization, not the uppercased result.
+        {"stck_shrn_iscd": "1234ı0", "hts_kor_isnm": "비ASCII"},
     ]
     outcome = intraday.classify_kis_payload(payload)
     assert outcome.status == "ok" and outcome.source == intraday.KIS_SOURCE
