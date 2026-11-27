@@ -1,0 +1,110 @@
+operation: retro_symbol_events
+request:
+  path: /trading/api/retro/v1/retro_symbol_events
+  query:
+    symbol: '005930'
+    known_cutoff: '2026-11-23T00:00:00Z'
+    from: '2026-11-19'
+    to: '2026-11-20'
+status: 200
+response:
+  as_of: '2026-11-28T00:00:00Z'
+  data_as_of: '2026-11-21T01:00:00Z'
+  timezone: KST
+  total: 2
+  truncated: false
+  limit: 100
+  cursor: null
+  next_cursor: null
+  unknowns:
+  - field: collection.latest_collected.naver_disclosure
+    reason: no_partition
+  - field: data.0.published_date
+    reason: not_applicable
+  - field: data.0.revised_at
+    reason: missing_data
+  - field: data.0.effective_at
+    reason: missing_data
+  - field: data.0.relevance
+    reason: missing_data
+  - field: data.0.relevance_state
+    reason: missing_data
+  - field: data.0.relevance_basis
+    reason: missing_data
+  - field: data.0.version_seq
+    reason: not_applicable
+  - field: data.0.reason
+    reason: not_applicable
+  data:
+  - row_type: event
+    date: '2026-11-20'
+    symbol: '005930'
+    market: kr
+    event_ref: evt-816be546ede0480c7e2e
+    event_type: disclosure
+    source: dart
+    status: released
+    published_at: '2026-11-20T07:31:00Z'
+    published_date: null
+    published_offset: +09:00
+    published_precision: minute
+    first_received_at: '2026-11-20T08:00:00Z'
+    revised_at: null
+    effective_at: null
+    relevance: null
+    relevance_state: null
+    relevance_basis: null
+    symbols:
+    - '005930'
+    version_seq: null
+    version_state: unchanged_since_cutoff
+    superseded_later: false
+    sources:
+    - source: dart
+      first_received_at: '2026-11-20T08:00:00Z'
+      source_event_id: '20261120000001'
+      source_url: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261120000001
+    reason: null
+  - row_type: bar
+    date: '2026-11-20'
+    symbol: '005930'
+    market: kr
+    open_price: '70000'
+    high_price: '71000'
+    low_price: '69000'
+    close_price: '70500'
+    quantity: '9007199254740993'
+    currency: KRW
+    unit: shares
+    source: kis
+    venue: KRX
+    adjusted: null
+    missing_reason: unavailable
+    basis: inference
+    bar_end_at: '2026-11-20T11:00:00Z'
+    stored_at: '2026-11-21T01:00:00Z'
+    availability_basis: last_stored_write
+  symbol: '005930'
+  market: kr
+  known_cutoff: '2026-11-23T00:00:00Z'
+  excluded_after_cutoff:
+    events: 1
+    bars: 1
+  excluded_unproven:
+    events: 0
+    bars: 0
+  collection:
+    basis: current_partitions
+    latest_collected:
+      dart: '2026-11-18'
+      naver_disclosure: null
+    gaps:
+    - source: dart
+      category: disclosure
+      date: '2026-11-19'
+      reason: timeout
+    - source: dart
+      category: disclosure
+      date: '2026-11-20'
+      reason: not_yet_run
+    gaps_truncated: false

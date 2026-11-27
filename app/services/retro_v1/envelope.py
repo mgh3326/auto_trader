@@ -52,6 +52,10 @@ UNKNOWN_REASONS: Final = frozenset(
         "flows_not_confirmed",
         "source_mixed",
         "incomplete_evidence",
+        # hk 6410 (retro_symbol_events): the source keeps no ingestion partition,
+        # or the writer never recorded the value.
+        "no_partition",
+        "not_recorded",
     }
 )
 EVIDENCE_BASES: Final = frozenset({"broker", "inference", "unknown"})
