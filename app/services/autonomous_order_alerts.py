@@ -5,17 +5,29 @@ live order accepted, refused or uncertain, a booked fill, an automatic
 stop-loss send, and an account kill freeze. Callers are wired in later tickets
 (N10+); this module is the emitter, its event vocabulary and its message shape.
 
-* **One message per event key.** A key that was already delivered is dropped,
-  so a caller that retries the same event does not post twice. A delivery that
-  failed or timed out releases the key — nothing was proven delivered, so a
-  retry may try again; an ambiguous timeout can then duplicate one message,
-  the same trade-off the TREND alerting path makes.
+* **One message per (kind, event key).** The dedupe identity is the event
+  kind plus the caller's full, untruncated ``event_key`` — two transitions
+  that share a journal key but differ in kind are different messages, and
+  two keys that only share a display-length prefix never merge. The key
+  itself must name ONE transition: for append-only journal or ledger rows
+  the row's own key may suffice per kind, but a mutable row — the
+  ``account_control`` freeze is one row per account — must carry the
+  transition discriminator inside ``event_key`` (e.g. the freeze row's
+  ``updated_at`` or an activation sequence) so a later freeze after
+  re-activation is a new identity, not a duplicate. Display truncates the
+  key; dedupe never does. A delivery that failed or timed out releases the
+  key — nothing was proven delivered, so a retry may try again; an
+  ambiguous timeout can then duplicate one message, the same trade-off the
+  TREND alerting path makes.
 * **Fail-open.** Delivery runs as a background task bounded by a 5 s timeout
   and every exception is swallowed. The caller's result, exit code and timing
   never change. ``drain`` waits, bounded, for in-flight sends on shutdown.
 * **No trading surface.** Nothing here imports a broker, order, ledger or
-  database module. The payload is one Discord embed posted to the existing ops
-  webhook (``settings.discord_webhook_alerts``). The account field is a closed
+  database module — directly or transitively; the Discord send goes through
+  the ``app.core.discord_transport`` leaf, not the ``trade_notifier``
+  package whose ``__init__`` pulls the DB-backed notifier services. The
+  payload is one Discord embed posted to the existing ops webhook
+  (``settings.discord_webhook_alerts``). The account field is a closed
   account mode (``kis_live``, ``toss_live``, ``upbit_live``, mocks); anything
   that looks like a broker account number is replaced by a fixed placeholder.
 
@@ -34,11 +46,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import UUID
 
 import httpx
 
 from app.core.config import settings
-from app.monitoring.trade_notifier.transports import send_discord_embed_single
+from app.core.discord_transport import send_discord_embed_single
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +77,14 @@ class OrderAlertKind(StrEnum):
 class OrderAlertEvent:
     """One alertable transition.
 
-    ``event_key`` is the durable identity the caller already holds (journal
-    key, ledger fill, kill row, ...): it is what makes a retried call one
-    message. ``account`` is the account mode; ``quantity`` and ``price`` are
-    exact decimal strings, never floats. ``plan_head_id``/``plan_version``/
+    ``event_key`` is the durable identity of THIS transition that the caller
+    already holds (journal key plus transition, ledger fill, kill row plus
+    activation, ...): together with ``kind`` it is what makes a retried call
+    one message and a later transition on the same row a new message.
+    ``account`` is the account mode; ``quantity`` and ``price`` are exact
+    decimal strings, never floats. ``plan_head_id``/``plan_version``/
     ``plan_row_key`` are the daily_plan binding of the intent, when the event
-    has one.
+    has one; ``plan_head_id`` is the ``review.daily_plan_heads.id`` UUID.
     """
 
     kind: OrderAlertKind
@@ -79,10 +94,17 @@ class OrderAlertEvent:
     side: str | None = None
     quantity: str | None = None
     price: str | None = None
-    plan_head_id: int | None = None
+    plan_head_id: UUID | None = None
     plan_version: int | None = None
     plan_row_key: str | None = None
     reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.plan_head_id is not None and not isinstance(self.plan_head_id, UUID):
+            raise TypeError(
+                "plan_head_id must be a uuid.UUID or None, got "
+                f"{type(self.plan_head_id).__name__}"
+            )
 
 
 class AlertChannel(Protocol):
@@ -204,11 +226,11 @@ class DiscordAlertChannel:
 
 
 class AutonomousOrderAlerter:
-    """One message per event key, sent off the caller's path.
+    """One message per (kind, event key), sent off the caller's path.
 
     ``emit`` never waits and never raises: it claims the key, schedules the
-    send and returns. A duplicate key is dropped while the first send is still
-    in flight and after it was delivered.
+    send and returns. A duplicate (kind, key) pair is dropped while the
+    first send is still in flight and after it was delivered.
     """
 
     def __init__(
@@ -223,8 +245,8 @@ class AutonomousOrderAlerter:
         self._enabled = enabled
         self._send_timeout = send_timeout
         self._max_remembered = max_remembered
-        self._delivered: OrderedDict[str, None] = OrderedDict()
-        self._in_flight: set[str] = set()
+        self._delivered: OrderedDict[tuple[OrderAlertKind, str], None] = OrderedDict()
+        self._in_flight: set[tuple[OrderAlertKind, str]] = set()
         self._pending: set[asyncio.Task[bool]] = set()
 
     @property
@@ -236,13 +258,17 @@ class AutonomousOrderAlerter:
         try:
             if not self.enabled:
                 return False
-            key = _clean(event.event_key)
-            if not key:
+            # Dedupe on the full, untruncated key: ``_clean``'s 200-char cap
+            # is for display only, and two distinct identities that share a
+            # prefix must never merge.
+            identity = " ".join(str(event.event_key).split())
+            if not identity:
                 logger.warning(
                     "autonomous order alert dropped: empty event key kind=%s",
                     event.kind.value,
                 )
                 return False
+            key = (event.kind, identity)
             if key in self._delivered or key in self._in_flight:
                 return False
             try:
@@ -275,7 +301,9 @@ class AutonomousOrderAlerter:
         except Exception:  # noqa: BLE001
             logger.warning("autonomous order alert drain overran; pending cancelled")
 
-    async def _deliver(self, event: OrderAlertEvent, key: str) -> bool:
+    async def _deliver(
+        self, event: OrderAlertEvent, key: tuple[OrderAlertKind, str]
+    ) -> bool:
         channel = self._channel
         if channel is None:  # guarded by ``enabled``; belt and braces
             self._in_flight.discard(key)
@@ -297,7 +325,7 @@ class AutonomousOrderAlerter:
             self._remember(key)
         return delivered
 
-    def _remember(self, key: str) -> None:
+    def _remember(self, key: tuple[OrderAlertKind, str]) -> None:
         self._delivered[key] = None
         self._delivered.move_to_end(key)
         while len(self._delivered) > self._max_remembered:
