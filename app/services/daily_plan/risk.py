@@ -6,7 +6,12 @@ from typing import Any, cast
 
 from app.schemas.trading_policy import MechanicalLossCutMarket
 from app.services.daily_plan.bundle import decimal_string
-from app.services.daily_plan.validator import parse_positive_decimal, risk_input_gap
+from app.services.daily_plan.validator import (
+    LOSS_CUT_MARKET,
+    parse_positive_decimal,
+    parking_not_applicable,
+    risk_input_gap,
+)
 from app.services.mechanical_loss_cut.rules import (
     Bar,
     ExitPlan,
@@ -52,6 +57,12 @@ def replay_risk(
     *,
     symbol: str,
 ) -> dict[str, Any]:
+    if parking_not_applicable(symbol):
+        return {
+            "result": "skip",
+            "skip_reason": "parking_instrument",
+            "status": "not_applicable",
+        }
     raw = evidence.get("risk_inputs")
     if raw is None:
         return {
@@ -66,7 +77,7 @@ def replay_risk(
             "skip_reason": reason if reason in UNAVAILABLE_SKIPS else default_skip,
             "status": "unknown",
         }
-    key = LotKey(evidence["account_mode"], "equity_kr", symbol)
+    key = LotKey(evidence["account_mode"], LOSS_CUT_MARKET, symbol)
     lot = HeldLot(
         key,
         parse_positive_decimal(raw["quantity"]),
