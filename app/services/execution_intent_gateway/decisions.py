@@ -85,6 +85,10 @@ class Refusal(StrEnum):
     ACCOUNT_MISMATCH = "account_mismatch"
     PRICE_NORMALIZATION_MISMATCH = "price_normalization_mismatch"
     LOWER_GUARD_REFUSED = "lower_guard_refused"
+    # hk 6991 — v3 intents bound to a daily_plan row (design 6939 §5).
+    PLAN_VERSION_STALE = "plan_version_stale"
+    PRIOR_INTENT_UNSETTLED = "prior_intent_unsettled"
+    PLAN_GUARD_UNAVAILABLE = "plan_guard_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +126,16 @@ class IntentSnapshot:
     min_position_after_decimal: Decimal | None = None
     max_position_after_decimal: Decimal | None = None
     created_at: datetime | None = None
+    # hk 6991 — set only on a schema_version 3 row (a v1-shaped kis_mock intent
+    # bound to one published daily_plan row, design 6939 §1.3).
+    plan_head_id: UUID | None = None
+    plan_version: int | None = None
+    plan_row_key: str | None = None
+    plan_account_ref: str | None = None
+    plan_venue: str | None = None
+    plan_session: str | None = None
+    plan_action: str | None = None
+    invalidation_price_krw: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

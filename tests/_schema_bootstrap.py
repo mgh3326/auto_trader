@@ -208,7 +208,11 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # market_events gains five columns — the columns ARE mirrored as ALTERs below, the
 # append-only triggers are mirrored DDL. Production migration:
 # 20261125_hk6513_benzinga.
-SCHEMA_BOOTSTRAP_VERSION = 80
+# v81 (hk 6991): review.execution_intents gains the v3 plan-binding columns (ADD
+# COLUMN IF NOT EXISTS for a persistent test DB), the v3 CHECK swaps, and the
+# journal guard that admits not_sent for v3, loaded from the production
+# migration 20261127_hk6991_intent_v3. It must run after the hk 5441 guard.
+SCHEMA_BOOTSTRAP_VERSION = 81
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -2729,6 +2733,25 @@ def _rob1440_journal_triggers(path) -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _hk5441_upbit_gateway_ddl()
+
+
+def _hk6991_intent_v3_ddl() -> tuple[str, ...]:
+    """hk 6991 DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261127_hk6991_intent_v3.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk6991_intent_v3_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (*module.ALTER_DDL, *module.GUARD_DDL)
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _hk6991_intent_v3_ddl()
 
 
 # --------------------------------------------------------------------------- #

@@ -59,6 +59,7 @@ from app.services.kis_mock_runner.control import (
 )
 
 if TYPE_CHECKING:
+    from app.services.execution_intent_gateway.plan_binding import PlanGuard
     from app.services.execution_intent_gateway.upbit_gateway import UpbitGatewayPath
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ class IntentGateway:
         environment: Mapping[str, str] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         upbit: UpbitGatewayPath | None = None,
+        plan_guard: PlanGuard | None = None,
     ) -> None:
         not_mock = set(forwarders) - MOCK_ACCOUNTS
         if not_mock:
@@ -145,6 +147,9 @@ class IntentGateway:
         # account kill row, shadow or live forwarder). It is not a "forwarder"
         # of this class and cannot be passed as one.
         self._upbit = upbit
+        # hk 6991: the pre-send re-read of a v3 intent's plan row (design 6939
+        # §5.1). Without it a v3 submit/amend is never forwarded.
+        self._plan_guard = plan_guard
         self._store = store
         self._forwarders = dict(forwarders)
         self._kill_switch = kill_switch
@@ -265,9 +270,81 @@ class IntentGateway:
         if decision.refusal is not None:
             return _refused(decision.refusal, child.child_id)
 
+        if reservation.intent.schema_version == 3 and request.action != "cancel":
+            return await self._forward_plan_bound(
+                request, reservation.intent, child, decision
+            )
         return await self._forward_and_record(
             request, reservation.intent, child, decision
         )
+
+    async def _forward_plan_bound(
+        self,
+        request: Child,
+        intent: IntentSnapshot,
+        child: ChildSnapshot,
+        decision: Decision,
+    ) -> GatewayOutcome:
+        """hk 6991 pre-send hook (design 6939 §5.1).
+
+        Takes the plan row lock, re-reads the row's latest change and the prior
+        intents, and holds the lock through the forwarder's first send. A newer
+        version or an unsettled prior intent committed in between ends the child
+        ``not_sent``: proven unsent, so nothing is resent. Once the send was
+        entered, a later failure is ``uncertain`` as on every other path.
+
+        If the hook cannot run, no request was made, but the journal has no
+        closed reason for that: the row stays ``sending`` and is never resent.
+        """
+        if self._plan_guard is None:
+            logger.error(
+                "intent gateway v3 child has no plan guard: child_id=%s",
+                child.child_id,
+            )
+            return GatewayOutcome(
+                status="sending", child_id=child.child_id, outcome_not_recorded=True
+            )
+        try:
+            hook = self._plan_guard.pre_send(intent, request.action)
+            refusal = await hook.__aenter__()
+        except Exception as exc:  # noqa: BLE001 - nothing was sent
+            logger.error(
+                "intent gateway pre-send hook failed: child_id=%s error_class=%s",
+                child.child_id,
+                type(exc).__name__,
+            )
+            return GatewayOutcome(
+                status="sending", child_id=child.child_id, outcome_not_recorded=True
+            )
+        try:
+            if refusal is not None:
+                try:
+                    recorded = await self._store.finish(
+                        child.child_id,
+                        state=ChildState.NOT_SENT,
+                        broker_order_id=None,
+                        result={"not_sent_reason": refusal.value},
+                        now=self._clock(),
+                        refusal_reason=refusal.value,
+                    )
+                except Exception as exc:  # noqa: BLE001 - stays sending, not resent
+                    logger.error(
+                        "intent gateway not_sent not recorded: child_id=%s "
+                        "error_class=%s",
+                        child.child_id,
+                        type(exc).__name__,
+                    )
+                    recorded = False
+                if not recorded:
+                    return GatewayOutcome(
+                        status="sending",
+                        child_id=child.child_id,
+                        outcome_not_recorded=True,
+                    )
+                return _refused(refusal, child.child_id)
+            return await self._forward_and_record(request, intent, child, decision)
+        finally:
+            await hook.__aexit__(None, None, None)
 
     async def _forward_and_record(
         self,
