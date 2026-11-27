@@ -59,3 +59,17 @@ def test_input_observation(sources, expected):
         )
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("0256C0", "0256C0"), (" 0256c0 ", "0256C0"), ("005930", "005930")],
+)
+def test_alphanumeric_kr_short_code_is_accepted(raw, expected):
+    assert normalize_symbol(raw, "kr", "KRX", "regular") == expected
+
+
+@pytest.mark.parametrize("raw", ["25C0A", "0256C01", "0256-0", "０２５６C0", ""])
+def test_other_symbol_shapes_are_refused(raw):
+    with pytest.raises(ValueError, match="invalid_symbol"):
+        normalize_symbol(raw, "kr", "KRX", "regular")

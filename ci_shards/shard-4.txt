@@ -163,6 +163,7 @@ tests/services/daily_candles/test_crypto_candles_1m.py
 tests/services/daily_candles/test_crypto_instruments.py
 tests/services/daily_plan/test_bundle_db.py
 tests/services/daily_plan/test_migration_db.py
+tests/services/daily_plan/test_unavailable_inputs.py
 tests/services/decision_evidence/test_decision_evidence.py
 tests/services/decision_evidence/test_order_attempt_unit.py
 tests/services/dots_history_export/test_export_contract.py

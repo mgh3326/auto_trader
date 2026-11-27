@@ -18,11 +18,24 @@ from app.services.daily_plan.vocabulary import (
     REASON_CODES,
     ROW_KINDS,
     TRIGGER_KINDS,
+    UNAVAILABLE_REASONS,
     VENUE_SESSIONS,
 )
 
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
+_KR_SYMBOL = re.compile(r"[0-9A-Z]{6}")
+# Loss-cut replay inputs, with the skip an unknown one means (design §7.2).
+# Open-sell, protected quantity and bar volume are absent on purpose: the rule
+# already reads an unknown one as unknown.
+_RISK_INPUT_SKIPS = (
+    ("quantity", "position_unreadable"),
+    ("average_cost", "position_unreadable"),
+    ("plan", "no_exit_plan"),
+    ("bars", "price_missing"),
+    ("price_fresh", "price_stale"),
+    ("prior_decision", "position_unreadable"),
+)
 
 
 def require_base_version(expected: int, current: int) -> None:
@@ -43,7 +56,7 @@ def parse_positive_decimal(value: Any) -> Decimal:
 
 def normalize_symbol(symbol: str, market: str, venue: str, session: str) -> str:
     normalized = to_db_symbol(symbol.strip().upper())
-    if market != "kr" or not re.fullmatch(r"[0-9]{6}", normalized):
+    if market != "kr" or not _KR_SYMBOL.fullmatch(normalized):
         raise ValueError("invalid_symbol")
     if session not in VENUE_SESSIONS.get(venue, ()):
         raise ValueError("invalid_venue_session")
@@ -114,8 +127,46 @@ def parse_time(value: str) -> datetime:
     return parsed
 
 
-def _evidence_time(value: str | None) -> datetime | None:
-    if value is None:
+def unavailable_reason(value: Any) -> str | None:
+    """The closed reason of an ``{"unavailable": reason}`` value, else ``None``.
+
+    A reason outside the closed list is still unknown, never a usable value.
+    """
+    if not isinstance(value, Mapping) or "unavailable" not in value:
+        return None
+    reason = value["unavailable"]
+    return reason if reason in UNAVAILABLE_REASONS else "input_missing"
+
+
+def _first_unavailable(value: Any) -> str | None:
+    """The first unavailable value anywhere inside ``value``, skipping volume."""
+    if reason := unavailable_reason(value):
+        return reason
+    if isinstance(value, Mapping):
+        children = [item for key, item in value.items() if key != "volume"]
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    return next(
+        (reason for item in children if (reason := _first_unavailable(item))), None
+    )
+
+
+def risk_input_gap(raw: Any) -> tuple[str, str] | None:
+    """``(default skip, reason)`` of the first unknown loss-cut replay input."""
+    if reason := unavailable_reason(raw):
+        return "position_unreadable", reason
+    if not isinstance(raw, Mapping):
+        return None
+    for field, skip in _RISK_INPUT_SKIPS:
+        if reason := _first_unavailable(raw.get(field)):
+            return skip, reason
+    return None
+
+
+def _evidence_time(value: Any) -> datetime | None:
+    if value is None or unavailable_reason(value):
         return None
     parsed = datetime.fromisoformat(value)
     return parsed if parsed.utcoffset() is not None else None
@@ -278,6 +329,18 @@ def prepare_row(
         }
         for source, times in source_times.items()
     }
+    # An absent source outranks a stated reason; a reason stated in place of a
+    # time outranks the generic one the missing timestamp would produce.
+    if reason != "input_missing":
+        reason = next(
+            (
+                stated
+                for name in sorted(required & sources.keys())
+                for key in ("event_at", "first_observed_at")
+                if (stated := unavailable_reason(sources[name].get(key)))
+            ),
+            reason,
+        )
     if reason is None and any(
         source.get("unavailable") == "price_stale"
         for name, source in sources.items()
@@ -287,13 +350,16 @@ def prepare_row(
     if reason is None and any(sources[name].get("unavailable") for name in required):
         reason = "input_missing"
     if kind == "holding" and evidence is not None:
+        risk_inputs = evidence.get("risk_inputs") or {}
+        if reason is None:
+            gap = risk_input_gap(risk_inputs)
+            reason = gap[1] if gap else None
         if action in ("add", "trim", "risk_sell") and reason is None:
-            risk_inputs = evidence.get("risk_inputs") or {}
-            if any(
-                "known" not in (risk_inputs.get(field) or {})
-                for field in ("open_sell_quantity", "protected_quantity")
-            ):
-                reason = "input_missing"
+            for field in ("open_sell_quantity", "protected_quantity"):
+                quantity = risk_inputs.get(field) or {}
+                if "known" not in quantity:
+                    reason = unavailable_reason(quantity) or "input_missing"
+                    break
         for field, vocabulary in (
             ("account_mode", ACCOUNT_MODES),
             ("account_scope", ACCOUNT_SCOPES),
@@ -306,7 +372,9 @@ def prepare_row(
             reason = reason or "account_not_routable"
         if action == "add" and reason is None:
             costs = evidence.get("average_costs", [])
-            if not costs or evidence.get("last_close") is None:
+            if stated := _first_unavailable([costs, evidence.get("last_close")]):
+                reason = stated
+            elif not costs or evidence.get("last_close") is None:
                 reason = "position_unknown"
             else:
                 close = parse_positive_decimal(evidence["last_close"])
