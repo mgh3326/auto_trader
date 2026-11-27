@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
@@ -22,6 +26,7 @@ pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "app/services/autonomous_order_alerts.py"
+PLAN_HEAD_ID = UUID("3f6b1c2e-9a4d-4e8b-b7c5-2d1e0f9a8b7c")
 
 
 class FakeChannel:
@@ -55,7 +60,7 @@ def event(kind: alerts.OrderAlertKind = alerts.OrderAlertKind.ORDER_ACCEPTED, **
         "side": "buy",
         "quantity": "10",
         "price": "71000",
-        "plan_head_id": 42,
+        "plan_head_id": PLAN_HEAD_ID,
         "plan_version": 7,
         "plan_row_key": '["new","kr","005930","kis_live"]',
         "reason_code": "order_accepted",
@@ -152,7 +157,9 @@ async def test_message_carries_account_symbol_side_quantity_price_plan_and_reaso
     assert fields["구분"] == "매도"
     assert fields["수량"] == "10"
     assert fields["가격"] == "68000"
-    assert fields["계획"] == 'head 42 · seq 7 · row ["new","kr","005930","kis_live"]'
+    assert fields["계획"] == (
+        f'head {PLAN_HEAD_ID} · seq 7 · row ["new","kr","005930","kis_live"]'
+    )
     assert fields["사유"] == "invalidation_break"
     assert fields["이벤트 키"] == "`journal:abc:1`"
 
@@ -225,6 +232,117 @@ async def test_distinct_event_keys_both_send():
     await instance.drain()
 
     assert [sent.event_key for sent in channel.sent] == ["journal:a", "journal:b"]
+
+
+@pytest.mark.asyncio
+async def test_same_event_key_with_two_kinds_both_send():
+    """One E1 journal key covers several transitions: the kind is part of
+    the dedupe identity, so an uncertain send followed by the reconciled
+    accepted outcome on the same journal key are two messages."""
+    channel = FakeChannel()
+    instance = alerter(channel)
+
+    assert instance.emit(event(alerts.OrderAlertKind.ORDER_UNCERTAIN)) is True
+    assert instance.emit(event(alerts.OrderAlertKind.ORDER_ACCEPTED)) is True
+    await instance.drain()
+
+    assert [sent.kind for sent in channel.sent] == [
+        alerts.OrderAlertKind.ORDER_UNCERTAIN,
+        alerts.OrderAlertKind.ORDER_ACCEPTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refreeze_after_reactivation_sends_with_per_activation_key():
+    """``account_control`` is one mutable row per account: the caller keys a
+    freeze event per activation (e.g. the row's updated_at), so a freeze
+    after re-activation is a new identity, not a suppressed duplicate."""
+    channel = FakeChannel()
+    instance = alerter(channel)
+
+    first = event(
+        alerts.OrderAlertKind.KILL_FREEZE,
+        event_key="account_control:kis_live:freeze@2026-11-26T22:00:00+00:00",
+        account="kis_live",
+        symbol="-",
+        side=None,
+        quantity=None,
+        price=None,
+        plan_head_id=None,
+        plan_version=None,
+        plan_row_key=None,
+        reason_code="daily_loss_freeze",
+    )
+    second = event(
+        alerts.OrderAlertKind.KILL_FREEZE,
+        event_key="account_control:kis_live:freeze@2026-11-27T09:30:00+00:00",
+        account="kis_live",
+        symbol="-",
+        side=None,
+        quantity=None,
+        price=None,
+        plan_head_id=None,
+        plan_version=None,
+        plan_row_key=None,
+        reason_code="daily_loss_freeze",
+    )
+
+    assert instance.emit(first) is True
+    assert instance.emit(second) is True
+    await instance.drain()
+
+    assert len(channel.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_keys_sharing_a_display_length_prefix_do_not_merge():
+    """Dedupe uses the full untruncated key: two identities that agree on
+    the first 200 characters but differ later are different messages."""
+    channel = FakeChannel()
+    instance = alerter(channel)
+    prefix = "journal:" + "x" * 300
+
+    assert instance.emit(event(event_key=f"{prefix}:first")) is True
+    assert instance.emit(event(event_key=f"{prefix}:second")) is True
+    await instance.drain()
+
+    assert len(channel.sent) == 2
+    # Display still truncates the key to the field limit.
+    shown = fields_of(alerts.alert_embed(channel.sent[0]))["이벤트 키"]
+    assert len(shown) <= alerts._FIELD_MAX + 2  # backticks around the value
+
+
+@pytest.mark.asyncio
+async def test_same_kind_and_same_full_key_still_dedupes():
+    channel = FakeChannel()
+    instance = alerter(channel)
+    long_key = "journal:" + "y" * 500
+
+    assert instance.emit(event(event_key=long_key)) is True
+    await instance.drain()
+    assert instance.emit(event(event_key=long_key)) is False
+    await instance.drain()
+
+    assert len(channel.sent) == 1
+
+
+def test_plan_head_id_must_be_a_uuid():
+    with pytest.raises(TypeError):
+        alerts.OrderAlertEvent(
+            kind=alerts.OrderAlertKind.ORDER_ACCEPTED,
+            event_key="journal:abc:1",
+            account="kis_live",
+            symbol="005930",
+            plan_head_id=42,
+        )
+    with pytest.raises(TypeError):
+        alerts.OrderAlertEvent(
+            kind=alerts.OrderAlertKind.ORDER_ACCEPTED,
+            event_key="journal:abc:1",
+            account="kis_live",
+            symbol="005930",
+            plan_head_id="3f6b1c2e-9a4d-4e8b-b7c5-2d1e0f9a8b7c",
+        )
 
 
 @pytest.mark.asyncio
@@ -350,9 +468,10 @@ _ALLOWED_IMPORTS = {
     "dataclasses",
     "enum",
     "typing",
+    "uuid",
     "httpx",
     "app.core.config",
-    "app.monitoring.trade_notifier.transports",
+    "app.core.discord_transport",
 }
 _FORBIDDEN_PREFIXES = (
     "app.services.brokers",
@@ -395,6 +514,7 @@ def test_module_imports_no_broker_order_or_ledger_surface():
             "dataclasses",
             "enum",
             "typing",
+            "uuid",
             "httpx",
         }:
             continue
@@ -413,3 +533,38 @@ def test_module_names_no_order_submission_or_ledger_write():
     source = MODULE.read_text()
     for name in _FORBIDDEN_NAMES:
         assert name not in source, f"module names {name}"
+
+
+#: Modules that must never enter the alerter's import closure — not even
+#: transitively through the notifier transport (hk 7008).
+_DB_CLOSURE_PREFIXES = (
+    "sqlalchemy",
+    "asyncpg",
+    "app.models",
+    "app.core.db",
+)
+
+
+def test_import_closure_loads_no_db_modules():
+    """Fresh-interpreter check: importing the alerter must not load the DB
+    layer. The direct-import scan above cannot see transitive loads, so this
+    runs a clean interpreter and inspects ``sys.modules``."""
+    prefixes = json.dumps(list(_DB_CLOSURE_PREFIXES))
+    code = (
+        "import json, sys;"
+        "import app.services.autonomous_order_alerts;"
+        f"bad = sorted(m for m in sys.modules"
+        f" if any(m == p or m.startswith(p + '.') for p in {prefixes}));"
+        "print(json.dumps(bad))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    loaded = json.loads(result.stdout.strip().splitlines()[-1])
+    assert loaded == []

@@ -11,6 +11,12 @@ from typing import Any
 
 import httpx
 
+from app.core.discord_transport import (
+    send_discord_content_single as send_discord_content_single,
+)
+from app.core.discord_transport import (
+    send_discord_embed_single as send_discord_embed_single,
+)
 from app.telegram_contract import (
     TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
     TelegramErrorClassification,
@@ -682,49 +688,3 @@ async def edit_message_reply_markup(
     )
     _log_method_failure(result, telegram_method="editMessageReplyMarkup")
     return result
-
-
-async def send_discord_embed_single(
-    *,
-    http_client: httpx.AsyncClient,
-    webhook_url: str,
-    embed: dict[str, Any],
-) -> bool:
-    """Send a single Discord embed to one webhook URL.
-
-    Returns True on success, False on failure.
-    """
-    try:
-        response = await http_client.post(
-            webhook_url,
-            json={"embeds": [embed]},
-        )
-        response.raise_for_status()
-        logger.info(f"Discord embed sent to {webhook_url[:50]}...")
-        return True
-    except Exception:
-        logger.error(f"Failed to send Discord embed to {webhook_url[:50]}...")
-        return False
-
-
-async def send_discord_content_single(
-    *,
-    http_client: httpx.AsyncClient,
-    webhook_url: str,
-    content: str,
-) -> bool:
-    """Send plain text content to one Discord webhook URL.
-
-    Returns True on success, False on failure.
-    """
-    try:
-        response = await http_client.post(
-            webhook_url,
-            json={"content": content},
-        )
-        response.raise_for_status()
-        logger.info(f"Discord content sent to {webhook_url[:50]}...")
-        return True
-    except Exception:
-        logger.error(f"Failed to send Discord content to {webhook_url[:50]}...")
-        return False
