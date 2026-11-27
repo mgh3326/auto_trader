@@ -11,6 +11,7 @@ import datetime as dt
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import KST
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -38,6 +39,7 @@ from app.services.market_data_coverage.ohlcv_freshness import (
     kr_candles_freshness,
     us_candles_freshness,
 )
+from app.services.market_events.taxonomy import PARTITION_STATUSES
 from app.services.market_quote_snapshots.freshness import freshness_window_minutes
 from app.services.market_quote_snapshots.repository import (
     MarketQuoteSnapshotsRepository,
@@ -55,6 +57,17 @@ SUPPORTED_STATES: list[CoverageState] = [
     "error",
     "provider_unwired",
 ]
+
+# `market_event_ingestion_partitions.status` uses the writer's closed
+# vocabulary (market_events.taxonomy.PARTITION_STATUSES): `succeeded` is the
+# only complete status and `failed` the only error status. The remaining
+# statuses (`pending`, `running`, `partial`) mean the partition is not
+# finished; writers leave `pending` only for the current day
+# (market_events.ingestion `day_incomplete`), so an unfinished partition
+# dated before today is stuck rather than in flight.
+_PARTITION_UNFINISHED_STATUSES = tuple(
+    sorted(PARTITION_STATUSES - {"succeeded", "failed"})
+)
 
 
 async def build_invest_coverage(
@@ -598,6 +611,7 @@ async def _calendar_surfaces(
     markets = ["kr", "us", "crypto", "global"] if market == "all" else [market]
     rows: list[InvestCoverageSurface] = []
     stale_cutoff = now - dt.timedelta(hours=36)
+    current_kst_date = now.astimezone(KST).date()
     for m in markets:
         row = (
             await db.execute(
@@ -616,8 +630,15 @@ async def _calendar_surfaces(
                     ),
                     sa.func.count()
                     .filter(
-                        MarketEventIngestionPartition.status.notin_(
-                            ["success", "empty"]
+                        sa.or_(
+                            MarketEventIngestionPartition.status == "failed",
+                            sa.and_(
+                                MarketEventIngestionPartition.status.in_(
+                                    _PARTITION_UNFINISHED_STATUSES
+                                ),
+                                MarketEventIngestionPartition.partition_date
+                                < current_kst_date,
+                            ),
                         )
                     )
                     .label("partial"),
@@ -632,7 +653,7 @@ async def _calendar_surfaces(
         warnings: list[str] = []
         if partial:
             state = "partial" if fresh else "error"
-            warnings.append("One or more calendar partitions are not success/empty.")
+            warnings.append("One or more calendar partitions failed or are incomplete.")
         if latest_at and latest_at < stale_cutoff:
             state = "stale" if state == "fresh" else state
             warnings.append(

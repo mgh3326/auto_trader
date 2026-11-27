@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.core.db import get_db
+from app.core.timezone import today_kst
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -224,7 +225,7 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
                 category="economic",
                 market="kr",
                 partition_date=trading_day,
-                status="success",
+                status="succeeded",
                 event_count=1,
                 finished_at=now,
             ),
@@ -318,6 +319,170 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert response.symbols[0].surfaces["screener_snapshots"] == "fresh"
     assert response.symbols[1].surfaces["screener_snapshots"] == "stale"
     assert response.symbols[1].actionability.priority == "high"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_kr_calendar_partitions")
+async def test_calendar_events_uses_writer_partition_statuses(db_session):
+    """hk 7048: `succeeded` is complete, `failed` counts, `pending` today does not."""
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="test",
+                category="economic",
+                market="kr",
+                partition_date=trading_day,
+                status="succeeded",
+                event_count=3,
+                finished_at=now,
+            ),
+            MarketEventIngestionPartition(
+                source="test",
+                category="disclosure",
+                market="kr",
+                partition_date=trading_day,
+                status="failed",
+                event_count=0,
+                finished_at=now,
+                last_error="fixture failure",
+            ),
+            MarketEventIngestionPartition(
+                source="test",
+                category="regulatory",
+                market="kr",
+                partition_date=today_kst(),
+                status="pending",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="kr", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "kr"
+    )
+
+    # Only the `failed` partition counts: `succeeded` is complete and the
+    # `pending` partition is dated today, where writers legitimately leave
+    # the day unfinished.
+    assert calendar.counts.partial == 1
+    assert calendar.state == "partial"
+    assert any("failed or are incomplete" in warning for warning in calendar.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_kr_calendar_partitions")
+async def test_calendar_events_pending_today_is_not_a_failure(db_session):
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="test",
+                category="economic",
+                market="kr",
+                partition_date=trading_day,
+                status="succeeded",
+                event_count=3,
+                finished_at=now,
+            ),
+            MarketEventIngestionPartition(
+                source="test",
+                category="disclosure",
+                market="kr",
+                partition_date=today_kst(),
+                status="pending",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="kr", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "kr"
+    )
+
+    assert calendar.counts.partial == 0
+    assert calendar.state == "fresh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_kr_calendar_partitions")
+async def test_calendar_events_failed_without_fresh_is_error(db_session):
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add(
+        MarketEventIngestionPartition(
+            source="test",
+            category="economic",
+            market="kr",
+            partition_date=trading_day - dt.timedelta(days=1),
+            status="failed",
+            event_count=0,
+            finished_at=now,
+            last_error="fixture failure",
+        )
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="kr", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "kr"
+    )
+
+    assert calendar.counts.partial == 1
+    assert calendar.state == "error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_owned_kr_calendar_partitions")
+async def test_calendar_events_unfinished_past_partition_counts(db_session):
+    """A `pending`/`running` partition dated before today is stuck, not in flight."""
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime.now(dt.UTC)
+
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="test",
+                category="economic",
+                market="kr",
+                partition_date=trading_day,
+                status="succeeded",
+                event_count=3,
+                finished_at=now,
+            ),
+            MarketEventIngestionPartition(
+                source="test",
+                category="disclosure",
+                market="kr",
+                partition_date=trading_day,
+                status="pending",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="kr", as_of=trading_day)
+    calendar = next(
+        s
+        for s in response.surfaces
+        if s.surface == "calendar_events" and s.market == "kr"
+    )
+
+    assert calendar.counts.partial == 1
+    assert calendar.state == "partial"
 
 
 @pytest.mark.asyncio
