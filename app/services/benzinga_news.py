@@ -504,8 +504,15 @@ def _dedupe_articles(
     return list(best.values()) + unkeyed, removed
 
 
-def _cell(record: dict[str, Any]) -> tuple[Any, Any]:
-    return (record.get("poll_id"), record.get("query_symbol"))
+def _cell(record: dict[str, Any]) -> tuple[Any, Any, Any]:
+    # hk 7092: cells are per attempt so an incomplete poll sharing a reused
+    # poll_id cannot mark another attempt's articles unreliable. Rows written
+    # before attempt ids existed key on attempt_id=None.
+    return (
+        record.get("poll_id"),
+        record.get("attempt_id"),
+        record.get("query_symbol"),
+    )
 
 
 def summarize_shadow(
@@ -586,14 +593,14 @@ def summarize_shadow(
             entry["reason"] = "no_completion_record"
             entry["symbols"] = sorted(wanted, key=str)
             incomplete_polls.append(entry)
-            unreliable.update((poll_id, symbol) for symbol in wanted)
+            unreliable.update((poll_id, attempt_id, symbol) for symbol in wanted)
         else:
             missing = wanted - done
             if missing:
                 entry["reason"] = "symbols_unpolled"
                 entry["symbols"] = sorted(missing, key=str)
                 incomplete_polls.append(entry)
-                unreliable.update((poll_id, symbol) for symbol in missing)
+                unreliable.update((poll_id, attempt_id, symbol) for symbol in missing)
     ben_all = [r for r in benzinga_records if r.get("record_type") == "article"]
     fin_all = [r for r in finnhub_records if r.get("record_type") == "article"]
     ben_excluded = [r for r in ben_all if _cell(r) in unreliable]
@@ -667,7 +674,10 @@ def summarize_shadow(
     latencies: list[float] = []
     latency_pairs = 0
     for ben_first, fin_first in overlap_pairs:
-        if ben_first.get("poll_id") != fin_first.get("poll_id"):
+        if (ben_first.get("poll_id"), ben_first.get("attempt_id")) != (
+            fin_first.get("poll_id"),
+            fin_first.get("attempt_id"),
+        ):
             continue
         ben_seen, fin_seen = _seen_at(ben_first), _seen_at(fin_first)
         if ben_seen is None or fin_seen is None:
@@ -705,8 +715,12 @@ def summarize_shadow(
         "benzinga_duplicates_removed": ben_dupes,
         "finnhub_duplicates_removed": fin_dupes,
         "unreliable_symbol_polls": [
-            {"poll_id": poll, "symbol": symbol}
-            for poll, symbol in sorted(unreliable, key=str)
+            {
+                "poll_id": poll,
+                **({"attempt_id": attempt} if attempt is not None else {}),
+                "symbol": symbol,
+            }
+            for poll, attempt, symbol in sorted(unreliable, key=str)
         ],
         "incomplete_polls": incomplete_polls,
         "excluded_unreliable_articles": {

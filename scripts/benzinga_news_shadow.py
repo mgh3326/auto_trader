@@ -825,6 +825,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     )
                     errors.extend(saveticker_errors)
                     for record in saveticker_rows:
+                        record["attempt_id"] = attempt_id
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                     try:
                         _save_saveticker_seen_ids(out_dir, saveticker_state)
@@ -834,22 +835,18 @@ async def _run_poll(args: argparse.Namespace) -> int:
                         logger.warning(
                             "saveticker seen-state write failed: %s", error_class
                         )
-                        fh.write(
-                            json.dumps(
-                                _status_row(
-                                    source="saveticker",
-                                    symbol=None,
-                                    poll_id=poll_id,
-                                    status="error",
-                                    count=0,
-                                    error_class=error_class,
-                                    seen_at=datetime.now(UTC),
-                                    query_param="seen_state",
-                                ),
-                                ensure_ascii=False,
-                            )
-                            + "\n"
+                        row = _status_row(
+                            source="saveticker",
+                            symbol=None,
+                            poll_id=poll_id,
+                            status="error",
+                            count=0,
+                            error_class=error_class,
+                            seen_at=datetime.now(UTC),
+                            query_param="seen_state",
                         )
+                        row["attempt_id"] = attempt_id
+                        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 except Exception as exc:  # noqa: BLE001 - setup errors are source-local too
                     error_class = type(exc).__name__
                     seen_at = datetime.now(UTC)
@@ -867,6 +864,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                             query_param=query_param,
                             extra={"malformed_count": 0},
                         )
+                        row["attempt_id"] = attempt_id
                         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             brk_by_symbol: dict[str, int] = {}
             if kis_on and args.market == "us":
@@ -890,6 +888,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                         sym = record.get("query_symbol")
                         if sym is not None:
                             brk_by_symbol[sym] = brk_by_symbol.get(sym, 0) + 1
+                    record["attempt_id"] = attempt_id
                     fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             for symbol in symbols:
                 if args.market == "us":
@@ -922,6 +921,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     errs = [*errs, *kis_errs]
                 errors.extend(errs)
                 for record in rows:
+                    record["attempt_id"] = attempt_id
                     fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                 if args.market == "us":
                     counts[symbol] = {
