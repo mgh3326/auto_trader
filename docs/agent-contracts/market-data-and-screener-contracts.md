@@ -1265,6 +1265,17 @@ DELL·URBN 이 프리마켓(04:xx ET) 급락 목록에 있었지만 그 세션�
 - **마켓별 저장**: fetch 작업은 최대 4개까지 겹치지만, 각 마켓은 fetch가 끝나는 즉시 별도 insert/commit을 한다. 한 마켓의 느린 fetch가 다른 마켓의 이미 닫힌 봉 저장을 막지 않는다.
 - **테스트**: `tests/services/minute_candles/test_upbit_collector.py`(문서 응답형 fixture, `:02` 완결 시각, 형성 중 봉 제외, target union/cap, 삽입 전용 SQL, 오류 격리), `tests/scripts/test_dagu_upbit_1m_dag.py`; DB round-trip은 CI에서 검증한다.
 
+### Upbit 코인별 입출금 지갑 상태 읽기 (hk 6372)
+
+`app/services/upbit_wallet_status.py`는 Upbit 공식 읽기 전용 `GET /v1/status/wallet`을 JWT 인증(기존 `settings.upbit_access_key`/`upbit_secret_key`, 쿼리 파라미터 없음 → `query_hash` 없음)으로 조회한다. 응답은 **(currency, network) 행**이다 — USDT 같은 멀티체인 자산은 `net_type`/`network_name`별 행이 여러 개다. 필드: `currency`, `wallet_state`, `block_state`, `block_height`, `block_updated_at`, `block_elapsed_minutes`, `net_type`, `network_name`. `wallet_state` 닫힌 어휘는 `working`·`withdraw_only`·`deposit_only`·`paused`·`unsupported`(입출금 미지원 — paused 와 같이 어느 방향도 불가)이고, 누락·미인식 값은 `unknown`이다 — **`working` 으로 채우지 않는다**. 근거 페이지: [입출금 현황](https://docs.upbit.com/kr/v1.5.9/reference/입출금-현황)(영문 우선순위는 한국어 판) 및 [global-docs wallet-status](https://global-docs.upbit.com/v1.2.2/reference/wallet-status). 🔴 Upbit 공지: 이 데이터는 실제 서비스 상태보다 수 분 지연될 수 있는 **참고용**이며 실제 입출금 전 공지·현황 페이지 확인이 필요하다.
+
+- **파서**: `parse_wallet_status`는 최상위가 list가 아니면 `WalletStatusError`. `currency` 없는 행·객체가 아닌 행은 귀속 불가로 버린다. 코인 단위 rollup(`currency_statuses`)은 방향별로 **한 네트워크라도 가능하면 가능**으로 본다(운영자가 네트워크를 고른다). `unknown` 행이 하나라도 있으면 known 행만으로 입출금 양방향이 모두 증명될 때만 hold 없음이고, 그 외에는 `wallet_status_unknown`이다 — 미파싱 행이 유일한 working 네트워크일 수 있기 때문이다.
+- **hold reason 닫힌 어휘**: `deposit_withdraw_paused`·`withdraw_only`·`deposit_only`·`wallet_status_unknown`, hold 없으면 `None`. 응답에 없는 코인도 `wallet_status_unknown`(`status_for_currency`). plan/screen 소비자는 이 함수만 읽고 원시 행을 재해석하지 않는다.
+- **held 코인**: 같은 모듈의 `fetch_accounts()`가 `GET /v1/accounts`를 읽어 `held_currencies`(KRW 제외, `balance+locked > 0`, 파싱 불가 잔고는 held 로 간주)로 보유 코인을 돌려준다.
+- **수동 CLI**: `scripts/upbit_wallet_status.py`(`uv run python -m scripts.upbit_wallet_status [--top-n N]`)는 보유 코인 ∪ KRW 24시간 거래대금 상위 N(`app.services.minute_candles.upbit_public`의 공개 market/all+ticker, DB 없음)의 코인별 hold reason과 네트워크별 상태를 출력하는 읽기 전용 드라이런이다. 스케줄러·DB 테이블·쓰기 경로 없음.
+- **경계**: 모듈은 `app.services.brokers.credential_firewall`의 `assert_broker_credentials_allowed`만 허용하고 그 외 `app.services.brokers.*`(특히 `upbit` 패키지 — `__init__`이 주문 제출을 import)·주문·원장·DB·스케줄러·MCP를 import하지 않는다. JWT 서명은 `client.py::_request_with_auth`의 GET 경로와 동일 규칙을 자체 구현한다(패키지 import가 주문 경로를 끌어오므로 재사용 불가). 정적 import 폐쇄 + 새 인터프리터 로드 검사는 `tests/services/test_upbit_wallet_status.py`.
+- **테스트**: `tests/services/test_upbit_wallet_status.py` + fixture `tests/fixtures/upbit_wallet_status_response.json`(문서 응답 예시 그대로 — 6개 state 전부 포함).
+
 ## Benzinga Pro 캡처 수신 (hk 6579)
 
 - `POST /trading/api/research/benzinga-pro/ingest`는 `benzinga-pro-capture/v1` JSON을 받는다. `BENZINGA_PRO_INGEST_ENABLED` 기본값은 false이며 환경 변수 값이 정확히 `true`일 때만 열린다. DB 접근 전에 게이트 off는 404, 토큰 또는 헤더 이름 미설정은 403, 토큰 불일치는 401을 반환한다. 전용 토큰 `BENZINGA_PRO_INGEST_TOKEN`은 `BENZINGA_PRO_INGEST_TOKEN_HEADER`(기본 `X-Benzinga-Pro-Ingest-Token`)에서만 받는다.

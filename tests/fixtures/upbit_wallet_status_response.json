@@ -1,0 +1,62 @@
+[
+  {
+    "currency": "KLAY",
+    "wallet_state": "working",
+    "block_state": "normal",
+    "block_height": 7235123,
+    "block_updated_at": "2019-02-18T07:08:50.499+00:00",
+    "block_elapsed_minutes": 2502349,
+    "net_type": "KLAY",
+    "network_name": "Klaytn"
+  },
+  {
+    "currency": "BTG",
+    "wallet_state": "deposit_only",
+    "block_state": "delayed",
+    "block_height": 556154,
+    "block_updated_at": "2018-11-19T17:00:15.690+00:00",
+    "block_elapsed_minutes": 2632797,
+    "net_type": "BTG",
+    "network_name": "Bitcoin Gold"
+  },
+  {
+    "currency": "ADD",
+    "wallet_state": "withdraw_only",
+    "block_state": "inactive",
+    "block_height": 40097434,
+    "block_updated_at": "2019-01-30T08:13:00.447+00:00",
+    "block_elapsed_minutes": 2529645,
+    "net_type": "EOS",
+    "network_name": "EOS"
+  },
+  {
+    "currency": "IOTA",
+    "wallet_state": "paused",
+    "block_state": "normal",
+    "block_height": null,
+    "block_updated_at": "2019-02-18T07:08:24.423+00:00",
+    "block_elapsed_minutes": 2502349,
+    "net_type": "IOTA",
+    "network_name": "IOTA"
+  },
+  {
+    "currency": "ETH",
+    "wallet_state": "unsupported",
+    "block_state": null,
+    "block_height": null,
+    "block_updated_at": null,
+    "block_elapsed_minutes": null,
+    "net_type": "ETH",
+    "network_name": "Ethereum"
+  },
+  {
+    "currency": "NEO",
+    "wallet_state": "working",
+    "block_state": "normal",
+    "block_height": 7235123,
+    "block_updated_at": "2019-02-18T07:08:50.499+00:00",
+    "block_elapsed_minutes": 2502349,
+    "net_type": "NEO",
+    "network_name": "NEO N3"
+  }
+]
