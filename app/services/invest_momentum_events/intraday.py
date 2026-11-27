@@ -139,12 +139,26 @@ class SurfaceOutcome:
     reason: str | None
     rows: tuple[Any, ...] = ()
     source: str = "naver_stock"
+    http_status: int | None = None
+
+
+#: HTTP statuses that mean "this ranking combination is unsupported" — the only
+#: ones allowed to trigger the KIS NX fallback (hk 7092). 429/401/403 and every
+#: other client error stay Naver surface errors.
+_NAVER_UNSUPPORTED_HTTP = frozenset({400, 404})
 
 
 def classify_error(exc: BaseException) -> str:
     """Closed reason for a failed fetch. Never carries an exception message."""
     if isinstance(exc, httpx.HTTPStatusError):
-        return "http_5xx" if exc.response.status_code >= 500 else "http_4xx"
+        code = exc.response.status_code
+        if code >= 500:
+            return "http_5xx"
+        if code in (401, 403):
+            return "auth"
+        if code == 429:
+            return "rate_limited"
+        return "http_4xx"
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, httpx.TransportError):
@@ -202,8 +216,30 @@ async def fetch_surface(
             surface_key(order_type),
             type(exc).__name__,
         )
-        return SurfaceOutcome(STATUS_ERROR, classify_error(exc))
+        http_status = (
+            exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        )
+        return SurfaceOutcome(
+            STATUS_ERROR, classify_error(exc), http_status=http_status
+        )
     return classify_payload(payload)
+
+
+#: KIS ``hts_avls`` is denominated in 100-million-KRW units, unlike the Naver
+#: ``marketSum`` KRW figure stored in the same column (hk 7092).
+_HTS_AVLS_UNIT_KRW = Decimal("100000000")
+
+
+def _kr_short_code(value: Any) -> str | None:
+    """KRX 6-character short code: digits or upper-case ASCII letters (hk 7092)."""
+    if not isinstance(value, str):
+        return None
+    code = value.strip().upper()
+    if len(code) != 6:
+        return None
+    if not all(ch.isdigit() or "A" <= ch <= "Z" for ch in code):
+        return None
+    return code
 
 
 def classify_kis_payload(payload: Any) -> SurfaceOutcome:
@@ -217,13 +253,13 @@ def classify_kis_payload(payload: Any) -> SurfaceOutcome:
     rows: list[NaverStockRow] = []
     seen: set[str] = set()
     for index, raw in enumerate(payload, start=1):
-        code = raw.get("stck_shrn_iscd") or raw.get("mksc_shrn_iscd")
-        if not isinstance(code, str) or not code.strip().isdigit():
-            continue
-        symbol = code.strip().zfill(6)
-        if symbol in seen:
+        symbol = _kr_short_code(raw.get("stck_shrn_iscd") or raw.get("mksc_shrn_iscd"))
+        if symbol is None or symbol in seen:
             continue
         seen.add(symbol)
+        avls = _decimal_value(raw.get("hts_avls"))
+        stored = dict(raw)
+        stored["hts_avls_unit_krw"] = str(_HTS_AVLS_UNIT_KRW)
         rows.append(
             NaverStockRow(
                 symbol=symbol,
@@ -234,8 +270,8 @@ def classify_kis_payload(payload: Any) -> SurfaceOutcome:
                 change_rate=_decimal_value(raw.get("prdy_ctrt")),
                 volume=_integer_value(raw.get("acml_vol")),
                 trade_value=_decimal_value(raw.get("acml_tr_pbmn")),
-                market_cap=_decimal_value(raw.get("hts_avls")),
-                raw_payload=dict(raw),
+                market_cap=(avls * _HTS_AVLS_UNIT_KRW if avls is not None else None),
+                raw_payload=stored,
             )
         )
     if rows:
@@ -288,11 +324,14 @@ async def fetch_extended_surface(
 ) -> SurfaceOutcome:
     outcome = await fetch_surface(fetcher, order_type, trade_type=venue)
     # Naver accepts a venue selector but does not expose an NX venue in all
-    # rankings. Only its explicit unsupported response triggers the KIS NX read.
+    # rankings. Only its documented unsupported response (400/404) triggers the
+    # KIS NX read; rate limits, auth failures and other errors stay Naver
+    # surface errors (hk 7092).
     if (
         venue == "NXT"
         and outcome.status == STATUS_ERROR
         and outcome.reason == "http_4xx"
+        and outcome.http_status in _NAVER_UNSUPPORTED_HTTP
     ):
         return await fetch_kis_surface(kis_fetcher, order_type)
     return outcome

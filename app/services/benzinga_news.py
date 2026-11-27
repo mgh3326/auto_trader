@@ -552,48 +552,47 @@ def summarize_shadow(
         ):
             unreliable.add(_cell(status))
 
-    planned: dict[Any, set[Any]] = {}
-    completed: dict[Any, set[Any]] = {}
+    planned: dict[tuple[Any, Any], set[Any]] = {}
+    completed: dict[tuple[Any, Any], set[Any]] = {}
     for frame in poll_frames:
         frame_type = frame.get("record_type")
         poll_id = frame.get("poll_id")
         if poll_id is None:
             continue
+        # hk 7092: a caller-supplied poll_id may be reused across runs, so a
+        # header and its completion must also agree on the per-run attempt id.
+        # Frames written before attempt ids existed key on (poll_id, None).
+        key = (poll_id, frame.get("attempt_id"))
         if frame_type == "poll_header":
             symbols = frame.get("symbols")
             if isinstance(symbols, list):
-                planned.setdefault(poll_id, set()).update(
+                planned.setdefault(key, set()).update(
                     s for s in symbols if isinstance(s, str)
                 )
         elif frame_type == "poll_completion":
             symbols = frame.get("symbols_completed")
             if isinstance(symbols, list):
-                completed.setdefault(poll_id, set()).update(
+                completed.setdefault(key, set()).update(
                     s for s in symbols if isinstance(s, str)
                 )
     incomplete_polls: list[dict[str, Any]] = []
-    for poll_id in sorted(planned, key=str):
-        wanted = planned[poll_id]
-        done = completed.get(poll_id)
+    for poll_id, attempt_id in sorted(planned, key=str):
+        wanted = planned[(poll_id, attempt_id)]
+        done = completed.get((poll_id, attempt_id))
+        entry: dict[str, Any] = {"poll_id": poll_id}
+        if attempt_id is not None:
+            entry["attempt_id"] = attempt_id
         if done is None:
-            incomplete_polls.append(
-                {
-                    "poll_id": poll_id,
-                    "reason": "no_completion_record",
-                    "symbols": sorted(wanted, key=str),
-                }
-            )
+            entry["reason"] = "no_completion_record"
+            entry["symbols"] = sorted(wanted, key=str)
+            incomplete_polls.append(entry)
             unreliable.update((poll_id, symbol) for symbol in wanted)
         else:
             missing = wanted - done
             if missing:
-                incomplete_polls.append(
-                    {
-                        "poll_id": poll_id,
-                        "reason": "symbols_unpolled",
-                        "symbols": sorted(missing, key=str),
-                    }
-                )
+                entry["reason"] = "symbols_unpolled"
+                entry["symbols"] = sorted(missing, key=str)
+                incomplete_polls.append(entry)
                 unreliable.update((poll_id, symbol) for symbol in missing)
     ben_all = [r for r in benzinga_records if r.get("record_type") == "article"]
     fin_all = [r for r in finnhub_records if r.get("record_type") == "article"]

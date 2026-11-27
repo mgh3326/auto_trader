@@ -62,9 +62,10 @@ def test_vocabularies_match_the_code() -> None:
         "naver_stock",
     ):
         assert f"'{value}'" in source
-    # hk 6510 introduced source_unavailable; it is checked separately below.
+    # hk 6510 introduced source_unavailable; auth/rate_limited arrived with
+    # hk 7092 — both belong to their own migrations, not this one.
     for reason in RUN_ERROR_REASONS:
-        if reason == "source_unavailable":
+        if reason in ("source_unavailable", "auth", "rate_limited"):
             continue
         assert f"'{reason}'" in source
 

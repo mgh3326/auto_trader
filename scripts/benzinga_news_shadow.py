@@ -749,6 +749,11 @@ async def _run_poll(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    # hk 7092: --poll-id is caller supplied and the collector appends to the
+    # same file, so every invocation also carries a distinct attempt id. The
+    # summary matches poll_header/poll_completion on (poll_id, attempt_id): a
+    # reused poll id can no longer borrow an earlier run's completion record.
+    attempt_id = uuid.uuid4().hex
     api_key = None
     if args.market == "us" and not args.skip_benzinga:
         try:
@@ -796,6 +801,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     {
                         "record_type": "poll_header",
                         "poll_id": poll_id,
+                        "attempt_id": attempt_id,
                         "symbols": symbols,
                         "started_at": datetime.now(UTC).astimezone(UTC).isoformat(),
                     },
@@ -967,6 +973,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
                     {
                         "record_type": "poll_completion",
                         "poll_id": poll_id,
+                        "attempt_id": attempt_id,
                         "symbols_completed": completed,
                         "finished_at": datetime.now(UTC).astimezone(UTC).isoformat(),
                     },
@@ -982,6 +989,7 @@ async def _run_poll(args: argparse.Namespace) -> int:
 
     report = {
         "poll_id": poll_id,
+        "attempt_id": attempt_id,
         "out_path": str(out_path),
         "counts": counts,
         "errors": errors,
