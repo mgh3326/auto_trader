@@ -1321,7 +1321,12 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 `not_executable_reason`은 객체의 사유다(닫힌 어휘 `UNAVAILABLE_REASONS` 밖은
 `input_missing`). 필수 소스가 아예 없으면 `input_missing`이 우선한다. 위험 재생은
 `skip`·`status=unknown`이며 0이나 계획 있음으로 읽지 않는다. 봉 `volume`은 위험
-규칙이 미상으로 읽으므로 내리지 않는다. 소스 객체 자체의 `unavailable` 표시는
+규칙이 미상으로 읽으므로 내리지 않는다. 예외(hk 6973, 설계 §7.2): 주차 종목
+(`is_parking_instrument`) 보유 행은 입력 결측보다 먼저 분류해 위험 재생이 항상
+`skip`·`parking_instrument`·`not_applicable`이고, 그 `hold`·`watch` 행은 손실절단
+규칙만 읽는 `plan`·`bars`·`price_fresh`·`prior_decision` 결측으로 내리지 않는다.
+수량·평단·`risk_inputs` 전체 결측, 필수 소스, `add`·`trim`·`risk_sell` 행의 결측
+처리는 위와 같다. 소스 객체 자체의 `unavailable` 표시는
 기존 매핑(`price_stale`→`input_stale`, 시각 없음→`observed_time_unproven`, 그 밖
 →`input_missing`)을 유지한다. 계획 행의 심볼은 숫자·대문자 영문 6자리 KR
 단축코드다(`ck_daily_plan_rows_kr_symbol`). 입력 번들 후보 규칙(`daily-plan-candidates/v1`)도 같은
