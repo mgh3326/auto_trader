@@ -197,8 +197,15 @@ def _print_results(results, failures=()) -> None:  # noqa: ANN001
         print(
             f"dataset_outcome {failure.dataset} {failure.market} "
             f"{failure.partition_date} status={failure.status} "
-            f"reason={json.dumps(failure.reason, ensure_ascii=True)}"
+            f"reason={failure.reason}"
         )
+        if failure.detail:
+            print(
+                f"dataset_failure_detail {failure.dataset} {failure.market} "
+                f"{failure.partition_date} "
+                f"detail={json.dumps(failure.detail, ensure_ascii=True)}",
+                file=sys.stderr,
+            )
 
 
 def _coverage_floor(value: str) -> float:

@@ -193,6 +193,61 @@ def test_alpaca_classification_of_broken_payloads() -> None:
         ),
         (us_sources.SymbolMaster(), "unknown"),
         (us_sources.SymbolMaster(security_type="SOMETHING_NEW"), "unknown"),
+        # hk 7080: positive common-stock evidence outranks an unrecognized
+        # provider label and leverage evidence.
+        (
+            us_sources.SymbolMaster(
+                security_type="SOMETHING_NEW",
+                is_common_stock=True,
+                leverage_factor=Decimal("2"),
+            ),
+            "common_stock",
+        ),
+        (
+            us_sources.SymbolMaster(
+                security_type="SOMETHING_NEW", is_common_stock=True
+            ),
+            "common_stock",
+        ),
+        # hk 7080: an unrecognized label with leverage evidence and no positive
+        # common-stock flag still means a leveraged/inverse product.
+        (
+            us_sources.SymbolMaster(
+                security_type="SOMETHING_NEW", leverage_factor=Decimal("2")
+            ),
+            "leveraged_etf",
+        ),
+        # hk 7080: a warrant/right name outranks leveraged-name evidence in the
+        # is_common_stock=False branch so a leveraged warrant stays excluded.
+        (
+            us_sources.SymbolMaster(
+                security_type=None,
+                is_common_stock=False,
+                name_en="2x Leveraged Warrant",
+                leverage_factor=Decimal("2"),
+            ),
+            "right_or_warrant",
+        ),
+        (
+            us_sources.SymbolMaster(
+                security_type="SOMETHING_NEW",
+                is_common_stock=False,
+                name_en="Acme Inverse Right",
+                leverage_factor=Decimal("-2"),
+            ),
+            "right_or_warrant",
+        ),
+        # A leveraged non-warrant name under is_common_stock=False stays a
+        # leveraged product, not a warrant.
+        (
+            us_sources.SymbolMaster(
+                security_type=None,
+                is_common_stock=False,
+                name_en="Daily 3x Bull Fund",
+                leverage_factor=Decimal("3"),
+            ),
+            "leveraged_etf",
+        ),
     ],
 )
 def test_asset_type_is_a_closed_mapping(

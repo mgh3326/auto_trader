@@ -8,9 +8,14 @@ from datetime import date, datetime, time, timedelta
 from math import isfinite
 from zoneinfo import ZoneInfo
 
-from research.trade_retro.canonical import Cleaning, apply_splits, build_canon
+from research.trade_retro.canonical import (
+    Cleaning,
+    apply_splits,
+    build_canon,
+    reclassify_implausible,
+)
 from research.trade_retro.export import Export, ExportIntegrityError
-from research.trade_retro.positions import walk_symbol
+from research.trade_retro.positions import cutover_time, walk_symbol
 from research.trade_retro.prices import Bars, PriceBook
 
 
@@ -113,21 +118,45 @@ def selection(book: PriceBook, symbol: str, day: date, evidence: Evidence) -> di
                 ) / len(peers)
         results[str(horizon)] = {
             "return": stock,
-            "missing_reason": "no_price" if stock is None or index is None else None,
+            "missing_reason": (
+                "not_matured"
+                if maturity is None and i is not None
+                else "no_price"
+                if stock is None or index is None
+                else None
+            ),
             "excess_index": _subtract(stock, index),
             "excess_sector": _subtract(stock, sector),
             "sector_missing_reason": (
-                "no_sector" if not peers else "no_price" if sector is None else None
+                "no_sector"
+                if not peers
+                else "not_matured"
+                if maturity is None and i is not None
+                else "no_price"
+                if sector is None
+                else None
             ),
         }
     return results
+
+
+def _seed_lot_price(bars: Bars | None, row) -> float:
+    """Cost basis for an implausible-price opening lot: the session close, the
+    same base trade_retro measures its return from — never the bogus booked
+    price."""
+    i = bars.idx_on_or_after(row.date) if bars is not None else None
+    if i is not None:
+        value = float(bars.close[i])
+        if isfinite(value) and value > 0:
+            return value
+    return row.price
 
 
 def _entries(rows, orders, bars, benchmark, evidence, cutover, unknown_initial):
     """Compare each buy order with inventory before its first fill."""
     entries = {}
     lots = deque([(unknown_initial, float("nan"))] if unknown_initial else [])
-    cutover_seed = ((rows["seed"]) & (rows["ts"] == cutover)).any()
+    cutover_seed = ((rows["source"] == "manual_import") & (rows["ts"] == cutover)).any()
 
     def reduce(quantity):
         while quantity > 1e-12 and lots:
@@ -139,15 +168,22 @@ def _entries(rows, orders, bars, benchmark, evidence, cutover, unknown_initial):
 
     for row in rows.itertuples(index=False):
         if row.seed:
-            delta = (
-                row.qty - sum(quantity for quantity, _ in lots)
-                if row.ts > cutover
-                else row.qty
-            )
-            if delta > 0:
-                lots.append((delta, row.price))
+            if row.source == "manual_import":
+                delta = (
+                    row.qty - sum(quantity for quantity, _ in lots)
+                    if row.ts > cutover
+                    else row.qty
+                )
+                if delta > 0:
+                    lots.append((delta, row.price))
+                else:
+                    reduce(-delta)
+            elif row.side == "sell":
+                reduce(row.qty)
             else:
-                reduce(-delta)
+                # implausible_price rows are opening lots, not scored trades:
+                # they add quantity at the session-close basis, as walk_symbol.
+                lots.append((row.qty, _seed_lot_price(bars, row)))
             continue
         if row.side == "sell":
             reduce(row.qty)
@@ -249,11 +285,21 @@ def score(
         raise ExportIntegrityError(
             "export window does not cover the full KR scoring window"
         )
-    canon = build_canon(export, Cleaning(preserve_fill_time=True))
+    canon = build_canon(export, Cleaning())
+    # The seed cutover is the first manual_import batch's instant, shared by
+    # every broker and market (trade_retro's cutover_time). It is read from the
+    # unfiltered canon so an account whose first seed is a later batch still
+    # scores its earlier buys instead of treating that batch as the cutover.
+    cutover = (
+        cutover_time(canon.fills)
+        if (canon.fills["source"] == "manual_import").any()
+        else canon.fills["ts"].min()
+    )
     fills = canon.fills[
         (canon.fills["market"] == "kr") & (canon.fills["alias"] == account)
     ]
     fills, _ = apply_splits(fills, book)
+    fills, _implausible = reclassify_implausible(fills, book)
     fills = fills[fills["date"] < until]
     orders = {
         row.key: row
@@ -273,7 +319,6 @@ def score(
         else until - timedelta(days=1)
     )
     cards = []
-    cutover = fills.loc[fills["seed"], "ts"].min()
     for symbol, rows in fills.groupby("symbol", sort=True):
         rows = rows.sort_values(["ts", "side"], kind="stable")
         bars = book.get("kr", symbol)
@@ -307,6 +352,28 @@ def score(
                 else None
             )
             exit_order = orders.get(match.exit_key)
+            add_qty = (
+                entry["quantity"]
+                if entry is not None and entry["type"] == "add"
+                else None
+            )
+            add_fill = entry["fill"] if entry is not None else None
+            tranche_pnl = (
+                add_qty * (match.exit_price - add_fill)
+                if add_qty is not None and add_fill is not None
+                else None
+            )
+            if tranche_pnl is not None and not isfinite(tranche_pnl):
+                tranche_pnl = None
+            basis_effect = (
+                add_qty * (entry["prior_average"] - add_fill)
+                if add_qty is not None
+                and entry["prior_average"] is not None
+                and add_fill is not None
+                else None
+            )
+            if basis_effect is not None and not isfinite(basis_effect):
+                basis_effect = None
             cards.append(
                 {
                     "symbol": symbol,
@@ -335,9 +402,14 @@ def score(
                         if cash.costs is None
                         else None,
                         "net": net,
-                        "add_money_gross_pnl": pnl
-                        if entry and entry["type"] == "add"
-                        else None,
+                        # The added tranche's own P&L at this card's price —
+                        # distinct from the slice P&L above when the add is
+                        # only partly exited or outlives the slice.
+                        "add_money_gross_pnl": tranche_pnl,
+                        # KRW cost-basis change the add caused relative to the
+                        # pre-add holding priced at prior_average: positive
+                        # when averaging down, negative when averaging up.
+                        "average_down_effect": basis_effect,
                     },
                     "entry_missing_reason": None if entry else "no_decision_evidence",
                 }

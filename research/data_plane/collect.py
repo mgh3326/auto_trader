@@ -75,8 +75,40 @@ UNIVERSE_DROP_SLACK = 5
 MISSING_LIST_CAP = 500
 
 
+# Closed per-dataset failure codes surfaced as ``DatasetFailure.reason`` and the
+# CLI ``reason=`` field. The free-text message stays in ``DatasetFailure.detail``.
+FAILURE_COVERAGE_BELOW_FLOOR = "coverage_below_floor"
+FAILURE_UNIVERSE_MISSING = "universe_missing"
+FAILURE_UNIVERSE_INVALID = "universe_invalid"
+FAILURE_UNIVERSE_SHRINK = "universe_shrink"
+FAILURE_FETCH_FAILED = "fetch_failed"
+FAILURE_SOURCE_UNAVAILABLE = "source_unavailable"
+FAILURE_REFUSED_ROW = "refused_row"
+FAILURE_MANIFEST_MISMATCH = "manifest_mismatch"
+FAILURE_COLLECT_ERROR = "collect_error"
+FAILURE_CODES = frozenset(
+    {
+        FAILURE_COVERAGE_BELOW_FLOOR,
+        FAILURE_UNIVERSE_MISSING,
+        FAILURE_UNIVERSE_INVALID,
+        FAILURE_UNIVERSE_SHRINK,
+        FAILURE_FETCH_FAILED,
+        FAILURE_SOURCE_UNAVAILABLE,
+        FAILURE_REFUSED_ROW,
+        FAILURE_MANIFEST_MISMATCH,
+        FAILURE_COLLECT_ERROR,
+    }
+)
+
+
 class CollectError(RuntimeError):
     """A dataset could not be collected; nothing was written for it."""
+
+    def __init__(self, message: str, *, code: str = FAILURE_COLLECT_ERROR) -> None:
+        if code not in FAILURE_CODES:
+            raise ValueError(f"unknown failure code {code!r}")
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -85,7 +117,8 @@ class DatasetFailure:
     market: str
     partition_date: date
     status: str  # refused | not_collected
-    reason: str
+    reason: str  # closed code from FAILURE_CODES
+    detail: str = ""  # free-text message; never the reason
 
 
 @dataclass
@@ -196,19 +229,21 @@ def collect(
                     status="refused"
                     if isinstance(exc, RefusedRowError)
                     else "not_collected",
-                    reason=str(exc),
+                    reason=_failure_code(exc),
+                    detail=str(exc),
                 )
             )
             errors.append(exc)
         except ManifestMismatchError as exc:
-            failure = CollectError(str(exc))
+            failure = CollectError(str(exc), code=FAILURE_MANIFEST_MISMATCH)
             failures.append(
                 DatasetFailure(
                     dataset=dataset,
                     market=market,
                     partition_date=day,
                     status="not_collected",
-                    reason=str(exc),
+                    reason=FAILURE_MANIFEST_MISMATCH,
+                    detail=str(exc),
                 )
             )
             errors.append(failure)
@@ -308,6 +343,12 @@ def _collect_one(run: _Run, dataset: str) -> PublishResult:
 # helpers
 
 
+def _failure_code(exc: CollectError | RefusedRowError) -> str:
+    if isinstance(exc, RefusedRowError):
+        return FAILURE_REFUSED_ROW
+    return exc.code
+
+
 def _require_observable_today(run: _Run, dataset: str) -> None:
     """Snapshots (universe, actions) can only be observed on their own day."""
     today = local_today(run.market, run.now())
@@ -331,7 +372,8 @@ def _coverage_gate(
 ) -> float:
     if requested == 0:
         raise CollectError(
-            f"{dataset} {run.market} {run.day}: no instruments to collect"
+            f"{dataset} {run.market} {run.day}: no instruments to collect",
+            code=FAILURE_UNIVERSE_MISSING,
         )
     coverage = (requested - len(missing)) / requested
     if coverage < run.min_coverage:
@@ -340,7 +382,8 @@ def _coverage_gate(
             reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
         raise CollectError(
             f"{dataset} {run.market} {run.day}: coverage {coverage:.3f} < {run.min_coverage} "
-            f"({len(missing)}/{requested} missing; reasons {reasons}); nothing written"
+            f"({len(missing)}/{requested} missing; reasons {reasons}); nothing written",
+            code=FAILURE_COVERAGE_BELOW_FLOOR,
         )
     return coverage
 
@@ -360,7 +403,8 @@ def _instruments(run: _Run) -> tuple[list[tuple[str, str]], list[dict[str, str]]
     if not days:
         raise CollectError(
             f"no universe partition for {run.market} on or before {run.day}; "
-            f"collect the universe dataset first"
+            f"collect the universe dataset first",
+            code=FAILURE_UNIVERSE_MISSING,
         )
     records = manifest_records(run.root, DATASET_UNIVERSE, run.market)
     picked = days[-2:]
@@ -374,7 +418,10 @@ def _instruments(run: _Run) -> tuple[list[tuple[str, str]], list[dict[str, str]]
     if run.symbols is not None:
         unknown = run.symbols - {p[0] for p in pairs}
         if unknown:
-            raise CollectError(f"--symbols not in the universe: {sorted(unknown)}")
+            raise CollectError(
+                f"--symbols not in the universe: {sorted(unknown)}",
+                code=FAILURE_UNIVERSE_MISSING,
+            )
         pairs = {p for p in pairs if p[0] in run.symbols}
     return sorted(pairs), refs
 
@@ -442,7 +489,9 @@ def _build_universe(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         try:
             bodies[name] = _get(run, url)
         except (sources.SourceError, OSError) as exc:
-            raise CollectError(f"universe {run.market}: {name}: {exc}") from exc
+            raise CollectError(
+                f"universe {run.market}: {name}: {exc}", code=FAILURE_FETCH_FAILED
+            ) from exc
         fetched_files.append(
             {
                 "name": name,
@@ -458,7 +507,8 @@ def _build_universe(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         entries = sources.parse_universe(run.market, bodies)
     except sources.SourceError as exc:
         raise CollectError(
-            f"universe {run.market} {run.day}: {exc}; nothing written"
+            f"universe {run.market} {run.day}: {exc}; nothing written",
+            code=FAILURE_UNIVERSE_INVALID,
         ) from exc
     observed = iso(run.observed())
     source = {
@@ -527,7 +577,8 @@ def _universe_floor(run: _Run, entries: list[sources.UniverseEntry]) -> dict[str
                 f"universe {run.market} {run.day}: {venue} has {now} instruments, "
                 f"{lost} fewer than {before} on {earlier[-1]} (allowed drop "
                 f"{run.max_universe_drop:.0%}); a truncated source is refused, "
-                f"nothing written"
+                f"nothing written",
+                code=FAILURE_UNIVERSE_SHRINK,
             )
     floor: dict[str, Any] = {
         "compared_to": earlier[-1].isoformat(),
@@ -551,7 +602,8 @@ SOURCE_ABORT_STREAK = 25
 def _bars_ready(run: _Run, dataset: str) -> datetime:
     if not is_partition_day(run.market, run.day):
         raise CollectError(
-            f"{run.day} is not a {run.market} partition day (no session)"
+            f"{run.day} is not a {run.market} partition day (no session)",
+            code=FAILURE_COLLECT_ERROR,
         )
     available = bar_available_at(run.market, run.day)
     if run.now() < available:
@@ -637,7 +689,8 @@ def _equity_bars(
     pairs, refs = _instruments(run)
     if not pairs:
         raise CollectError(
-            f"{dataset} {run.market} {run.day}: no instruments to collect"
+            f"{dataset} {run.market} {run.day}: no instruments to collect",
+            code=FAILURE_UNIVERSE_MISSING,
         )
     attempts: list[dict[str, Any]] = []
     for name in run.source_order:
@@ -708,7 +761,8 @@ def _equity_bars(
     raise CollectError(
         f"{dataset} {run.market} {run.day}: no source covered the floor "
         f"{run.min_coverage}: {_attempts_text(attempts, run.min_coverage)}; "
-        f"nothing written"
+        f"nothing written",
+        code=FAILURE_SOURCE_UNAVAILABLE,
     )
 
 
@@ -902,7 +956,8 @@ def _listing_changes(run: _Run) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     ]
     if not days or days[-1] != run.day:
         raise CollectError(
-            f"corporate_actions {run.market} {run.day}: needs today's universe partition"
+            f"corporate_actions {run.market} {run.day}: needs today's universe partition",
+            code=FAILURE_UNIVERSE_MISSING,
         )
     today_rows = read_partition(run.root, DATASET_UNIVERSE, run.market, run.day)
     today = {(r["instrument"], r["venue"]): r for r in today_rows}
