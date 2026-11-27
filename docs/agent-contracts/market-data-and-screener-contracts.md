@@ -1324,8 +1324,8 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 규칙이 미상으로 읽으므로 내리지 않는다. 소스 객체 자체의 `unavailable` 표시는
 기존 매핑(`price_stale`→`input_stale`, 시각 없음→`observed_time_unproven`, 그 밖
 →`input_missing`)을 유지한다. 계획 행의 심볼은 숫자·대문자 영문 6자리 KR
-단축코드다(`ck_daily_plan_rows_kr_symbol`). 입력 번들 후보 규칙은 여전히 6자리
-숫자만 고른다.
+단축코드다(`ck_daily_plan_rows_kr_symbol`). 입력 번들 후보 규칙(`daily-plan-candidates/v1`)도 같은
+`[0-9A-Z]{6}` 단축코드를 고른다(hk 6970, 위 후보 규칙 절).
 
 설계 §8.2의 역할 구성은 hk 6751 디자인 레인 결정으로 조정했다.
 `at_migration_owner`는 `NOCREATEROLE`이고 앱 로그인은 `at_app`을 상속한다.
@@ -1439,7 +1439,7 @@ DB 만 읽고 `store_input_bundle` 로만 저장한다. 브로커 호출, 계획
 재실행은 같은 바이트·같은 `bundle_id` 이고, 판정에 영향을 주는 행이 바뀌면 새 번들이다.
 
 **후보 규칙** `daily-plan-candidates/v1`(번들에 본문·`candidate_rule_sha256`·`candidate_set_sha256` 저장).
-KR 6자리 숫자 코드만, 주차 종목 제외(제외 수 기록).
+KR 단축코드만(hk 6970): `validator.KR_SHORT_CODE`와 같은 `[0-9A-Z]{6}`를 `strip`·대문자화한 심볼에 적용한다(`candidate_rule.symbol`에 저장되어 `candidate_rule_sha256`에 들어간다 — 이 값이 바뀌면 규칙 해시가 바뀐다). 숫자 6자리가 아닌 영문 포함 코드(예: 0256C0)는 후보다. 형식이 맞지 않는 값(5·7자, 구분자 포함 등)만 `non_six_digit_symbol` 사유로 제외 수에 센다(사유 이름은 호환을 위해 유지). 주차 종목 제외(제외 수 기록).
 - 스크리너: `invest_screener_snapshots` 의 직전 세션 파티션 중 `updated_at`·`created_at` 이 마감 이하인 행.
   거래대금 상위 40, 등락률 상위 20, 연속 상승 3일 이상 상위 20, 지지선 거리 하위 20
   (동점은 거래대금 내림차순 → symbol).
