@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,6 +109,53 @@ class MarketEventsRepository:
             )
         )
         return {value for value in result.scalars() if value is not None}
+
+    async def list_dart_null_symbol_rows(
+        self, *, from_date: date, to_date: date
+    ) -> list[tuple[str, date]]:
+        """Return ``(rcept_no, event_date)`` for stored KR DART rows lacking a symbol.
+
+        Read-only. Used by the hk 5623 symbol backfill to choose which days to
+        re-collect.
+        """
+        result = await self.db.execute(
+            select(MarketEvent.source_event_id, MarketEvent.event_date).where(
+                MarketEvent.source == "dart",
+                MarketEvent.market == "kr",
+                MarketEvent.symbol.is_(None),
+                MarketEvent.source_event_id.is_not(None),
+                MarketEvent.event_date >= from_date,
+                MarketEvent.event_date <= to_date,
+            )
+        )
+        return [(rcept_no, event_date) for rcept_no, event_date in result.all()]
+
+    async def fill_dart_symbol_if_null(
+        self, *, source_event_id: str, symbol: str
+    ) -> int:
+        """Set ``symbol`` on a stored KR DART row that has none; return rows changed.
+
+        Touches only the ``symbol`` column. ``first_received_at``, the raw payload,
+        ``updated_at``, and every other stored value stay as they are (hk 5623).
+        A row that already has a symbol is never overwritten, so a repeat call
+        changes nothing.
+
+        ``updated_at`` carries ``onupdate=func.now()``, which SQLAlchemy applies to
+        any UPDATE that leaves the column out of SET. Assigning the column to
+        itself keeps the stored timestamp and suppresses that default.
+        """
+        result = await self.db.execute(
+            update(MarketEvent)
+            .where(
+                MarketEvent.source == "dart",
+                MarketEvent.market == "kr",
+                MarketEvent.source_event_id == source_event_id,
+                MarketEvent.symbol.is_(None),
+            )
+            .values(symbol=symbol, updated_at=MarketEvent.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0)
 
     async def lock_revision_identity(
         self, *, source: str, category: str, market: str, source_event_id: str

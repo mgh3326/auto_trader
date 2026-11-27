@@ -358,6 +358,7 @@ tests/services/test_krx_official_daily.py
 tests/services/test_krx_official_daily_db.py
 tests/services/test_krx_official_daily_static_guard.py
 tests/services/test_loss_cut_policy_and_settings.py
+tests/services/test_market_events_dart_symbol_backfill_db.py
 tests/services/test_market_events_freshness_service.py
 tests/services/test_market_events_models.py
 tests/services/test_market_events_repository.py
