@@ -592,7 +592,6 @@ class _Rows:
 
 @pytest.mark.asyncio
 async def test_soft_cancelled_prior_order_is_not_settled() -> None:
-    from types import SimpleNamespace
 
     corr = forwarder_module.order_correlation_id("root-0001")
 
