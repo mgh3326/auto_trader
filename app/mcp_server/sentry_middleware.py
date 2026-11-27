@@ -10,6 +10,10 @@ from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware
 
 from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
+from app.mcp_server.caller_input_errors import (
+    is_mcp_caller_input_error,
+    record_mcp_caller_input_error,
+)
 from app.monitoring.sentry import (
     enrich_mcp_tool_call_scope,
     get_mcp_http_scopes,
@@ -80,6 +84,11 @@ class McpToolCallSentryMiddleware(Middleware):
             try:
                 result = await call_next(context)
             except BaseException as exc:
+                if is_mcp_caller_input_error(exc):
+                    # hk 6805: caller argument mistakes are not server faults —
+                    # count them instead of letting them reach Sentry (the
+                    # matching events are also dropped in app.monitoring.sentry).
+                    record_mcp_caller_input_error(tool_name, exc)
                 try:
                     record_mcp_tool_call_result(
                         scope,
