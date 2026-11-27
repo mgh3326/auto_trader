@@ -3,7 +3,7 @@
 Shared, deterministic helpers that turn a snapshot bundle's freshness/coverage
 state into structured, operator-facing diagnostics. **No in-process LLM** lives
 here (PR #898 guard): this module only classifies facts. The human-readable
-narrative is composed by Hermes; the Korean strings produced here are
+narrative is composed out of process; the Korean strings produced here are
 deterministic fallback templates, not generated prose.
 
 Two surfaces:

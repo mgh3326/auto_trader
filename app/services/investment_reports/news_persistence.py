@@ -1,7 +1,7 @@
 # app/services/investment_reports/news_persistence.py
 """ROB-423 PR2 — pure news-citation persistence planner (no DB I/O).
 
-Matches Hermes-supplied news citations against the bundle's news snapshot
+Matches caller-supplied news citations against the bundle's news snapshot
 articles and produces the fetch_run + citation rows to insert. Unmatched refs
 are dropped and reported (fail-open, no fabrication). Kept pure so the matching
 logic is unit-testable without a database.

@@ -98,7 +98,8 @@ class ReportGenerationRequest(BaseModel):
     # news + journal/watch). Items emit with operation="review" +
     # apply_policy="requires_user_approval"; mutation paths remain
     # unreachable. Per ROB-287, this proposer remains a deterministic,
-    # explicit-flag-only path and never co-runs with Hermes composition
+    # explicit-flag-only path and never co-runs with out-of-process
+    # composition
     # against the same bundle.
     auto_emit_from_evidence: bool = False
 
@@ -152,6 +153,7 @@ class ReportGenerationResponse(BaseModel):
     # ROB-318 Phase 3 (PR-A) — deterministic classification of why the report
     # concludes no-action: data_insufficient | stale_gated | real_no_action,
     # or ``None`` when an action is allowed. ``{kind, blocking_sources,
-    # reason_ko}``. Computed deterministically; Hermes owns the prose. In PR-A
+    # reason_ko}``. Computed deterministically; prose is composed out of
+    # process. In PR-A
     # this is a response-only field (ephemeral); PR-B persists it.
     why_no_action: dict[str, Any] | None = None

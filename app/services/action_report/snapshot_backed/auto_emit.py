@@ -4,10 +4,10 @@ Reads the persisted snapshot bundle and proposes ``IngestReportItem``
 drafts for the report generator. This proposer is **deterministic**
 and uses Phase 2 collector enrichments (portfolio v2, symbol
 quote/orderbook, candidate_universe usefulness, news symbol citations)
-to gate candidate emission. Per ROB-287 it is the only in-process
-report-item writer; LLM reasoning/composition lives in Hermes and
-ingests through the dedicated Hermes-result path. The two paths are
-not co-mingled against the same bundle.
+to gate candidate emission. It is the only in-process report-item
+writer; LLM reasoning/composition is out of process (the Hermes
+composition and ingest path is retired, hk 6930). Nothing in this
+module ingests composed prose.
 
 Lockdown invariants:
 

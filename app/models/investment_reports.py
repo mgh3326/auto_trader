@@ -791,7 +791,7 @@ class InvestmentReportNewsCitation(Base):
 
     Only articles Hermes flagged as used land here (never fetched-but-unused).
     Judgment fields (``role``/``decision_impact``/``relevance``/
-    ``selection_reason``/``confidence``) are Hermes-authored — auto_trader only
+    ``selection_reason``/``confidence``) are caller-authored — auto_trader only
     validates + persists. Article fields are a snapshot copy (immutable audit).
     """
 

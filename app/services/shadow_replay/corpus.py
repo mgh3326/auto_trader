@@ -13,8 +13,8 @@ of profile names (``claude_code``, ``claude_code_kislive``,
 ``CLAUDE_NXT_ADVISOR``, ...) plus custom session labels (e.g. ``파이리``).
 So the primary source ``claude_family`` matches case-insensitive
 ``%claude%`` plus an explicit, env-extensible set of custom labels.
-``hermes_bundle`` (fully-automated Hermes composition) is kept only as a
-last-resort fallback; if neither has coverage, ``select_replay_corpus``
+``hermes_bundle`` (the retired fully-automated Hermes composition, hk 6930) is
+kept only as a last-resort legacy label; if neither has coverage, ``select_replay_corpus``
 raises ``CorpusUnavailable`` and defers to the operator.
 """
 

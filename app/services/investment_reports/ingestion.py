@@ -558,7 +558,7 @@ class InvestmentReportIngestionService:
                 ref.model_dump(mode="json", exclude_none=True)
                 for ref in item_req.linked_order_ids
             ]
-        # ROB-693 — Hermes-authored advisory narrative ("what would
+        # ROB-693 — caller-authored advisory narrative ("what would
         # invalidate this thesis"), merged verbatim (no synthesis/transform
         # by auto_trader — pure pass-through, per the ROB-501 boundary).
         if item_req.invalidation_triggers:
