@@ -1030,19 +1030,19 @@ async def collect_sec_filings(
 
         if not requests:
             # Nothing resolvable was requested — a typo or empty scope is not
-            # a collection failure and proves nothing about the day: pending.
+            # a collection failure and proves nothing about the day. It still
+            # goes through the terminal path so another scope's recorded
+            # failure on this shared partition stays visible.
             if commit and partition is not None:
-                assert repo is not None
-                await repo.mark_partition_pending(partition)
-                if session is not None:
-                    await session.commit()
-                partition_persisted = True
-            report["partition"] = {
-                "partition_date": partition_day.isoformat(),
-                "status": "pending" if commit else "unresolved",
-                "event_count": 0,
-                "persisted": bool(commit and partition_persisted),
-            }
+                await _persist_terminal_partition()
+                _finish_partition()
+            else:
+                report["partition"] = {
+                    "partition_date": partition_day.isoformat(),
+                    "status": "unresolved",
+                    "event_count": 0,
+                    "persisted": False,
+                }
             return report
 
         resolved_scope_key = _resolved_scope_key(requests)

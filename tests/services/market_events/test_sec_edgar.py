@@ -790,6 +790,49 @@ async def test_scoped_success_never_completes_shared_partition():
 
 
 @pytest.mark.asyncio
+async def test_unresolved_scope_run_preserves_other_scopes_failure():
+    """An all-unresolved run (typo'd symbols) is not a collection success:
+    it must not downgrade a day partition that holds another scope's
+    recorded failure."""
+    repo = FakeRepository()
+    failing = FakeEdgarClient(
+        submissions={1045810: NVDA_SUBMISSIONS},
+        failures={1045810: SecEdgarError("boom", failure_code="http_5xx")},
+    )
+    first = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=failing,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    assert first["partition"]["status"] == "failed"
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    nvda_failure_map = json.loads(partition.source_request_hash)
+    assert len(nvda_failure_map) == 1
+
+    # A typo'd symbol resolves to nothing — the run is "unresolved", not
+    # clean, and the NVDA failure must stay visible.
+    unresolved = FakeEdgarClient(submissions={}, tickers=TICKERS)
+    second = await collect_sec_filings(
+        None,
+        symbols=["FAKE"],
+        repo=repo,
+        client=unresolved,
+        commit=True,
+        clock=lambda: RECEIVED + timedelta(hours=2),
+        run_date=RUN_DATE,
+    )
+    assert second["issuers"]["FAKE"]["status"] == "unresolved"
+    assert second["partition"]["status"] == "failed"
+    assert partition.status == "failed"
+    assert partition.last_error == "http_5xx"
+    assert json.loads(partition.source_request_hash) == nvda_failure_map
+
+
+@pytest.mark.asyncio
 async def test_empty_recent_is_pending_zero_not_failure():
     repo = FakeRepository()
     tickers = {
