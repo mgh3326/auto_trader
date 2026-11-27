@@ -217,6 +217,7 @@ PLAN = {
     "version": 1,
 }
 BAR = {"session": "2026-11-25", "high": "101", "low": "99", "close": "100"}
+PARKING_SYMBOL = "459580"
 RISK_PATHS = {
     "risk_inputs": ((), "position_unreadable"),
     "quantity": (("quantity",), "position_unreadable"),
@@ -259,6 +260,53 @@ async def test_unavailable_risk_input_publishes_watch(name, action, reason):
     assert verdict["skip_reason"] == (
         reason if reason in UNAVAILABLE_SKIPS else default_skip
     )
+
+
+def parking_holding_evidence(**risk_changes) -> dict:
+    evidence = holding_evidence(**risk_changes)
+    evidence["symbol"] = PARKING_SYMBOL
+    return evidence
+
+
+def parking_holding_row(action: str) -> dict:
+    return {**holding_row(action), "symbol": PARKING_SYMBOL}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "risk_changes",
+    [
+        {},
+        {"plan": {"unavailable": "input_missing"}},
+        {"price_fresh": {"unavailable": "input_missing"}},
+    ],
+    ids=["base", "plan_unknown", "price_fresh_unknown"],
+)
+async def test_parking_holding_is_not_applicable_before_the_input_gap(risk_changes):
+    """459580 is cash: the loss-cut replay never reads its inputs (design §7.2)."""
+    [row] = await publish(
+        [parking_holding_evidence(**risk_changes)], [parking_holding_row("hold")]
+    )
+    assert row["action"] == "hold"
+    assert row["not_executable_reason"] is None
+    assert row.get("reason_code") is None
+    verdict = row["rule_verdict"]
+    assert verdict["result"] == "skip"
+    assert verdict["skip_reason"] == "parking_instrument"
+    assert verdict["status"] == "not_applicable"
+
+
+@pytest.mark.asyncio
+async def test_non_parking_holding_still_reports_the_input_gap():
+    """Control: an ordinary holding keeps the gap's watch row and unknown replay."""
+    [row] = await publish(
+        [break_risk_input(("plan",), "input_missing")], [holding_row("hold")]
+    )
+    assert_watch(row, "input_missing")
+    verdict = row["rule_verdict"]
+    assert verdict["result"] == "skip"
+    assert verdict["skip_reason"] == "no_exit_plan"
+    assert verdict["status"] == "unknown"
 
 
 @pytest.mark.asyncio
