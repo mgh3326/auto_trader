@@ -133,7 +133,7 @@ rows = _table(
     _vocabulary("action", ACTIONS),
     _vocabulary("action_basis", ACTION_BASES),
     CheckConstraint("execution_state = 'plan_only'", name="plan_only"),
-    CheckConstraint("market = 'kr' AND symbol ~ '^[0-9]{6}$'", name="kr_symbol"),
+    CheckConstraint("market = 'kr' AND symbol ~ '^[0-9A-Z]{6}$'", name="kr_symbol"),
     CheckConstraint(
         "(row_kind = 'holding' AND account_ref IS NOT NULL AND account_ref <> '') OR "
         "(row_kind = 'candidate' AND account_ref IS NULL)",

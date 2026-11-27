@@ -29,6 +29,7 @@ _MIGRATION = (
     Path(__file__).resolve().parents[3]
     / "alembic/versions/20261126_hk6751_daily_plan.py"
 )
+_SYMBOL_MIGRATION = _MIGRATION.with_name("20261127_hk6769_daily_plan_symbol.py")
 _UNRELATED = (
     "order_proposals",
     "order_proposal_rungs",
@@ -41,11 +42,16 @@ _UNRELATED = (
 )
 
 
-def _migrate(conn):
-    spec = importlib.util.spec_from_file_location("hk6751_migration", _MIGRATION)
+def _load(path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec and spec.loader
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
+    return migration
+
+
+def _migrate(conn):
+    migration = _load(_MIGRATION)
     # Bootstrap uses metadata.create_all. Run the actual DDL inside the
     # test transaction so its triggers, constraints and ACLs are exercised.
     for table in reversed(_TABLES):
@@ -69,6 +75,64 @@ async def test_migration_rejects_all_mutations(db_session):
                 ):
                     async with db_session.begin_nested():
                         await db_session.execute(text(sql))
+        await db_session.rollback()
+
+
+def _run_symbol_migration(conn, direction):
+    with Operations.context(MigrationContext.configure(conn)):
+        getattr(_load(_SYMBOL_MIGRATION), direction)()
+
+
+async def _insert_row(db_session, version_id, symbol):
+    async with db_session.begin_nested():
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_rows "
+                "(id, version_id, row_kind, market, symbol, action, action_basis, body)"
+                " VALUES (:id, :version_id, 'candidate', 'kr', :symbol, 'watch', "
+                "'scored', '{}')"
+            ),
+            {"id": uuid4(), "version_id": version_id, "symbol": symbol},
+        )
+
+
+async def test_symbol_check_accepts_alphanumeric_short_codes(db_session):
+    async with db_session.begin():
+        conn = await db_session.connection()
+        await conn.run_sync(_migrate)
+        head_id, version_id = uuid4(), uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_heads "
+                "(id, market, session_date, cutoff_at) "
+                "VALUES (:id, 'kr', :day, now())"
+            ),
+            {"id": head_id, "day": date(2031, 1, 6)},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_versions (id, head_id, seq, kind, "
+                "idempotency_key, request_sha256, strategy_id, "
+                "strategy_rule_version, policy_version, policy_content_hash, "
+                "metadata) VALUES (:id, :head, 1, 'session', 'k', 'h', 's', 'v', "
+                "'p', 'c', '{}')"
+            ),
+            {"id": version_id, "head": head_id},
+        )
+        with pytest.raises(DBAPIError, match="ck_daily_plan_rows_kr_symbol"):
+            await _insert_row(db_session, version_id, "0256C0")
+
+        await conn.run_sync(_run_symbol_migration, "upgrade")
+        await _insert_row(db_session, version_id, "005930")
+        # With digits only, the downgrade restores the old rule and back.
+        await conn.run_sync(_run_symbol_migration, "downgrade")
+        await conn.run_sync(_run_symbol_migration, "upgrade")
+        await _insert_row(db_session, version_id, "0256C0")
+        for symbol in ("0256c0", "25C0A", "0256C01", "0256-0"):
+            with pytest.raises(DBAPIError, match="ck_daily_plan_rows_kr_symbol"):
+                await _insert_row(db_session, version_id, symbol)
+        with pytest.raises(RuntimeError, match="alphanumeric short codes"):
+            await conn.run_sync(_run_symbol_migration, "downgrade")
         await db_session.rollback()
 
 

@@ -1309,6 +1309,20 @@ MCP `get_kr_flow_signals(symbol, days=20)`는 6자리 국내 종목코드와 `da
 오른다. 상한에 닿거나 이월을 허용하지 않으면 `expired`로 닫힌다. 이월의
 원천은 이전 발행 행이다. 이 경로는 주문·제안·감시·위임장을 쓰지 않는다.
 
+**사용 불가 표기 (hk 6769).** 번들 값 자리의 `{"unavailable": "<사유>"}` 객체는
+발행을 거부하지 않는다. 필수 소스의 `event_at`·`first_observed_at`, 보유 행
+`risk_inputs`(전체·`quantity`·`average_cost`·`plan`·`bars`·`price_fresh`·
+`prior_decision`), `add`·`trim`·`risk_sell`의 미체결 매도·보호 수량, `add`의
+`average_costs`·`last_close`가 그 객체면 해당 행은 `watch`이고 `reason_code`·
+`not_executable_reason`은 객체의 사유다(닫힌 어휘 `UNAVAILABLE_REASONS` 밖은
+`input_missing`). 필수 소스가 아예 없으면 `input_missing`이 우선한다. 위험 재생은
+`skip`·`status=unknown`이며 0이나 계획 있음으로 읽지 않는다. 봉 `volume`은 위험
+규칙이 미상으로 읽으므로 내리지 않는다. 소스 객체 자체의 `unavailable` 표시는
+기존 매핑(`price_stale`→`input_stale`, 시각 없음→`observed_time_unproven`, 그 밖
+→`input_missing`)을 유지한다. 계획 행의 심볼은 숫자·대문자 영문 6자리 KR
+단축코드다(`ck_daily_plan_rows_kr_symbol`). 입력 번들 후보 규칙은 여전히 6자리
+숫자만 고른다.
+
 설계 §8.2의 역할 구성은 hk 6751 디자인 레인 결정으로 조정했다.
 `at_migration_owner`는 `NOCREATEROLE`이고 앱 로그인은 `at_app`을 상속한다.
 기존 `at_app`에 객체별 조건부 `SELECT`·`INSERT`를 부여한다.

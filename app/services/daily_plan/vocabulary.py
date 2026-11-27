@@ -38,6 +38,17 @@ REASON_CODES = (
     "account_not_routable",
     "position_unknown",
     "expired",
+    # A row downgraded for an unusable input carries the bundle's own reason.
+    "input_invalid",
+    "observed_after_cutoff",
+    "direction_unclassified",
+    "price_missing",
+    "price_stale",
+    "halted_suspect",
+    "position_unreadable",
+    "no_exit_plan",
+    "open_sell_unknown",
+    "protected_unknown",
 )
 
 VENUE_SESSIONS = {
@@ -60,6 +71,16 @@ INPUT_UNKNOWN_REASONS = (
     "observed_after_cutoff",
     "input_stale",
     "direction_unclassified",
+)
+# Closed reasons of an {"unavailable": reason} bundle value (design §7.1, §7.2).
+UNAVAILABLE_REASONS = INPUT_UNKNOWN_REASONS + (
+    "price_missing",
+    "price_stale",
+    "halted_suspect",
+    "position_unreadable",
+    "no_exit_plan",
+    "open_sell_unknown",
+    "protected_unknown",
 )
 ENTRY_STATES = ("met", "not_met", "unknown")
 BUDGET_POLICIES = ("W", "N")
