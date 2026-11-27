@@ -174,6 +174,30 @@ async def test_get_quote_crypto_returns_error_payload(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# hk 6678: regular KRX session instant. The quote code reads the wall clock
+# (market_data_quotes.now_kst and market_session.kr_market_data_state's own
+# clock), so KR get_quote tests that reach the session-dependent overlay /
+# auction / premarket branches pin both to this instant; unpinned they can be
+# hijacked by the KRX auction windows (08:30-09:00, 15:20-15:30 KST) or the
+# NXT overlay sessions.
+_KR_REGULAR_SESSION_KST = dt.datetime(
+    2026, 6, 11, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+)
+
+
+def _pin_kr_regular_session(monkeypatch) -> None:
+    """Pin the KR quote session clocks to a regular-session instant."""
+    from app.mcp_server.tooling import market_data_quotes
+    from app.mcp_server.tooling.market_session import DATA_STATE_FRESH
+
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: DATA_STATE_FRESH,
+    )
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: _KR_REGULAR_SESSION_KST)
+
+
 @pytest.mark.asyncio
 async def test_get_quote_korean_equity(monkeypatch):
     tools = build_tools()
@@ -187,6 +211,7 @@ async def test_get_quote_korean_equity(monkeypatch):
             called["n"] = n
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("005930")
@@ -216,6 +241,7 @@ async def test_get_quote_korean_equity_tags_premarket_data_state(monkeypatch):
             return df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: _NXT_PREMARKET_KST)
     monkeypatch.setattr(
         market_data_quotes,
         "kr_market_data_state",
@@ -261,6 +287,7 @@ async def test_get_quote_korean_equity_previous_close(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("005930")
@@ -299,6 +326,7 @@ async def test_get_quote_korean_etf(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("0123G0")
@@ -318,6 +346,7 @@ async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("0117V0", market="kr")
@@ -347,6 +376,7 @@ async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label)
             called["n"] = n
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"](symbol)
@@ -449,6 +479,7 @@ async def test_apply_nxt_quote_overlay_applies_in_premarket(monkeypatch):
             "price_source": "nxt_expected_price",
         }
 
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: _NXT_PREMARKET_KST)
     monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
     monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
 
@@ -1242,6 +1273,7 @@ async def test_get_quote_us_equity(monkeypatch):
     _patch_runtime_attr(
         monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NYSE")
     )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
     price_df = pd.DataFrame(
         [{"close": 205.0, "previous_close": 201.5, "volume": 123456789}]
     )
@@ -1311,6 +1343,7 @@ async def test_get_quote_us_kis_raises_then_yahoo_succeeds(monkeypatch):
     _patch_runtime_attr(
         monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
     )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
 
     class DummyKISClient:
         async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
@@ -1347,6 +1380,7 @@ async def test_get_quote_us_falls_back_to_yahoo(monkeypatch):
     _patch_runtime_attr(
         monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
     )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
 
     class DummyKISClient:
         async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
@@ -1454,6 +1488,7 @@ async def test_get_quote_us_flag_off_uses_yahoo(monkeypatch):
         "get_us_exchange_by_symbol",
         AsyncMock(side_effect=AssertionError("KIS path should be skipped")),
     )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
     mock_fast_info = AsyncMock(
         return_value={
             "symbol": "AAPL",
@@ -1952,6 +1987,7 @@ async def test_get_quote_kr_include_extended_hours_is_noop(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         yahoo_service,
@@ -2108,6 +2144,7 @@ async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     async def fake_tradability(symbols, db=None):
@@ -2140,6 +2177,7 @@ def _krx_after_quote_setup(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
+    _pin_kr_regular_session(monkeypatch)
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     return tools, market_data_quotes
 
@@ -2318,6 +2356,7 @@ async def test_registered_get_quote_surfaces_nxt_schema_fault(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_quote_us_has_no_nxt_fields(monkeypatch):
     tools = build_tools()
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
 
     async def fake_fast_info(_symbol):
         return {"close": 100.0, "previous_close": 99.0}
