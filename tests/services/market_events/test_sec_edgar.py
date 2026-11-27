@@ -992,15 +992,18 @@ async def test_joint_filing_merges_symbols_without_flipflop():
             222: _joint_payload(222, "BBB", "Beta Corp", "001-2", "222"),
         }
     )
+    reports = []
     for cik in (111, 222, 111, 222):
-        await collect_sec_filings(
-            None,
-            ciks=[cik],
-            repo=repo,
-            client=client,
-            commit=True,
-            clock=lambda: RECEIVED,
-            run_date=RUN_DATE,
+        reports.append(
+            await collect_sec_filings(
+                None,
+                ciks=[cik],
+                repo=repo,
+                client=client,
+                commit=True,
+                clock=lambda: RECEIVED,
+                run_date=RUN_DATE,
+            )
         )
     assert len(repo.events) == 1
     event = repo.events[("sec", "0000000001-25-000001")]
@@ -1013,6 +1016,13 @@ async def test_joint_filing_merges_symbols_without_flipflop():
     )
     # Content-identical re-reads append no revisions — no flip-flop.
     assert len(repo.revisions[("sec", "0000000001-25-000001")]) == 1
+    # Outcome accounting: insert, symbols-only merge, then unchanged —
+    # a merge is not a revision.
+    assert reports[0]["totals"]["inserted"] == 1
+    assert reports[1]["totals"]["merged"] == 1
+    assert reports[1]["totals"]["revised"] == 0
+    assert reports[2]["totals"]["unchanged"] == 1
+    assert reports[3]["totals"]["unchanged"] == 1
 
 
 @pytest.mark.asyncio
@@ -1100,6 +1110,53 @@ async def test_window_applies_to_normalized_event_date():
     assert repo.events[("sec", "0001045810-25-000301")]["event_date"] == date(
         2025, 11, 19
     )
+
+
+@pytest.mark.asyncio
+async def test_null_form_row_is_unparseable_not_silently_dropped():
+    repo = FakeRepository()
+    broken = copy.deepcopy(NVDA_SUBMISSIONS)
+    broken["filings"]["recent"]["form"][0] = None
+    client = FakeEdgarClient(submissions={1045810: broken})
+    report = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    issuer = report["issuers"]["NVDA"]
+    assert issuer["status"] == "failed"
+    assert issuer["failure_code"] == "unparseable"
+    assert issuer["skipped_unparseable"] == 1
+    assert report["partition"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_observed_at_is_stamped_at_request_start():
+    """Ordering follows the server state the request saw, not when the
+    response finished — a slow response must not look newer."""
+    current = [RECEIVED]
+
+    class SlowClient(FakeEdgarClient):
+        async def fetch_submissions(self, cik):
+            current[0] += timedelta(seconds=30)
+            return await super().fetch_submissions(cik)
+
+    repo = FakeRepository()
+    await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=SlowClient(submissions={1045810: NVDA_SUBMISSIONS}),
+        commit=True,
+        clock=lambda: current[0],
+        run_date=RUN_DATE,
+    )
+    revision = repo.revisions[("sec", "0001045810-25-000301")][0]
+    assert revision.observed_at == RECEIVED
 
 
 @pytest.mark.asyncio

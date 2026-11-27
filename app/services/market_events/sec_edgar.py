@@ -582,7 +582,8 @@ async def _write_filing(
 ) -> str:
     """Compare-and-append one filing, then upsert the current row.
 
-    Returns ``inserted`` / ``revised`` / ``unchanged`` / ``stale``. The
+    Returns ``inserted`` / ``revised`` / ``merged`` / ``unchanged`` /
+    ``stale``. The
     provenance row is written once per accession via ``append_source``
     (``ON CONFLICT DO NOTHING`` keeps re-collection duplicate-free).
 
@@ -687,7 +688,9 @@ async def _write_filing(
             "raw_hash": digest,
         }
     )
-    return "inserted" if latest is None else "revised"
+    return (
+        "inserted" if latest is None else ("revised" if content_changed else "merged")
+    )
 
 
 def _issuer_identity(
@@ -848,6 +851,7 @@ async def collect_sec_filings(
             "written": 0,
             "inserted": 0,
             "revised": 0,
+            "merged": 0,
             "unchanged": 0,
             "stale": 0,
             "unresolved": 0,
@@ -1047,6 +1051,10 @@ async def collect_sec_filings(
             label = request["label"]
             issuer_failure_code: str | None = None
             try:
+                # Stamp the observation at request start: ordering must
+                # follow the server state this request saw, not when the
+                # response happened to finish (overlapping runs).
+                observed_at = capture_now()
                 payload = await fetcher.fetch_submissions(request["cik"])
                 if not isinstance(payload, dict):
                     raise SecEdgarError(
@@ -1059,12 +1067,16 @@ async def collect_sec_filings(
                     request["fallback_symbol"],
                     request["fallback_name"],
                 )
-                observed_at = capture_now()
                 filings: list[tuple[dict[str, Any], dict[str, Any]]] = []
                 skipped_unparseable = 0
                 for row in rows:
                     form = row.get("form")
-                    if not isinstance(form, str) or form not in SEC_FORMS:
+                    if not isinstance(form, str):
+                        # A malformed row is a parse failure, not a quiet
+                        # skip — same class as normalization failures.
+                        skipped_unparseable += 1
+                        continue
+                    if form not in SEC_FORMS:
                         continue
                     if not _in_window(row, from_date, to_date):
                         continue
@@ -1100,6 +1112,7 @@ async def collect_sec_filings(
                 counts = {
                     "inserted": 0,
                     "revised": 0,
+                    "merged": 0,
                     "unchanged": 0,
                     "stale": 0,
                 }
@@ -1146,6 +1159,7 @@ async def collect_sec_filings(
                     ),
                     "inserted": counts["inserted"],
                     "revised": counts["revised"],
+                    "merged": counts["merged"],
                     "unchanged": counts["unchanged"],
                     "stale": counts["stale"],
                     "skipped_unparseable": skipped_unparseable,
@@ -1154,7 +1168,7 @@ async def collect_sec_filings(
                 }
                 report["totals"]["filings"] += len(filings)
                 report["totals"]["written"] += report["issuers"][label]["written"]
-                for key in ("inserted", "revised", "unchanged", "stale"):
+                for key in ("inserted", "revised", "merged", "unchanged", "stale"):
                     report["totals"][key] += counts[key]
             except SecEdgarError as exc:
                 await _safe_rollback()
