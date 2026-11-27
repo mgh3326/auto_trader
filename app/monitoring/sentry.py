@@ -402,12 +402,61 @@ def _is_mcp_deadline_exceeded_event(event: Event) -> bool:
     )
 
 
-def _is_fastmcp_tool_validation_error(
-    logger_name: str | None, message: str | None
-) -> bool:
+def _is_fastmcp_tool_error_log(logger_name: str | None, message: str | None) -> bool:
+    """FastMCP's per-tool failure log records.
+
+    ``fastmcp.server.server`` logs ``Error validating tool '<name>'`` for
+    argument schema failures and ``Error calling tool '<name>'`` for every
+    other tool exception, then re-raises. Both are duplicate noise next to
+    the exception event the sentry-sdk MCP integration captures at the
+    ``call_tool`` boundary (which carries the full chain plus the
+    ``mcp_tool_call`` context this middleware attaches), so both log records
+    are dropped here. hk 6805.
+    """
     if logger_name != "fastmcp.server.server" or not message:
         return False
-    return message.startswith("Error validating tool ")
+    return message.startswith(("Error validating tool ", "Error calling tool '"))
+
+
+# hk 6805: caller-input failure types, mirrored by the live-exception
+# classifier in ``app.mcp_server.caller_input_errors`` (``ValueError`` covers
+# ``pydantic.ValidationError``; fastmcp/pydantic ``ValidationError`` serialize
+# under the same type name). ``ToolError``/``FastMCPError``/``McpError`` are
+# transparent wrappers FastMCP adds and never decide the class alone.
+_MCP_CALLER_INPUT_ERROR_TYPES = frozenset({"ValueError", "ValidationError"})
+_MCP_ERROR_WRAPPER_TYPES = frozenset(
+    {"ToolError", "FastMCPError", "McpError", "McpToolDeadlineExceeded"}
+)
+
+
+def _is_mcp_caller_input_error_event(event: Event) -> bool:
+    """True for a tools/call Sentry event whose whole cause is caller input.
+
+    Only fires inside MCP tool-call context (the ``mcp.tool.name`` tag /
+    ``mcp_tool_call`` context the sentry middleware stamps), so a ``ValueError``
+    raised anywhere else still reports. Every non-wrapper exception type in
+    the chain must be in the closed caller-input set — one server-side type
+    (``RuntimeError``, an httpx or DB error) keeps the event.
+    """
+    tags = event.get("tags")
+    contexts = event.get("contexts")
+    has_tool_context = (
+        isinstance(tags, dict) and isinstance(tags.get("mcp.tool.name"), str)
+    ) or (
+        isinstance(contexts, dict) and isinstance(contexts.get("mcp_tool_call"), dict)
+    )
+    if not has_tool_context:
+        return False
+    exception = event.get("exception")
+    values = exception.get("values") if isinstance(exception, dict) else None
+    if not isinstance(values, list) or not values:
+        return False
+    meaningful_types = {
+        value.get("type")
+        for value in values
+        if isinstance(value, dict) and isinstance(value.get("type"), str)
+    } - _MCP_ERROR_WRAPPER_TYPES
+    return bool(meaningful_types) and meaningful_types <= _MCP_CALLER_INPUT_ERROR_TYPES
 
 
 # Rules for expected MCP argument noise (client misuse, not server failures)
@@ -603,7 +652,9 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_mcp_deadline_exceeded_event(event):
         return None
-    if _is_fastmcp_tool_validation_error(logger_name, message):
+    if _is_mcp_caller_input_error_event(event):
+        return None
+    if _is_fastmcp_tool_error_log(logger_name, message):
         return None
     if _is_expected_mcp_argument_noise(logger_name, message, event):
         return None
@@ -636,7 +687,7 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
         return None
     if _is_mcp_deadline_exceeded_log(logger_name, message):
         return None
-    if _is_fastmcp_tool_validation_error(logger_name, message):
+    if _is_fastmcp_tool_error_log(logger_name, message):
         return None
     if _is_expected_mcp_argument_noise(logger_name, message):
         return None

@@ -492,6 +492,7 @@ tests/test_market_news_briefing_formatter.py
 tests/test_market_quote_snapshots_latest_prices.py
 tests/test_mcp_alpaca_paper_tools.py
 tests/test_mcp_analyst_consensus.py
+tests/test_mcp_caller_input_errors.py
 tests/test_mcp_correlation_tools.py
 tests/test_mcp_get_market_news_quality_gate.py
 tests/test_mcp_kis_order_variants.py

@@ -82,6 +82,24 @@ hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에�
 KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
 true를 유지한다.
 
+### MCP tool error reporting (hk 6805)
+
+Caller argument mistakes are not Sentry errors. The closed caller-input set is
+`ValueError` (which covers `pydantic.ValidationError`) plus
+`fastmcp.exceptions.ValidationError`; `ToolError`/`FastMCPError`/`McpError` are
+transparent wrappers. `app/mcp_server/caller_input_errors.py` classifies the
+live exception in `McpToolCallSentryMiddleware`: a caller-input failure emits
+one `mcp.tool.caller_input_error` warning plus one
+`mcp_metric metric=mcp_tool_caller_input_error_total ... value=1` counter sample
+and the caller still receives the same `ToolError` response. `app/monitoring/sentry.py`
+drops both duplicate Sentry records for such calls — the
+`fastmcp.server.server` "Error calling/validating tool" log record (dropped for
+every tool failure, since the MCP-integration capture carries the same exception
+with `mcp_tool_call` context) and the `ToolError`/`ValidationError` event itself
+when its whole non-wrapper cause is caller input. A server-side exception keeps
+exactly one Sentry event. Keep the live classifier's type set and the serialized
+`_MCP_CALLER_INPUT_ERROR_TYPES`/`_MCP_ERROR_WRAPPER_TYPES` in sync.
+
 ### Fundamentals provider availability
 
 `get_financials`, `get_valuation`, and US `get_investment_opinions` treat a Yahoo Finance
