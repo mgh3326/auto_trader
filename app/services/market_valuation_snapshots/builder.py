@@ -54,7 +54,7 @@ async def default_valuation_fetcher(
     if market == "kr":
         from app.services.naver_finance.valuation import fetch_valuation
 
-        return await fetch_valuation(symbol)
+        return _annotate_kr_missing_reasons(await fetch_valuation(symbol))
     if market == "us":
         from app.services.brokers.yahoo.client import (
             fetch_52w_high_date,
@@ -145,6 +145,31 @@ def _resolve_raw_value(raw: dict[str, Any], field: str) -> Any:
         if value:
             return value
     return None
+
+
+# hk 5754: KR valuation columns have no per-field reason column; keep the closed
+# reason vocabulary in raw_payload['_missing_reasons'] so a NULL is never silent.
+# high_52w_date is excluded — it is NULL for KR by design, not a missing reading.
+_KR_VALUATION_REASON_FIELDS = tuple(
+    field for field in _FIELD_SOURCE_KEYS if field != "high_52w_date"
+)
+_KR_VALUATION_MISSING_REASON = "naver_mobile_totalInfos_missing"
+_KR_VALUATION_NOT_PROVIDED_REASON = "naver_finance_not_provided"
+
+
+def _annotate_kr_missing_reasons(raw: dict[str, Any]) -> dict[str, Any]:
+    reasons = {
+        field: (
+            _KR_VALUATION_NOT_PROVIDED_REASON
+            if field == "roe"
+            else _KR_VALUATION_MISSING_REASON
+        )
+        for field in _KR_VALUATION_REASON_FIELDS
+        if _resolve_raw_value(raw, field) is None
+    }
+    if not reasons:
+        return raw
+    return {**raw, "_missing_reasons": reasons}
 
 
 def _payload_from_raw(

@@ -26,6 +26,40 @@ NAVER_MOBILE_API = "https://m.stock.naver.com/api/stock"
 
 logger = logging.getLogger(__name__)
 
+# hk 5754: keys overlaid from the mobile basic+integration endpoints onto the
+# HTML-parsed valuation. The PC main/sise pages now serve the same Next.js SPA,
+# so these are the live source for the metrics the legacy selectors used to read.
+_INTEGRATION_OVERLAY_KEYS = (
+    "name",
+    "current_price",
+    "per",
+    "pbr",
+    "eps",
+    "bps",
+    "market_cap",
+    "dividend_yield",
+    "high_52w",
+    "low_52w",
+)
+# Keys whose zero value means "no usable reading" on the legacy HTML path
+# (em#_per/_pbr skip 0; the 52-week cells use truthiness). Keep the same
+# semantics when the mobile overlay supplies the value.
+_OVERLAY_SKIP_ZERO_KEYS = {"per", "pbr", "high_52w", "low_52w"}
+
+
+def _set_current_position_52w(valuation: dict[str, Any]) -> None:
+    if (
+        valuation.get("current_price") is None
+        or valuation.get("high_52w") is None
+        or valuation.get("low_52w") is None
+    ):
+        return
+    high = valuation["high_52w"]
+    low = valuation["low_52w"]
+    current = valuation["current_price"]
+    if high > low:
+        valuation["current_position_52w"] = round((current - low) / (high - low), 2)
+
 
 def _parse_valuation_from_soups(
     code: str,
@@ -103,16 +137,7 @@ def _parse_valuation_from_soups(
                     if low_val:
                         valuation["low_52w"] = int(low_val)
 
-    if (
-        valuation["current_price"] is not None
-        and valuation["high_52w"] is not None
-        and valuation["low_52w"] is not None
-    ):
-        high = valuation["high_52w"]
-        low = valuation["low_52w"]
-        current = valuation["current_price"]
-        if high > low:
-            valuation["current_position_52w"] = round((current - low) / (high - low), 2)
+    _set_current_position_52w(valuation)
 
     return valuation
 
@@ -255,24 +280,29 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
     )
     valuation = _parse_valuation_from_soups(code, main_soup, sise_soup)
 
-    # ROB-448: overlay EPS/BPS/market_cap from the Naver mobile integration endpoint
-    # (already parsed by _parse_total_infos, just not surfaced on the HTML path).
-    # Units are RAW KRW: market_cap = won, eps/bps = won/share (parse_korean_number
-    # expands 조/억/만). fail-open — a mobile-API hiccup leaves the 3 keys None and
-    # never breaks the existing HTML-scraped valuation.
+    # hk 5754 / ROB-448: overlay the mobile basic+integration metrics. The PC
+    # main/sise pages are now the same Next.js SPA, so the HTML selectors above
+    # return all-None; the mobile endpoints still serve name/current_price,
+    # per/pbr/eps/bps/market_cap, dividend_yield and 52-week high/low.
+    # fail-open — a mobile-API hiccup leaves the HTML-scraped values untouched.
     valuation.setdefault("eps", None)
     valuation.setdefault("bps", None)
     valuation.setdefault("market_cap", None)
     try:
         async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=10) as client:
             integ = await _fetch_integration(code, client)
-        for key in ("eps", "bps", "market_cap"):
-            if integ.get(key) is not None:
-                valuation[key] = integ[key]
+        for key in _INTEGRATION_OVERLAY_KEYS:
+            value = integ.get(key)
+            if value is None:
+                continue
+            if key in _OVERLAY_SKIP_ZERO_KEYS and value == 0:
+                continue
+            valuation[key] = value
     except Exception as exc:  # noqa: BLE001 — additive overlay; degrade to None
         logger.debug(
             "fetch_valuation: integration overlay failed for %s: %s", code, exc
         )
+    _set_current_position_52w(valuation)
 
     return valuation
 
@@ -294,14 +324,17 @@ def _parse_total_infos(total_infos: list[dict[str, Any]]) -> dict[str, Any]:
         "bps": "bps",
         "marketValue": "market_cap",
         "dividendYieldRatio": "dividend_yield",
+        "highPriceOf52Weeks": "high_52w",
+        "lowPriceOf52Weeks": "low_52w",
     }
     for item in total_infos:
         code = item.get("code", "")
         if code not in code_map:
             continue
         raw = item.get("value", "")
-        # Strip trailing unit suffixes (배, 원, %)
-        cleaned = re.sub(r"[배원%]", "", raw).strip() if raw else None
+        # Strip 배/원 but keep '%' so parse_korean_number returns dividend_yield
+        # as a ratio (3.45% -> 0.0345), matching the stored unit.
+        cleaned = re.sub(r"[배원]", "", raw).strip() if raw else None
         result[code_map[code]] = _parse_korean_number(cleaned)
     return result
 
@@ -321,8 +354,9 @@ async def _fetch_integration(
             behavior (``fetch_valuation``'s overlay and the target fetch inside
             ``fetch_sector_peers``).
 
-    Returns a dict with ``name``, ``per``, ``pbr``, ``market_cap``, ``current_price``,
-    ``change_pct``, ``industry_code``, ``peers_raw``.
+    Returns a dict with ``name``, ``per``, ``pbr``, ``eps``, ``bps``,
+    ``market_cap``, ``dividend_yield``, ``high_52w``, ``low_52w``,
+    ``current_price``, ``change_pct``, ``industry_code``, ``peers_raw``.
     """
     get_kwargs: dict[str, Any] = {}
     if request_timeout is not None:
@@ -360,6 +394,9 @@ async def _fetch_integration(
         "eps": metrics.get("eps"),
         "bps": metrics.get("bps"),
         "market_cap": metrics.get("market_cap"),
+        "dividend_yield": metrics.get("dividend_yield"),
+        "high_52w": metrics.get("high_52w"),
+        "low_52w": metrics.get("low_52w"),
         "current_price": current_price,
         "change_pct": change_pct,
         "industry_code": integ.get("industryCode"),
