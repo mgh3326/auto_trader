@@ -13,7 +13,22 @@ LINK_STATES = (
     "link_unresolved",
 )
 TRIGGER_KINDS = ("price_at_or_below", "price_at_or_above", "event")
-ACCOUNT_MODES = ("kis_live", "toss_live")
+MARKETS = ("kr", "us", "crypto")
+PLAN_MODES = ("plan_only", "executable")
+ACCOUNT_MODES = (
+    "kis_live",
+    "toss_live",
+    "upbit_live",
+    # Mock/demo accounts named in decision/2026-11-27/at-autonomous-strategy-orders.
+    "kis_mock",
+    "kiwoom_mock",
+    "kiwoom_mock_us",
+    "alpaca_paper",
+    "binance_spot_demo",
+    "binance_futures_demo",
+    "nh_mock",
+    "kis_futures_mock",
+)
 ACCOUNT_SCOPES = ("routable", "read_only")
 ACCOUNT_REF_KINDS = ("derived", "logical")
 LOT_AVAILABILITIES = ("fifo_lots", "absent")
@@ -54,6 +69,18 @@ REASON_CODES = (
 VENUE_SESSIONS = {
     "KRX": frozenset({"regular", "aftermarket"}),
     "NXT": frozenset({"premarket", "regular", "aftermarket"}),
+    "NASD": frozenset({"us_pre", "us_regular", "us_post"}),
+    "NYSE": frozenset({"us_pre", "us_regular", "us_post"}),
+    "AMEX": frozenset({"us_pre", "us_regular", "us_post"}),
+    "UPBIT": frozenset({"crypto_24h"}),
+}
+VENUE_MARKETS = {
+    "KRX": "kr",
+    "NXT": "kr",
+    "NASD": "us",
+    "NYSE": "us",
+    "AMEX": "us",
+    "UPBIT": "crypto",
 }
 
 # hk 6790 plan-only ranking and budget comparison. Stored in version metadata.

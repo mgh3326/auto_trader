@@ -218,3 +218,99 @@ async def test_replay_publish_fold_and_queue_have_no_side_effects(db_session):
             for name in _UNRELATED
         } == before
         await db_session.rollback()
+
+
+_WIDEN_MIGRATION = _MIGRATION.with_name("20261127_hk6981_daily_plan_widen.py")
+
+
+def _run_widen_migration(conn, direction):
+    with Operations.context(MigrationContext.configure(conn)):
+        getattr(_load(_WIDEN_MIGRATION), direction)()
+
+
+async def _insert_head(db_session, market, mode):
+    head_id, version_id = uuid4(), uuid4()
+    async with db_session.begin_nested():
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_heads "
+                "(id, market, session_date, mode, cutoff_at) "
+                "VALUES (:id, :market, :day, :mode, now())"
+            ),
+            {"id": head_id, "market": market, "mode": mode, "day": date(2031, 1, 6)},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_versions (id, head_id, seq, kind, "
+                "idempotency_key, request_sha256, strategy_id, "
+                "strategy_rule_version, policy_version, policy_content_hash, "
+                "metadata) VALUES (:id, :head, 1, 'session', 'k', 'h', 's', 'v', "
+                "'p', 'c', '{}')"
+            ),
+            {"id": version_id, "head": head_id},
+        )
+    return version_id
+
+
+async def _insert_market_row(db_session, version_id, market, symbol, state):
+    async with db_session.begin_nested():
+        await db_session.execute(
+            text(
+                "INSERT INTO review.daily_plan_rows (id, version_id, row_kind, "
+                "market, symbol, action, action_basis, execution_state, body) "
+                "VALUES (:id, :version_id, 'candidate', :market, :symbol, 'watch', "
+                "'scored', :state, '{}')"
+            ),
+            {
+                "id": uuid4(),
+                "version_id": version_id,
+                "market": market,
+                "symbol": symbol,
+                "state": state,
+            },
+        )
+
+
+async def test_widened_checks_and_downgrade_refusal(db_session):
+    async with db_session.begin():
+        conn = await db_session.connection()
+        await conn.run_sync(_migrate)
+        await conn.run_sync(_run_symbol_migration, "upgrade")
+        # Before the widening a US head is refused.
+        with pytest.raises(DBAPIError, match="ck_daily_plan_heads_kr_plan_only"):
+            await _insert_head(db_session, "us", "plan_only")
+        await conn.run_sync(_run_widen_migration, "upgrade")
+        # Downgrade and back with nothing widened stored.
+        await conn.run_sync(_run_widen_migration, "downgrade")
+        await conn.run_sync(_run_widen_migration, "upgrade")
+
+        for market, mode in (("jp", "plan_only"), ("us", "live")):
+            with pytest.raises(DBAPIError, match="ck_daily_plan_heads_market_mode"):
+                await _insert_head(db_session, market, mode)
+        version_id = await _insert_head(db_session, "crypto", "executable")
+        for market, symbol in (
+            ("kr", "0256C0"),
+            ("us", "BRK.B"),
+            ("us", "AAPL"),
+            ("crypto", "KRW-BTC"),
+        ):
+            await _insert_market_row(
+                db_session, version_id, market, symbol, "executable"
+            )
+        for market, symbol in (
+            ("kr", "0256c0"),
+            ("us", "brk.b"),
+            ("us", "BRK-B"),
+            ("crypto", "KRW.BTC"),
+            ("crypto", "BTC"),
+            ("jp", "7203"),
+        ):
+            with pytest.raises(DBAPIError, match="ck_daily_plan_rows_market_symbol"):
+                await _insert_market_row(
+                    db_session, version_id, market, symbol, "plan_only"
+                )
+        with pytest.raises(DBAPIError, match="ck_daily_plan_rows_execution_state"):
+            await _insert_market_row(db_session, version_id, "kr", "005930", "live")
+        with pytest.raises(RuntimeError, match="us/crypto or executable"):
+            await conn.run_sync(_run_widen_migration, "downgrade")
+        await db_session.rollback()

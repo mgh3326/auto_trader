@@ -1,9 +1,9 @@
-"""Sole writer and published-state reader for KR daily plans."""
+"""Sole writer and published-state reader for daily plans (KR, US, crypto)."""
 
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4, uuid5
@@ -31,6 +31,8 @@ from app.services.daily_plan.validator import (
 )
 from app.services.daily_plan.vocabulary import (
     ALLOCATION_METADATA_KEY,
+    MARKETS,
+    PLAN_MODES,
     VERSION_KINDS,
 )
 from app.services.daily_plan.watch import watch_state
@@ -41,6 +43,42 @@ from app.services.market_events.session_calendar import (
 )
 
 _KST = ZoneInfo("Asia/Seoul")
+_ET = ZoneInfo("America/New_York")
+_ZONES = {"kr": _KST, "us": _ET, "crypto": UTC}
+# Latest asof a premarket version may carry, in the market's own clock.
+_CUTOFFS = {"kr": time(8, 30), "us": time(4), "crypto": time(0)}
+_INSTRUMENTS = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+
+
+def validate_market(value: Any) -> str:
+    if value not in MARKETS:
+        raise ValueError("invalid_market")
+    return value
+
+
+def _cutoff(market: str, day: date) -> datetime:
+    return datetime.combine(day, _CUTOFFS[market], _ZONES[market])
+
+
+def _regular_bounds(market: str, day: date) -> tuple[datetime, datetime] | None:
+    if market == "crypto":
+        start = datetime.combine(day, time(0), UTC)
+        return start, start + timedelta(days=1)
+    return regular_session_bounds(market, day)
+
+
+def _previous_session(market: str, day: date) -> date | None:
+    if market == "crypto":
+        return day - timedelta(days=1)
+    return previous_trading_session(market, day)
+
+
+def _next_session(market: str, day: date) -> date | None:
+    if market == "crypto":
+        return day + timedelta(days=1)
+    return next_trading_session(market, day)
+
+
 _PLAN_NAMESPACE = UUID("ed870506-5d0b-5907-9c26-ab799da98b1b")
 
 
@@ -52,17 +90,24 @@ async def _lock_head(db: AsyncSession, day: date) -> None:
     await db.execute(select(func.pg_advisory_xact_lock(6751, day.toordinal())))
 
 
-async def _head(db: AsyncSession, day: date) -> UUID:
-    existing = await db.scalar(select(heads.c.id).where(heads.c.session_date == day))
+async def _head(
+    db: AsyncSession, day: date, market: str = "kr", mode: str = "plan_only"
+) -> UUID:
+    where = (heads.c.market == market, heads.c.session_date == day)
+    existing = await db.scalar(select(heads.c.id).where(*where, heads.c.mode == mode))
     if existing is not None:
         return existing
+    # A head's mode is fixed when it is created; another mode is a conflict.
+    if await db.scalar(select(heads.c.id).where(*where)) is not None:
+        raise ValueError("plan_mode_conflict")
     head_id = uuid4()
     await db.execute(
         heads.insert().values(
             id=head_id,
-            market="kr",
+            market=market,
             session_date=day,
-            cutoff_at=datetime.combine(day, time(8, 30), _KST),
+            mode=mode,
+            cutoff_at=_cutoff(market, day),
         )
     )
     return head_id
@@ -193,9 +238,19 @@ async def write_version(
     policy: TradingPolicyDocument,
     policy_hash: str,
 ) -> dict:
-    """Validate and insert one publication in the caller's transaction."""
+    """Validate and insert one publication in the caller's transaction.
+
+    ``market`` (default kr) and ``mode`` (default plan_only) are explicit
+    request fields. An ``executable`` row is stored as such but nothing reads
+    it yet: the intent issuer is a later ticket (hk 6939 N2).
+    """
+    market = validate_market(request.get("market", "kr"))
+    mode = request.get("mode", "plan_only")
+    if mode not in PLAN_MODES:
+        raise ValueError("invalid_plan_mode")
+    zone = _ZONES[market]
     await _lock_head(db, day)
-    head_id = await _head(db, day)
+    head_id = await _head(db, day, market, mode)
     request_hash = _digest(request)
     key = request["idempotency_key"]
     if type(key) is not str or not 1 <= len(key) <= 200:
@@ -226,14 +281,14 @@ async def write_version(
     kind = request["kind"]
     if kind not in VERSION_KINDS:
         raise ValueError("invalid_version_kind")
-    regular = regular_session_bounds("kr", day)
-    if regular is None or now.utcoffset() is None or now.astimezone(_KST).date() != day:
+    regular = _regular_bounds(market, day)
+    if regular is None or now.utcoffset() is None or now.astimezone(zone).date() != day:
         raise ValueError("calendar_unknown")
-    cutoff = datetime.combine(day, time(8, 30), _KST)
+    cutoff = _cutoff(market, day)
     asof = parse_time(request["asof"])
     if (
         asof > now
-        or asof.astimezone(_KST).date() != day
+        or asof.astimezone(zone).date() != day
         or (kind == "premarket" and asof > cutoff)
     ):
         raise ValueError("invalid_version_time")
@@ -244,6 +299,9 @@ async def write_version(
     bundle_hash = request.get("input_bundle_sha256")
     if (bundle_id is None) != (bundle_hash is None):
         raise ValueError("invalid_bundle_reference")
+    if bundle_id and market != "kr":
+        # The server-side bundle assembler is KR only (hk 6902).
+        raise ValueError("bundle_market_unsupported")
     bundle_closed_at = asof
     bundle_body = None
     evidence = {}
@@ -273,8 +331,8 @@ async def write_version(
         bundle_body = bundle["body"]
         evidence = {row_key(row): row for row in bundle_body["rows"]}
 
-    previous = previous_trading_session("kr", day)
-    previous_bounds = regular_session_bounds("kr", previous) if previous else None
+    previous = _previous_session(market, day)
+    previous_bounds = _regular_bounds(market, previous) if previous else None
     if previous_bounds is None:
         raise ValueError("calendar_unknown")
     proposed = request["rows"]
@@ -285,8 +343,10 @@ async def write_version(
     prepared = []
     seen = set()
     for raw in proposed:
+        if raw.get("market") != market:
+            raise ValueError("market_mismatch")
         key_for_row = row_key({**raw, "symbol": raw["symbol"].strip().upper()})
-        close = _session_close(day, raw["venue"], raw["session"], regular[1])
+        close = _session_close(market, day, raw["venue"], raw["session"], regular)
         row_evidence = evidence.get(key_for_row)
         row = prepare_row(
             raw,
@@ -421,7 +481,7 @@ async def write_version(
     inserts = []
     replay_ids = []
     for row in prepared:
-        item = await _prepare_insert(db, version, row)
+        item = await _prepare_insert(db, version, row, mode)
         if isinstance(item, UUID):
             replay_ids.append(str(item))
         else:
@@ -438,8 +498,22 @@ async def _current_rows(db: AsyncSession, head_id: UUID, seq: int) -> dict:
 
 
 def _session_close(
-    day: date, venue: str, session: str, regular_close: datetime
+    market: str,
+    day: date,
+    venue: str,
+    session: str,
+    regular: tuple[datetime, datetime],
 ) -> datetime:
+    regular_close = regular[1]
+    if market == "crypto":
+        return regular_close
+    if market == "us":
+        if session == "us_pre":
+            return regular[0]
+        if session == "us_post":
+            # Extended hours end four hours after the (possibly early) close.
+            return regular_close + timedelta(hours=4)
+        return regular_close
     if venue == "NXT" and session == "premarket":
         return datetime.combine(day, time(8, 50), _KST)
     if session == "aftermarket":
@@ -447,7 +521,9 @@ def _session_close(
     return regular_close
 
 
-async def _prepare_insert(db: AsyncSession, version: dict, row: dict) -> dict | UUID:
+async def _prepare_insert(
+    db: AsyncSession, version: dict, row: dict, mode: str = "plan_only"
+) -> dict | UUID:
     adoption_key = content_hash = forecast_id = None
     if row.get("disposition") == "adopted":
         if (
@@ -478,6 +554,7 @@ async def _prepare_insert(db: AsyncSession, version: dict, row: dict) -> dict | 
     return {
         "id": uuid4(),
         "version_id": version["id"],
+        "execution_state": mode,
         **{
             key: row.get(key)
             for key in (
@@ -497,12 +574,19 @@ async def _prepare_insert(db: AsyncSession, version: dict, row: dict) -> dict | 
 
 
 async def get_plan(
-    db: AsyncSession, *, day: date, seq: int | None, now: datetime, max_carries: int
+    db: AsyncSession,
+    *,
+    day: date,
+    seq: int | None,
+    now: datetime,
+    max_carries: int,
+    market: str = "kr",
 ) -> dict | None:
+    market = validate_market(market)
     stmt = (
         select(versions)
         .join(heads, heads.c.id == versions.c.head_id)
-        .where(heads.c.session_date == day)
+        .where(heads.c.market == market, heads.c.session_date == day)
         .order_by(versions.c.seq.desc())
         .limit(1)
     )
@@ -522,8 +606,8 @@ async def get_plan(
                     carry_allowed=view["carry_allowed"],
                     carry_count=view["carry_count"],
                     carry_max_sessions=max_carries,
-                    next_session=next_trading_session("kr", day),
-                    session_date=now.astimezone(_KST).date(),
+                    next_session=_next_session(market, day),
+                    session_date=now.astimezone(_ZONES[market]).date(),
                 )
             )
         if row["forecast_id"]:
@@ -554,7 +638,9 @@ async def list_plans(
     now: datetime,
     max_carries: int,
     queue_for: date | None,
+    market: str = "kr",
 ) -> dict:
+    market = validate_market(market)
     latest = (
         select(versions.c.head_id, func.max(versions.c.seq).label("seq"))
         .group_by(versions.c.head_id)
@@ -563,6 +649,7 @@ async def list_plans(
     statement = (
         select(heads.c.session_date, latest.c.head_id, latest.c.seq)
         .join(latest, heads.c.id == latest.c.head_id)
+        .where(heads.c.market == market)
         .order_by(heads.c.session_date.desc())
         .limit(60)
     )
@@ -570,15 +657,27 @@ async def list_plans(
     plans = [dict(row) for row in result.mappings()]
     queue = []
     if queue_for is not None:
-        previous = previous_trading_session("kr", queue_for)
+        previous = _previous_session(market, queue_for)
         plan = (
-            await get_plan(db, day=previous, seq=None, now=now, max_carries=max_carries)
+            await get_plan(
+                db,
+                day=previous,
+                seq=None,
+                now=now,
+                max_carries=max_carries,
+                market=market,
+            )
             if previous
             else None
         )
         if plan:
             current = await get_plan(
-                db, day=queue_for, seq=None, now=now, max_carries=max_carries
+                db,
+                day=queue_for,
+                seq=None,
+                now=now,
+                max_carries=max_carries,
+                market=market,
             )
             decided = {row_key(row) for row in current["rows"]} if current else set()
             queue = [
@@ -591,16 +690,21 @@ async def list_plans(
 
 
 async def confirm_links(
-    db: AsyncSession, *, day: date, seq: int, now: datetime
+    db: AsyncSession, *, day: date, seq: int, now: datetime, market: str = "kr"
 ) -> dict:
     """Attach evidence already committed by forecast_save to adopted rows."""
+    market = validate_market(market)
     await _lock_head(db, day)
     version = (
         (
             await db.execute(
                 select(versions)
                 .join(heads, heads.c.id == versions.c.head_id)
-                .where(heads.c.session_date == day, versions.c.seq == seq)
+                .where(
+                    heads.c.market == market,
+                    heads.c.session_date == day,
+                    versions.c.seq == seq,
+                )
             )
         )
         .mappings()
@@ -610,12 +714,16 @@ async def confirm_links(
         raise ValueError("version_not_found")
     candidates = await _publication_rows(db, dict(version))
     results = []
-    next_day = next_trading_session("kr", day)
+    next_day = _next_session(market, day)
     for row in candidates:
         if row["forecast_id"] is None:
             continue
         state, decision_id = await _link_state(db, row)
-        if state == "pending" and next_day and now.astimezone(_KST).date() >= next_day:
+        if (
+            state == "pending"
+            and next_day
+            and now.astimezone(_ZONES[market]).date() >= next_day
+        ):
             state = "link_unresolved"
         previous = (
             (
@@ -707,12 +815,13 @@ async def _link_state(db: AsyncSession, row: dict) -> tuple[str, UUID | None]:
         .all()
     )
     body = row["body"]
+    instrument = _INSTRUMENTS[row.get("market", "kr")]
     if (
         forecast["correlation_id"] != row["adoption_key"]
         or forecast["decision_bucket"] != "deferred_no_action"
-        or forecast["market"] != "equity_kr"
+        or forecast["market"] != instrument
         or forecast["symbol"] != row["symbol"]
-        or decision["market"] != "equity_kr"
+        or decision["market"] != instrument
         or decision["symbol"] != row["symbol"]
         or decision["side"] != "buy"
         or decision["account_mode"] != body.get("would_be_account_mode")
