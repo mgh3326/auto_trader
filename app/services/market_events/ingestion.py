@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -343,6 +343,9 @@ async def ingest_kr_disclosures_for_date(
 
     try:
         rows = await fetch_rows(target_date)
+        # Our first-receipt clock, stamped after the provider answered. The
+        # repository writes it on insert only, so a re-ingest never moves it.
+        received_at = datetime.now(UTC)
         corp_registry = None
         endpoints = [capital_endpoint(row.get("report_nm") or "") for row in rows]
         needs_registry = any(
@@ -373,6 +376,7 @@ async def ingest_kr_disclosures_for_date(
             except ValueError as exc:
                 logger.warning("skipping unparseable dart row: %s (%s)", row, exc)
                 continue
+            event_dict["first_received_at"] = received_at
             if enrich_capital and endpoint and not credential_refused:
                 try:
                     value_dicts = await enrich_capital_event(

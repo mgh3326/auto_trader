@@ -1,0 +1,19 @@
+{
+  "symbol_state": "ok",
+  "news": [
+    {
+      "title": "Apple wins large cloud contract",
+      "url": "https://example.com/aapl-1",
+      "datetime": "2026-11-27T14:30:00+00:00",
+      "datetime_raw": "1795789800",
+      "source": "Reuters",
+      "relevance": {"status": "pending"},
+      "published_at": "2026-11-27T14:30:00+00:00",
+      "published_offset": "+00:00",
+      "published_precision": "second",
+      "first_received_at": "2026-11-27T14:33:12+00:00",
+      "event_key": "ev1:us:AAPL:title:2026-11-27:05461b7c0fed9848",
+      "event_key_basis": "title_day"
+    }
+  ]
+}

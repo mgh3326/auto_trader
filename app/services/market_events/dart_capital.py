@@ -180,6 +180,15 @@ async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | Non
     raise AssertionError("unreachable")
 
 
+async def filing_list_is_empty(**params: str) -> bool:
+    """True only when ``list.json`` answers "no data" (013) for these params.
+
+    ``False`` means DART reports filings; every other answer raises a
+    :class:`DartDetailError` subclass.
+    """
+    return await _request("list.json", **params) is None
+
+
 def _decimal(value: Any) -> Decimal | None:
     if not isinstance(value, str):
         return None

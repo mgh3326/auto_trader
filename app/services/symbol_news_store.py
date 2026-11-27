@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol
 from app.models.symbol_news_relevance import SymbolNewsRelevance
 from app.services.naver_news_urls import canonicalize_naver_news_url
+from app.services.news_payload_normalizer import NEWS_RELATION_TYPES
 from app.services.symbol_news_relevance import build_relevance_hints
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class StoredSymbolNews:
     fetched_at: datetime | None = None
     published_at_raw: str | None = None
     published_offset: str | None = None
+    published_precision: str | None = None
     first_received_at: datetime | None = None
     revised_at: datetime | None = None
     provider_article_id: str | None = None
@@ -598,19 +600,23 @@ async def upsert_related_symbols(
         return 0
     for row in rows:
         relation_type = row.get("relation_type")
-        if relation_type is None:
-            relation_type = "direct"
-            row["relation_type"] = relation_type
-        if relation_type not in {"direct", "sector", "market"}:
+        if relation_type is not None and (
+            not isinstance(relation_type, str)
+            or relation_type not in NEWS_RELATION_TYPES
+        ):
             raise ValueError("invalid_news_symbol_relation")
         evidence = row.get("relation_evidence")
         if not isinstance(evidence, dict) or not evidence:
+            # No evidence from the writer: the relation is unknown (hk 6968).
+            relation_type = None
             row["relation_evidence"] = {
                 "kind": "legacy_candidate",
                 "source": row.get("source"),
                 "matched_term": row.get("matched_term"),
                 "candidate": row.get("raw") or {},
             }
+        # Every row carries the key so the multi-row INSERT stays uniform.
+        row["relation_type"] = relation_type
     result = await db.execute(
         pg_insert(NewsArticleRelatedSymbol)
         .values(rows)
@@ -757,6 +763,7 @@ async def load_symbol_news(
             fetched_at=article.scraped_at,
             published_at_raw=article.published_at_raw,
             published_offset=article.published_offset,
+            published_precision=article.published_precision,
             first_received_at=article.first_received_at,
             revised_at=article.revised_at,
             provider_article_id=article.provider_article_id,

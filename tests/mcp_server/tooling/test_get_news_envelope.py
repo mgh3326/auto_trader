@@ -16,6 +16,16 @@ from app.services.symbol_news_service import (
     SymbolNewsFetchResult,
 )
 
+# hk 6968 — item keys added on top of the provider's own payload.
+_ITEM_ADDITIONS = {
+    "published_at",
+    "published_offset",
+    "published_precision",
+    "first_received_at",
+    "event_key",
+    "event_key_basis",
+}
+
 
 def _naver_article() -> SymbolNewsArticle:
     raw = {
@@ -93,11 +103,17 @@ async def test_get_news_kr_envelope_adds_freshness_contract(
         "source": "naver",
         "count": 1,
         "excluded_count": 0,
-        "news": [art.provider_metadata["source_item"]],
     }
     assert {key: out[key] for key in expected_payload} == expected_payload
+    [item] = out["news"]
+    source_item = art.provider_metadata["source_item"]
+    assert {key: item[key] for key in source_item} == source_item
+    assert set(item) == {*source_item, *_ITEM_ADDITIONS}
+    assert out["symbol_state"] == "stale_copy"
     assert set(out) == {
         *expected_payload,
+        "news",
+        "symbol_state",
         "data_state",
         "stale",
         "derived_as_of",
@@ -267,6 +283,7 @@ async def test_get_news_us_envelope_keys_preserved(
         "summary",
         "sentiment",
         "related",
+        *_ITEM_ADDITIONS,
     }
     assert out["news"][0]["sentiment"] == "positive"
     assert "relevance" not in out["news"][0]
@@ -322,6 +339,7 @@ async def test_get_news_error_payload_carries_closed_reason(
 
     assert out.get("error_code") == "news_lookup_failed"
     assert out.get("error_class") == "TimeoutError"
+    assert out.get("symbol_state") == "fetch_failed"
     assert out.get("data_state") == "missing"
     assert "suggestion" in out
     assert "news" not in out

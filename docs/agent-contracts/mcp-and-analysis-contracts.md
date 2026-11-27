@@ -295,6 +295,60 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - 미등록 Dagu 사본: `deploy/dagu/at-kr-news-timing/` — 평일 07:00–20:00 KST, 5분 간격.
   저장소 변경은 DAG를 등록하거나 활성화하지 않는다.
 
+### get_news·get_disclosures 시각, 종목 상태, 사건 키 (hk 6968)
+
+**항목별 시각.** `get_news.news[]`와 `get_disclosures.filings[]`는 항상 `published_at`, `published_offset`,
+`published_precision`, `first_received_at`을 싣는다. 모르는 값은 null이며 다른 시각으로 대신하지 않는다.
+
+- `published_at`은 제공자 발행 시각이며 `published_offset` 기준 ISO 8601이다. `published_precision=date`면
+  날짜(`YYYY-MM-DD`)만 낸다. 뉴스의 저장 오프셋이 없으면 시장 시간대(KR=KST, 그 밖=UTC)로 표시하고
+  `published_offset`은 null이다.
+- `first_received_at`은 우리 최초 수신 시각(UTC)이다. 시각 열이 생기기 전 행과 뉴스 저장소가 내려간 응답은 null이다.
+- 공시의 발행 시각 근거는 `published_at_source`가 밝힌다. 우선순위: `market_events_publication`(DART 행의
+  발행 열) → `dart_receipt_time`(DART 당일 목록의 접수 `HH:MM`, KST, 분 정밀도) → `naver_disclosure`(접수번호가
+  연결된 네이버 행) → `dart_list_date`(OpenDART 목록의 날짜). `first_received_at`은 DART 행과 연결된 네이버 행의
+  가장 이른 수신 시각이고 `first_received_source`가 출처다. 저장 시각 읽기가 실패해도 공시는 내며
+  `receipt_lookup="failed"`다(정상은 `ok`). DART 일별 수집은 새 행에 `first_received_at`을 기록하고 재수집은 바꾸지
+  않는다. 기존 행은 소급하지 않는다.
+
+**종목 상태 `symbol_state`** (두 도구, 닫힌 어휘 — `app/mcp_server/tooling/symbol_state.py`). "뉴스 없음"과
+"수집 실패"는 다른 상태다.
+
+| 값 | `get_news` | `get_disclosures` |
+|---|---|---|
+| `ok` | 조회 성공, 응답 항목 중 하나 이상이 3시간 창 안에 수신됨 | 조회 성공, 공시 있음 |
+| `no_items` | 조회 성공, 낼 항목 없음(제외 행 수는 `excluded_count`) | OpenDART 상태 `013`으로 증명된 빈 목록 |
+| `stale_copy` | 제공자 실패 또는 전 행 판독 불가인데 저장분을 냄, 또는 낸 항목이 모두 3시간보다 오래전에 수신됨 | 내지 않는다(저장분 폴백 없음) |
+| `fetch_failed` | 실패이고 낼 것이 없음. 제공자 행을 모두 버린 경우(`parser_skips`) 포함 | 조회·검증 실패 |
+
+- ROB-510의 `error_code="news_lookup_failed"` 오류 응답은 그대로이며 `symbol_state="fetch_failed"`가 붙는다.
+- `data_state`/`stale`은 낸 항목 중 **가장 오래된** 수신 시각의 나이이고, `symbol_state`는 이번 조회의 결과다.
+  최신 조회가 성공해도 오래된 저장 행이 페이지를 채우면 `data_state=stale`, `symbol_state=ok`일 수 있다.
+- OpenDartReader는 DART 오류 상태(한도 초과·키·점검)에도 빈 목록을 돌려주므로, 빈 목록은
+  `list.json`의 상태 `013`을 다시 확인해야 `no_items`다. 그 밖의 답은 `success=false`·`fetch_failed`다.
+  DART 오류 문자열에서 API 키는 지운다.
+
+**사건 키 `event_key` / `event_key_basis`** (`app/services/news_event_key.py`, 순수 함수, LLM 없음).
+점수를 매기는 쪽은 같은 키를 **한 사건으로 한 번만** 센다. 형식은 `ev1:{market}:{symbol}:…`이다.
+
+1. `disclosure_id` — 같은 종목 + 같은 공시 ID(`rcept_no`/`dart_id`, `krx_id`, `kis_id`, `filing_id`, `ir_id`;
+   `document_id`류는 제외). 기사가 ID를 정확히 하나 인용할 때만 적용한다(DART 접수번호가 있으면 그것을 쓴다).
+   기간 제한은 없다. 공시의 키는 `ev1:kr:{종목}:doc:dart:{접수번호}`라서 그 접수번호를 인용한 기사와 같다
+   (종목 코드를 모르면 `-`). 정정 공시는 새 접수번호이므로 다른 키다.
+2. `title_day` — 같은 종목 + 정규화 제목 + **시장 현지 같은 날**(KR=Asia/Seoul, US=America/New_York,
+   crypto=UTC). 정규화: NFKC, 소문자화, 닫힌 후속 표지 제거(`[속보]`·`(종합)`·`(N보)`·`단독`·`상보`·`수정`·`정정`,
+   `Breaking:`·`UPDATE N-` 등), 따옴표·말줄임·구두점 정리. 숫자·부호·`%`·종목 코드는 남긴다. 같은 응답에서
+   그 제목·날짜 묶음의 공시 ID가 하나뿐이면 ID 없는 기사도 그 ID 키를 쓴다.
+3. `article` — 발행 시각을 모르거나 정규화 제목이 8자 미만이면 기사별 키(URL 해시).
+
+한계: 제목을 새로 쓴 후속 기사와 다음 날 후속 기사는 다른 키다.
+
+**수집 입력 검증(hk 6767 이월).** 뉴스 입력의 `published_offset`은 `±HH:MM`, `published_precision`은
+`second`/`minute`/`date`만 받고 그 밖은 배치 저장 전에 422다. 원문에서 유도한 오프셋도 같은 검사를 통과해야
+저장한다. 오프셋 우선순위는 명시값 → 제공자 원문 → 파싱 시각이다. `news_article_related_symbols.relation_type`은
+`direct`/`sector`/`market` 또는 NULL(미확인)이다. 작성자가 관계와 근거를 함께 주지 않으면 NULL이며
+`direct`를 기본값으로 넣지 않는다. 기존 행은 바꾸지 않는다.
+
 
 ### retro/v1 모의 왕복 읽기 `mock_round_trips` (hk 6476)
 

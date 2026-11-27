@@ -40,3 +40,27 @@ def test_research_report_receipt_default_is_expand_only_sql_expression() -> None
     assert "ALTER COLUMN first_received_at SET NOT NULL" not in sql
     assert "UPDATE research_reports SET first_received_at" not in sql
     assert "SET relation_type = 'direct'" not in sql
+
+
+def test_legacy_relations_are_left_unknown() -> None:
+    """hk 6968: the migration labels evidence only; it asserts no relation."""
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    original_op = MIGRATION.op
+    MIGRATION.op = Operations(context)
+    try:
+        MIGRATION.upgrade()
+    finally:
+        MIGRATION.op = original_op
+
+    updates = [
+        line
+        for line in output.getvalue().splitlines()
+        if line.startswith("UPDATE news_article_related_symbols")
+    ]
+    assert updates
+    assert all("relation_type" not in line for line in updates)
+    assert all("'legacy_candidate'" in line for line in updates)

@@ -271,7 +271,10 @@ def register_analysis_tools(
             "Supports direct 6-digit stock-code inputs (e.g., '005930') and best-effort "
             "Korean company-name inputs (e.g., '삼성전자'). "
             "Returns filing date, report name, report number, and "
-            "corporation name. Set include_values to read stored capital and ownership metrics."
+            "corporation name, published_at (KST), first_received_at (ours) and "
+            "event_key (shared with news citing the receipt: count once). "
+            "symbol_state is ok / no_items / fetch_failed. Set include_values to "
+            "read stored capital and ownership metrics."
         ),
     )
     async def get_disclosures(

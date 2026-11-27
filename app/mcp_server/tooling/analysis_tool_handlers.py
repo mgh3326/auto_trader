@@ -42,14 +42,21 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
+from app.mcp_server.tooling.symbol_state import (
+    SYMBOL_STATE_FETCH_FAILED,
+    SYMBOL_STATE_NO_ITEMS,
+    SYMBOL_STATE_OK,
+)
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
+from app.services.disclosures.timing import disclosure_timing
 from app.services.market_valuation_snapshots.normalized_market_cap import (
     KR_NORMALIZED_MARKET_CAP_SOURCE,
     NormalizedMarketCap,
     fetch_normalized_kr_market_caps,
 )
+from app.services.news_event_key import BASIS_DISCLOSURE_ID, disclosure_key
 
 logger = logging.getLogger(__name__)
 
@@ -649,26 +656,35 @@ async def get_disclosures_impl(
             "error": "DART functionality not available",
             "filings": [],
             "symbol": symbol,
+            "symbol_state": SYMBOL_STATE_FETCH_FAILED,
         }
 
     try:
         result = await list_filings(symbol, days, limit, report_type)
-        if not include_values or not result["success"] or not result["filings"]:
-            return result
-        from app.core.db import AsyncSessionLocal
-        from app.services.market_events.query_service import MarketEventsQueryService
-
-        filings = result["filings"]
-        async with AsyncSessionLocal() as db:
-            values = await MarketEventsQueryService(db).dart_values_by_receipt(
-                [filing["rcp_no"] for filing in filings]
+        if not result["success"]:
+            return {**result, "symbol_state": SYMBOL_STATE_FETCH_FAILED}
+        if not result["filings"]:
+            return {**result, "symbol_state": SYMBOL_STATE_NO_ITEMS}
+        filings, receipt_lookup = await _timed_filings(symbol, result["filings"])
+        if include_values:
+            from app.core.db import AsyncSessionLocal
+            from app.services.market_events.query_service import (
+                MarketEventsQueryService,
             )
-        return {
-            **result,
-            "filings": [
+
+            async with AsyncSessionLocal() as db:
+                values = await MarketEventsQueryService(db).dart_values_by_receipt(
+                    [filing["rcp_no"] for filing in filings]
+                )
+            filings = [
                 {**filing, "values": values.get(filing["rcp_no"], [])}
                 for filing in filings
-            ],
+            ]
+        return {
+            **result,
+            "filings": filings,
+            "symbol_state": SYMBOL_STATE_OK,
+            "receipt_lookup": receipt_lookup,
         }
     except Exception as exc:
         return {
@@ -676,7 +692,49 @@ async def get_disclosures_impl(
             "error": str(exc),
             "filings": [],
             "symbol": symbol,
+            "symbol_state": SYMBOL_STATE_FETCH_FAILED,
         }
+
+
+async def _timed_filings(
+    symbol: str, filings: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str]:
+    """Add publish / first-receipt times and the event key to each filing.
+
+    The stored-time read is fail-soft: filings are still returned, with
+    ``receipt_lookup="failed"`` so a null receipt is not read as "never seen".
+    """
+    fallback = symbol.strip()
+    if not (len(fallback) == 6 and fallback.isdigit()):
+        fallback = "-"
+    codes = [filing.get("stock_code") or fallback for filing in filings]
+    receipt_lookup = "ok"
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.services.market_events.query_service import MarketEventsQueryService
+
+        async with AsyncSessionLocal() as db:
+            stored = await MarketEventsQueryService(db).disclosure_rows_by_receipt(
+                [filing["rcp_no"] for filing in filings],
+                sorted({code for code in codes if code != "-"}),
+            )
+    except Exception as exc:  # noqa: BLE001 — timing must not hide the filings
+        logger.warning(
+            "get_disclosures: stored receipt read failed: %s", type(exc).__name__
+        )
+        stored, receipt_lookup = {}, "failed"
+
+    timed = []
+    for filing, code in zip(filings, codes, strict=True):
+        receipt = filing["rcp_no"]
+        item = {key: value for key, value in filing.items() if key != "stock_code"}
+        item.update(disclosure_timing(filing["date"], stored.get(receipt, [])))
+        item["event_key"] = (
+            disclosure_key("kr", code, "dart", receipt) if receipt else None
+        )
+        item["event_key_basis"] = BASIS_DISCLOSURE_ID if receipt else None
+        timed.append(item)
+    return timed, receipt_lookup
 
 
 async def get_correlation_impl(

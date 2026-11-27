@@ -438,7 +438,8 @@ def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candida
     assert rows[1]["matched_term"] == "삼전"
     assert rows[1]["score"] == pytest.approx(0.91)
     assert rows[1]["source"] == "candidate_metadata"
-    assert rows[1]["relation_type"] == "direct"
+    # hk 6968: a candidate naming no relation is unknown, not "direct".
+    assert rows[1]["relation_type"] is None
     assert rows[1]["relation_evidence"]["kind"] == "provider_candidate"
     assert rows[1]["relation_evidence"]["judgment_state"] == "pending"
 

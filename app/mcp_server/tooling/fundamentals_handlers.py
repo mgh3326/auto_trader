@@ -150,8 +150,12 @@ def _register_fundamentals_tools_impl(
         description=(
             "Get recent catalyst news for ONE stock or cryptocurrency "
             "(per-symbol headlines + relevance). Supports US stocks (Finnhub), "
-            "Korean stocks (Naver Finance), and crypto (Finnhub). For many "
-            "symbols / your current holdings in one call, use get_holdings_news."
+            "Korean stocks (Naver Finance), and crypto (Finnhub). symbol_state "
+            "is ok / no_items / stale_copy / fetch_failed (a failed lookup is "
+            "not 'no news'). Each item has published_at (provider offset), "
+            "first_received_at (ours) and event_key: count items sharing a key "
+            "as one event. For many symbols / your current holdings in one call, "
+            "use get_holdings_news."
         ),
     )
     async def get_news(

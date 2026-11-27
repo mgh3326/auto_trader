@@ -104,6 +104,10 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 - CLI 요약 JSON 은 기존 키를 그대로 두고 `pending`(미완료 파티션 수)을 추가한다. `failed == 0` 이면 pending 이 있어도 종료 코드 0이다.
   `pending` 키는 날짜 단위 루프 경로(dart 등)에만 있고 finnhub 범위 경로는 바뀌지 않았다.
 
+**DART 최초 수신 시각 (hk 6968)**: `ingest_kr_disclosures_for_date`는 제공자 응답을 받은 뒤의 우리 시계를
+`market_events.first_received_at`에 새 행에만 기록한다. 재수집은 바꾸지 않고 기존 NULL 행은 채우지 않는다.
+`get_disclosures`의 시각 투영 규칙은 MCP·분석 계약의 hk 6968 절을 따른다.
+
 **DART 공시 심볼 연결 (hk 4591)**: `list_date_ex` 행에 `stock_code`가 없으면 공식 OpenDART `corpCode.xml`
 레지스트리의 `corp_name`을 공백 정규화한 뒤 정확히 비교한다. 디스크 캐시는 7일 TTL이며 갱신은 원자적으로 수행한다.
 정규화 이름에 해당하는 레지스트리 항목 중 유효한 6자리 숫자 `stock_code`를 가진 상장사가 정확히 하나일 때만

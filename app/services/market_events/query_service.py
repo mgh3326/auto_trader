@@ -18,6 +18,7 @@ from app.schemas.market_events import (
     MarketEventsRangeResponse,
     MarketEventValueResponse,
 )
+from app.services.disclosures.timing import StoredDisclosureRow
 from app.services.market_events.taxonomy import (
     validate_category,
     validate_market,
@@ -99,6 +100,22 @@ def select_current_metric_value(
     return max(values, key=order_key)
 
 
+def _disclosure_row(
+    event: MarketEvent, *, receipt_text: str | None = None
+) -> StoredDisclosureRow:
+    return StoredDisclosureRow(
+        source=event.source,
+        published_at=event.published_at,
+        published_date=event.published_date,
+        published_offset=event.published_offset,
+        published_precision=event.published_precision,
+        provider_created_at=event.provider_created_at,
+        provider_created_raw=event.provider_created_raw,
+        first_received_at=event.first_received_at,
+        receipt_text=receipt_text,
+    )
+
+
 class MarketEventsQueryService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -131,6 +148,56 @@ class MarketEventsQueryService:
                 }
             )
         return values
+
+    async def disclosure_rows_by_receipt(
+        self, receipts: list[str], symbols: list[str]
+    ) -> dict[str, list[StoredDisclosureRow]]:
+        """Stored timing evidence for DART receipts (DART and linked Naver rows).
+
+        Naver rows are looked up only for the given symbols: the collector links
+        a receipt to the stock it fetched.
+        """
+        if not receipts:
+            return {}
+        rows: dict[str, list[StoredDisclosureRow]] = {}
+        dart_stmt = (
+            select(MarketEvent)
+            .where(
+                MarketEvent.source == "dart",
+                MarketEvent.market == "kr",
+                MarketEvent.category.in_(("disclosure", "earnings")),
+                MarketEvent.source_event_id.in_(receipts),
+            )
+            .order_by(MarketEvent.id)
+        )
+        for event in (await self.db.execute(dart_stmt)).scalars().all():
+            receipt_text = (event.raw_payload_json or {}).get("rcept_dt")
+            rows.setdefault(event.source_event_id, []).append(
+                _disclosure_row(
+                    event,
+                    receipt_text=receipt_text
+                    if isinstance(receipt_text, str)
+                    else None,
+                )
+            )
+        if not symbols:
+            return rows
+        link = MarketEvent.raw_payload_json["dart_rcept_no"].astext
+        naver_stmt = (
+            select(MarketEvent)
+            .where(
+                MarketEvent.source == "naver_disclosure",
+                MarketEvent.market == "kr",
+                MarketEvent.category == "disclosure",
+                MarketEvent.symbol.in_(symbols),
+                link.in_(receipts),
+            )
+            .order_by(MarketEvent.id)
+        )
+        for event in (await self.db.execute(naver_stmt)).scalars().all():
+            receipt = (event.raw_payload_json or {}).get("dart_rcept_no")
+            rows.setdefault(receipt, []).append(_disclosure_row(event))
+        return rows
 
     async def list_for_date(
         self,

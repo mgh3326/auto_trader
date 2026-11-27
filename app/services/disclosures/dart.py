@@ -6,6 +6,7 @@ import enum
 import fcntl
 import importlib
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -84,6 +85,50 @@ def _error_payload(symbol: str, message: str) -> dict[str, Any]:
         "filings": [],
         "symbol": symbol,
     }
+
+
+def _redact(message: str) -> str:
+    """Strip the API key: transport errors echo the request URL."""
+    if settings.opendart_api_key:
+        message = message.replace(settings.opendart_api_key, "[redacted]")
+    return re.sub(r"crtfc_key=[^&\s'\"]+", "crtfc_key=[redacted]", message)
+
+
+async def _empty_list_failure(
+    client: Any, corp: str, start: dt.date, end: dt.date, kind: str
+) -> str | None:
+    """Why an empty filing list is not proof of "no filings", else None.
+
+    OpenDartReader prints DART error statuses (quota, key, maintenance) and
+    returns an empty frame, so an empty result is confirmed by DART status 013.
+    """
+    from app.services.market_events.dart_capital import (
+        DartDetailError,
+        filing_list_is_empty,
+    )
+
+    failed = "DART filing list check failed"
+    try:
+        corp_code = await asyncio.to_thread(client.find_corp_code, corp)
+        if not corp_code:
+            return f"{failed}: unknown company"
+        params = {
+            "corp_code": str(corp_code),
+            "bgn_de": start.strftime("%Y%m%d"),
+            "end_de": end.strftime("%Y%m%d"),
+            "last_reprt_at": "Y",
+            "page_no": "1",
+            "page_count": "10",
+        }
+        if kind:
+            params["pblntf_ty"] = kind
+        if await filing_list_is_empty(**params):
+            return None
+    except DartDetailError as exc:
+        return f"{failed}: {_redact(str(exc))}"
+    except Exception as exc:
+        return f"{failed}: {type(exc).__name__}"
+    return f"{failed}: DART reports filings the list read did not return"
 
 
 def _today(today: dt.date | None = None) -> dt.date:
@@ -231,14 +276,15 @@ def _normalize_filings(df: pd.DataFrame, limit: int) -> list[dict[str, str]]:
     filings: list[dict[str, str]] = []
     limit_clamped = max(limit, 0)
     for _, row in df.head(limit_clamped).iterrows():
-        filings.append(
-            {
-                "date": _format_receipt_date(_row_text(row, "rcept_dt")),
-                "report_nm": _row_text(row, "report_nm"),
-                "rcp_no": _row_text(row, "rcept_no"),
-                "corp_name": _row_text(row, "corp_name"),
-            }
-        )
+        filing = {
+            "date": _format_receipt_date(_row_text(row, "rcept_dt")),
+            "report_nm": _row_text(row, "report_nm"),
+            "rcp_no": _row_text(row, "rcept_no"),
+            "corp_name": _row_text(row, "corp_name"),
+        }
+        if stock_code := _row_text(row, "stock_code").strip():
+            filing["stock_code"] = stock_code
+        filings.append(filing)
     return filings
 
 
@@ -284,7 +330,14 @@ async def list_filings(
     try:
         df = await asyncio.to_thread(fetch_sync)
     except Exception as exc:
-        return _error_payload(normalized_symbol, str(exc))
+        return _error_payload(normalized_symbol, _redact(str(exc)))
+
+    if df.empty:
+        failure = await _empty_list_failure(
+            client, normalized_symbol, start_date, end_date, kind
+        )
+        if failure is not None:
+            return _error_payload(normalized_symbol, failure)
 
     return {
         "success": True,
