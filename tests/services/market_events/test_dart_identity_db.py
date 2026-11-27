@@ -36,7 +36,7 @@ async def _clean_market_events(db_session, _market_events_lock):
     yield
 
 
-def _dart_event(report_nm: str, category: str) -> dict:
+def _dart_event(report_nm: str, category: str, rcept_dt: str = "20261127") -> dict:
     from app.services.market_events.normalizers import normalize_dart_disclosure_row
 
     event, _ = normalize_dart_disclosure_row(
@@ -46,7 +46,7 @@ def _dart_event(report_nm: str, category: str) -> dict:
             "stock_code": "123456",
             "report_nm": report_nm,
             "rcept_no": RECEIPT,
-            "rcept_dt": "20261127",
+            "rcept_dt": rcept_dt,
         }
     )
     assert event["category"] == category
@@ -146,3 +146,72 @@ async def test_existing_duplicate_receipt_fails_closed_without_writing(db_sessio
         )
     ).scalar_one()
     assert count == 2
+
+
+async def _one_row(db_session):
+    from app.models.market_events import MarketEvent
+
+    return (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(
+                    MarketEvent.source == "dart",
+                    MarketEvent.source_event_id == RECEIPT,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_timed_write_clears_an_earlier_date_only_publication(db_session):
+    from app.services.disclosures.timing import (
+        PUBLISHED_FROM_DART_RECEIPT,
+        StoredDisclosureRow,
+        disclosure_timing,
+    )
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(_dart_event("기타공시", "disclosure"), [])
+    await repo.upsert_event_with_values(
+        _dart_event("기타공시", "disclosure", rcept_dt="2026-11-27 16:30"), []
+    )
+    await db_session.commit()
+
+    row = await _one_row(db_session)
+    assert row.published_precision is None
+    assert row.published_date is None
+    timing = disclosure_timing(
+        "2026-11-27",
+        [
+            StoredDisclosureRow(
+                source="dart",
+                published_date=row.published_date,
+                published_precision=row.published_precision,
+                receipt_text=row.raw_payload_json["rcept_dt"],
+            )
+        ],
+    )
+    assert timing["published_precision"] == "minute"
+    assert timing["published_at_source"] == PUBLISHED_FROM_DART_RECEIPT
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_date_only_write_after_a_timed_one_stores_the_date(db_session):
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(
+        _dart_event("기타공시", "disclosure", rcept_dt="2026-11-27 16:30"), []
+    )
+    await repo.upsert_event_with_values(_dart_event("기타공시", "disclosure"), [])
+    await db_session.commit()
+
+    row = await _one_row(db_session)
+    assert row.published_precision == "date"
+    assert row.published_date == date(2026, 11, 27)

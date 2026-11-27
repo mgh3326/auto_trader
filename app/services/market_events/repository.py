@@ -315,6 +315,13 @@ class MarketEventsRepository:
                 value = payload.get(column)
                 if value is not None:
                     update_columns[column] = value
+            if payload.get("source") == DART_SOURCE and not payload.get(
+                "published_precision"
+            ):
+                # A timed DART row keeps its time in raw_payload_json.rcept_dt and
+                # no publication tuple. A date-only tuple an earlier write stored
+                # must not outrank that time, so clear it (hk 6408).
+                update_columns.update(dict.fromkeys(PUBLICATION_FIELDS))
             if clear_notice_symbol:
                 if payload.get("source") not in {"upbit_notice", "bithumb_notice"}:
                     raise ValueError("clear_notice_symbol is only valid for notices")

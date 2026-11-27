@@ -2,9 +2,14 @@
 
 ``fetch_dart_filings_for_date`` reads ``list.json`` (공시검색) for one receipt
 day, page by page, through the same closed-error client that the capital detail
-path uses (``dart_capital``). No HTML scraping: the scraper this replaces had no
-guaranteed response shape. The official list gives ``rcept_dt`` as a date only
-(``YYYYMMDD``), so a row from here carries no receipt time.
+path uses (``dart_capital``). The official list is the source of rows and of the
+receipt-number identity. Its ``rcept_dt`` is a date only (``YYYYMMDD``).
+
+The receipt time (HH:MM) still comes from the same day's ``list_date_ex`` read,
+used as an enrichment only: ``fetch_dart_receipt_times_for_date`` returns the
+scraped times by exact ``rcept_no``, and ``join_receipt_times`` applies them to
+official rows. A failed scrape or a missing match leaves the official row
+date-only (fail-open).
 
 The corp-code registry (``corpCode.xml``) is still used, but only for rows whose
 list entry has no ``stock_code`` (unlisted issuers).
@@ -17,6 +22,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from collections import defaultdict
@@ -27,6 +33,8 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.symbol import KR_SHORT_CODE
+from app.core.timezone import today_kst
+from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +43,13 @@ DART_CORP_REGISTRY_CACHE_PATH = Path(
     "/tmp/auto_trader/opendartreader/dart_corp_registry.json"
 )
 DART_CORP_REGISTRY_LOCK_PATH = DART_CORP_REGISTRY_CACHE_PATH.with_suffix(".lock")
+
+# Columns the receipt-time enrichment needs from ``list_date_ex``.
+DART_LIST_DATE_EX_REQUIRED_COLUMNS = frozenset({"rcept_no", "rcept_dt"})
+# A scraped receipt value that carries a time of day: a date, then HH:MM.
+_TIMED_RECEIPT_RE = re.compile(
+    r"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?$"
+)
 
 # OpenDART list.json page size (max 100) and the most pages one receipt day may
 # take before the list is refused as incomplete. 50 pages is 5,000 filings.
@@ -259,3 +274,81 @@ async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]
         seen.add(receipt)
         unique.append(row)
     return unique
+
+
+async def fetch_dart_receipt_times_for_date(target_date: date) -> dict[str, str]:
+    """Receipt time of the day's filings from the list_date_ex scrape (hk 6968).
+
+    Returns ``{rcept_no: "YYYY-MM-DD HH:MM[:SS]"}`` for rows whose scraped receipt
+    value carries a time on ``target_date``. A duplicate receipt number is dropped
+    (ambiguous). Any failure returns ``{}``: this is enrichment, so the official
+    rows still store date-only. The exception class name is logged; the message is
+    not, because an OpenDartReader error can carry the request URL and its key.
+    A day on or after today is never read from the on-disk page cache (hk 3845).
+    """
+    client = await _get_client()
+    if client is None:
+        logger.warning("DART receipt-time enrichment skipped: client unavailable")
+        return {}
+    iso = target_date.isoformat()
+    use_cache = target_date < today_kst()
+
+    def read_sync() -> dict[str, str]:
+        frame = client.list_date_ex(iso, cache=use_cache)
+        columns = getattr(frame, "columns", None)
+        if columns is None or not DART_LIST_DATE_EX_REQUIRED_COLUMNS.issubset(columns):
+            raise ValueError("list_date_ex response has an unexpected schema")
+        # One receipt number, one usable time. Anything ambiguous is dropped.
+        candidates: dict[str, list[str | None]] = {}
+        for record in frame.to_dict(orient="records"):
+            receipt = str(record.get("rcept_no") or "").strip()
+            if not receipt:
+                continue
+            value = record.get("rcept_dt")
+            text = (
+                value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+            )
+            match = _TIMED_RECEIPT_RE.match(text.strip())
+            usable = (
+                text.strip().replace("T", " ")
+                if match and match.group(1) == iso
+                else None
+            )
+            candidates.setdefault(receipt, []).append(usable)
+        return {
+            receipt: values[0]
+            for receipt, values in candidates.items()
+            if len(values) == 1 and values[0] is not None
+        }
+
+    try:
+        return await asyncio.to_thread(read_sync)
+    except Exception as exc:
+        logger.warning(
+            "DART receipt-time enrichment unavailable (%s); rows stay date-only",
+            type(exc).__name__,
+        )
+        return {}
+
+
+def join_receipt_times(
+    rows: list[dict[str, Any]], times: dict[str, str]
+) -> tuple[list[dict[str, Any]], int]:
+    """Apply scraped receipt times to official rows, by exact receipt number.
+
+    Only official ``rows`` are returned: a scraped receipt with no official row is
+    never inserted. A time is applied only when its date equals the row's own
+    official receipt date. Returns ``(rows, applied_count)``.
+    """
+    applied = 0
+    joined: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = str(row.get("rcept_no") or "").strip()
+        official_day = str(row.get("rcept_dt") or "").strip()[:8]
+        timed = times.get(receipt)
+        if timed and timed[:10].replace("-", "") == official_day:
+            joined.append({**row, "rcept_dt": timed})
+            applied += 1
+        else:
+            joined.append(row)
+    return joined, applied

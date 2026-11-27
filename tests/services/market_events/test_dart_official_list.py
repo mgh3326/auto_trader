@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.timezone import KST
 from app.services.market_events import dart_capital, dart_helpers
 from app.services.market_events.dart_capital import DartDetailError
 from app.services.market_events.normalizers import normalize_dart_disclosure_row
@@ -28,6 +27,8 @@ FIXTURE = (
     / "list_json_doc_shape.json"
 )
 DAY = date(2026, 11, 27)
+TODAY = date(2026, 11, 27)
+YESTERDAY = date(2026, 11, 26)
 
 
 def _fixture_payload() -> dict:
@@ -360,21 +361,56 @@ def test_official_receipt_date_is_date_precision_with_no_time():
     assert event["event_date"] == date(2026, 11, 27)
 
 
-def test_a_row_that_carries_a_time_keeps_it_as_a_kst_minute_instant():
+def test_a_timed_row_writes_no_publication_columns_and_keeps_the_time_in_raw():
+    # hk 6968 reads the scraped time from raw_payload_json.rcept_dt; writing a
+    # publication tuple would change its basis to market_events_publication.
     event, _ = normalize_dart_disclosure_row(_row(rcept_dt="2026-11-27 16:30"))
 
-    assert event["published_precision"] == "minute"
-    assert event["published_date"] is None
-    assert event["published_offset"] == "+09:00"
-    # The instant is KST-aware; the repository converts to UTC on write.
-    assert event["published_at"] == datetime(2026, 11, 27, 16, 30, tzinfo=KST)
+    assert "published_precision" not in event
+    assert "published_at" not in event
+    assert event["event_date"] == date(2026, 11, 27)
+    assert event["raw_payload_json"]["rcept_dt"] == "2026-11-27 16:30"
 
 
-def test_a_row_with_seconds_is_second_precision():
-    event, _ = normalize_dart_disclosure_row(_row(rcept_dt="2026-11-27T16:30:05"))
+def test_timed_raw_payload_is_minute_precision_with_the_dart_receipt_basis():
+    from app.services.disclosures.timing import (
+        PUBLISHED_FROM_DART_RECEIPT,
+        StoredDisclosureRow,
+        disclosure_timing,
+    )
 
-    assert event["published_precision"] == "second"
-    assert event["published_at"] == datetime(2026, 11, 27, 16, 30, 5, tzinfo=KST)
+    event, _ = normalize_dart_disclosure_row(_row(rcept_dt="2026-11-27 16:30"))
+    stored = StoredDisclosureRow(
+        source="dart",
+        receipt_text=event["raw_payload_json"]["rcept_dt"],
+    )
+
+    timing = disclosure_timing("2026-11-27", [stored])
+
+    assert timing["published_precision"] == "minute"
+    assert timing["published_at_source"] == PUBLISHED_FROM_DART_RECEIPT
+    assert timing["published_at"].startswith("2026-11-27T16:30:00")
+
+
+def test_a_date_only_row_is_timed_by_its_date_basis():
+    from app.services.disclosures.timing import (
+        PUBLISHED_FROM_EVENT,
+        StoredDisclosureRow,
+        disclosure_timing,
+    )
+
+    event, _ = normalize_dart_disclosure_row(_row())
+    stored = StoredDisclosureRow(
+        source="dart",
+        published_date=event["published_date"],
+        published_precision=event["published_precision"],
+        receipt_text=event["raw_payload_json"]["rcept_dt"],
+    )
+
+    timing = disclosure_timing("2026-11-27", [stored])
+
+    assert timing["published_precision"] == "date"
+    assert timing["published_at_source"] == PUBLISHED_FROM_EVENT
 
 
 def test_correction_tags_share_the_family_key_with_the_original():
@@ -427,3 +463,277 @@ def test_unlisted_issuer_without_a_registry_is_unresolved_not_corp_code():
     assert event["raw_payload_json"]["symbol_resolution_reason"] == (
         "registry_unavailable"
     )
+
+
+# -- receipt-time enrichment from the list_date_ex scrape (hk 6408 / hk 6968) ----
+
+
+def test_join_applies_a_scraped_time_only_by_exact_receipt_and_same_day():
+    rows = [
+        {"rcept_no": "20261127000001", "rcept_dt": "20261127"},
+        {"rcept_no": "20261127000002", "rcept_dt": "20261127"},
+        {"rcept_no": "20261127000003", "rcept_dt": "20261127"},
+    ]
+    times = {
+        "20261127000001": "2026-11-27 16:30",
+        "20261126000009": "2026-11-26 09:00",  # scraped, but no official row
+        "20261127000003": "2026-11-26 09:00",  # wrong day: never applied
+    }
+
+    joined, applied = dart_helpers.join_receipt_times(rows, times)
+
+    assert applied == 1
+    assert [row["rcept_no"] for row in joined] == [
+        "20261127000001",
+        "20261127000002",
+        "20261127000003",
+    ]
+    assert joined[0]["rcept_dt"] == "2026-11-27 16:30"
+    assert joined[1]["rcept_dt"] == "20261127"
+    assert joined[2]["rcept_dt"] == "20261127"
+
+
+def test_a_scraped_receipt_with_no_official_match_is_never_inserted():
+    joined, applied = dart_helpers.join_receipt_times(
+        [{"rcept_no": "20261127000001", "rcept_dt": "20261127"}],
+        {"20261127999999": "2026-11-27 10:00"},
+    )
+
+    assert applied == 0
+    assert joined == [{"rcept_no": "20261127000001", "rcept_dt": "20261127"}]
+
+
+class _FrameClient:
+    def __init__(self, frame=None, error: Exception | None = None):
+        self.frame = frame
+        self.error = error
+        self.calls: list[tuple[str, bool]] = []
+
+    def list_date_ex(self, iso, cache=True):
+        self.calls.append((iso, cache))
+        if self.error is not None:
+            raise self.error
+        return self.frame
+
+
+def _scrape_frame(records):
+    import pandas as pd
+
+    return pd.DataFrame(records, columns=["rcept_no", "rcept_dt", "corp_name"])
+
+
+@pytest.mark.asyncio
+async def test_scrape_returns_timed_receipts_for_the_day_only(monkeypatch):
+    import pandas as pd
+
+    frame = _scrape_frame(
+        [
+            {
+                "rcept_no": "20261127000001",
+                "rcept_dt": pd.Timestamp("2026-11-27 16:30:00"),
+                "corp_name": "A",
+            },
+            {
+                "rcept_no": "20261127000002",
+                "rcept_dt": pd.Timestamp("2026-11-26 09:00:00"),
+                "corp_name": "B",
+            },
+        ]
+    )
+    client = _FrameClient(frame)
+    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
+
+    times = await dart_helpers.fetch_dart_receipt_times_for_date(DAY)
+
+    assert times == {"20261127000001": "2026-11-27 16:30:00"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_drops_ambiguous_duplicate_receipts(monkeypatch):
+    frame = _scrape_frame(
+        [
+            {
+                "rcept_no": "20261127000001",
+                "rcept_dt": "2026-11-27 16:30",
+                "corp_name": "A",
+            },
+            {
+                "rcept_no": "20261127000001",
+                "rcept_dt": "2026-11-27 17:00",
+                "corp_name": "A",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        dart_helpers, "_get_client", AsyncMock(return_value=_FrameClient(frame))
+    )
+
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+
+
+@pytest.mark.asyncio
+async def test_scrape_schema_drift_is_fail_open_and_logs_only_the_class(
+    monkeypatch, caplog
+):
+    sentinel = "SYNTHETIC_DART_KEY_SENTINEL"
+    frame = _scrape_frame([{"rcept_no": "1", "rcept_dt": "x", "corp_name": "A"}])
+    frame = frame.drop(columns=["rcept_dt"])
+    monkeypatch.setattr(
+        dart_helpers, "_get_client", AsyncMock(return_value=_FrameClient(frame))
+    )
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "_get_client",
+        AsyncMock(return_value=_FrameClient(error=ConnectionError(sentinel))),
+    )
+    with caplog.at_level("WARNING"):
+        assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+    assert "ConnectionError" in caplog.text
+    assert sentinel not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected_cache"), [(TODAY, False), (YESTERDAY, True)]
+)
+async def test_scrape_never_reads_today_from_the_page_cache(
+    monkeypatch, target, expected_cache
+):
+    client = _FrameClient(_scrape_frame([]))
+    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(dart_helpers, "today_kst", lambda: TODAY)
+
+    await dart_helpers.fetch_dart_receipt_times_for_date(target)
+
+    assert client.calls == [(target.isoformat(), expected_cache)]
+
+
+@pytest.mark.asyncio
+async def test_scrape_without_a_client_is_empty(monkeypatch):
+    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=None))
+
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+
+
+def _ingest_db():
+    db = MagicMock()
+    db.rollback = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_enriched_official_row_keeps_time_in_raw_and_no_publication(monkeypatch):
+    from app.services.market_events import ingestion
+
+    upserts: list[dict] = []
+
+    class _Repo:
+        def __init__(self, _db):
+            self.parts = {}
+
+        async def get_or_create_partition(self, *, partition_date, **_):
+            return self.parts.setdefault(partition_date, SimpleNamespace())
+
+        async def mark_partition_running(self, part):
+            pass
+
+        async def mark_partition_succeeded(self, part, *, event_count):
+            part.count = event_count
+
+        async def mark_partition_pending(self, part):
+            pass
+
+        async def upsert_event_with_values(self, event, values, **_):
+            upserts.append(event)
+
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", _Repo)
+    rows = [
+        {
+            "rcept_no": "20261127000001",
+            "rcept_dt": "20261127",
+            "corp_name": "A",
+            "stock_code": "123456",
+            "report_nm": "기타공시",
+            "corp_code": "00000001",
+        },
+        {
+            "rcept_no": "20261127000002",
+            "rcept_dt": "20261127",
+            "corp_name": "B",
+            "stock_code": "654321",
+            "report_nm": "기타공시",
+            "corp_code": "00000002",
+        },
+    ]
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        _ingest_db(),
+        DAY,
+        fetch_rows=AsyncMock(return_value=rows),
+        today=TODAY,
+        load_receipt_times=AsyncMock(
+            return_value={
+                "20261127000001": "2026-11-27 16:30",
+                "20261127999999": "2026-11-27 10:00",  # no official row
+            }
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert [event["source_event_id"] for event in upserts] == [
+        "20261127000001",
+        "20261127000002",
+    ]
+    timed, dated = upserts
+    assert timed["raw_payload_json"]["rcept_dt"] == "2026-11-27 16:30"
+    assert "published_precision" not in timed
+    assert dated["published_precision"] == "date"
+    assert dated["published_date"] == date(2026, 11, 27)
+
+
+@pytest.mark.asyncio
+async def test_failed_enrichment_is_fail_open_and_rows_store_date_only(monkeypatch):
+    from app.services.market_events import ingestion
+
+    upserts: list[dict] = []
+
+    class _Repo:
+        def __init__(self, _db):
+            pass
+
+        async def get_or_create_partition(self, *, partition_date, **_):
+            return SimpleNamespace()
+
+        async def mark_partition_running(self, part):
+            pass
+
+        async def mark_partition_succeeded(self, part, *, event_count):
+            pass
+
+        async def upsert_event_with_values(self, event, values, **_):
+            upserts.append(event)
+
+    monkeypatch.setattr(ingestion, "MarketEventsRepository", _Repo)
+    row = {
+        "rcept_no": "20261127000001",
+        "rcept_dt": "20261127",
+        "corp_name": "A",
+        "stock_code": "123456",
+        "report_nm": "기타공시",
+        "corp_code": "00000001",
+    }
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        _ingest_db(),
+        DAY,
+        fetch_rows=AsyncMock(return_value=[row]),
+        today=TODAY,
+        load_receipt_times=AsyncMock(side_effect=ConnectionError("down")),
+    )
+
+    assert result.status == "succeeded"
+    assert len(upserts) == 1
+    assert upserts[0]["published_precision"] == "date"
+    assert upserts[0]["raw_payload_json"]["rcept_dt"] == "20261127"

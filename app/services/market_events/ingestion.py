@@ -23,6 +23,7 @@ from app.schemas.market_events import IngestionRunResult
 from app.services.market_events.dart_helpers import (
     dart_row_stock_code,
     fetch_dart_corp_registry,
+    join_receipt_times,
 )
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
 from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
@@ -307,12 +308,20 @@ async def ingest_kr_disclosures_for_date(
     enrich_capital: bool | None = None,
     load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
     | None = None,
+    load_receipt_times: Callable[[date], Awaitable[dict[str, str]]] | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
     `fetch_rows` is an optional injection point: an async callable taking a date and
     returning a list of dart-row dicts. Default uses
-    `app.services.market_events.dart_helpers.fetch_dart_filings_for_date`.
+    `app.services.market_events.dart_helpers.fetch_dart_filings_for_date` (the
+    official list.json, hk 6408).
+
+    `load_receipt_times` enriches those official rows with the same day's scraped
+    receipt times, joined by exact receipt number (hk 6968). It defaults to the
+    production scrape only when `fetch_rows` is also defaulted, so an injected
+    fetcher never reaches the network. A failing enrichment is fail-open: the
+    official rows store date-only.
 
     With a custom fetcher, typed detail enrichment is opt-in via `enrich_capital`.
 
@@ -331,6 +340,7 @@ async def ingest_kr_disclosures_for_date(
 
     if enrich_capital is None:
         enrich_capital = fetch_rows is None
+    production_fetch = fetch_rows is None
     if fetch_rows is None:
         from app.services.market_events.dart_helpers import (
             fetch_dart_filings_for_date as _default_fetch,
@@ -352,6 +362,28 @@ async def ingest_kr_disclosures_for_date(
 
     try:
         rows = await fetch_rows(target_date)
+        if load_receipt_times is None and production_fetch:
+            from app.services.market_events.dart_helpers import (
+                fetch_dart_receipt_times_for_date,
+            )
+
+            load_receipt_times = fetch_dart_receipt_times_for_date
+        if load_receipt_times is not None:
+            try:
+                times = await load_receipt_times(target_date)
+            except Exception as exc:
+                logger.warning(
+                    "DART receipt-time enrichment failed (%s); rows stay date-only",
+                    type(exc).__name__,
+                )
+                times = {}
+            rows, applied = join_receipt_times(rows, times)
+            logger.info(
+                "DART receipt times applied to %d of %d official rows for %s",
+                applied,
+                len(rows),
+                target_date,
+            )
         # Our first-receipt clock, stamped after the provider answered. The
         # repository writes it on insert only, so a re-ingest never moves it.
         received_at = datetime.now(UTC)

@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from app.core.symbol import KR_SHORT_CODE
-from app.core.timezone import KST
 
 _FINNHUB_HOUR_TO_TIME_HINT = {
     "bmo": "before_open",
@@ -187,37 +186,21 @@ def dart_group_key(
 
 
 def _dart_publication(rcept_dt: str, event_date: date) -> dict[str, Any]:
-    """Receipt publication tuple (hk 6408).
+    """Publication columns for one DART receipt (hk 6408, hk 6968).
 
-    The official list carries a date only, so that is the default: precision
-    ``date`` with no time. A row that does carry a time of day (legacy scraped
-    rows, injected fixtures) keeps it as a KST instant with its own precision.
+    A row with no time of day is date precision: ``published_date`` is the
+    receipt date. A row whose ``rcept_dt`` carries HH:MM (the scraped enrichment)
+    writes NO publication columns. Its time stays in ``raw_payload_json.rcept_dt``,
+    which the timing reader turns into minute precision with the
+    ``dart_receipt_time`` basis, exactly as before this change.
     """
-    match = _TIME_OF_DAY_RE.search(rcept_dt)
-    if match is None:
-        return {
-            "published_at": None,
-            "published_date": event_date,
-            "published_offset": None,
-            "published_precision": "date",
-        }
-    precision = "second" if match.group(3) is not None else "minute"
-    try:
-        instant = datetime.fromisoformat(rcept_dt.strip().replace(" ", "T"))
-    except ValueError:
-        instant = datetime(
-            event_date.year,
-            event_date.month,
-            event_date.day,
-            int(match.group(1)),
-            int(match.group(2)),
-            int(match.group(3) or 0),
-        )
+    if _TIME_OF_DAY_RE.search(rcept_dt):
+        return {}
     return {
-        "published_at": instant.replace(tzinfo=KST),
-        "published_date": None,
-        "published_offset": "+09:00",
-        "published_precision": precision,
+        "published_at": None,
+        "published_date": event_date,
+        "published_offset": None,
+        "published_precision": "date",
     }
 
 

@@ -13,8 +13,10 @@ index, run this report against the database:
   receipt number (the OpenDART ``rcept_no`` shape). The identity scope is only
   sound if every DART ``source_event_id`` has that shape.
 
-One ``READ ONLY`` transaction, an 8 s statement timeout, SELECT only. It prints
-JSON with counts and receipt numbers only: no titles, names or payloads. Exit 0
+One ``READ ONLY`` transaction with an 8 s statement timeout, SELECT only. It
+prints JSON with counts only: no receipt numbers, categories, ids, titles, names
+or payloads. The database URL is read from the named environment variable and is
+never printed. Exit 0
 when there is no conflict and no malformed id, 1 when there is, 2 when the read
 itself fails.
 
@@ -34,8 +36,6 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-MAX_LISTED = 500
-
 SUMMARY_SQL = text(
     """
     SELECT
@@ -46,19 +46,20 @@ SUMMARY_SQL = text(
     """
 )
 
+# Counts only: how many receipt numbers have more than one row, and the largest
+# number of rows any one receipt has. No receipt numbers, categories or ids.
 CONFLICT_SQL = text(
     """
     SELECT
-        source_event_id,
-        count(*) AS row_count,
-        array_agg(category ORDER BY id) AS categories,
-        array_agg(id ORDER BY id) AS row_ids
-    FROM market_events
-    WHERE source = 'dart' AND source_event_id IS NOT NULL
-    GROUP BY source_event_id
-    HAVING count(*) > 1
-    ORDER BY source_event_id
-    LIMIT :limit
+        count(*) AS multi_row_receipts,
+        coalesce(max(row_count), 0) AS max_rows_per_receipt
+    FROM (
+        SELECT count(*) AS row_count
+        FROM market_events
+        WHERE source = 'dart' AND source_event_id IS NOT NULL
+        GROUP BY source_event_id
+        HAVING count(*) > 1
+    ) AS per_receipt
     """
 )
 
@@ -76,33 +77,24 @@ MALFORMED_SQL = text(
 def build_report(
     *,
     summary: dict[str, Any],
-    conflicts: list[dict[str, Any]],
+    conflicts: dict[str, Any],
     malformed_rows: int,
 ) -> tuple[dict[str, Any], int]:
-    """Pure: the JSON body and exit code for one set of read results."""
-    multi_row = [
-        {
-            "source_event_id": str(row["source_event_id"]),
-            "row_count": int(row["row_count"]),
-            "categories": sorted({str(c) for c in row["categories"]}),
-            "row_ids": [int(i) for i in row["row_ids"]],
-        }
-        for row in conflicts
-    ]
-    clean = not multi_row and malformed_rows == 0
+    """Pure: the counts-only JSON body and exit code for one set of read results."""
+    multi_row = int(conflicts["multi_row_receipts"])
+    clean = multi_row == 0 and malformed_rows == 0
     body = {
         "status": "clean" if clean else "conflicts",
         "dart_rows": int(summary["dart_rows"]),
         "receipts": int(summary["receipts"]),
-        "multi_row_receipt_count": len(multi_row),
         "multi_row_receipts": multi_row,
+        "max_rows_per_receipt": int(conflicts["max_rows_per_receipt"]),
         "malformed_receipts": malformed_rows,
-        "listed_limit": MAX_LISTED,
     }
     return body, 0 if clean else 1
 
 
-async def _read(database_url: str) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+async def _read(database_url: str) -> tuple[dict[str, Any], dict[str, Any], int]:
     engine = create_async_engine(database_url)
     try:
         async with engine.connect() as conn:
@@ -110,14 +102,9 @@ async def _read(database_url: str) -> tuple[dict[str, Any], list[dict[str, Any]]
                 await conn.execute(text("SET TRANSACTION READ ONLY"))
                 await conn.execute(text("SET LOCAL statement_timeout = '8s'"))
                 summary = (await conn.execute(SUMMARY_SQL)).mappings().one()
-                conflicts = [
-                    dict(row)
-                    for row in (
-                        await conn.execute(CONFLICT_SQL, {"limit": MAX_LISTED})
-                    ).mappings()
-                ]
+                conflicts = (await conn.execute(CONFLICT_SQL)).mappings().one()
                 malformed = (await conn.execute(MALFORMED_SQL)).scalar_one()
-        return dict(summary), conflicts, int(malformed)
+        return dict(summary), dict(conflicts), int(malformed)
     finally:
         await engine.dispose()
 
