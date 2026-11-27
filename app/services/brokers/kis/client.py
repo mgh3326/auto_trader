@@ -531,11 +531,11 @@ class KISClient(BaseKISClient):
         )
 
     async def inquire_overseas_mover_ranking(
-        self, ranking_type: str, exchange_code: str, *, side: str
+        self, ranking_type: str, exchange_code: str, *, side: str, vol_rang: str = "0"
     ) -> dict[str, Any]:
         """해외주식 mover ranking 조회를 market-data facade로 위임한다."""
         return await self._market_data.inquire_overseas_mover_ranking(
-            ranking_type, exchange_code, side=side
+            ranking_type, exchange_code, side=side, vol_rang=vol_rang
         )
 
     async def fetch_domestic_balance_snapshot(

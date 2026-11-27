@@ -496,9 +496,20 @@ class OverseasMarketDataMixin(MarketDataBase):
         return js if isinstance(js, dict) else {}
 
     async def inquire_overseas_mover_ranking(
-        self, source: str, exchange_code: str, *, side: str
+        self,
+        source: str,
+        exchange_code: str,
+        *,
+        side: str,
+        vol_rang: str = "0",
     ) -> dict[str, Any]:
-        """Read one of the official overseas mover rankings, no order path."""
+        """Read one of the official overseas mover rankings, no order path.
+
+        ``vol_rang`` is the documented ``VOL_RANG`` volume floor shared by all
+        four TRs (``0`` = all ... ``6`` = 10M+ shares; official samples read
+        2026-11-25). hk 6572 passes ``4`` (100k shares) so surfaces fill with
+        liquid names; the default keeps the old unfiltered behavior.
+        """
         configured = constants.OVERSEAS_MOVER_RANKINGS.get(source)
         if configured is None:
             raise ValueError("unsupported overseas mover ranking")
@@ -514,21 +525,25 @@ class OverseasMarketDataMixin(MarketDataBase):
         }
         if source == "kis_overseas_price_fluct":
             params.update(
-                {"GUBN": "1" if side == "up" else "0", "MINX": "0", "VOL_RANG": "0"}
+                {
+                    "GUBN": "1" if side == "up" else "0",
+                    "MINX": "0",
+                    "VOL_RANG": vol_rang,
+                }
             )
         elif source == "kis_overseas_volume_surge":
-            params.update({"MINX": "0", "VOL_RANG": "0"})
+            params.update({"MINX": "0", "VOL_RANG": vol_rang})
         elif source == "kis_overseas_new_highlow":
             params.update(
                 {
                     "MINX": "0",
-                    "VOL_RANG": "0",
+                    "VOL_RANG": vol_rang,
                     "GUBN": "1" if side == "up" else "0",
                     "GUBN2": "1",
                 }
             )
         else:
-            params.update({"NDAY": "0", "VOL_RANG": "0"})
+            params.update({"NDAY": "0", "VOL_RANG": vol_rang})
         js = await self._request_with_token_retry(
             tr_id=tr_id,
             url=self._kis_url(path),

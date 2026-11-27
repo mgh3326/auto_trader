@@ -177,7 +177,19 @@ def test_alpaca_classification_of_broken_payloads() -> None:
                 is_common_stock=False,
                 name_en="Daily 3x Bull Fund",
             ),
-            "unknown",
+            # hk 6572: a leveraged name is positive evidence even without a
+            # recognized security_type label.
+            "leveraged_etf",
+        ),
+        (
+            us_sources.SymbolMaster(
+                security_type="LEVERAGED_ETF", leverage_factor=Decimal("2")
+            ),
+            "leveraged_etf",
+        ),
+        (
+            us_sources.SymbolMaster(security_type=None, leverage_factor=Decimal("-1")),
+            "leveraged_etf",
         ),
         (us_sources.SymbolMaster(), "unknown"),
         (us_sources.SymbolMaster(security_type="SOMETHING_NEW"), "unknown"),
@@ -312,20 +324,22 @@ class FakeKis:
     def __init__(self, down=None, error: Exception | None = None):
         self.down = down if down is not None else _kis_down()
         self.error = error
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple] = []
 
     async def inquire_overseas_updown_rate(
         self, exchange_code, *, direction, nday="0", vol_rang="0", keyb=""
     ):
-        self.calls.append((exchange_code, direction))
+        self.calls.append((exchange_code, direction, nday, vol_rang))
         if self.error is not None:
             raise self.error
         if direction == us_sources.KIS_GUBN_DOWN and exchange_code == "NAS":
             return self.down
         return {"output1": {"stat": "R"}, "output2": []}
 
-    async def inquire_overseas_mover_ranking(self, source, exchange_code, *, side):
-        self.calls.append((f"{source}:{exchange_code}", side))
+    async def inquire_overseas_mover_ranking(
+        self, source, exchange_code, *, side, vol_rang="0"
+    ):
+        self.calls.append((f"{source}:{exchange_code}", side, vol_rang))
         return {"output1": {"stat": "R"}, "output2": []}
 
 
@@ -449,11 +463,12 @@ async def test_premarket_run_inserts_dell_and_urbn_and_a_replay_inserts_nothing(
     assert dell.change_rate == Decimal("-7.45")
     assert dell.first_received_at is not None
     assert dell.raw_payload["trade_value_basis"] == "price_times_volume"
-    urbn = next(
-        r for r in inserted if r.symbol == "URBN" and r.source == "kis_overseas_ranking"
+    # hk 6572: URBN's recorded tvol is 1,310 shares — below the VOL_RANG=4
+    # (100k shares) floor — so the defensive client-side floor drops it even
+    # though the recorded response still contains it.
+    assert not any(
+        r.symbol == "URBN" and r.source == "kis_overseas_ranking" for r in inserted
     )
-    assert urbn.asset_type == "common_stock"
-    assert urbn.trade_value == Decimal("43.11") * 1310
     # plus Alpaca rows for the same snapshot and the four actives
     assert {"NVDA", "AMD", "QQQ", "SMH"} <= {r.symbol for r in inserted}
     qqq = next(r for r in inserted if r.symbol == "QQQ")
@@ -478,7 +493,7 @@ async def test_a_symbol_outside_the_master_is_unknown_with_a_reason() -> None:
                 {
                     "symb": "NEWCO",
                     "last": "10.00",
-                    "tvol": "100",
+                    "tvol": "200000",
                     "rate": "5.0",
                     "rank": "1",
                 }
@@ -493,7 +508,66 @@ async def test_a_symbol_outside_the_master_is_unknown_with_a_reason() -> None:
     )
     assert row.asset_type == "unknown"
     assert row.field_reasons["asset_type"] == "not_in_symbol_universe"
-    assert row.trade_value == Decimal("1000.00")
+    assert row.trade_value == Decimal("2000000.00")
+
+
+@pytest.mark.asyncio
+async def test_kis_requests_carry_the_documented_volume_floor() -> None:
+    """hk 6572: every KIS ranking/updown call sends VOL_RANG=KIS_VOL_RANG."""
+    kis = FakeKis()
+    await _run(kis=kis)
+    updown_calls = [c for c in kis.calls if len(c) == 4]
+    ranking_calls = [c for c in kis.calls if len(c) == 3]
+    assert updown_calls and all(c[3] == us_sources.KIS_VOL_RANG for c in updown_calls)
+    assert all(c[2] == us_sources.KIS_VOL_RANG for c in ranking_calls)
+    assert us_sources.KIS_VOL_RANG == "4"
+    assert us_sources.KIS_MIN_VOLUME_SHARES == 100_000
+
+
+@pytest.mark.asyncio
+async def test_a_kis_row_below_the_volume_floor_is_never_stored() -> None:
+    """hk 6572 acceptance: a provider row under the floor does not reach rows."""
+    kis = FakeKis(
+        down={
+            "output1": {"stat": "R"},
+            "output2": [
+                {
+                    "symb": "ILLIQ",
+                    "last": "1.00",
+                    "tvol": "50000",  # below the 100k-share floor
+                    "rate": "9.9",
+                    "rank": "1",
+                }
+            ],
+        }
+    )
+    report, _ = await _run(kis=kis)
+    assert not any(r.symbol == "ILLIQ" for r in MemoryRepo.rows.values())
+    surfaces = {line.surface: line for line in report.surfaces}
+    line = surfaces["us:kis_overseas_ranking:us_pre:down"]
+    # every exchange answered, but nothing qualified: honest empty, not error
+    assert (line.status, line.reason) == ("empty", "no_rows")
+
+
+@pytest.mark.asyncio
+async def test_a_leveraged_etf_master_marks_the_row_leveraged_etf() -> None:
+    """hk 6572: leverage_factor != 1 flows through us_momentum_upsert."""
+
+    async def asset_types(symbols):
+        masters = await _asset_types(symbols)
+        masters["DELL"] = us_sources.SymbolMaster(
+            security_type="ETF", leverage_factor=Decimal("2")
+        )
+        return masters
+
+    await _run(asset_types=asset_types)
+    dell = next(
+        r
+        for r in MemoryRepo.rows.values()
+        if r.symbol == "DELL" and r.source == "kis_overseas_ranking"
+    )
+    assert dell.asset_type == "leveraged_etf"
+    assert "asset_type" not in (dell.field_reasons or {})
 
 
 @pytest.mark.asyncio
