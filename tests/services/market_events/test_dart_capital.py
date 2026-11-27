@@ -59,6 +59,15 @@ async def test_cb_normal_ingestion_retries_and_stores_exact_dilution(monkeypatch
     )
     repo = AsyncMock()
     monkeypatch.setattr(ingestion, "MarketEventsRepository", Mock(return_value=repo))
+    # The production default also reads the receipt-time scrape. Stub it to a
+    # successful read with no timed rows (hk 6408): this test is about capital.
+    from app.services.market_events import dart_helpers
+
+    monkeypatch.setattr(
+        dart_helpers,
+        "fetch_dart_receipt_times_for_date",
+        AsyncMock(return_value={}),
+    )
 
     result = await ingestion.ingest_kr_disclosures_for_date(
         AsyncMock(), date(2026, 11, 24)

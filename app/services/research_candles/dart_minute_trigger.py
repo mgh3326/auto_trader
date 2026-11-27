@@ -228,7 +228,12 @@ def plan_collection_requests(
             continue
         t0 = parse_rcept_dt(row.rcept_dt)
         if t0 is None:
-            plan.skipped.append(SkippedRow(row.rcept_no, "no_rcept_time", cohort))
+            # A date-only receipt (the official list, when the receipt-time lookup
+            # failed or has not run) has no HH:MM, so D0 cannot be chosen. It is
+            # reported, not dropped, so the gap is visible (hk 6408 review).
+            plan.skipped.append(
+                SkippedRow(row.rcept_no, "receipt_time_unknown", cohort)
+            )
             continue
         if t0.hour == 0 and t0.minute == 0:
             # The research drops 00:00 placeholders as untimed.

@@ -581,7 +581,7 @@ async def test_scrape_schema_drift_is_fail_open_and_logs_only_the_class(
     monkeypatch.setattr(
         dart_helpers, "_get_client", AsyncMock(return_value=_FrameClient(frame))
     )
-    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) is None
 
     monkeypatch.setattr(
         dart_helpers,
@@ -589,7 +589,7 @@ async def test_scrape_schema_drift_is_fail_open_and_logs_only_the_class(
         AsyncMock(return_value=_FrameClient(error=ConnectionError(sentinel))),
     )
     with caplog.at_level("WARNING"):
-        assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+        assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) is None
     assert "ConnectionError" in caplog.text
     assert sentinel not in caplog.text
 
@@ -611,10 +611,10 @@ async def test_scrape_never_reads_today_from_the_page_cache(
 
 
 @pytest.mark.asyncio
-async def test_scrape_without_a_client_is_empty(monkeypatch):
+async def test_scrape_without_a_client_is_a_failed_lookup_not_an_empty_day(monkeypatch):
     monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=None))
 
-    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) == {}
+    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) is None
 
 
 def _ingest_db():
@@ -694,10 +694,16 @@ async def test_enriched_official_row_keeps_time_in_raw_and_no_publication(monkey
 
 
 @pytest.mark.asyncio
-async def test_failed_enrichment_is_fail_open_and_rows_store_date_only(monkeypatch):
+async def test_failed_enrichment_is_fail_open_and_the_day_stays_retryable(monkeypatch):
+    """A failed receipt-time lookup stores rows date-only but leaves the day pending.
+
+    The partition must not read as succeeded: the minute trigger would then skip
+    these disclosures for good (hk 6408 review). A later run re-collects the day.
+    """
     from app.services.market_events import ingestion
 
     upserts: list[dict] = []
+    states: list[str] = []
 
     class _Repo:
         def __init__(self, _db):
@@ -710,7 +716,13 @@ async def test_failed_enrichment_is_fail_open_and_rows_store_date_only(monkeypat
             pass
 
         async def mark_partition_succeeded(self, part, *, event_count):
-            pass
+            states.append("succeeded")
+
+        async def mark_partition_pending(self, part):
+            states.append("pending")
+
+        async def mark_partition_failed(self, part, **_):
+            states.append("failed")
 
         async def upsert_event_with_values(self, event, values, **_):
             upserts.append(event)
@@ -730,11 +742,13 @@ async def test_failed_enrichment_is_fail_open_and_rows_store_date_only(monkeypat
         DAY,
         fetch_rows=AsyncMock(return_value=[row]),
         today=TODAY,
-        load_receipt_times=AsyncMock(side_effect=ConnectionError("down")),
+        load_receipt_times=AsyncMock(return_value=None),
     )
 
-    assert result.status == "succeeded"
-    assert len(upserts) == 1
+    assert result.status == "pending"
+    assert result.error == "receipt_time_unavailable"
+    assert states == ["pending"]  # never "succeeded"
+    assert len(upserts) == 1  # the official row is still stored, date-only
     assert upserts[0]["published_precision"] == "date"
     assert upserts[0]["raw_payload_json"]["rcept_dt"] == "20261127"
 
@@ -835,6 +849,7 @@ async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
         from_date=DAY,
         to_date=DAY,
         commit=True,
+        receipt_times=True,
         fetch_rows=AsyncMock(return_value=[]),
         emit=lambda *_: None,
         pace_seconds=0.0,
@@ -980,6 +995,7 @@ async def test_backfill_receipt_time_scrape_is_gated_and_skipped_when_budget_is_
         from_date=DAY,
         to_date=DAY,
         commit=True,
+        receipt_times=True,
         fetch_rows=AsyncMock(return_value=[]),  # one budget unit: the day fetch
         emit=lambda *_: None,
         pace_seconds=0.0,
@@ -987,7 +1003,7 @@ async def test_backfill_receipt_time_scrape_is_gated_and_skipped_when_budget_is_
     )
 
     assert scrape.await_count == 0  # budget spent: no scrape request
-    assert loaded == [{}]  # fail-open: the day stays date-only
+    assert loaded == [None]  # lookup not done: the day stays pending, rows date-only
 
 
 @pytest.mark.asyncio
@@ -1015,6 +1031,7 @@ async def test_backfill_receipt_time_scrape_counts_against_the_budget(monkeypatc
         from_date=DAY,
         to_date=DAY,
         commit=True,
+        receipt_times=True,
         fetch_rows=AsyncMock(return_value=[]),
         emit=lambda *_: None,
         pace_seconds=0.0,
@@ -1038,3 +1055,42 @@ async def test_a_no_data_answer_on_a_later_page_fails_closed(monkeypatch):
         await dart_helpers.fetch_dart_filings_for_date(DAY)
 
     assert raised.value.failure_code == "bad_response"
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_scrape_receipt_times_unless_opted_in(monkeypatch):
+    """Receipt-time enrichment is opt-in for backfill (hk 6408 review)."""
+    from scripts import backfill_dart_disclosures as cli
+
+    seen: dict[str, object] = {}
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        seen["loader"] = load_receipt_times
+        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        fetch_rows=AsyncMock(return_value=[]),
+        emit=lambda *_: None,
+        pace_seconds=0.0,
+    )
+
+    assert seen["loader"] is None
+
+
+def test_receipt_times_flag_is_off_by_default_and_on_when_given():
+    from scripts.backfill_dart_disclosures import parse_args
+
+    base = ["--from-date", "2026-11-27", "--to-date", "2026-11-27", "--commit"]
+
+    assert parse_args(base).receipt_times is False
+    assert parse_args([*base, "--receipt-times"]).receipt_times is True

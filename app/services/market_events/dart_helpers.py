@@ -306,20 +306,25 @@ async def fetch_dart_filings_for_date(
     return unique
 
 
-async def fetch_dart_receipt_times_for_date(target_date: date) -> dict[str, str]:
+async def fetch_dart_receipt_times_for_date(
+    target_date: date,
+) -> dict[str, str] | None:
     """Receipt time of the day's filings from the list_date_ex scrape (hk 6968).
 
     Returns ``{rcept_no: "YYYY-MM-DD HH:MM[:SS]"}`` for rows whose scraped receipt
-    value carries a time on ``target_date``. A duplicate receipt number is dropped
-    (ambiguous). Any failure returns ``{}``: this is enrichment, so the official
-    rows still store date-only. The exception class name is logged; the message is
-    not, because an OpenDartReader error can carry the request URL and its key.
-    A day on or after today is never read from the on-disk page cache (hk 3845).
+    value carries a time on ``target_date``; a duplicate receipt number is dropped
+    (ambiguous). Returns ``{}`` when the read succeeded and found no timed row.
+    Returns ``None`` when the lookup failed: the official rows are still stored
+    date-only (fail-open), but the caller must keep the day retryable, because
+    the time was never looked up (hk 6408 review). The exception class name is
+    logged; the message is not, because an OpenDartReader error can carry the
+    request URL and its key. A day on or after today is never read from the
+    on-disk page cache (hk 3845).
     """
     client = await _get_client()
     if client is None:
         logger.warning("DART receipt-time enrichment skipped: client unavailable")
-        return {}
+        return None
     iso = target_date.isoformat()
     use_cache = target_date < today_kst()
 
@@ -358,7 +363,7 @@ async def fetch_dart_receipt_times_for_date(target_date: date) -> dict[str, str]
             "DART receipt-time enrichment unavailable (%s); rows stay date-only",
             type(exc).__name__,
         )
-        return {}
+        return None
 
 
 def join_receipt_times(

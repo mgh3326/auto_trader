@@ -218,23 +218,23 @@ def _make_request_gate(
 
 def _make_gated_receipt_times(
     gate: Callable[[], Awaitable[None]],
-) -> Callable[[date], Awaitable[dict[str, str]]]:
+) -> Callable[[date], Awaitable[dict[str, str] | None]]:
     """Receipt-time enrichment that spends the same run budget as the list pages.
 
     The scrape is a second DART read per day. It is gated like every other
     request, so --max-calls and the run summary count it and pacing applies. When
-    the budget is spent the scrape is skipped and the day stays date-only, which
-    the enrichment's fail-open contract already allows.
+    the budget is spent the scrape is skipped: the lookup did not happen, so the
+    loader answers None and the day stays pending (retryable, hk 6408).
     """
     from app.services.market_events.dart_helpers import (
         fetch_dart_receipt_times_for_date,
     )
 
-    async def _gated(target_date: date) -> dict[str, str]:
+    async def _gated(target_date: date) -> dict[str, str] | None:
         try:
             await gate()
         except _CallBudgetExhausted:
-            return {}
+            return None
         return await fetch_dart_receipt_times_for_date(target_date)
 
     return _gated
@@ -368,6 +368,7 @@ async def run_backfill(
     max_days: int | None = None,
     pace_seconds: float = DEFAULT_PACE_SECONDS,
     max_calls: int = DEFAULT_MAX_CALLS,
+    receipt_times: bool = False,
     retry_max_attempts: int = DEFAULT_RETRY_MAX_ATTEMPTS,
     retry_base_seconds: float = DEFAULT_RETRY_BASE_SECONDS,
     retry_max_seconds: float = DEFAULT_RETRY_MAX_SECONDS,
@@ -512,7 +513,11 @@ async def run_backfill(
                     db,
                     d,
                     fetch_rows=paced_fetch,
-                    load_receipt_times=_make_gated_receipt_times(request_gate),
+                    load_receipt_times=(
+                        _make_gated_receipt_times(request_gate)
+                        if receipt_times
+                        else None
+                    ),
                 )
                 await db.commit()
             except Exception as exc:
@@ -647,6 +652,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.set_defaults(commit=False)
     parser.add_argument(
+        "--receipt-times",
+        action="store_true",
+        dest="receipt_times",
+        help=(
+            "Enrich rows with the day's list_date_ex receipt times (hk 6968). Opt-in "
+            "for backfill: each day costs one budgeted scrape request. The daily "
+            "run keeps the enrichment on by default."
+        ),
+    )
+    parser.add_argument(
         "--resume-from",
         type=date.fromisoformat,
         default=None,
@@ -756,6 +771,7 @@ async def main(argv: list[str] | None = None) -> int:
                 retry_base_seconds=ns.retry_base_seconds,
                 retry_max_seconds=ns.retry_max_seconds,
                 max_consecutive_failures=ns.max_consecutive_failures,
+                receipt_times=ns.receipt_times,
             )
     except Exception as exc:
         capture_exception(exc, process="backfill_dart_disclosures")

@@ -308,7 +308,8 @@ async def ingest_kr_disclosures_for_date(
     enrich_capital: bool | None = None,
     load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
     | None = None,
-    load_receipt_times: Callable[[date], Awaitable[dict[str, str]]] | None = None,
+    load_receipt_times: Callable[[date], Awaitable[dict[str, str] | None]]
+    | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
@@ -368,6 +369,7 @@ async def ingest_kr_disclosures_for_date(
             )
 
             load_receipt_times = fetch_dart_receipt_times_for_date
+        enrichment_failed = False
         if load_receipt_times is not None:
             try:
                 times = await load_receipt_times(target_date)
@@ -376,8 +378,10 @@ async def ingest_kr_disclosures_for_date(
                     "DART receipt-time enrichment failed (%s); rows stay date-only",
                     type(exc).__name__,
                 )
-                times = {}
-            rows, applied = join_receipt_times(rows, times)
+                times = None
+            # A failed lookup is not "no timed rows": keep the day retryable below.
+            enrichment_failed = times is None
+            rows, applied = join_receipt_times(rows, times or {})
             logger.info(
                 "DART receipt times applied to %d of %d official rows for %s",
                 applied,
@@ -466,6 +470,20 @@ async def ingest_kr_disclosures_for_date(
                 partition_date=target_date,
                 status="pending",
                 event_count=0,
+            )
+        if enrichment_failed and upserted:
+            # The rows are stored date-only, but the receipt times were never
+            # looked up. Leave the day pending so a later run re-collects it, and
+            # the minute trigger does not silently skip its disclosures (hk 6408).
+            await repo.mark_partition_pending(partition)
+            return IngestionRunResult(
+                source=source,
+                category=partition_category,
+                market=market,
+                partition_date=target_date,
+                status="pending",
+                event_count=upserted,
+                error="receipt_time_unavailable",
             )
         await repo.mark_partition_succeeded(partition, event_count=upserted)
         return IngestionRunResult(
