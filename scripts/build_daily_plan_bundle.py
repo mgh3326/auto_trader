@@ -56,6 +56,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_CUTOFF,
         help="Bundle close time in KST (HH:MM, at most 08:30; default 08:20).",
     )
+    parser.add_argument(
+        "--plan-mode",
+        choices=("plan_only", "executable"),
+        default="plan_only",
+        help="Mode of the day's head if this bundle creates it (default plan_only).",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--dry-run",
@@ -177,7 +183,11 @@ async def run(
     if args.commit:
         async with session_factory() as db, db.begin():
             bundle_id = await store_input_bundle(
-                db, day=day, body=body, claimed_sha256=digest
+                db,
+                day=day,
+                body=body,
+                claimed_sha256=digest,
+                **({"mode": args.plan_mode} if args.plan_mode != "plan_only" else {}),
             )
         report.update(status="stored", bundle_id=str(bundle_id))
     return 0, report

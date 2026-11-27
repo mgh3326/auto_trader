@@ -91,10 +91,25 @@ async def _lock_head(db: AsyncSession, day: date) -> None:
 
 
 async def _head(
-    db: AsyncSession, day: date, market: str = "kr", mode: str = "plan_only"
+    db: AsyncSession,
+    day: date,
+    market: str = "kr",
+    mode: str = "plan_only",
+    *,
+    any_mode: bool = False,
 ) -> UUID:
+    """Return the (market, day) head, creating it in ``mode`` when absent.
+
+    A head's mode is fixed at creation. A publication must match it; a bundle
+    (``any_mode``) attaches to the head whatever its mode, so a bundle-backed
+    publication works in either mode.
+    """
     where = (heads.c.market == market, heads.c.session_date == day)
-    existing = await db.scalar(select(heads.c.id).where(*where, heads.c.mode == mode))
+    if not any_mode:
+        where_mode = (*where, heads.c.mode == mode)
+    else:
+        where_mode = where
+    existing = await db.scalar(select(heads.c.id).where(*where_mode))
     if existing is not None:
         return existing
     # A head's mode is fixed when it is created; another mode is a conflict.
@@ -119,8 +134,15 @@ async def store_input_bundle(
     day: date,
     body: dict[str, Any],
     claimed_sha256: str,
+    mode: str = "plan_only",
 ) -> UUID:
-    """Called by the server-side input assembler in its write transaction."""
+    """Called by the server-side input assembler in its write transaction.
+
+    The bundle joins the day's KR head in whatever mode it already has; if no
+    head exists yet it creates one in ``mode`` (the mode the day will publish).
+    """
+    if mode not in PLAN_MODES:
+        raise ValueError("invalid_plan_mode")
     canonical = canonical_bundle(body)
     if hashlib.sha256(canonical).hexdigest() != claimed_sha256:
         raise ValueError("bundle_hash_mismatch")
@@ -131,7 +153,7 @@ async def store_input_bundle(
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate_bundle_row_key")
     await _lock_head(db, day)
-    head_id = await _head(db, day)
+    head_id = await _head(db, day, "kr", mode, any_mode=True)
     existing = await db.scalar(
         select(bundles.c.id).where(
             bundles.c.head_id == head_id,

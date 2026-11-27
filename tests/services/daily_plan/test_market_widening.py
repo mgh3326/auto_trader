@@ -1,11 +1,16 @@
 """hk 6981: US/crypto plan rows and the explicit executable mode (6939 §1.1)."""
 
+import hashlib
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.services.daily_plan import store
+from app.services.daily_plan.bundle import SCHEMA_VERSION, canonical_bundle
 from app.services.daily_plan.validator import normalize_symbol
 from app.services.daily_plan.vocabulary import ACCOUNT_MODES
 from tests.services.daily_plan.test_publish import fake_db, request
@@ -200,3 +205,44 @@ async def test_watch_carry_reads_the_previous_plan_of_the_same_market(monkeypatc
         policy_hash="hash",
     )
     assert seen == ["crypto"]
+
+
+def _mode_aware_db(head_mode: str):
+    """A DB with one KR head in ``head_mode``; lookups honour a mode filter."""
+    head_id = uuid4()
+
+    async def scalar(stmt):
+        params = stmt.compile().params
+        if stmt.get_final_froms()[0] is store.heads:
+            wanted = [v for k, v in params.items() if k.startswith("mode")]
+            return head_id if not wanted or wanted == [head_mode] else None
+        return None
+
+    async def execute(_stmt, *_args):
+        return None
+
+    return SimpleNamespace(
+        scalar=AsyncMock(side_effect=scalar),
+        execute=AsyncMock(side_effect=execute),
+    ), head_id
+
+
+@pytest.mark.asyncio
+async def test_bundle_attaches_to_an_executable_kr_head():
+    """A bundle must reach the day's head whatever its mode (review r4714936282)."""
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "bundle_closed_at": datetime(
+            2026, 11, 24, 8, 20, tzinfo=ZoneInfo("Asia/Seoul")
+        ).isoformat(),
+        "rows": [],
+    }
+    digest = hashlib.sha256(canonical_bundle(body)).hexdigest()
+    db, head_id = _mode_aware_db("executable")
+    await store.store_input_bundle(db, day=DAY, body=body, claimed_sha256=digest)
+    inserted = [
+        call.args[0].compile().params
+        for call in db.execute.call_args_list
+        if getattr(call.args[0], "table", None) is store.bundles
+    ]
+    assert [params["head_id"] for params in inserted] == [head_id]

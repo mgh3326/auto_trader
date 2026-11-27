@@ -21,13 +21,12 @@ ACCOUNT_MODES = (
     "kis_live",
     "toss_live",
     "upbit_live",
-    # Mock/demo accounts named in decision/2026-11-27/at-autonomous-strategy-orders.
+    # Mock accounts named in decision/2026-11-27/at-autonomous-strategy-orders.
+    # USDT-quoted demo venues are left out: they fail the KRW-XXX CHECK.
     "kis_mock",
     "kiwoom_mock",
     "kiwoom_mock_us",
     "alpaca_paper",
-    "binance_spot_demo",
-    "binance_futures_demo",
     "nh_mock",
     "kis_futures_mock",
 )
