@@ -1146,8 +1146,8 @@ async def test_a_scrape_below_the_ceiling_is_complete(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_backfill_charges_the_scrape_pages_and_reports_them_apart(monkeypatch):
-    from scripts import backfill_dart_disclosures as cli
     from app.services.market_events.dart_helpers import ReceiptTimeRead
+    from scripts import backfill_dart_disclosures as cli
 
     read = AsyncMock(
         return_value=ReceiptTimeRead(
