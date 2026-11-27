@@ -24,6 +24,7 @@ from app.services.daily_plan.vocabulary import (
     VENUE_MARKETS,
     VENUE_SESSIONS,
 )
+from app.services.mechanical_loss_cut.rules import is_parking_instrument
 
 # Upbit KRW market minimum order amount (orders/chance ``market.bid.min_total``).
 # The plan layer reads no live orders/chance; the order path revalidates later.
@@ -43,6 +44,8 @@ _RISK_INPUT_SKIPS = (
     ("price_fresh", "price_stale"),
     ("prior_decision", "position_unreadable"),
 )
+# Inputs only the loss-cut rule reads; the position itself is not one of them.
+_LOSS_CUT_ONLY_INPUTS = frozenset({"plan", "bars", "price_fresh", "prior_decision"})
 
 
 def require_base_version(expected: int, current: int) -> None:
@@ -187,14 +190,16 @@ def _first_unavailable(value: Any) -> str | None:
     )
 
 
-def risk_input_gap(raw: Any) -> tuple[str, str] | None:
+def risk_input_gap(
+    raw: Any, *, unread: frozenset[str] = frozenset()
+) -> tuple[str, str] | None:
     """``(default skip, reason)`` of the first unknown loss-cut replay input."""
     if reason := unavailable_reason(raw):
         return "position_unreadable", reason
     if not isinstance(raw, Mapping):
         return None
     for field, skip in _RISK_INPUT_SKIPS:
-        if reason := _first_unavailable(raw.get(field)):
+        if field not in unread and (reason := _first_unavailable(raw.get(field))):
             return skip, reason
     return None
 
@@ -386,7 +391,15 @@ def prepare_row(
     if kind == "holding" and evidence is not None:
         risk_inputs = evidence.get("risk_inputs") or {}
         if reason is None:
-            gap = risk_input_gap(risk_inputs)
+            # A parking row that orders nothing has no use for the rule's own
+            # inputs. Order rows still fail closed on every one.
+            parked = action in ("watch", "hold") and is_parking_instrument(
+                row["symbol"], "equity_kr"
+            )
+            gap = risk_input_gap(
+                risk_inputs,
+                unread=_LOSS_CUT_ONLY_INPUTS if parked else frozenset(),
+            )
             reason = gap[1] if gap else None
         if action in ("add", "trim", "risk_sell") and reason is None:
             for field in ("open_sell_quantity", "protected_quantity"):

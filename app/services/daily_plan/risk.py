@@ -16,6 +16,7 @@ from app.services.mechanical_loss_cut.rules import (
     Skip,
     StopBasis,
     evaluate_lot,
+    is_parking_instrument,
 )
 
 UNAVAILABLE_SKIPS = frozenset(
@@ -52,6 +53,13 @@ def replay_risk(
     *,
     symbol: str,
 ) -> dict[str, Any]:
+    # Parking is outside the rule, so no input can be missing for it (§7.2).
+    if is_parking_instrument(symbol, "equity_kr"):
+        return {
+            "result": "skip",
+            "skip_reason": "parking_instrument",
+            "status": "not_applicable",
+        }
     raw = evidence.get("risk_inputs")
     if raw is None:
         return {

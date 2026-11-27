@@ -261,6 +261,78 @@ async def test_unavailable_risk_input_publishes_watch(name, action, reason):
     )
 
 
+PARKING = "459580"
+NOT_APPLICABLE = ("skip", "parking_instrument", "not_applicable")
+LOSS_CUT_ONLY = ("plan", "bars", "price_fresh", "prior_decision")
+
+
+async def publish_parking(evidence: dict, action: str) -> dict:
+    [row] = await publish(
+        [{**evidence, "symbol": PARKING}],
+        [{**holding_row(action), "symbol": PARKING}],
+    )
+    return row
+
+
+def verdict_of(row: dict) -> tuple:
+    verdict = row["rule_verdict"]
+    return verdict["result"], verdict["skip_reason"], verdict["status"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "risk_changes",
+    [
+        {},
+        {"plan": {"unavailable": "no_exit_plan"}},
+        {"price_fresh": {"unavailable": "price_stale"}},
+        {"bars": {"unavailable": "price_missing"}},
+        {"prior_decision": {"unavailable": "input_missing"}},
+    ],
+    ids=["base", "plan", "price_fresh", "bars", "prior_decision"],
+)
+async def test_parking_hold_ignores_unknown_loss_cut_inputs(risk_changes):
+    row = await publish_parking(holding_evidence(**risk_changes), "hold")
+    assert verdict_of(row) == NOT_APPLICABLE
+    assert row["action"] == "hold"
+    assert row.get("reason_code") is None
+    assert row["not_executable_reason"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", RISK_PATHS)
+async def test_parking_is_classified_before_any_missing_input(name):
+    evidence = break_risk_input(RISK_PATHS[name][0], "input_missing")
+    row = await publish_parking(evidence, "hold")
+    assert verdict_of(row) == NOT_APPLICABLE
+    # An unreadable position is still stated on the row; the inputs only the
+    # loss-cut rule reads are not.
+    if name.split(".")[0] in LOSS_CUT_ONLY:
+        assert row["action"] == "hold"
+        assert row["not_executable_reason"] is None
+    else:
+        assert_watch(row, "input_missing")
+
+
+@pytest.mark.asyncio
+async def test_parking_without_risk_inputs_is_not_applicable():
+    evidence = holding_evidence()
+    del evidence["risk_inputs"]
+    row = await publish_parking(evidence, "hold")
+    assert verdict_of(row) == NOT_APPLICABLE
+    assert row["action"] == "hold"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", LOSS_CUT_ONLY)
+@pytest.mark.parametrize("action", ["add", "trim", "risk_sell"])
+async def test_parking_order_row_still_needs_every_input(action, name):
+    evidence = break_risk_input(RISK_PATHS[name][0], "input_missing")
+    row = await publish_parking(evidence, action)
+    assert verdict_of(row) == NOT_APPLICABLE
+    assert_watch(row, "input_missing")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", UNAVAILABLE_REASONS)
 @pytest.mark.parametrize("field", ["open_sell_quantity", "protected_quantity"])
