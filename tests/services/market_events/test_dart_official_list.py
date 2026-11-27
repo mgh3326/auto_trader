@@ -822,42 +822,6 @@ async def test_a_timed_incoming_write_replaces_the_stored_time():
     assert payload["raw_payload_json"]["rcept_dt"] == "2026-11-27 17:00"
 
 
-@pytest.mark.asyncio
-async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
-    from app.services.market_events.dart_helpers import ReceiptTimeRead
-    from scripts import backfill_dart_disclosures as cli
-
-    seen: dict[str, object] = {}
-    scrape = AsyncMock(return_value=ReceiptTimeRead({}, 0, True))
-    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", scrape)
-
-    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        seen["loader"] = load_receipt_times
-        return SimpleNamespace(status="succeeded", event_count=0, error=None)
-
-    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
-    db = MagicMock()
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    # _load_partition_states reads the partition table before the day loop.
-    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-
-    await cli.run_backfill(
-        db=db,
-        from_date=DAY,
-        to_date=DAY,
-        commit=True,
-        receipt_times=True,
-        fetch_rows=AsyncMock(return_value=[]),
-        emit=lambda *_: None,
-        pace_seconds=0.0,
-    )
-
-    # The loader is gated: it reaches the production scrape only through the run budget.
-    await seen["loader"](DAY)
-    scrape.assert_awaited_once_with(DAY)
-
-
 # -- review findings on PR #2694 (pagination, 429, per-request budget) ----------
 
 
@@ -967,86 +931,6 @@ def test_backfill_retries_only_transient_dart_failure_codes(code, retryable):
 
 
 @pytest.mark.asyncio
-async def test_backfill_skips_the_scrape_without_ceiling_budget(monkeypatch):
-    """A scrape starts only with 99 units left under --max-calls (hk 6408 review)."""
-    from scripts import backfill_dart_disclosures as cli
-
-    read = AsyncMock()
-    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", read)
-    loaded: list = []
-
-    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        await fetch_rows(target_date)  # the day fetch spends one unit
-        loaded.append(await load_receipt_times(target_date))
-        return SimpleNamespace(status="succeeded", event_count=0, error=None)
-
-    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
-    db = MagicMock()
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-
-    await cli.run_backfill(
-        db=db,
-        from_date=DAY,
-        to_date=DAY,
-        commit=True,
-        receipt_times=True,
-        fetch_rows=AsyncMock(return_value=[]),
-        emit=lambda *_: None,
-        pace_seconds=0.0,
-        max_calls=50,  # fewer than 99 units: the worst-case scrape cannot be afforded
-    )
-
-    assert read.await_count == 0  # no scrape request was made
-    assert loaded == [None]  # the day stays pending, rows date-only
-
-
-@pytest.mark.asyncio
-async def test_backfill_scrape_at_the_ceiling_stays_pending(monkeypatch):
-    from app.services.market_events.dart_helpers import ReceiptTimeRead
-    from scripts import backfill_dart_disclosures as cli
-
-    monkeypatch.setattr(
-        dart_helpers,
-        "read_dart_receipt_times_for_date",
-        AsyncMock(
-            return_value=ReceiptTimeRead(
-                times={"20261127000001": "2026-11-27 16:30"},
-                scrape_rows=99 * 100,
-                complete=False,
-            )
-        ),
-    )
-    loaded: list = []
-
-    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        await fetch_rows(target_date)
-        loaded.append(await load_receipt_times(target_date))
-        return SimpleNamespace(status="pending", event_count=0, error=None)
-
-    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
-    db = MagicMock()
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-
-    await cli.run_backfill(
-        db=db,
-        from_date=DAY,
-        to_date=DAY,
-        commit=True,
-        receipt_times=True,
-        fetch_rows=AsyncMock(return_value=[]),
-        emit=lambda *_: None,
-        pace_seconds=0.0,
-        max_calls=200,
-    )
-
-    assert loaded == [None]  # an incomplete scrape is not usable times
-
-
-@pytest.mark.asyncio
 async def test_a_no_data_answer_on_a_later_page_fails_closed(monkeypatch):
     """Page 2 answering 013 contradicts page 1's total_page=2 (hk 6408 review)."""
     pages = {"1": {"list": [{"rcept_no": "1"}], "total_page": 2}, "2": None}
@@ -1062,9 +946,20 @@ async def test_a_no_data_answer_on_a_later_page_fails_closed(monkeypatch):
     assert raised.value.failure_code == "bad_response"
 
 
+# -- backfill never scrapes; the scrape is daily-only (hk 6408 round 7) --------
+
+
+def test_backfill_has_no_receipt_time_scrape_flag():
+    from scripts.backfill_dart_disclosures import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(
+            ["--from-date", "2026-11-27", "--to-date", "2026-11-27", "--receipt-times"]
+        )
+
+
 @pytest.mark.asyncio
-async def test_backfill_does_not_scrape_receipt_times_unless_opted_in(monkeypatch):
-    """Receipt-time enrichment is opt-in for backfill (hk 6408 review)."""
+async def test_backfill_run_never_wires_the_receipt_time_loader(monkeypatch):
     from scripts import backfill_dart_disclosures as cli
 
     seen: dict[str, object] = {}
@@ -1092,99 +987,111 @@ async def test_backfill_does_not_scrape_receipt_times_unless_opted_in(monkeypatc
     assert seen["loader"] is None
 
 
-def test_receipt_times_flag_is_off_by_default_and_on_when_given():
-    from scripts.backfill_dart_disclosures import parse_args
-
-    base = ["--from-date", "2026-11-27", "--to-date", "2026-11-27", "--commit"]
-
-    assert parse_args(base).receipt_times is False
-    assert parse_args([*base, "--receipt-times"]).receipt_times is True
+# -- receipt-time scrape: coverage decides completeness (hk 6408 round 7) -------
 
 
-def _ceiling_frame(rows: int):
-    return _scrape_frame(
+@pytest.mark.asyncio
+async def test_a_scrape_missing_an_official_receipt_is_not_used(monkeypatch):
+    monkeypatch.setattr(
+        dart_helpers,
+        "_get_client",
+        AsyncMock(
+            return_value=_FrameClient(
+                _scrape_frame(
+                    [
+                        {
+                            "rcept_no": "20261127000001",
+                            "rcept_dt": "2026-11-27 16:30",
+                            "corp_name": "A",
+                        }
+                    ]
+                )
+            )
+        ),
+    )
+
+    times = await dart_helpers.fetch_dart_receipt_times_for_date(
+        DAY, expected_receipts=frozenset({"20261127000001", "20261127000002"})
+    )
+
+    assert times is None  # the scrape does not cover the official list
+
+
+@pytest.mark.asyncio
+async def test_a_scrape_covering_the_official_list_is_used(monkeypatch):
+    monkeypatch.setattr(
+        dart_helpers,
+        "_get_client",
+        AsyncMock(
+            return_value=_FrameClient(
+                _scrape_frame(
+                    [
+                        {
+                            "rcept_no": "20261127000001",
+                            "rcept_dt": "2026-11-27 16:30",
+                            "corp_name": "A",
+                        }
+                    ]
+                )
+            )
+        ),
+    )
+
+    times = await dart_helpers.fetch_dart_receipt_times_for_date(
+        DAY, expected_receipts=frozenset({"20261127000001"})
+    )
+
+    assert times == {"20261127000001": "2026-11-27 16:30"}
+
+
+@pytest.mark.asyncio
+async def test_identical_duplicate_occurrences_keep_the_time(monkeypatch):
+    """A filing listed on two pages with the same time is one timed receipt (hk 6408 r7)."""
+    frame = _scrape_frame(
         [
             {
-                "rcept_no": f"2026112700{index:06d}",
-                "rcept_dt": "2026-11-27 10:00",
+                "rcept_no": "20261127000001",
+                "rcept_dt": "2026-11-27 16:30",
                 "corp_name": "A",
-            }
-            for index in range(rows)
+            },
+            {
+                "rcept_no": "20261127000001",
+                "rcept_dt": "2026-11-27 16:30",
+                "corp_name": "A",
+            },
         ]
     )
-
-
-@pytest.mark.asyncio
-async def test_a_scrape_at_the_page_ceiling_is_incomplete(monkeypatch):
-    """A scrape that reached the 99-page ceiling may be truncated (hk 6408 review)."""
-    from app.services.market_events.dart_helpers import SCRAPE_CEILING_ROWS
-
     monkeypatch.setattr(
-        dart_helpers,
-        "_get_client",
-        AsyncMock(return_value=_FrameClient(_ceiling_frame(SCRAPE_CEILING_ROWS))),
-    )
-
-    assert await dart_helpers.fetch_dart_receipt_times_for_date(DAY) is None
-
-
-@pytest.mark.asyncio
-async def test_a_scrape_below_the_ceiling_is_complete(monkeypatch):
-    from app.services.market_events.dart_helpers import SCRAPE_CEILING_ROWS
-
-    monkeypatch.setattr(
-        dart_helpers,
-        "_get_client",
-        AsyncMock(return_value=_FrameClient(_ceiling_frame(SCRAPE_CEILING_ROWS - 1))),
+        dart_helpers, "_get_client", AsyncMock(return_value=_FrameClient(frame))
     )
 
     times = await dart_helpers.fetch_dart_receipt_times_for_date(DAY)
 
-    assert times is not None
-    assert len(times) == SCRAPE_CEILING_ROWS - 1 or times == {}  # no timed rows here
+    assert times == {"20261127000001": "2026-11-27 16:30"}
 
 
-@pytest.mark.asyncio
-async def test_backfill_charges_the_scrape_pages_and_reports_them_apart(monkeypatch):
-    from app.services.market_events.dart_helpers import ReceiptTimeRead
-    from scripts import backfill_dart_disclosures as cli
+# -- the scraper's page loop is read from the pinned source (hk 6408 round 7) ---
 
-    read = AsyncMock(
-        return_value=ReceiptTimeRead(
-            times={"20261127000001": "2026-11-27 16:30"},
-            scrape_rows=150,
-            complete=True,
-        )
-    )
-    monkeypatch.setattr(dart_helpers, "read_dart_receipt_times_for_date", read)
-    loaded: list = []
 
-    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
-        await fetch_rows(target_date)
-        loaded.append(await load_receipt_times(target_date))
-        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+def test_the_installed_opendartreader_is_the_pinned_version():
+    """The page ceiling below is read from this version; a new version must be re-reviewed."""
+    from importlib import metadata
 
-    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
-    db = MagicMock()
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-    emitted: list[str] = []
+    assert metadata.version("OpenDartReader") == "0.2.3"
 
-    await cli.run_backfill(
-        db=db,
-        from_date=DAY,
-        to_date=DAY,
-        commit=True,
-        receipt_times=True,
-        fetch_rows=AsyncMock(return_value=[]),
-        emit=emitted.append,
-        pace_seconds=0.0,
-        max_calls=200,
-    )
 
-    assert loaded == [{"20261127000001": "2026-11-27 16:30"}]
-    summary = json.loads(emitted[-1])
-    # 1 day fetch + 1 gate unit + 2 extra scrape pages (ceil(150/100)+1 = 3 pages)
-    assert summary["dart_calls"] == 4
-    assert summary["dart_scrape_requests"] == 3
+def test_the_scrape_ceiling_matches_the_installed_source():
+    """SCRAPE_CEILING_PAGES is the upper bound of the loop in list_date_ex (dart_utils.py)."""
+    import re as _re
+    from importlib import util
+    from pathlib import Path as _Path
+
+    spec = util.find_spec("OpenDartReader")
+    source = (_Path(spec.origin).parent / "dart_utils.py").read_text(encoding="utf-8")
+    body = source[source.index("def list_date_ex(") :]
+    upper = int(_re.search(r"for page in range\(1, (\d+)\):", body).group(1))
+
+    assert dart_helpers.SCRAPE_CEILING_PAGES == upper - 1
+    assert not hasattr(
+        dart_helpers, "SCRAPE_PAGE_SIZE"
+    )  # the library defines no page size

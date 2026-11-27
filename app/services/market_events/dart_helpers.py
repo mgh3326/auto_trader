@@ -306,38 +306,35 @@ async def fetch_dart_filings_for_date(
     return unique
 
 
-# OpenDartReader's list_date_ex loops ``for page in range(1, 100)`` and returns
-# what it has, so a day that reaches the 99th page is silently truncated. The page
-# size is ASSUMED to be 100 rows (not verified against dsac001); the ceiling rule
-# below depends on it. The budget's hard guarantee does not: the backfill never
-# starts a scrape with fewer than SCRAPE_CEILING_PAGES units left.
+# OpenDartReader's list_date_ex loops ``for page in range(1, 100)`` and makes one
+# request per page; the page size is decided by the server and is not observable
+# here. So a scrape's page count is never inferred. The budget charges the whole
+# worst case (SCRAPE_CEILING_PAGES) for every scrape, and completeness is judged
+# by coverage: every official receipt number must appear in the scrape.
 SCRAPE_CEILING_PAGES = 99
-SCRAPE_PAGE_SIZE = 100
-SCRAPE_CEILING_ROWS = SCRAPE_CEILING_PAGES * SCRAPE_PAGE_SIZE
 
 
 @dataclass(frozen=True)
 class ReceiptTimeRead:
     """One receipt-time scrape of a day.
 
-    ``times`` holds the usable timed receipts; ``scrape_rows`` is the raw row
-    count the library returned, which the caller charges against the budget.
-    ``complete`` is False when the scrape reached the page ceiling: the day is
-    then not fully known and must stay pending (hk 6408 review).
+    ``times`` holds the usable timed receipts. ``receipts`` is every distinct
+    receipt number the scrape returned, timed or not, so the caller can check the
+    scrape covers the official list.
     """
 
     times: dict[str, str]
+    receipts: frozenset[str]
     scrape_rows: int
-    complete: bool
 
 
 async def read_dart_receipt_times_for_date(target_date: date) -> ReceiptTimeRead | None:
     """Read the day's list_date_ex scrape once. ``None`` when the read failed.
 
-    Every attempt reads fresh pages: ``cache=False`` for every date, so a retry
-    never re-serves a cached failing page (hk 6408 review). The exception class
-    name is logged; the message is not, because an OpenDartReader error can carry
-    the request URL and its key.
+    Every attempt reads fresh pages (``cache=False``), so a retry never re-serves a
+    cached failing page (hk 6408 review). The exception class name is logged; the
+    message is not, because an OpenDartReader error can carry the request URL and
+    its key.
     """
     client = await _get_client()
     if client is None:
@@ -350,33 +347,31 @@ async def read_dart_receipt_times_for_date(target_date: date) -> ReceiptTimeRead
         columns = getattr(frame, "columns", None)
         if columns is None or not DART_LIST_DATE_EX_REQUIRED_COLUMNS.issubset(columns):
             raise ValueError("list_date_ex response has an unexpected schema")
-        # One receipt number, one usable time. Anything ambiguous is dropped.
-        candidates: dict[str, list[str | None]] = {}
+        # Occurrences of one receipt number that agree on the usable time are the
+        # same filing seen on two pages (the list shifts while paged). Only
+        # conflicting usable times make a receipt ambiguous.
+        usable_by_receipt: dict[str, set[str]] = {}
         for record in frame.to_dict(orient="records"):
             receipt = str(record.get("rcept_no") or "").strip()
             if not receipt:
                 continue
+            usable_by_receipt.setdefault(receipt, set())
             value = record.get("rcept_dt")
             text = (
                 value.isoformat() if hasattr(value, "isoformat") else str(value or "")
-            )
-            match = _TIMED_RECEIPT_RE.match(text.strip())
-            usable = (
-                text.strip().replace("T", " ")
-                if match and match.group(1) == iso
-                else None
-            )
-            candidates.setdefault(receipt, []).append(usable)
+            ).strip()
+            match = _TIMED_RECEIPT_RE.match(text)
+            if match and match.group(1) == iso:
+                usable_by_receipt[receipt].add(text.replace("T", " "))
         times = {
-            receipt: values[0]
-            for receipt, values in candidates.items()
-            if len(values) == 1 and values[0] is not None
+            receipt: next(iter(usable))
+            for receipt, usable in usable_by_receipt.items()
+            if len(usable) == 1
         }
-        scrape_rows = len(frame)
         return ReceiptTimeRead(
             times=times,
-            scrape_rows=scrape_rows,
-            complete=scrape_rows < SCRAPE_CEILING_ROWS,
+            receipts=frozenset(usable_by_receipt),
+            scrape_rows=len(frame),
         )
 
     try:
@@ -389,21 +384,29 @@ async def read_dart_receipt_times_for_date(target_date: date) -> ReceiptTimeRead
         return None
 
 
+def scrape_covers(read: ReceiptTimeRead, expected_receipts: frozenset[str]) -> bool:
+    """True when the scrape saw every official receipt number of the day."""
+    return expected_receipts <= read.receipts
+
+
 async def fetch_dart_receipt_times_for_date(
     target_date: date,
+    *,
+    expected_receipts: frozenset[str] | None = None,
 ) -> dict[str, str] | None:
     """Timed receipts for the ingestion path; ``None`` when they are not known.
 
-    ``None`` covers both a failed read and a scrape that reached the page ceiling.
-    The official rows are still stored date-only, and the caller keeps the day
-    pending (``receipt_time_unavailable``), so the next run re-reads it (hk 6408).
+    ``None`` covers a failed read and a scrape that does not cover every expected
+    official receipt (the list was truncated, or the scrape is short). The official
+    rows are still stored date-only, and the caller keeps the day pending
+    (``receipt_time_unavailable``), so the next run re-reads it (hk 6408).
     """
     read = await read_dart_receipt_times_for_date(target_date)
     if read is None:
         return None
-    if not read.complete:
+    if expected_receipts is not None and not scrape_covers(read, expected_receipts):
         logger.warning(
-            "DART receipt-time scrape reached the page ceiling; day stays pending"
+            "DART receipt-time scrape does not cover the official list; day stays pending"
         )
         return None
     return read.times

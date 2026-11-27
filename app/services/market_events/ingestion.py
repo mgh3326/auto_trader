@@ -308,8 +308,7 @@ async def ingest_kr_disclosures_for_date(
     enrich_capital: bool | None = None,
     load_corp_registry: Callable[[], Awaitable[dict[str, list[dict[str, str]]] | None]]
     | None = None,
-    load_receipt_times: Callable[[date], Awaitable[dict[str, str] | None]]
-    | None = None,
+    load_receipt_times: Callable[..., Awaitable[dict[str, str] | None]] | None = None,
 ) -> IngestionRunResult:
     """Ingest KR DART disclosures for one day.
 
@@ -372,7 +371,12 @@ async def ingest_kr_disclosures_for_date(
         enrichment_failed = False
         if load_receipt_times is not None:
             try:
-                times = await load_receipt_times(target_date)
+                expected = frozenset(
+                    str(row.get("rcept_no") or "").strip() for row in rows
+                ) - {""}
+                times = await load_receipt_times(
+                    target_date, expected_receipts=expected
+                )
             except Exception as exc:
                 logger.warning(
                     "DART receipt-time enrichment failed (%s); rows stay date-only",
