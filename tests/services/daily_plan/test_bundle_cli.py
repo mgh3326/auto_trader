@@ -57,7 +57,7 @@ def harness(monkeypatch):
         assembled.append((db, list(db.statements), kwargs))
         return f.build()
 
-    async def store(db, *, day, body, claimed_sha256):
+    async def store(db, *, day, body, claimed_sha256, **_):
         stored.append((db, day, body, claimed_sha256))
         return BUNDLE_ID
 

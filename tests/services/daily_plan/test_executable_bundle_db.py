@@ -19,25 +19,33 @@ from tests.services.daily_plan.test_allocation_publication import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+def _kr_executable():
+    policy = load_trading_policy()
+    plan = policy.daily_plan.model_copy(
+        update={"executable_markets": frozenset({"kr"})}
+    )
+    return policy.model_copy(update={"daily_plan": plan})
+
+
 async def _publish(db, request):
     return await store.write_version(
         db,
         day=DAY,
         request=request,
         now=NOW,
-        policy=load_trading_policy(),
+        policy=_kr_executable(),
         policy_hash="hash",
     )
 
 
-async def _store(db, mode="plan_only"):
+async def _store(db):
     bundle = _bundle()
     bundle["id"] = await store.store_input_bundle(
         db,
         day=DAY,
         body=bundle["body"],
         claimed_sha256=bundle["sha256"],
-        mode=mode,
+        policy=_kr_executable(),
     )
     return bundle
 
@@ -74,10 +82,10 @@ async def _check(db, published, bundle):
 
 async def test_bundle_first_then_executable_publication(db_session, calendar):  # noqa: F811
     async with db_session.begin():
-        bundle = await _store(db_session, mode="executable")
+        bundle = await _store(db_session)
         published = await _publish(
             db_session,
-            {**_request(bundle, key=str(uuid4())), "mode": "executable"},
+            {**_request(bundle, key=str(uuid4()))},
         )
         await _check(db_session, published, bundle)
         await db_session.rollback()
@@ -90,7 +98,6 @@ async def test_existing_executable_head_then_bundle_backed_version(
     async with db_session.begin():
         unbound = {
             **_request(_bundle(), key=str(uuid4()), symbols=("005930",)),
-            "mode": "executable",
         }
         for key in ("input_bundle_id", "input_bundle_sha256"):
             unbound.pop(key)
@@ -99,13 +106,11 @@ async def test_existing_executable_head_then_bundle_backed_version(
             {k: v for k, v in _row("005930").items() if k != "would_be_account_ref"}
         ]
         await _publish(db_session, unbound)
-        # The bundle job's default mode must still join the executable head.
         bundle = await _store(db_session)
         published = await _publish(
             db_session,
             {
                 **_request(bundle, seq=1, key=str(uuid4())),
-                "mode": "executable",
                 "rows": [_row("005930"), _row("278470")],
             },
         )

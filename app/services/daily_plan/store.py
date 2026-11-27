@@ -56,6 +56,16 @@ def validate_market(value: Any) -> str:
     return value
 
 
+def day_mode(market: str, policy: Any) -> str:
+    """The single source of a (market, day)'s mode: the trading policy.
+
+    A policy without the key (or none) is plan-only, the fail-closed default.
+    """
+    plan = getattr(policy, "daily_plan", None)
+    enabled = getattr(plan, "executable_markets", frozenset())
+    return "executable" if market in enabled else "plan_only"
+
+
 def _cutoff(market: str, day: date) -> datetime:
     return datetime.combine(day, _CUTOFFS[market], _ZONES[market])
 
@@ -95,21 +105,14 @@ async def _head(
     day: date,
     market: str = "kr",
     mode: str = "plan_only",
-    *,
-    any_mode: bool = False,
 ) -> UUID:
     """Return the (market, day) head, creating it in ``mode`` when absent.
 
-    A head's mode is fixed at creation. A publication must match it; a bundle
-    (``any_mode``) attaches to the head whatever its mode, so a bundle-backed
-    publication works in either mode.
+    Every writer passes ``day_mode`` from policy, so a head in another mode
+    means the policy changed mid-day; that is refused, never adopted.
     """
     where = (heads.c.market == market, heads.c.session_date == day)
-    if not any_mode:
-        where_mode = (*where, heads.c.mode == mode)
-    else:
-        where_mode = where
-    existing = await db.scalar(select(heads.c.id).where(*where_mode))
+    existing = await db.scalar(select(heads.c.id).where(*where, heads.c.mode == mode))
     if existing is not None:
         return existing
     # A head's mode is fixed when it is created; another mode is a conflict.
@@ -134,15 +137,13 @@ async def store_input_bundle(
     day: date,
     body: dict[str, Any],
     claimed_sha256: str,
-    mode: str = "plan_only",
+    policy: TradingPolicyDocument | None = None,
 ) -> UUID:
     """Called by the server-side input assembler in its write transaction.
 
-    The bundle joins the day's KR head in whatever mode it already has; if no
-    head exists yet it creates one in ``mode`` (the mode the day will publish).
+    The head is created or joined in the policy's mode for KR (``day_mode``).
     """
-    if mode not in PLAN_MODES:
-        raise ValueError("invalid_plan_mode")
+    mode = day_mode("kr", policy)
     canonical = canonical_bundle(body)
     if hashlib.sha256(canonical).hexdigest() != claimed_sha256:
         raise ValueError("bundle_hash_mismatch")
@@ -153,7 +154,7 @@ async def store_input_bundle(
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate_bundle_row_key")
     await _lock_head(db, day)
-    head_id = await _head(db, day, "kr", mode, any_mode=True)
+    head_id = await _head(db, day, "kr", mode)
     existing = await db.scalar(
         select(bundles.c.id).where(
             bundles.c.head_id == head_id,
@@ -267,9 +268,12 @@ async def write_version(
     it yet: the intent issuer is a later ticket (hk 6939 N2).
     """
     market = validate_market(request.get("market", "kr"))
-    mode = request.get("mode", "plan_only")
-    if mode not in PLAN_MODES:
-        raise ValueError("invalid_plan_mode")
+    mode = day_mode(market, policy)
+    # ``request.mode`` is only an assertion; the policy decides the mode.
+    if "mode" in request and request["mode"] != mode:
+        if request["mode"] not in PLAN_MODES:
+            raise ValueError("invalid_plan_mode")
+        raise ValueError("plan_mode_conflict")
     zone = _ZONES[market]
     await _lock_head(db, day)
     head_id = await _head(db, day, market, mode)

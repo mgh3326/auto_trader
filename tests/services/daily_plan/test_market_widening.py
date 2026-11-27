@@ -1,7 +1,9 @@
 """hk 6981: US/crypto plan rows and the explicit executable mode (6939 §1.1)."""
 
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -11,15 +13,26 @@ import pytest
 
 from app.services.daily_plan import store
 from app.services.daily_plan.bundle import SCHEMA_VERSION, canonical_bundle
-from app.services.daily_plan.validator import normalize_symbol
+from app.services.daily_plan.validator import normalize_symbol, prepare_row
 from app.services.daily_plan.vocabulary import ACCOUNT_MODES
 from tests.services.daily_plan.test_publish import fake_db, request
 
 DAY = date(2026, 11, 24)
-POLICY = SimpleNamespace(
-    version="v1",
-    daily_plan=SimpleNamespace(no_add_floor_pct=-8, carry_max_sessions=5, max_adopt=10),
-)
+
+
+def _policy(*executable):
+    return SimpleNamespace(
+        version="v1",
+        daily_plan=SimpleNamespace(
+            no_add_floor_pct=-8,
+            carry_max_sessions=5,
+            max_adopt=10,
+            executable_markets=frozenset(executable),
+        ),
+    )
+
+
+POLICY = _policy()
 
 
 @pytest.mark.parametrize(
@@ -153,7 +166,6 @@ async def test_executable_mode_is_stored_on_rows():
         day=DAY,
         request=request(
             market="crypto",
-            mode="executable",
             asof=now.isoformat(),
             rows=[
                 _row(
@@ -165,7 +177,7 @@ async def test_executable_mode_is_stored_on_rows():
             ],
         ),
         now=now,
-        policy=POLICY,
+        policy=_policy("crypto"),
         policy_hash="hash",
     )
     inserted = [
@@ -207,42 +219,143 @@ async def test_watch_carry_reads_the_previous_plan_of_the_same_market(monkeypatc
     assert seen == ["crypto"]
 
 
-def _mode_aware_db(head_mode: str):
-    """A DB with one KR head in ``head_mode``; lookups honour a mode filter."""
+def _heads_db(existing_mode: str | None):
+    """A DB holding at most one KR head; head lookups honour the mode filter."""
     head_id = uuid4()
 
     async def scalar(stmt):
-        params = stmt.compile().params
         if stmt.get_final_froms()[0] is store.heads:
+            params = stmt.compile().params
             wanted = [v for k, v in params.items() if k.startswith("mode")]
-            return head_id if not wanted or wanted == [head_mode] else None
-        return None
-
-    async def execute(_stmt, *_args):
+            if existing_mode is None or (wanted and wanted != [existing_mode]):
+                return None
+            return head_id
         return None
 
     return SimpleNamespace(
-        scalar=AsyncMock(side_effect=scalar),
-        execute=AsyncMock(side_effect=execute),
-    ), head_id
+        scalar=AsyncMock(side_effect=scalar), execute=AsyncMock(return_value=None)
+    )
+
+
+def _inserted(db, table):
+    return [
+        call.args[0].compile().params
+        for call in db.execute.call_args_list
+        if getattr(call.args[0], "table", None) is table
+    ]
+
+
+def _bundle_body():
+    closed = datetime(2026, 11, 24, 8, 20, tzinfo=ZoneInfo("Asia/Seoul"))
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "bundle_closed_at": closed.isoformat(),
+        "rows": [],
+    }
+    return body, hashlib.sha256(canonical_bundle(body)).hexdigest()
 
 
 @pytest.mark.asyncio
-async def test_bundle_attaches_to_an_executable_kr_head():
-    """A bundle must reach the day's head whatever its mode (review r4714936282)."""
-    body = {
-        "schema_version": SCHEMA_VERSION,
-        "bundle_closed_at": datetime(
-            2026, 11, 24, 8, 20, tzinfo=ZoneInfo("Asia/Seoul")
-        ).isoformat(),
-        "rows": [],
-    }
-    digest = hashlib.sha256(canonical_bundle(body)).hexdigest()
-    db, head_id = _mode_aware_db("executable")
-    await store.store_input_bundle(db, day=DAY, body=body, claimed_sha256=digest)
-    inserted = [
-        call.args[0].compile().params
-        for call in db.execute.call_args_list
-        if getattr(call.args[0], "table", None) is store.bundles
-    ]
-    assert [params["head_id"] for params in inserted] == [head_id]
+async def test_bundle_first_creates_the_head_in_the_policy_mode():
+    """r4714936282: with kr enabled, the 08:20 bundle makes an executable head."""
+    body, digest = _bundle_body()
+    db = _heads_db(None)
+    await store.store_input_bundle(
+        db, day=DAY, body=body, claimed_sha256=digest, policy=_policy("kr")
+    )
+    assert [head["mode"] for head in _inserted(db, store.heads)] == ["executable"]
+
+
+@pytest.mark.asyncio
+async def test_default_policy_bundle_head_is_plan_only():
+    body, digest = _bundle_body()
+    db = _heads_db(None)
+    await store.store_input_bundle(
+        db, day=DAY, body=body, claimed_sha256=digest, policy=POLICY
+    )
+    assert [head["mode"] for head in _inserted(db, store.heads)] == ["plan_only"]
+
+
+@pytest.mark.asyncio
+async def test_requested_executable_mode_is_refused_before_any_head():
+    now = datetime(2026, 11, 24, 3, tzinfo=UTC)
+    db = _heads_db(None)
+    with pytest.raises(ValueError, match="plan_mode_conflict"):
+        await store.write_version(
+            db,
+            day=DAY,
+            request=request(mode="executable", asof=now.isoformat()),
+            now=now,
+            policy=POLICY,
+            policy_hash="hash",
+        )
+    assert _inserted(db, store.heads) == []
+
+
+@pytest.mark.asyncio
+async def test_policy_flip_after_the_head_exists_is_refused():
+    body, digest = _bundle_body()
+    with pytest.raises(ValueError, match="plan_mode_conflict"):
+        await store.store_input_bundle(
+            _heads_db("plan_only"),
+            day=DAY,
+            body=body,
+            claimed_sha256=digest,
+            policy=_policy("kr"),
+        )
+
+
+def test_policy_file_enables_no_executable_market():
+    from app.services.trading_policy_service import load_trading_policy
+
+    assert load_trading_policy().daily_plan.executable_markets == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("sizes", "refused"),
+    [
+        ({"would_be_notional": "1000000"}, False),
+        ({"would_be_notional": "4999"}, True),
+        ({"would_be_quantity": "0.0001"}, False),
+        ({"would_be_quantity": "0.00000001"}, True),
+    ],
+)
+def test_crypto_minimum_order_is_the_upbit_krw_minimum(sizes, refused):
+    """r4714877846: a crypto notional need not buy one whole coin."""
+    now = datetime(2026, 11, 24, 3, tzinfo=UTC)
+    seen = (now - timedelta(minutes=5)).isoformat()
+    row = {k: v for k, v in _row().items() if k != "would_be_quantity"}
+    row.update(
+        market="crypto",
+        symbol="KRW-BTC",
+        venue="UPBIT",
+        session="crypto_24h",
+        max_buy_price="140000000",
+        would_be_limit_price="140000000",
+        **sizes,
+    )
+    prepare = partial(
+        prepare_row,
+        row,
+        evidence={"sources": {"price": {"event_at": seen, "first_observed_at": seen}}},
+        asof=now,
+        session_close=now + timedelta(hours=20),
+        bundle_closed_at=now,
+        oldest_accepted_at=now - timedelta(days=1),
+        no_add_floor_pct=Decimal("-8"),
+    )
+    if refused:
+        with pytest.raises(ValueError, match="below_min_order_amount"):
+            prepare()
+    else:
+        assert prepare()["not_executable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_links_reports_an_invalid_market(monkeypatch):
+    """r4714876157: an unknown market is invalid_market, not version_not_found."""
+    from app.mcp_server.tooling import daily_plan_registration as registration
+
+    monkeypatch.setattr(registration.settings, "daily_plan_enabled", True)
+    result = await registration.daily_plan_confirm_links(DAY, 1, market="eu")
+    assert result == {"error_code": "invalid_market"}

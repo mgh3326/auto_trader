@@ -25,6 +25,9 @@ from app.services.daily_plan.vocabulary import (
     VENUE_SESSIONS,
 )
 
+# Upbit KRW market minimum order amount (orders/chance ``market.bid.min_total``).
+# The plan layer reads no live orders/chance; the order path revalidates later.
+UPBIT_KRW_MIN_ORDER_KRW = Decimal("5000")
 _DECIMAL = re.compile(r"[0-9]{1,38}(?:\.[0-9]{1,38})?")
 _SIDES = {"new": "buy", "add": "buy", "trim": "sell", "risk_sell": "sell"}
 _US_SYMBOL = re.compile(r"[A-Z][A-Z0-9]{0,9}(?:\.[A-Z0-9]{1,4})?")
@@ -443,7 +446,16 @@ def prepare_row(
             quantity = parse_positive_decimal(size)
             if row["market"] in ("kr", "us") and quantity != int(quantity):
                 raise ValueError(f"invalid_{row['market']}_quantity")
-        if size is None and parse_positive_decimal(row["would_be_notional"]) < limit:
+        if row["market"] == "crypto":
+            amount = (
+                parse_positive_decimal(size) * limit
+                if size is not None
+                else parse_positive_decimal(row["would_be_notional"])
+            )
+            if amount < UPBIT_KRW_MIN_ORDER_KRW:
+                raise ValueError("below_min_order_amount")
+        elif size is None and parse_positive_decimal(row["would_be_notional"]) < limit:
+            # KR and US trade whole shares: a notional must buy at least one.
             raise ValueError("below_min_order_amount")
     if row["action"] == "watch":
         if reason and trigger is None:

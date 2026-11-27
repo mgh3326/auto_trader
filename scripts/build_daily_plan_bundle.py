@@ -36,6 +36,7 @@ from app.services.daily_plan.store import store_input_bundle
 # The pure keyed digest the order path uses, so a plan row and a send agree on
 # which account is meant. Nothing else of the mandate package is used.
 from app.services.mandate.account_ref import derive_account_ref
+from app.services.trading_policy_service import load_trading_policy
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -55,12 +56,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=time.fromisoformat,
         default=DEFAULT_CUTOFF,
         help="Bundle close time in KST (HH:MM, at most 08:30; default 08:20).",
-    )
-    parser.add_argument(
-        "--plan-mode",
-        choices=("plan_only", "executable"),
-        default="plan_only",
-        help="Mode of the day's head if this bundle creates it (default plan_only).",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -187,7 +182,7 @@ async def run(
                 day=day,
                 body=body,
                 claimed_sha256=digest,
-                **({"mode": args.plan_mode} if args.plan_mode != "plan_only" else {}),
+                policy=load_trading_policy(),
             )
         report.update(status="stored", bundle_id=str(bundle_id))
     return 0, report

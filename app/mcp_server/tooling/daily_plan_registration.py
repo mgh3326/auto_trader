@@ -85,6 +85,10 @@ async def daily_plan_confirm_links(
     if not settings.daily_plan_enabled:
         return {"error_code": "daily_plan_disabled"}
     try:
+        market = store.validate_market(market)
+    except ValueError:
+        return {"error_code": "invalid_market"}
+    try:
         async with AsyncSessionLocal() as db, db.begin():
             return await store.confirm_links(
                 db, day=session_date, seq=seq, now=datetime.now(UTC), market=market
