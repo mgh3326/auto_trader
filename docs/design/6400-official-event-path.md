@@ -17,6 +17,9 @@ hk 6302·6031·6372·6395, 같은 날짜의 dots 댓글 33192/33232/33252.
 **표시가 없는 서술은 현행 코드에서 다시 확인하지 않았다** — 예를 들어 §1.9 의 `retro_timeline` source 목록에는 그 뒤
 hk 7005(`508cbee55`)가 `plan` 을 더했다.
 
+**정정 (hk 7091, 2026-11-28)**: PR #2701 리뷰에서 미룬 지적 2건(§3.3 결측 규칙, §4.2 `published_date`)을
+`auto_trader@0b05c53b8` 코드와 대조해 고쳤고, 고친 곳에는 `(hk 7091)` 을 달았다.
+
 ## 0. 결론 요약
 
 |#|결론|
@@ -342,11 +345,26 @@ scripts/request_market_event_backfill.py \
 
 Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_event_ingestion_partitions` 의 투영이다:
 
-- `latest_collected`: 원천별 `MAX(partition_date)` where `status='succeeded'`.
-- `gaps[]`: 최근 N일 안에서 `failed`/`pending`/행 자체 없음(`not_yet_run`)을 닫힌 사유로 나열. **(hk 6417)**
-  `succeeded` + `event_count=0` 은 gap 으로 세지 않으며(`no_notice` 여부는 §2.4 zero 규칙), 파티션을 쓰지 않는 원천의
-  행 부재는 `not_yet_run` 으로 세지 않는다.
+- `latest_collected`: 원천별 `MAX(partition_date)` where `status='succeeded'` 이고 (`event_count>0` 또는 증명된 0건).
+  **(hk 7091)** 증명되지 않은 0건은 휴장일·주말의 행이라도 `latest_collected` 를 전진시키지 않는다.
+- `gaps[]`: 최근 N일 안에서 `failed`/`pending`/행 자체 없음(`not_yet_run`)/증명되지 않은 `succeeded`+0
+  (`unproven_zero`)을 닫힌 사유로 나열. **(hk 7091)** 증명된 0건만 gap 에서 뺀다(`no_notice`, §2.4 zero 규칙).
 - 기대 여부는 `expected_sources.expected_sources_for_date`(세션 달력) 재사용 — 휴장일·주말은 결측이 아니다.
+- **증명된 0건 (hk 7091)**: 파티션 행에는 완전성 증거 열이 없다
+  (`auto_trader@0b05c53b8 app/models/market_events.py:337-353`). reader 는 §2.4 zero 규칙(완전한 목록, 선언된
+  페이지를 끝까지 읽음, 파싱 실패 0)을 지킨 때에만 `succeeded`+0 을 쓰는 원천의 **닫힌 목록**을 두고, 목록 밖 원천의
+  0건은 `unproven_zero` 로 읽는다. `0b05c53b8` 기준 이 목록은 비어 있다. Finnhub
+  (`auto_trader@0b05c53b8 app/services/market_events/ingestion.py:147-157`, `:263-274`)·WiseFn(`:556-565`)·
+  ForexFactory(`:645-656`)·TradingView(`:723-734`)·Benzinga 캘린더
+  (`auto_trader@0b05c53b8 app/services/benzinga_calendars/ingestion.py:74-84`, `:209-214`)는 파싱 불가 행을 건너뛰고
+  `succeeded` 를 쓸 수 있다. DART 도 파싱 불가 행을 건너뛴 채 확정 비세션일에 `succeeded`+0 을 쓸 수 있어
+  (`auto_trader@0b05c53b8 app/services/market_events/ingestion.py:420-427`, `:465-467`, `:492`) 목록에 넣지 않는다 —
+  비세션일은 기대일이 아니므로 gap 은 늘지 않는다. 수집기는 위 규칙을 지키고 테스트로 고정한 뒤 목록에 더한다.
+- **파티션을 쓰지 않는 원천 (hk 7091)**: 행 부재를 `not_yet_run` 으로 세지 않되, 결측이 없는 것처럼 두지도 않는다.
+  `collection.latest_collected.<source>` 는 `null` 이고 `unknowns` 에
+  `{"field": "collection.latest_collected.<source>", "reason": "no_partition"}` 을 낸다. `0b05c53b8` 에서 파티션을
+  쓰는 곳은 `market_events/ingestion.py`·`market_events/sec_edgar.py`·`benzinga_calendars/ingestion.py` 뿐이라 §2.4
+  의 파티션 없는 다섯 원천은 그대로다.
 - **Factortrail 은 잡을 기다리거나 실행하지 않는다.** 읽기는 지금 상태만 답하고, 결측은 사유로만 표현한다.
 
 ## 4. Factortrail 읽기 계약 — `retro_symbol_events`
@@ -386,6 +404,7 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
     "relevance_state": "known",
     "relevance_basis": "recorded",
     "published_at": "2026-11-21T00:12:00Z",
+    "published_date": null,
     "published_offset": "+09:00",
     "published_precision": "datetime",
     "first_received_at": "2026-11-21T00:31:05Z",
@@ -410,6 +429,16 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
   `auto_trader@7955ef356 docs/agent-contracts/mcp-and-analysis-contracts.md:419`, 계약 `format: date-time`
   `auto_trader@7955ef356 contracts/retro/v1/openapi.yaml:1154-1161`).
 - `reason`/`unknowns` 는 닫힌 어휘만. 원문 메시지·계좌번호·브로커 주문번호·원천 payload 는 내보내지 않는다.
+- **(hk 7091)** `published_date` 는 `published_precision="date"` 일 때만 값이 있는 `YYYY-MM-DD` 문자열이고, 이때
+  `published_at` 은 `null` 이다. 저장된 날짜를 그대로 내며 시각을 붙이거나 UTC 로 바꾸지 않는다.
+  `datetime`/`minute`/`second` 이면 `published_date` 는 `null` 이다. 정밀도가 기록되지 않은 행은 두 필드가 모두
+  `null` 이고 `event_date` 로 채우지 않으며 `unknowns` 에 `not_recorded` 로 남긴다. 저장 규칙은
+  `ck_market_events_publication` 이다(`auto_trader@0b05c53b8 app/models/market_events.py:35-41`,
+  `app/services/market_events/repository.py:73-85`). 날짜만 있는 DART·SEC 행이 `date` 형태다
+  (`auto_trader@0b05c53b8 app/services/market_events/normalizers.py:197-204`,
+  `app/services/market_events/sec_edgar.py:483-489`). 접수 시각을 얻은 DART 행은 발행 열을 쓰지 않아
+  (`auto_trader@0b05c53b8 app/services/market_events/normalizers.py:197-198`) "정밀도가 기록되지 않은 행"에 해당한다 —
+  그 시각을 어떻게 낼지는 여기서 정하지 않는다(hk 6410).
 
 ### 4.3 as-of 술어
 
