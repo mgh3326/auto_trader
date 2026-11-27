@@ -109,11 +109,12 @@ async def _kis_day_calendars(
     A KIS_DAY bar is labelled ``US_DAY`` only from this calendar (hk 7044). Other
     venues never read it, so their labels stay exactly the KIS windows.
     """
-    days = {
-        day
-        for item in bars
-        if _is_kis_day(item.venue) and (day := _kst_date(item)) is not None
-    }
+    days: set[date] = set()
+    for item in bars:
+        if _is_kis_day(item.venue):
+            day = _kst_date(item)
+            if day is not None:
+                days.add(day)
     return {day: await us_day_calendar.read_us_calendar(day) for day in sorted(days)}
 
 
