@@ -135,6 +135,28 @@ class TestDARTService:
         assert init_calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_list_filings_rejects_limit_below_one_before_client_init(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        limit: int,
+    ) -> None:
+        capture: list[dict[str, object]] = []
+        client = FakeOpenDartClient(frame=_filing_dataframe(), capture=capture)
+        init_calls = _install_future_service_double(monkeypatch, client=client)
+
+        result = await dart_service.list_filings("005930", days=3, limit=limit)
+
+        assert result == {
+            "success": False,
+            "error": "limit must be at least 1",
+            "filings": [],
+            "symbol": "005930",
+        }
+        assert init_calls == []
+        assert capture == []
+
+    @pytest.mark.asyncio
     async def test_list_filings_supports_six_digit_stock_code(
         self,
         monkeypatch: pytest.MonkeyPatch,
