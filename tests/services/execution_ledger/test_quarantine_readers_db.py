@@ -890,20 +890,6 @@ async def test_us_inference_excludes_quarantined_fill(db_session, seed, monkeypa
 # ------------------------------------------------- retro_v1 plan_source (hk 7013)
 
 
-#: ``plan_source._scope`` resolves ``VENUE_MARKETS`` by the stored intent
-#: venue, which the v3 CHECK pins to lowercase ``krx``; the vocabulary map
-#: only knows the plan spelling ``KRX``. Until that lookup is fixed the fill
-#: read cannot run on stored rows, so the probe supplies the missing alias —
-#: the quarantine predicate itself is what is under test.
-@pytest.fixture
-def plan_source_venue_alias(monkeypatch):
-    monkeypatch.setattr(
-        plan_source_module,
-        "VENUE_MARKETS",
-        {**plan_source_module.VENUE_MARKETS, "krx": "kr"},
-    )
-
-
 _PLAN_SOURCE_DAYS = {
     "fills": date(2099, 11, 10),
     "reason": date(2099, 11, 11),
@@ -1062,7 +1048,7 @@ async def _purge_plan_source(
 
 
 async def test_plan_source_fills_drop_the_quarantined_phantom(
-    db_session, plan_source_venue_alias, monkeypatch
+    db_session, monkeypatch
 ) -> None:
     """hk 7013: ``read_fills`` never counts a quarantined ledger row.
 
@@ -1109,7 +1095,7 @@ async def test_plan_source_fills_drop_the_quarantined_phantom(
 
 
 async def test_plan_source_plan_reason_drops_the_quarantined_phantom(
-    db_session, plan_source_venue_alias, monkeypatch
+    db_session, monkeypatch
 ) -> None:
     """hk 7013: through ``read_fills``, quarantine flips the derived reason.
 
