@@ -235,6 +235,7 @@ async def test_today_fetch_uses_the_official_list_and_no_page_cache(monkeypatch)
     requested: list[dict] = []
 
     async def no_data(**params):
+        params.pop("before_http", None)
         requested.append(params)
         return None
 

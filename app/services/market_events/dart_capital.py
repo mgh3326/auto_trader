@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException, HTTPSConnection
@@ -189,8 +189,20 @@ def _parse_xml(body: bytes) -> etree._Element:
     )
 
 
-async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | None:
+async def _request(
+    endpoint: str,
+    *,
+    before_http: Callable[[], Awaitable[None]] | None = None,
+    **params: str,
+) -> dict[str, Any] | bytes | None:
+    """Send one OpenDART request, retrying a 020 (rate limit) up to twice.
+
+    ``before_http`` is awaited before every HTTP attempt, including the 020 retries,
+    so a caller can budget real HTTP requests (hk 6408 round 8).
+    """
     for attempt in range(3):
+        if before_http is not None:
+            await before_http()
         body = await asyncio.to_thread(_get_bytes, endpoint, params)
         try:
             if endpoint == "document.xml":
@@ -220,13 +232,17 @@ async def _request(endpoint: str, **params: str) -> dict[str, Any] | bytes | Non
     raise AssertionError("unreachable")
 
 
-async def request_list_page(**params: str) -> dict[str, Any] | None:
+async def request_list_page(
+    *,
+    before_http: Callable[[], Awaitable[None]] | None = None,
+    **params: str,
+) -> dict[str, Any] | None:
     """One OpenDART ``list.json`` page, or ``None`` when DART answers 013/014.
 
     The market-wide daily collector (hk 6408) pages through this. Every failure
     raises a :class:`DartDetailError` whose ``failure_code`` is closed.
     """
-    payload = await _request("list.json", **params)
+    payload = await _request("list.json", before_http=before_http, **params)
     if payload is not None and not isinstance(payload, dict):
         raise DartDetailError(
             "OpenDART list response has an unexpected shape",

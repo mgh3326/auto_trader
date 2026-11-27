@@ -263,13 +263,14 @@ async def fetch_dart_filings_for_date(
     rows: list[dict[str, Any]] = []
     page = 1
     while True:
-        if before_request is not None:
-            await before_request()
+        # before_request runs before every HTTP attempt inside request_list_page,
+        # including 020 retries, so the budget counts real requests (hk 6408 r8).
         payload = await request_list_page(
             bgn_de=day,
             end_de=day,
             page_no=str(page),
             page_count=str(DART_LIST_PAGE_COUNT),
+            before_http=before_request,
         )
         if payload is None:
             if page > 1:

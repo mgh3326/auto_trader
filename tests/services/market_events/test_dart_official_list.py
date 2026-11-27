@@ -45,6 +45,9 @@ async def test_fetch_pages_the_whole_receipt_day_with_day_bounds(monkeypatch):
     calls: list[dict] = []
 
     async def fake_page(**params):
+        hook = params.pop("before_http", None)
+        if hook is not None:
+            await hook()
         calls.append(params)
         return first if params["page_no"] == "1" else second
 
@@ -858,25 +861,50 @@ async def test_a_page_count_that_contradicts_its_rows_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_before_request_is_awaited_before_every_list_page(monkeypatch):
-    pages = {
-        "1": {"list": [{"rcept_no": "1"}], "total_page": 2},
-        "2": {"list": [{"rcept_no": "2"}], "total_page": 2},
-    }
-    gated: list[str] = []
+async def test_a_page_answering_020_twice_then_000_charges_three_attempts(monkeypatch):
+    """Every HTTP attempt, including the 020 retries, is gated (hk 6408 round 8)."""
+    import json as _json
 
-    async def fake_page(**params):
-        gated.append(f"page{params['page_no']}")
-        return pages[params["page_no"]]
+    answers = [
+        _json.dumps({"status": "020"}).encode(),
+        _json.dumps({"status": "020"}).encode(),
+        _json.dumps(
+            {"status": "000", "list": [{"rcept_no": "1"}], "total_page": 1}
+        ).encode(),
+    ]
+    monkeypatch.setattr(dart_capital.settings, "opendart_api_key", "synthetic-key")
+    monkeypatch.setattr(dart_capital, "_get_bytes", lambda *_: answers.pop(0))
+    monkeypatch.setattr(dart_capital.asyncio, "sleep", AsyncMock())
+    charged: list[str] = []
 
     async def gate():
-        gated.append("gate")
+        charged.append("http")
 
-    monkeypatch.setattr(dart_capital, "request_list_page", fake_page)
+    rows = await dart_helpers.fetch_dart_filings_for_date(DAY, before_request=gate)
 
-    await dart_helpers.fetch_dart_filings_for_date(DAY, before_request=gate)
+    assert [row["rcept_no"] for row in rows] == ["1"]
+    assert charged == ["http", "http", "http"]  # 3 units for one page
 
-    assert gated == ["gate", "page1", "gate", "page2"]
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_mid_retry_leaves_the_day_without_rows(monkeypatch):
+    """When the gate stops a retry, the fetch raises and no partial rows are returned."""
+    import json as _json
+
+    answers = [_json.dumps({"status": "020"}).encode()] * 3
+    monkeypatch.setattr(dart_capital.settings, "opendart_api_key", "synthetic-key")
+    monkeypatch.setattr(dart_capital, "_get_bytes", lambda *_: answers.pop(0))
+    monkeypatch.setattr(dart_capital.asyncio, "sleep", AsyncMock())
+    calls = {"n": 0}
+
+    async def gate():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("budget exhausted")
+
+    with pytest.raises(RuntimeError, match="budget exhausted"):
+        await dart_helpers.fetch_dart_filings_for_date(DAY, before_request=gate)
+    assert calls["n"] == 2  # the second attempt was stopped before any request
 
 
 @pytest.mark.asyncio
@@ -887,6 +915,11 @@ async def test_backfill_budget_counts_every_list_page_request(monkeypatch):
     requests: list[str] = []
 
     async def fake_page(**params):
+        hook = params.pop("before_http", None)
+        if hook is not None:
+            await (
+                hook()
+            )  # the real request layer awaits the hook before each HTTP attempt
         requests.append(params["page_no"])
         return {"list": [{"rcept_no": params["page_no"]}], "total_page": 2}
 
