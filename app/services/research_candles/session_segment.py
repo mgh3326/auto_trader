@@ -27,6 +27,8 @@ US (ET): 04:00-regular open US_PRE; regular session US_REGULAR;
   inside its dayMarket window is US_DAY (any venue), and the TOSS_INTEGRATED venue
   takes every label from the calendar only (UNKNOWN outside all windows, never a
   guess). The KIS labels above are unchanged when no calendar is passed.
+  KIS_DAY (hk 7037, KIS 주간거래 bars from fillwire) is US_DAY inside the calendar
+  dayMarket window and UNKNOWN otherwise, with or without a calendar.
 
 Futures (hk 6148, ``market="futures"``, venue ignored — one KRX derivatives venue),
 KST on the bar START, ``futures_session_date`` gives the trading date:
@@ -108,6 +110,11 @@ KR_VENUES = ("KRX", "NTX")
 US_VENUES = ("NASD", "NYSE", "AMEX")
 #: Toss day-market bars (hk 6322): one integrated feed, the execution venue is unknown.
 TOSS_US_VENUE = "TOSS_INTEGRATED"
+#: KIS day-market bars (hk 7037, fillwire EXCD BAY/BAQ/BAA): the KIS 주간거래 execution
+#: venue. It is not the listing exchange, so it is never mapped to NASD/NYSE/AMEX.
+KIS_DAY_VENUE = "KIS_DAY"
+#: US venues whose label comes from the Toss US calendar alone (no KIS window).
+_CALENDAR_ONLY_US_VENUES = frozenset({TOSS_US_VENUE, KIS_DAY_VENUE})
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
@@ -191,11 +198,16 @@ def us_day_market_bar(bar_start_utc: datetime, calendar: Any | None) -> bool:
 def _us_segment_with_calendar(
     venue: str, bar_start_utc: datetime, calendar: Any | None
 ) -> str:
+    if venue in _CALENDAR_ONLY_US_VENUES:
+        label = us_calendar_segment(bar_start_utc, calendar)  # None without calendar
+        if venue == KIS_DAY_VENUE:
+            # KIS 주간거래 bars carry no KIS window of their own: US_DAY inside the
+            # day-market window, UNKNOWN everywhere else (never a guess).
+            return US_DAY if label == US_DAY else UNKNOWN
+        return label or UNKNOWN
     if calendar is None:
         return _us_segment(venue, bar_start_utc)
     label = us_calendar_segment(bar_start_utc, calendar)
-    if venue == TOSS_US_VENUE:
-        return label or UNKNOWN
     if label == US_DAY:
         return US_DAY
     return _us_segment(venue, bar_start_utc)

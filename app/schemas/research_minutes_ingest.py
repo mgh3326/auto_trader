@@ -31,7 +31,9 @@ class ResearchMinuteBarItem(BaseModel):
 
     #: KR/US: the ticker. Futures: the canonical ``<PRODUCT>.<YYMM>`` symbol.
     symbol: str
-    #: KR/US: ``KRX``/``NTX``, ``NASD``/``NYSE``/``AMEX``. Futures: ``KRX``.
+    #: KR: ``KRX``/``NTX``. US: ``NASD``/``NYSE``/``AMEX``, ``KIS_DAY`` (hk 7037:
+    #: KIS 주간거래; fillwire must send it, never the raw ``BAY``/``BAQ``/``BAA``).
+    #: Futures: ``KRX``.
     venue: str
     #: Bar START in UTC (KIS labels a bar by its start).
     time_utc: datetime

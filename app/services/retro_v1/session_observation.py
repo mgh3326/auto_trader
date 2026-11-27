@@ -69,6 +69,7 @@ from app.services.retro_v1.session_windows import (
     FUTURES_SESSIONS,
     FUTURES_SYMBOL,
     FUTURES_VENUE,
+    KIS_DAY_US_VENUE,
     KR_SESSIONS,
     SESSION_ORDER,
     TOSS_US_VENUE,
@@ -659,7 +660,11 @@ def _slots(subject: Subject, data: MarketData) -> list[tuple[str | None, str, st
         resolved = exchange if exchange in US_EXCHANGES else None
         # The venue the bars were stored under wins over today's universe row.
         venues: list[str | None] = sorted(
-            {venue for venue, _ in stored if venue != TOSS_US_VENUE}
+            {
+                venue
+                for venue, _ in stored
+                if venue not in (TOSS_US_VENUE, KIS_DAY_US_VENUE)
+            }
         ) or [resolved]
         for venue in venues:
             collection = "expected"

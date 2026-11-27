@@ -631,6 +631,32 @@ async def test_us_sessions_of_an_ended_day_and_the_unresolved_symbol() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kis_day_bars_add_no_phantom_listing_venue_slots() -> None:
+    """hk 7037: KIS 주간거래 is not a listing exchange. Stored KIS_DAY bars must not
+    turn into NASD/AMEX-style expected slots for the regular sessions."""
+    later = datetime(2026, 11, 26, 3, 0, tzinfo=UTC)
+    us_bars = [
+        support.agg(
+            "SPY",
+            "KIS_DAY",
+            "US_DAY",
+            support.et(1, 0),
+            source="KIS",
+        ),
+    ]
+    session = support.scenario(**{support.US_BARS: us_bars})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(so, "_now", lambda: later)
+        rows = (await read(session, market="us"))["data"]
+    found = {(r["symbol"], r["venue"], r["session"]): r for r in rows}
+    assert found[("SPY", "KIS_DAY", "US_DAY")]["state"] == "observed"
+    assert ("SPY", "KIS_DAY", "US_REGULAR") not in found
+    assert ("SPY", "KIS_DAY", "US_PRE") not in found
+    # The listing venue keeps its expected regular slots, as with Toss-only rows.
+    assert found[("SPY", "AMEX", "US_REGULAR")]["state"] == "not_collected"
+
+
+@pytest.mark.asyncio
 async def test_the_early_close_day_row_reports_the_exchange_end() -> None:
     later = datetime(2026, 11, 27, 17, 30, tzinfo=support.ET)
     with pytest.MonkeyPatch.context() as patch:
