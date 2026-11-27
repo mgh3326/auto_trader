@@ -11,7 +11,6 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pandas as pd
 import pytest
 
 from app.services.market_events import dart_helpers, ingestion
@@ -54,9 +53,9 @@ class FakeRepo:
         part.event_count = event_count
         self.calls.append(("succeeded", part.day))
 
-    async def mark_partition_failed(self, part, *, error):
+    async def mark_partition_failed(self, part, *, error=None, failure_code=None):
         part.status = "failed"
-        part.last_error = error
+        part.last_error = failure_code if failure_code is not None else error
         self.calls.append(("failed", part.day))
 
     async def upsert_event_with_values(self, event, _values):
@@ -226,37 +225,30 @@ async def test_whitespace_stock_code_still_loads_registry(repo, monkeypatch):
     assert repo.instances[-1].events[0]["symbol"] == "123456"
 
 
-class _Client:
-    def __init__(self):
-        self.cache_args: list[bool] = []
-
-    def list_date_ex(self, iso, cache=True):
-        self.cache_args.append(cache)
-        return pd.DataFrame(
-            columns=sorted(dart_helpers.DART_LIST_DATE_EX_REQUIRED_COLUMNS)
-        )
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("target", "use_cache", "expected_cache"),
-    [
-        (TODAY, True, False),  # today never hits the persisted page cache
-        (date(2026, 11, 11), True, False),
-        (YESTERDAY, True, True),  # completed days keep the cache
-        (YESTERDAY, False, False),  # explicit opt-out is preserved
-    ],
-)
-async def test_list_date_ex_cache_argument(
-    monkeypatch, target, use_cache, expected_cache
-):
-    client = _Client()
-    monkeypatch.setattr(dart_helpers, "_get_client", AsyncMock(return_value=client))
-    monkeypatch.setattr(dart_helpers, "today_kst", lambda: TODAY)
+async def test_today_fetch_uses_the_official_list_and_no_page_cache(monkeypatch):
+    # hk 6408: the official list.json is fetched directly for today as for any
+    # day. There is no on-disk page cache, so the day can never be served a
+    # stale "no filings" page (the hk 3845 problem, now structurally absent).
+    from app.services.market_events import dart_capital
 
-    await dart_helpers.fetch_dart_filings_for_date(target, use_cache=use_cache)
+    requested: list[dict] = []
 
-    assert client.cache_args == [expected_cache]
+    async def no_data(**params):
+        requested.append(params)
+        return None
+
+    monkeypatch.setattr(dart_capital, "request_list_page", no_data)
+
+    assert await dart_helpers.fetch_dart_filings_for_date(TODAY) == []
+    assert requested == [
+        {
+            "bgn_de": "20261110",
+            "end_de": "20261110",
+            "page_no": "1",
+            "page_count": "100",
+        }
+    ]
 
 
 @pytest.mark.asyncio

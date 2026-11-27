@@ -2,6 +2,9 @@
 
 Idempotency strategy:
 * When `source_event_id` is provided, upsert keyed by (source, category, market, source_event_id).
+  DART rows (hk 6408) are identified by the receipt number alone: a category change
+  moves the one existing row first (`_align_dart_identity`), and two rows for one
+  receipt fail closed (`DartIdentityConflict`).
 * Otherwise upsert keyed by (source, category, market, symbol, event_date, fiscal_year, fiscal_quarter).
 Both keys are enforced by partial unique indexes (see migration).
 
@@ -90,6 +93,17 @@ def value_keys(values: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
         for value in values
         if value.get("metric_name")
     }
+
+
+DART_SOURCE = "dart"
+
+
+class DartIdentityConflict(RuntimeError):
+    """One DART receipt number already maps to more than one market_events row.
+
+    Raised instead of choosing a row: merging or deleting is an operator decision
+    (hk 6408). The message carries the receipt number only.
+    """
 
 
 class MarketEventsRepository:
@@ -190,6 +204,51 @@ class MarketEventsRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none() is not None
 
+    async def _align_dart_identity(self, payload: dict[str, Any]) -> None:
+        """Keep one market_events row per DART receipt number (hk 6408).
+
+        The receipt number is the identity; the category is a classification that
+        can change when the report name does. The unique index still includes
+        category, so a changed category would insert a second row. Before the
+        normal upsert, move the one existing row to the new category/market. The
+        upsert then updates that row. More than one existing row fails closed.
+        """
+        receipt = str(payload["source_event_id"])
+        identity = "\0".join(("dart-identity", receipt)).encode()
+        lock_id = int.from_bytes(
+            hashlib.blake2b(identity, digest_size=8).digest(), "big", signed=True
+        )
+        await self.db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+        table = MarketEvent.__table__
+        rows = (
+            await self.db.execute(
+                select(table.c.id, table.c.category, table.c.market)
+                .where(
+                    table.c.source == DART_SOURCE,
+                    table.c.source_event_id == receipt,
+                )
+                .with_for_update()
+            )
+        ).all()
+        if len(rows) > 1:
+            raise DartIdentityConflict(
+                f"DART receipt {receipt} has {len(rows)} market_events rows"
+            )
+        if rows and (rows[0].category, rows[0].market) != (
+            payload.get("category"),
+            payload.get("market"),
+        ):
+            await self.db.execute(
+                update(table)
+                .where(table.c.id == rows[0].id)
+                .values(
+                    category=payload.get("category"),
+                    market=payload.get("market"),
+                    updated_at=func.now(),
+                )
+            )
+            await self.db.flush()
+
     async def upsert_event_with_values(
         self,
         event_data: dict[str, Any],
@@ -201,6 +260,8 @@ class MarketEventsRepository:
     ) -> MarketEvent:
         payload = dict(event_data)
         _normalize_publication(payload)
+        if payload.get("source") == DART_SOURCE and payload.get("source_event_id"):
+            await self._align_dart_identity(payload)
         if payload.get("raw_payload_json") is not None:
             payload["raw_payload_json"] = _redact_sensitive_keys(
                 payload["raw_payload_json"]

@@ -6,12 +6,14 @@ to MarketEventsRepository.upsert_event_with_values.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from app.core.symbol import KR_SHORT_CODE
+from app.core.timezone import KST
 
 _FINNHUB_HOUR_TO_TIME_HINT = {
     "bmo": "before_open",
@@ -131,15 +133,103 @@ def classify_dart_category(report_nm: str) -> str:
     return "disclosure"
 
 
+# Correction tags OpenDART prefixes to a report name (list.json ``report_nm``
+# legend). They mark a revision of an earlier filing; the family key drops them.
+_DART_CORRECTION_TAGS = (
+    "기재정정",
+    "첨부정정",
+    "첨부추가",
+    "변경등록",
+    "연장결정",
+    "발행조건확정",
+    "정정명령부과",
+    "정정제출요구",
+)
+_DART_CORRECTION_PREFIX_RE = re.compile(
+    r"^\s*(?:\[(?:" + "|".join(_DART_CORRECTION_TAGS) + r")\]\s*)+"
+)
+_TIME_OF_DAY_RE = re.compile(r"[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?")
+
+
+def dart_base_report_name(report_nm: str) -> str:
+    """Return the report name without leading correction tags, spaces removed.
+
+    ``[기재정정]사업보고서 (2025.12)`` and ``사업보고서(2025.12)`` share one base.
+    """
+    stripped = _DART_CORRECTION_PREFIX_RE.sub("", report_nm or "", count=1)
+    return re.sub(r"\s+", "", stripped)
+
+
+def dart_group_key(
+    *,
+    corp_code: str | None,
+    symbol: str | None,
+    corp_name: str,
+    report_nm: str,
+) -> str | None:
+    """Amendment family of one DART filing (hk 6408).
+
+    The original and every correction of the same report by the same issuer
+    share a key. Two independent filings with an identical title by the same
+    issuer also share it, so the key groups by title, not by proof of amendment.
+    """
+    from app.services.market_events.dart_helpers import normalize_dart_corp_name
+
+    base = dart_base_report_name(report_nm)
+    issuer = (
+        (corp_code or "").strip()
+        or (symbol or "")
+        or normalize_dart_corp_name(corp_name)
+    )
+    if not base or not issuer:
+        return None
+    return f"dart:{issuer}:{base}"
+
+
+def _dart_publication(rcept_dt: str, event_date: date) -> dict[str, Any]:
+    """Receipt publication tuple (hk 6408).
+
+    The official list carries a date only, so that is the default: precision
+    ``date`` with no time. A row that does carry a time of day (legacy scraped
+    rows, injected fixtures) keeps it as a KST instant with its own precision.
+    """
+    match = _TIME_OF_DAY_RE.search(rcept_dt)
+    if match is None:
+        return {
+            "published_at": None,
+            "published_date": event_date,
+            "published_offset": None,
+            "published_precision": "date",
+        }
+    precision = "second" if match.group(3) is not None else "minute"
+    try:
+        instant = datetime.fromisoformat(rcept_dt.strip().replace(" ", "T"))
+    except ValueError:
+        instant = datetime(
+            event_date.year,
+            event_date.month,
+            event_date.day,
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3) or 0),
+        )
+    return {
+        "published_at": instant.replace(tzinfo=KST),
+        "published_date": None,
+        "published_offset": "+09:00",
+        "published_precision": precision,
+    }
+
+
 def normalize_dart_disclosure_row(
     row: dict[str, Any],
     corp_registry: Mapping[str, list[dict[str, str]]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Normalize one DART ``list_date_ex`` row to a MarketEvent.
+    """Normalize one DART ``list.json`` row to a MarketEvent.
 
-    The scraper exposes receipt time, class, company name, receipt number, report
-    name, filer name, and remarks. It does not expose ``stock_code``; keep support
-    for that field for injected/legacy rows, but never substitute ``corp_code``.
+    ``stock_code`` and ``corp_code`` come from the official list. A row without a
+    ``stock_code`` (unlisted issuer) resolves through the corp registry, and
+    ``corp_code`` is never substituted for a symbol.
     """
     from app.services.market_events.dart_helpers import (
         _listed_stock_code,
@@ -188,6 +278,7 @@ def normalize_dart_disclosure_row(
         event_date = date.fromisoformat(rcept_dt[:10])
 
     category = classify_dart_category(report_nm)
+    publication = _dart_publication(rcept_dt, event_date)
 
     event = {
         "category": category,
@@ -197,6 +288,13 @@ def normalize_dart_disclosure_row(
         "company_name": corp_name,
         "title": report_nm or None,
         "event_date": event_date,
+        **publication,
+        "group_key": dart_group_key(
+            corp_code=(row.get("corp_code") or "").strip() or None,
+            symbol=symbol,
+            corp_name=corp_name,
+            report_nm=report_nm,
+        ),
         "release_time_utc": None,
         "release_time_local": None,
         "source_timezone": "Asia/Seoul",

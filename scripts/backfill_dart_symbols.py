@@ -67,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def _fetch_day(target_date: date) -> list[dict]:
     # Backfill-style: every attempt is a real OpenDART call, never a cached page.
-    return await fetch_dart_filings_for_date(target_date, use_cache=False)
+    return await fetch_dart_filings_for_date(target_date)
 
 
 async def main(argv: list[str] | None = None) -> int:

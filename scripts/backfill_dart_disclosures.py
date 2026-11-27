@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Backfill KR DART disclosures for an inclusive date range (#1085).
 
-Read-only against DART's public filing list (``list_date_ex`` scrape via
-OpenDartReader — the same fetch the scheduled daily path uses). Writes go only
+Read-only against DART's official filing list (``list.json``, hk 6408 — the
+same fetch the scheduled daily path uses). Writes go only
 through ``app.services.market_events.ingestion.ingest_kr_disclosures_for_date``,
 which upserts idempotently on ``source_event_id`` (= DART ``rcept_no``) and
 records one ``market_event_ingestion_partitions`` row per day.
@@ -150,10 +150,20 @@ def _transient_dart_error(exc: BaseException) -> str | None:
     checked first, then any HTTP ``response.status_code`` (429/5xx are
     retryable, other 4xx is not), then the network/transport exception
     families. HTML error pages that surface as parse errors
-    (``DartResponseSchemaError``, ``AttributeError``) are deliberately NOT
+    (``AttributeError``, malformed list rows) are deliberately NOT
     transient — they mean the scrape contract drifted, which a short
     backoff cannot repair.
     """
+    # Official list.json path (hk 6408): the closed failure code decides. Quota,
+    # server, timeout and transport faults retry; a rejected key or request
+    # does not.
+    from app.services.market_events.dart_capital import DartDetailError
+
+    if isinstance(exc, DartDetailError):
+        if exc.failure_code in {"quota", "http_5xx", "timeout", "transport"}:
+            return f"dart_{exc.failure_code}"
+        return None
+
     if isinstance(exc, ValueError) and exc.args and isinstance(exc.args[0], dict):
         status = str(exc.args[0].get("status", ""))
         if status in DART_TRANSIENT_STATUS_CODES:
@@ -239,7 +249,7 @@ async def _default_fetch(target_date: date) -> list[dict[str, Any]]:
 
     # Bypass the OpenDartReader docs_cache: backfill retries must hit the
     # network each attempt, and a cached error page would poison reruns.
-    return await fetch_dart_filings_for_date(target_date, use_cache=False)
+    return await fetch_dart_filings_for_date(target_date)
 
 
 def _parseable_count(rows: list[dict[str, Any]]) -> int:
@@ -311,7 +321,7 @@ async def run_backfill(
     untouched rather than half-marked.
 
     ``fetch_rows`` is an injection point for tests; the production default is
-    ``dart_helpers.fetch_dart_filings_for_date`` with ``use_cache=False``.
+    ``dart_helpers.fetch_dart_filings_for_date`` (official list.json, hk 6408).
 
     Pacing/resilience (#1097): the wrapped fetch paces every DART call by
     ``pace_seconds``, retries transient faults with bounded jittered

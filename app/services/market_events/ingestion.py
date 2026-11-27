@@ -88,11 +88,15 @@ async def _mark_failed_after_exception(
     market: str,
     partition_date: date,
     error: Exception,
+    failure_code: str | None = None,
 ) -> IngestionRunResult:
     """Record a failed partition after any fetch/normalization/upsert exception.
 
     Database exceptions can leave the current transaction unusable, so rollback first
     and then write the failed partition state in a clean transaction.
+
+    ``failure_code`` (a closed v2 code) is recorded instead of the message when a
+    collector supplies one.
     """
     await db.rollback()
     repo = MarketEventsRepository(db)
@@ -102,7 +106,12 @@ async def _mark_failed_after_exception(
         market=market,
         partition_date=partition_date,
     )
-    await repo.mark_partition_failed(partition, error=str(error))
+    if failure_code is not None:
+        await repo.mark_partition_failed(partition, failure_code=failure_code)
+        message = failure_code
+    else:
+        message = str(error)
+        await repo.mark_partition_failed(partition, error=message)
     return IngestionRunResult(
         source=source,
         category=category,
@@ -110,7 +119,7 @@ async def _mark_failed_after_exception(
         partition_date=partition_date,
         status="failed",
         event_count=0,
-        error=str(error),
+        error=message,
     )
 
 
@@ -400,7 +409,9 @@ async def ingest_kr_disclosures_for_date(
             upserted += 1
 
         if detail_error is not None:
-            await repo.mark_partition_failed(partition, error=str(detail_error))
+            await repo.mark_partition_failed(
+                partition, failure_code=detail_error.failure_code
+            )
             return IngestionRunResult(
                 source=source,
                 category=partition_category,
@@ -408,7 +419,7 @@ async def ingest_kr_disclosures_for_date(
                 partition_date=target_date,
                 status="failed",
                 event_count=upserted,
-                error=str(detail_error),
+                error=detail_error.failure_code,
             )
 
         day_incomplete = not rows and target_date >= (today or today_kst())
@@ -435,6 +446,8 @@ async def ingest_kr_disclosures_for_date(
         )
     except Exception as exc:
         logger.exception("dart ingestion failed for %s", target_date)
+        # A collection failure records its closed code; other failures keep the
+        # message this module wrote (zero-day guard, identity conflict).
         return await _mark_failed_after_exception(
             db,
             source=source,
@@ -442,6 +455,9 @@ async def ingest_kr_disclosures_for_date(
             market=market,
             partition_date=target_date,
             error=exc,
+            failure_code=(
+                exc.failure_code if isinstance(exc, DartDetailError) else None
+            ),
         )
 
 

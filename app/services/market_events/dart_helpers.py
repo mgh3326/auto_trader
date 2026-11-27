@@ -1,7 +1,13 @@
-"""Thin wrapper around OpenDartReader.list_date_ex for market-wide DART fetches.
+"""Market-wide DART daily filing list on the official OpenDART API (hk 6408).
 
-``list_date_ex`` scrapes ``dart.fss.or.kr`` rather than using the official API,
-so its response shape is validated before any result can be treated as usable.
+``fetch_dart_filings_for_date`` reads ``list.json`` (공시검색) for one receipt
+day, page by page, through the same closed-error client that the capital detail
+path uses (``dart_capital``). No HTML scraping: the scraper this replaces had no
+guaranteed response shape. The official list gives ``rcept_dt`` as a date only
+(``YYYYMMDD``), so a row from here carries no receipt time.
+
+The corp-code registry (``corpCode.xml``) is still used, but only for rows whose
+list entry has no ``stock_code`` (unlisted issuers).
 """
 
 from __future__ import annotations
@@ -21,8 +27,6 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.symbol import KR_SHORT_CODE
-from app.core.timezone import today_kst
-from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +36,10 @@ DART_CORP_REGISTRY_CACHE_PATH = Path(
 )
 DART_CORP_REGISTRY_LOCK_PATH = DART_CORP_REGISTRY_CACHE_PATH.with_suffix(".lock")
 
-DART_LIST_DATE_EX_REQUIRED_COLUMNS = frozenset(
-    {
-        "rcept_dt",
-        "corp_cls",
-        "corp_name",
-        "rcept_no",
-        "report_nm",
-        "flr_nm",
-        "rm",
-    }
-)
-
-
-class DartResponseSchemaError(RuntimeError):
-    """The DART scraping response no longer matches the expected table shape."""
+# OpenDART list.json page size (max 100) and the most pages one receipt day may
+# take before the list is refused as incomplete. 50 pages is 5,000 filings.
+DART_LIST_PAGE_COUNT = 100
+DART_LIST_MAX_PAGES = 50
 
 
 def normalize_dart_corp_name(value: Any) -> str:
@@ -193,56 +186,76 @@ async def fetch_dart_corp_registry() -> dict[str, list[dict[str, str]]] | None:
     return await asyncio.to_thread(_load_dart_corp_registry_sync, api_key)
 
 
-async def fetch_dart_filings_for_date(
-    target_date: date,
-    *,
-    use_cache: bool = True,
-) -> list[dict[str, Any]]:
-    """Return validated DART filings for one day.
+def _list_page_rows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Return ``(rows, total_pages)`` for one validated ``list.json`` page."""
+    from app.services.market_events.dart_capital import DartDetailError
 
-    The OpenDartReader client is loaded lazily and reused across calls.
+    items = payload.get("list")
+    if not isinstance(items, list):
+        raise DartDetailError(
+            "OpenDART filing list has no list field", failure_code="bad_response"
+        )
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise DartDetailError(
+                "OpenDART filing list row is not an object", failure_code="bad_response"
+            )
+        rows.append({str(key): value for key, value in item.items()})
+    try:
+        total_pages = int(payload.get("total_page"))
+    except (TypeError, ValueError):
+        raise DartDetailError(
+            "OpenDART filing list has no page count", failure_code="bad_response"
+        ) from None
+    return rows, total_pages
 
-    ``use_cache=True`` (default) preserves OpenDartReader's on-disk
-    ``docs_cache`` behavior — the scheduled daily path relies on it.
-    Backfill-style callers pass ``use_cache=False`` so every attempt is a
-    real network call: a cached error page would otherwise be re-served to
-    every retry of the same date.
 
-    A date on or after today (Asia/Seoul) never uses the cache, whatever
-    ``use_cache`` says. OpenDartReader writes each scraped page to
-    ``docs_cache/<url>`` once and serves it forever, so an early "no filings
-    found" page for a day DART has not finished publishing would hide the later
-    filings from every subsequent run.
+async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]:
+    """Return every DART filing received on one day, from the official list API.
+
+    A day with no filings (status 013) returns ``[]``; the caller decides what an
+    empty day means (hk 3845 pending rule). Each paged request goes through the
+    closed-error client, so failures arrive with a ``failure_code``. Rows are
+    de-duplicated by receipt number: the list can shift while it is paged.
+
+    The official JSON API has no on-disk page cache, so there is no cache switch
+    to manage here (the scraper's ``docs_cache`` problem no longer exists).
     """
-    use_cache = use_cache and target_date < today_kst()
-    client = await _get_client()
-    if client is None:
-        logger.warning("DART client unavailable; skipping fetch for %s", target_date)
-        return []
+    from app.services.market_events.dart_capital import (
+        DartDetailError,
+        request_list_page,
+    )
 
-    iso = target_date.isoformat()
-
-    def fetch_sync() -> list[dict[str, Any]]:
-        df = client.list_date_ex(iso, cache=use_cache)
-        columns = getattr(df, "columns", None)
-        if columns is None:
-            raise DartResponseSchemaError(
-                "DART list_date_ex returned a non-DataFrame response"
+    day = target_date.strftime("%Y%m%d")
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = await request_list_page(
+            bgn_de=day,
+            end_de=day,
+            page_no=str(page),
+            page_count=str(DART_LIST_PAGE_COUNT),
+        )
+        if payload is None:
+            break
+        page_rows, total_pages = _list_page_rows(payload)
+        rows.extend(page_rows)
+        if page >= total_pages or not page_rows:
+            break
+        if page >= DART_LIST_MAX_PAGES:
+            raise DartDetailError(
+                "OpenDART filing list exceeds the page limit",
+                failure_code="bad_response",
             )
-        missing = DART_LIST_DATE_EX_REQUIRED_COLUMNS.difference(columns)
-        if missing:
-            raise DartResponseSchemaError(
-                "DART list_date_ex response missing required columns: "
-                + ", ".join(sorted(missing))
-            )
-        if df.empty:
-            return []
-        records = df.to_dict(orient="records")
-        for record in records:
-            receipt_at = record.get("rcept_dt")
-            isoformat = getattr(receipt_at, "isoformat", None)
-            if callable(isoformat):
-                record["rcept_dt"] = isoformat()
-        return records
+        page += 1
 
-    return await asyncio.to_thread(fetch_sync)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = str(row.get("rcept_no") or "").strip()
+        if receipt and receipt in seen:
+            continue
+        seen.add(receipt)
+        unique.append(row)
+    return unique
