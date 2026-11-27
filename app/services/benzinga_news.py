@@ -551,7 +551,7 @@ def summarize_shadow(
         for r in list(benzinga_records) + list(finnhub_records)
         if r.get("record_type") != "article"
     ]
-    unreliable: set[tuple[Any, Any]] = set()
+    unreliable: set[tuple[Any, Any, Any]] = set()
     for status in statuses:
         if (
             status.get("record_type") == "poll_status"
