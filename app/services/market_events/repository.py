@@ -511,6 +511,27 @@ class MarketEventsRepository:
                 await self.db.delete(row)
         await self.db.flush()
 
+    async def get_provider_event(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        source_event_id: str,
+    ) -> MarketEvent | None:
+        """Return the current row for a provider-keyed event, if any."""
+        stmt = (
+            select(MarketEvent)
+            .where(
+                MarketEvent.source == source,
+                MarketEvent.category == category,
+                MarketEvent.market == market,
+                MarketEvent.source_event_id == source_event_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
     async def append_source(self, source_data: dict[str, Any]) -> bool:
         """Store the first provenance observation for a provider ID."""
         payload = dict(source_data)
@@ -626,12 +647,14 @@ class MarketEventsRepository:
     ) -> MarketEventIngestionPartition:
         existing = (
             await self.db.execute(
-                select(MarketEventIngestionPartition).where(
+                select(MarketEventIngestionPartition)
+                .where(
                     MarketEventIngestionPartition.source == source,
                     MarketEventIngestionPartition.category == category,
                     MarketEventIngestionPartition.market == market,
                     MarketEventIngestionPartition.partition_date == partition_date,
                 )
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if existing is not None:

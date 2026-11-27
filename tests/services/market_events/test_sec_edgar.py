@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -139,6 +140,10 @@ class FakeRepository:
         stored["id"] = len(self.events) + 1 if key not in self.events else prior["id"]
         self.events[key] = stored
         return SimpleNamespace(id=stored["id"])
+
+    async def get_provider_event(self, *, source, category, market, source_event_id):
+        stored = self.events.get((source, source_event_id))
+        return SimpleNamespace(**stored) if stored is not None else None
 
     async def append_source(self, source_data):
         key = (source_data["source"], source_data["source_event_id"])
@@ -372,9 +377,20 @@ def test_filing_rows_split_parallel_arrays_and_report_older_history():
     assert rows[0]["accessionNumber"] == "0001045810-25-000301"
     assert rows[0]["form"] == "8-K"
     assert rows[0]["primaryDocument"] == "nvda-20251119.htm"
+    # Real submissions JSON shape: ISO-8601 UTC, not the SGML 14-digit form.
+    assert rows[0]["acceptanceDateTime"] == "2025-11-19T21:31:12.000Z"
     assert rows[4]["acceptanceDateTime"] == ""
     assert meta["older_history_uncollected"] is True
     assert meta["recent_earliest"] == date(2025, 2, 26)
+
+
+def test_filing_rows_requires_core_columns():
+    for field in ("form", "filingDate", "acceptanceDateTime"):
+        broken = copy.deepcopy(NVDA_SUBMISSIONS)
+        del broken["filings"]["recent"][field]
+        with pytest.raises(SecEdgarError) as excinfo:
+            _filing_rows(broken)
+        assert excinfo.value.failure_code == "unparseable"
 
 
 def test_filing_rows_empty_recent_is_zero_filings_not_error():
@@ -428,7 +444,7 @@ def _row(index: int) -> dict:
     return rows[index]
 
 
-def test_normalize_8k_second_precision_et_to_utc():
+def test_normalize_8k_second_precision_iso_utc_to_et():
     event = normalize_sec_filing(
         _row(0),
         cik=1045810,
@@ -446,11 +462,13 @@ def test_normalize_8k_second_precision_et_to_utc():
     assert event["company_name"] == "NVIDIA CORP"
     assert event["title"] == "8-K (items 2.02,9.01)"
     assert event["event_date"] == date(2025, 11, 19)
-    # 2025-11-19 16:31:12 EST (UTC-5) → 21:31:12 UTC
+    # acceptanceDateTime "2025-11-19T21:31:12.000Z" is UTC; the filing index
+    # page shows the same instant as 16:31:12 US Eastern (EST, UTC-5).
     assert event["published_at"] == datetime(2025, 11, 19, 21, 31, 12, tzinfo=UTC)
     assert event["published_offset"] == "-05:00"
     assert event["published_precision"] == "second"
     assert event["published_date"] is None
+    assert event["release_time_local"] == datetime(2025, 11, 19, 16, 31, 12)
     assert event["source_url"] == (
         "https://www.sec.gov/Archives/edgar/data/1045810/"
         "000104581025000301/nvda-20251119.htm"
@@ -460,6 +478,53 @@ def test_normalize_8k_second_precision_et_to_utc():
     assert event["backfilled"] is True
     assert event["instrument_type"] == "equity_us"
     assert event["raw_payload_json"]["accessionNumber"] == "0001045810-25-000301"
+
+
+def test_parse_acceptance_iso_utc_and_sgml_fallback():
+    from app.services.market_events.sec_edgar import _parse_acceptance
+
+    # ISO-8601 UTC (the real submissions JSON shape) → UTC instant + ET offset.
+    utc, offset, local = _parse_acceptance("2026-11-27T18:06:41.000Z")
+    assert utc == datetime(2026, 11, 27, 18, 6, 41, tzinfo=UTC)
+    assert offset == "-05:00"  # EST at that instant
+    assert local == datetime(2026, 11, 27, 13, 6, 41)
+
+    # Explicit offset form parses the same way.
+    utc2, _, _ = _parse_acceptance("2026-11-27T13:06:41-05:00")
+    assert utc2 == utc
+
+    # SGML-header 14-digit form is US Eastern wall time.
+    utc3, offset3, local3 = _parse_acceptance("20251119163112")
+    assert utc3 == datetime(2025, 11, 19, 21, 31, 12, tzinfo=UTC)
+    assert offset3 == "-05:00"
+    assert local3 == datetime(2025, 11, 19, 16, 31, 12)
+
+    for bad in ("", "not-a-date", "2025-13-40", "2025-11-19", None, 123):
+        assert _parse_acceptance(bad) is None
+
+
+def test_backfilled_is_derived_from_filing_day_not_flag():
+    rows, _meta = _filing_rows(NVDA_SUBMISSIONS)
+    # Filing day 2025-11-19 collected on 2026-11-27 → backfilled.
+    old = normalize_sec_filing(
+        rows[0],
+        cik=1045810,
+        symbol="NVDA",
+        symbols=["NVDA"],
+        company_name="NVIDIA CORP",
+        received_at=RECEIVED,
+    )
+    assert old["backfilled"] is True
+    # Same-day collection is not a backfill.
+    same_day = normalize_sec_filing(
+        rows[0],
+        cik=1045810,
+        symbol="NVDA",
+        symbols=["NVDA"],
+        company_name="NVIDIA CORP",
+        received_at=datetime(2025, 11, 19, 22, 0, tzinfo=UTC),
+    )
+    assert same_day["backfilled"] is False
 
 
 def test_normalize_10q_uses_edt_offset():
@@ -579,8 +644,12 @@ async def test_commit_writes_rows_and_recollection_adds_no_duplicates():
         clock=lambda: RECEIVED,
         run_date=RUN_DATE,
     )
-    assert first["partition"]["status"] == "succeeded"
+    # A symbol-scoped run can never prove the source-wide day complete, so a
+    # clean run leaves the partition pending — never succeeded, never a
+    # false "no filings" zero (hk 6407 review; Benzinga --symbols precedent).
+    assert first["partition"]["status"] == "pending"
     assert first["partition"]["event_count"] == 4
+    assert first["partition"]["persisted"] is True
     assert first["totals"]["inserted"] == 4
     assert len(repo.events) == 4
     assert len(repo.sources) == 4
@@ -591,22 +660,33 @@ async def test_commit_writes_rows_and_recollection_adds_no_duplicates():
     assert event["published_offset"] == "-05:00"
     assert event["first_received_at"] == RECEIVED
     assert repo.sources[("sec", accession)]["raw_hash"]
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "pending"
+    assert partition.event_count == 0
 
+    # Re-collecting the same scope on the same run_date: no duplicate rows,
+    # no duplicate provenance, and the partition stays pending — a second
+    # scoped read must not flip it to succeeded+0 "no filings".
     second = await collect_sec_filings(
         None,
         symbols=["NVDA"],
         repo=repo,
         client=_nvda_client(),
         commit=True,
-        clock=lambda: RECEIVED + timedelta(days=1),
-        run_date=date(2026, 11, 28),
+        clock=lambda: RECEIVED + timedelta(hours=1),
+        run_date=RUN_DATE,
     )
     assert second["totals"]["unchanged"] == 4
     assert second["totals"]["inserted"] == 0
+    assert second["partition"]["status"] == "pending"
     assert len(repo.events) == 4  # no duplicate rows
     assert len(repo.sources) == 4  # provenance is first-observation only
+    assert len(repo.revisions[("sec", accession)]) == 1
     # first_received_at is insert-only — never moved by re-collection
     assert repo.events[("sec", accession)]["first_received_at"] == RECEIVED
+    assert repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)].status == (
+        "pending"
+    )
 
 
 @pytest.mark.asyncio
@@ -642,7 +722,51 @@ async def test_fetch_failure_marks_partition_failed_distinct_from_no_filings():
 
 
 @pytest.mark.asyncio
-async def test_empty_recent_is_succeeded_zero_not_failure():
+async def test_scoped_success_never_completes_shared_partition():
+    """A different symbol's success must not clear another scope's failure."""
+    repo = FakeRepository()
+    tickers = {
+        **TICKERS,
+        "3": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    }
+    failing = FakeEdgarClient(
+        submissions={1045810: NVDA_SUBMISSIONS, 320193: EMPTY_SUBMISSIONS},
+        tickers=tickers,
+        failures={1045810: SecEdgarError("boom", failure_code="http_5xx")},
+    )
+    first = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=failing,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    assert first["partition"]["status"] == "failed"
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "failed"
+    assert partition.last_error == "http_5xx"
+
+    # A same-day AAPL run succeeds — but it is a different scope, so the
+    # shared day partition can only go back to pending, never succeeded.
+    ok = FakeEdgarClient(submissions={320193: EMPTY_SUBMISSIONS}, tickers=tickers)
+    second = await collect_sec_filings(
+        None,
+        symbols=["AAPL"],
+        repo=repo,
+        client=ok,
+        commit=True,
+        clock=lambda: RECEIVED + timedelta(hours=2),
+        run_date=RUN_DATE,
+    )
+    assert second["partition"]["status"] == "pending"
+    assert partition.status == "pending"
+    assert partition.event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_recent_is_pending_zero_not_failure():
     repo = FakeRepository()
     tickers = {
         **TICKERS,
@@ -663,8 +787,11 @@ async def test_empty_recent_is_succeeded_zero_not_failure():
     )
     assert report["issuers"]["ESPY"]["status"] == "collected"
     assert report["issuers"]["ESPY"]["filings"] == 0
-    assert report["partition"]["status"] == "succeeded"
-    assert report["partition"]["event_count"] == 0
+    # Scoped "zero filings" is pending, not failed and not a claimed
+    # source-wide "no filings" (succeeded+0 is unreachable here).
+    assert report["partition"]["status"] == "pending"
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "pending"
 
 
 @pytest.mark.asyncio
@@ -729,7 +856,7 @@ async def test_ticker_map_failure_fails_partition_with_closed_code():
 
 
 @pytest.mark.asyncio
-async def test_all_unresolved_symbols_is_not_no_filings():
+async def test_all_unresolved_symbols_is_pending_not_no_filings():
     repo = FakeRepository()
     report = await collect_sec_filings(
         None,
@@ -741,9 +868,156 @@ async def test_all_unresolved_symbols_is_not_no_filings():
         run_date=RUN_DATE,
     )
     assert report["issuers"]["FAKE"]["status"] == "unresolved"
+    # A typo'd scope proves nothing about the day — pending, not failed and
+    # never a claimed "no filings".
+    assert report["partition"]["status"] == "pending"
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "pending"
+    assert partition.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_unparseable_rows_fail_partition_but_keep_parsed_rows():
+    repo = FakeRepository()
+    broken = copy.deepcopy(NVDA_SUBMISSIONS)
+    recent = broken["filings"]["recent"]
+    # First row is an in-window 8-K; strip both date fields so normalize
+    # cannot place it — a parse failure, not an out-of-window filing.
+    recent["filingDate"][0] = ""
+    recent["acceptanceDateTime"][0] = ""
+    client = FakeEdgarClient(submissions={1045810: broken})
+    report = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    issuer = report["issuers"]["NVDA"]
+    assert issuer["status"] == "failed"
+    assert issuer["failure_code"] == "unparseable"
+    assert issuer["skipped_unparseable"] == 1
+    assert issuer["filings"] == 3  # the rows that did parse stay stored
     assert report["partition"]["status"] == "failed"
     partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
-    assert partition.last_error == "no_resolvable_symbols"
+    assert partition.status == "failed"
+    assert partition.last_error == "unparseable"
+    assert len(repo.events) == 3
+
+
+@pytest.mark.asyncio
+async def test_missing_form_column_fails_instead_of_silent_zero():
+    repo = FakeRepository()
+    broken = copy.deepcopy(NVDA_SUBMISSIONS)
+    del broken["filings"]["recent"]["form"]
+    client = FakeEdgarClient(submissions={1045810: broken})
+    report = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=client,
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    assert report["issuers"]["NVDA"]["status"] == "failed"
+    assert report["issuers"]["NVDA"]["failure_code"] == "unparseable"
+    assert report["partition"]["status"] == "failed"
+    assert repo.events == {}
+
+
+@pytest.mark.asyncio
+async def test_db_failure_rolls_back_and_records_closed_last_error():
+    """A write error must not poison the shared transaction or leak text."""
+
+    class ExplodingRepository(FakeRepository):
+        async def upsert_event_with_values(self, event, values, **kwargs):
+            raise RuntimeError("pg_terminate: SELECT secret_column FROM t")
+
+    repo = ExplodingRepository()
+    report = await collect_sec_filings(
+        None,
+        symbols=["NVDA"],
+        repo=repo,
+        client=_nvda_client(),
+        commit=True,
+        clock=lambda: RECEIVED,
+        run_date=RUN_DATE,
+    )
+    issuer = report["issuers"]["NVDA"]
+    assert issuer["status"] == "failed"
+    assert issuer["failure_code"] == "bad_response"
+    assert report["partition"]["status"] == "failed"
+    partition = repo.partitions[(SEC_SOURCE, CATEGORY, MARKET, RUN_DATE)]
+    assert partition.status == "failed"
+    # Closed code only — raw exception text never reaches last_error (§2.4).
+    assert partition.last_error == "bad_response"
+    assert "secret_column" not in (partition.last_error or "")
+    assert repo.db.rollbacks >= 1
+
+
+@pytest.mark.asyncio
+async def test_joint_filing_merges_symbols_without_flipflop():
+    """One accession under two CIKs unions symbols; content stays put."""
+
+    def joint_payload(cik: int, ticker: str, name: str, file_no: str, film: str):
+        return {
+            "cik": f"{cik:010d}",
+            "name": name,
+            "tickers": [ticker],
+            "filings": {
+                "recent": {
+                    "accessionNumber": ["0000000001-25-000001"],
+                    "filingDate": ["2025-11-19"],
+                    "reportDate": ["2025-09-30"],
+                    "acceptanceDateTime": ["2025-11-19T21:31:12.000Z"],
+                    "act": ["34-13376"],
+                    "form": ["10-Q"],
+                    "fileNumber": [file_no],
+                    "filmNumber": [film],
+                    "items": [""],
+                    "core_type": [""],
+                    "size": [1234],
+                    "isXBRL": [1],
+                    "isInlineXBRL": [1],
+                    "isForeignPrivateIssuer": [0],
+                    "primaryDocument": [f"{ticker.lower()}-10q.htm"],
+                    "primaryDocDescription": ["10-Q"],
+                },
+                "files": [],
+            },
+        }
+
+    repo = FakeRepository()
+    client = FakeEdgarClient(
+        submissions={
+            111: joint_payload(111, "AAA", "Alpha Corp", "001-1", "111"),
+            222: joint_payload(222, "BBB", "Beta Corp", "001-2", "222"),
+        }
+    )
+    for cik in (111, 222, 111, 222):
+        await collect_sec_filings(
+            None,
+            ciks=[cik],
+            repo=repo,
+            client=client,
+            commit=True,
+            clock=lambda: RECEIVED,
+            run_date=RUN_DATE,
+        )
+    assert len(repo.events) == 1
+    event = repo.events[("sec", "0000000001-25-000001")]
+    # First writer keeps the primary fields; symbols is the union.
+    assert event["symbol"] == "AAA"
+    assert event["company_name"] == "Alpha Corp"
+    assert event["symbols"] == ["AAA", "BBB"]
+    assert event["source_url"].startswith(
+        "https://www.sec.gov/Archives/edgar/data/111/"
+    )
+    # Content-identical re-reads append no revisions — no flip-flop.
+    assert len(repo.revisions[("sec", "0000000001-25-000001")]) == 1
 
 
 # -- IR ------------------------------------------------------------------------

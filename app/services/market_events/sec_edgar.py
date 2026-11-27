@@ -78,6 +78,13 @@ _RECENT_FIELDS = (
     "primaryDocDescription",
 )
 
+# Columns whose absence silently corrupts every row (a missing ``form`` or
+# ``filingDate`` filters out or mis-dates the whole response, a missing
+# ``acceptanceDateTime`` degrades every timestamp to date precision). The
+# submissions schema always carries them, so a missing column is a malformed
+# response — ``unparseable``, never a successful zero.
+_REQUIRED_RECENT_FIELDS = frozenset({"filingDate", "form", "acceptanceDateTime"})
+
 IR_UNSUPPORTED_REASON = (
     "no official API/feed; IR page scraping requires an operator decision"
 )
@@ -274,6 +281,12 @@ def _filing_rows(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     accessions = recent.get("accessionNumber")
     older_files = filings.get("files")
     older_uncollected = isinstance(older_files, list) and bool(older_files)
+    for field in _REQUIRED_RECENT_FIELDS:
+        if not isinstance(recent.get(field), list):
+            raise SecEdgarError(
+                f"SEC EDGAR submissions recent {field} column is missing",
+                failure_code="unparseable",
+            )
     if accessions == []:
         return [], {"older_history_uncollected": older_uncollected}
     if not isinstance(accessions, list) or not all(
@@ -339,30 +352,53 @@ def _window_complete(
     return lower >= recent_earliest
 
 
-_ACCEPTANCE_RE = re.compile(r"^\d{14}$")
+_ACCEPTANCE_DIGITS_RE = re.compile(r"^\d{14}$")
 
 
-def _parse_acceptance(raw: Any) -> tuple[datetime, str, datetime] | None:
-    """Parse EDGAR ``acceptanceDateTime`` (``YYYYMMDDHHMMSS``, US Eastern).
-
-    Returns ``(aware_utc, offset_text, local_naive)`` or ``None`` when the
-    value is missing or malformed — the caller then falls back to date
-    precision from ``filingDate``.
-    """
-    if not isinstance(raw, str) or not _ACCEPTANCE_RE.fullmatch(raw.strip()):
-        return None
-    try:
-        local = datetime.strptime(raw.strip(), "%Y%m%d%H%M%S").replace(tzinfo=_ET)
-    except ValueError:
-        return None
+def _et_offset_text(local: datetime) -> str:
     offset = local.utcoffset()
-    if offset is None:
-        return None
+    assert offset is not None
     total = int(offset.total_seconds())
     sign = "+" if total >= 0 else "-"
     hours, remainder = divmod(abs(total), 3600)
-    offset_text = f"{sign}{hours:02d}:{remainder // 60:02d}"
-    return local.astimezone(UTC), offset_text, local.replace(tzinfo=None)
+    return f"{sign}{hours:02d}:{remainder // 60:02d}"
+
+
+def _parse_acceptance(raw: Any) -> tuple[datetime, str, datetime] | None:
+    """Parse EDGAR ``acceptanceDateTime``.
+
+    The submissions JSON returns ISO-8601 UTC (``2026-11-27T18:06:41.000Z`` —
+    verified against the filing index page's Eastern "Accepted" time); the
+    SGML-header ``YYYYMMDDHHMMSS`` form is US Eastern wall time. Returns
+    ``(aware_utc, offset_text, et_local_naive)`` where ``offset_text`` is the
+    ``America/New_York`` offset at that instant, or ``None`` when the value
+    is missing or malformed — the caller then falls back to date precision
+    from ``filingDate``.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    aware_utc: datetime | None = None
+    if _ACCEPTANCE_DIGITS_RE.fullmatch(text):
+        try:
+            aware_utc = (
+                datetime.strptime(text, "%Y%m%d%H%M%S")
+                .replace(tzinfo=_ET)
+                .astimezone(UTC)
+            )
+        except ValueError:
+            return None
+    else:
+        iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        try:
+            parsed = datetime.fromisoformat(iso)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        aware_utc = parsed.astimezone(UTC)
+    local = aware_utc.astimezone(_ET)
+    return aware_utc, _et_offset_text(local), local.replace(tzinfo=None)
 
 
 def _safe_primary_document(value: Any) -> str | None:
@@ -459,6 +495,16 @@ def normalize_sec_filing(
     items_text = items.strip() if isinstance(items, str) else ""
     title = form if not items_text else f"{form} (items {items_text})"
 
+    # ``backfilled`` marks rows collected after their filing day — first-
+    # insert-only evidence (hk 6406). Same-day collection is forward-looking;
+    # anything older was filled retroactively (§2.5).
+    received = (
+        received_at
+        if received_at.tzinfo is not None
+        else received_at.replace(tzinfo=UTC)
+    )
+    collection_day = received.astimezone(_ET).date()
+
     return {
         "category": CATEGORY,
         "market": MARKET,
@@ -495,14 +541,34 @@ def normalize_sec_filing(
         "group_key": None,
         "redistributable": True,
         "symbols": symbols,
-        "backfilled": True,
+        "backfilled": event_date < collection_day,
     }
 
 
+# Bump when ``normalize_sec_filing`` output changes so already-stored rows
+# compare unequal once and pick up the correction instead of staying
+# ``unchanged`` forever (content_hash covers normalized output, not just the
+# raw row).
+_NORMALIZER_VERSION = 1
+
+# Fields that describe *this filer's* view of an accession rather than the
+# filing itself: co-registrants file one accession under several CIKs and
+# their ``filings.recent`` rows differ here (verified shape — fileNumber and
+# filmNumber are per registrant, primaryDocument is CIK-scoped). Excluding
+# them keeps revision detection on filing content and stops symbol flip-flop.
+_DIGEST_EXCLUDED_FIELDS = frozenset({"fileNumber", "filmNumber", "primaryDocument"})
+
+
 def _content_digest(raw: dict[str, Any]) -> str:
+    canonical = {
+        key: value for key, value in raw.items() if key not in _DIGEST_EXCLUDED_FIELDS
+    }
     return hashlib.sha256(
         json.dumps(
-            raw, sort_keys=True, separators=(",", ">"), ensure_ascii=True
+            {"v": _NORMALIZER_VERSION, "row": canonical},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
         ).encode()
     ).hexdigest()
 
@@ -519,6 +585,11 @@ async def _write_filing(
     Returns ``inserted`` / ``revised`` / ``unchanged`` / ``stale``. The
     provenance row is written once per accession via ``append_source``
     (``ON CONFLICT DO NOTHING`` keeps re-collection duplicate-free).
+
+    One accession can be reported by several CIKs (co-registrant joint
+    filings). The first writer keeps ``symbol``/``company_name``/
+    ``source_url``; later writers only union their tickers into ``symbols``
+    and never flip the primary fields back and forth.
     """
     source = event["source"]
     source_event_id = event["source_event_id"]
@@ -540,20 +611,54 @@ async def _write_filing(
     latest_observed_at = getattr(latest, "observed_at", None)
     if latest_observed_at is not None and latest_observed_at > observed_at:
         return "stale"
-    if latest is not None and latest.content_hash == digest:
+
+    existing = None
+    if latest is not None:
+        getter = getattr(repository, "get_provider_event", None)
+        if getter is not None:
+            existing = await getter(
+                source=source,
+                category=CATEGORY,
+                market=MARKET,
+                source_event_id=source_event_id,
+            )
+    content_changed = latest is None or latest.content_hash != digest
+    symbols_changed = False
+    if existing is not None:
+        prior_symbols = list(getattr(existing, "symbols", None) or [])
+        merged = prior_symbols + [
+            item for item in (event.get("symbols") or []) if item not in prior_symbols
+        ]
+        symbols_changed = merged != prior_symbols
+        event = {
+            **event,
+            "symbol": getattr(existing, "symbol", None) or event["symbol"],
+            "company_name": (
+                getattr(existing, "company_name", None) or event["company_name"]
+            ),
+            "source_url": getattr(existing, "source_url", None) or event["source_url"],
+            "symbols": merged or None,
+        }
+        if not content_changed:
+            prior_raw = getattr(existing, "raw_payload_json", None)
+            if prior_raw is not None:
+                event["raw_payload_json"] = prior_raw
+
+    if not content_changed and not symbols_changed:
         return "unchanged"
-    if not await repository.append_revision(
-        source=source,
-        category=CATEGORY,
-        market=MARKET,
-        source_event_id=source_event_id,
-        content_hash=digest,
-        observed_at=observed_at,
-        provider_created_at=event["provider_created_at"],
-        provider_updated_at=event["provider_updated_at"],
-        raw_payload_json=event["raw_payload_json"],
-    ):
-        raise RuntimeError("SEC filing revision was not recorded")
+    if content_changed:
+        if not await repository.append_revision(
+            source=source,
+            category=CATEGORY,
+            market=MARKET,
+            source_event_id=source_event_id,
+            content_hash=digest,
+            observed_at=observed_at,
+            provider_created_at=event["provider_created_at"],
+            provider_updated_at=event["provider_updated_at"],
+            raw_payload_json=event["raw_payload_json"],
+        ):
+            raise RuntimeError("SEC filing revision was not recorded")
     stored = await repository.upsert_event_with_values(event, [])
     await repository.append_source(
         {
@@ -626,10 +731,13 @@ async def collect_sec_filings(
     ``commit=False`` (default) performs the fetches and normalization only —
     no repository or session is required and nothing is written. ``commit=True``
     writes through ``MarketEventsRepository`` and records one
-    ``(sec, disclosure, us, run_date)`` ingestion partition: ``failed`` with a
-    closed ``failure_code`` on collection errors, ``pending`` when an explicit
-    date window reaches into unfetched older history, ``succeeded`` otherwise
-    (``event_count=0`` is a proven "no filings", distinct from ``failed``).
+    ``(sec, disclosure, us, run_date)`` ingestion partition. Every run is
+    symbol/CIK-scoped, so it can never prove the source-wide day complete:
+    a clean run leaves the partition ``pending`` (the Benzinga ``--symbols``
+    precedent), a collection error marks it ``failed`` with a closed
+    ``failure_code``, and an already-``succeeded`` partition is restored.
+    ``pending`` is never read as "no filings"; ``succeeded``+0 is
+    unreachable for this scoped collector.
     """
     symbols = [item for item in (symbols or []) if str(item).strip()]
     parsed_ciks: list[int] = []
@@ -689,6 +797,9 @@ async def collect_sec_filings(
     }
 
     partition = None
+    already_complete = False
+    complete_event_count = 0
+    partition_persisted = False
     if commit:
         assert repo is not None
         partition = await repo.get_or_create_partition(
@@ -697,29 +808,76 @@ async def collect_sec_filings(
             market=MARKET,
             partition_date=partition_day,
         )
+        already_complete = partition.status == "succeeded"
+        complete_event_count = partition.event_count
         await repo.mark_partition_running(partition)
 
     first_failure_code: str | None = None
-    first_unexpected: str | None = None
-    window_incomplete = False
-    total_written = 0
+
+    async def _safe_rollback() -> None:
+        if session is None:
+            return
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001 - the session may already be dead
+            logger.exception("SEC EDGAR session rollback failed")
+
+    async def _persist_terminal_partition() -> None:
+        """Mark the run's terminal partition state and commit it."""
+        nonlocal partition_persisted
+        assert repo is not None
+        if first_failure_code is not None:
+            await repo.mark_partition_failed(partition, failure_code=first_failure_code)
+        elif already_complete:
+            # A scoped read cannot complete the day, but it must not downgrade
+            # a day an earlier run already proved (Benzinga parity).
+            await repo.mark_partition_succeeded(
+                partition, event_count=complete_event_count
+            )
+        else:
+            await repo.mark_partition_pending(partition)
+        if session is not None:
+            await session.commit()
+        partition_persisted = True
+
+    async def _persist_failure_in_fresh_transaction(failure_code: str) -> None:
+        """Record ``failed`` after a run-level crash, in a new transaction.
+
+        The crashed transaction is rolled back first — otherwise the aborted
+        Postgres transaction would take the partition write down with it.
+        """
+        nonlocal partition, partition_persisted
+        await _safe_rollback()
+        if repo is None:
+            return
+        try:
+            partition = await repo.get_or_create_partition(
+                source=SEC_SOURCE,
+                category=CATEGORY,
+                market=MARKET,
+                partition_date=partition_day,
+            )
+            await repo.mark_partition_failed(partition, failure_code=failure_code)
+            if session is not None:
+                await session.commit()
+            partition_persisted = True
+        except Exception:  # noqa: BLE001 - last-resort persistence
+            logger.exception("SEC EDGAR partition failure was not persisted")
 
     def _finish_partition() -> None:
         if partition is None:
             return
-        assert repo is not None
-        status: str
-        if first_failure_code is not None or first_unexpected is not None:
+        if first_failure_code is not None:
             status = "failed"
-        elif window_incomplete:
-            status = "pending"
-        else:
+        elif already_complete:
             status = "succeeded"
+        else:
+            status = "pending"
         report["partition"] = {
             "partition_date": partition_day.isoformat(),
             "status": status,
-            "event_count": total_written,
-            "persisted": True,
+            "event_count": report["totals"]["filings"],
+            "persisted": partition_persisted,
         }
 
     try:
@@ -758,24 +916,25 @@ async def collect_sec_filings(
             )
 
         if not requests:
-            # Nothing resolvable was requested — not a "no filings" result.
+            # Nothing resolvable was requested — a typo or empty scope is not
+            # a collection failure and proves nothing about the day: pending.
             if commit and partition is not None:
                 assert repo is not None
-                await repo.mark_partition_failed(
-                    partition, error="no_resolvable_symbols"
-                )
+                await repo.mark_partition_pending(partition)
                 if session is not None:
                     await session.commit()
+                partition_persisted = True
             report["partition"] = {
                 "partition_date": partition_day.isoformat(),
-                "status": "failed" if commit else "unresolved",
+                "status": "pending" if commit else "unresolved",
                 "event_count": 0,
-                "persisted": bool(commit),
+                "persisted": bool(commit and partition_persisted),
             }
             return report
 
         for request in requests:
             label = request["label"]
+            issuer_failure_code: str | None = None
             try:
                 payload = await fetcher.fetch_submissions(request["cik"])
                 if not isinstance(payload, dict):
@@ -818,8 +977,6 @@ async def collect_sec_filings(
                     from_date=from_date,
                     to_date=to_date,
                 )
-                if not complete:
-                    window_incomplete = True
 
                 counts = {
                     "inserted": 0,
@@ -834,13 +991,32 @@ async def collect_sec_filings(
                             repo, event, raw, observed_at=observed_at
                         )
                         counts[outcome] += 1
-                        if outcome in {"inserted", "revised"}:
-                            total_written += 1
+                    # Per-issuer commit: one issuer's rows survive another
+                    # issuer's failure, and advisory xact locks are released
+                    # instead of accumulating across the whole run.
+                    if session is not None:
+                        await session.commit()
                 else:
                     counts["inserted"] = len(filings)
 
+                issuer_status = "collected"
+                if skipped_unparseable:
+                    # Parse failures must never read as "no filings" (§2.4):
+                    # the issuer and the run partition fail with a closed
+                    # code while the rows that did parse stay stored.
+                    issuer_status = "failed"
+                    issuer_failure_code = "unparseable"
+                    report["totals"]["failed"] += 1
+                    if first_failure_code is None:
+                        first_failure_code = "unparseable"
+
                 report["issuers"][label] = {
-                    "status": "collected",
+                    "status": issuer_status,
+                    **(
+                        {"failure_code": issuer_failure_code}
+                        if issuer_failure_code is not None
+                        else {}
+                    ),
                     "cik": f"{request['cik']:010d}",
                     "symbol": symbol,
                     "filings": len(filings),
@@ -862,6 +1038,7 @@ async def collect_sec_filings(
                 for key in ("inserted", "revised", "unchanged", "stale"):
                     report["totals"][key] += counts[key]
             except SecEdgarError as exc:
+                await _safe_rollback()
                 logger.warning(
                     "SEC EDGAR collection failed for %s: %s (%s)",
                     label,
@@ -876,55 +1053,44 @@ async def collect_sec_filings(
                 report["totals"]["failed"] += 1
                 if first_failure_code is None:
                     first_failure_code = exc.failure_code
-            except Exception as exc:  # noqa: BLE001 - recorded, run continues
+            except Exception:  # noqa: BLE001 - recorded, run continues
+                await _safe_rollback()
                 logger.exception("SEC EDGAR collection crashed for %s", label)
                 report["issuers"][label] = {
                     "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "failure_code": "bad_response",
                 }
                 report["totals"]["failed"] += 1
-                if first_unexpected is None:
-                    first_unexpected = f"{type(exc).__name__}: {exc}"
+                if first_failure_code is None:
+                    first_failure_code = "bad_response"
 
-        _finish_partition()
         if commit and partition is not None:
             assert repo is not None
-            if first_failure_code is not None:
-                await repo.mark_partition_failed(
-                    partition, failure_code=first_failure_code
-                )
-            elif first_unexpected is not None:
-                await repo.mark_partition_failed(partition, error=first_unexpected)
-            elif window_incomplete:
-                await repo.mark_partition_pending(partition)
-            else:
-                await repo.mark_partition_succeeded(
-                    partition, event_count=total_written
-                )
-            if session is not None:
-                await session.commit()
+            # Per-issuer commits expired the ORM object; re-read so
+            # mark_partition_failed sees a fresh retry_count.
+            partition = await repo.get_or_create_partition(
+                source=SEC_SOURCE,
+                category=CATEGORY,
+                market=MARKET,
+                partition_date=partition_day,
+            )
+            await _persist_terminal_partition()
+        _finish_partition()
     except SecEdgarError as exc:
         # Run-level failure (e.g. the ticker map fetch) — no per-issuer entry.
         report["error"] = {"failure_code": exc.failure_code, "error": str(exc)}
         report["totals"]["failed"] += 1
         first_failure_code = exc.failure_code
         if commit and partition is not None:
-            assert repo is not None
-            await repo.mark_partition_failed(partition, failure_code=exc.failure_code)
-            if session is not None:
-                await session.commit()
+            await _persist_failure_in_fresh_transaction(exc.failure_code)
         _finish_partition()
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("SEC EDGAR collection crashed")
-        report["error"] = {"error": f"{type(exc).__name__}: {exc}"}
-        first_unexpected = f"{type(exc).__name__}: {exc}"
+        # Closed code only — raw exception text stays in the log (§2.4).
+        report["error"] = {"failure_code": "bad_response"}
+        first_failure_code = "bad_response"
         if commit and partition is not None:
-            assert repo is not None
-            await repo.mark_partition_failed(
-                partition, error=f"{type(exc).__name__}: {exc}"
-            )
-            if session is not None:
-                await session.commit()
+            await _persist_failure_in_fresh_transaction("bad_response")
         _finish_partition()
 
     return report
