@@ -215,3 +215,36 @@ async def test_date_only_write_after_a_timed_one_stores_the_date(db_session):
     row = await _one_row(db_session)
     assert row.published_precision == "date"
     assert row.published_date == date(2026, 11, 27)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_default_upsert_replay_keeps_a_stored_receipt_time(db_session):
+    """A date-only replay through the default upsert path keeps the stored time (hk 6408 review)."""
+    from app.services.disclosures.timing import (
+        PUBLISHED_FROM_DART_RECEIPT,
+        StoredDisclosureRow,
+        disclosure_timing,
+    )
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(
+        _dart_event("기타공시", "disclosure", rcept_dt="2026-11-27 16:30"), []
+    )
+    await repo.upsert_event_with_values(_dart_event("기타공시", "disclosure"), [])
+    await db_session.commit()
+
+    row = await _one_row(db_session)
+    assert row.raw_payload_json["rcept_dt"] == "2026-11-27 16:30"
+    timing = disclosure_timing(
+        "2026-11-27",
+        [
+            StoredDisclosureRow(
+                source="dart",
+                receipt_text=row.raw_payload_json["rcept_dt"],
+            )
+        ],
+    )
+    assert timing["published_precision"] == "minute"
+    assert timing["published_at_source"] == PUBLISHED_FROM_DART_RECEIPT

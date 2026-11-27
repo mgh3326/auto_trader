@@ -14,6 +14,7 @@ Values are upserted by (event_id, metric_name, period).
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
@@ -104,6 +105,32 @@ class DartIdentityConflict(RuntimeError):
     Raised instead of choosing a row: merging or deleting is an operator decision
     (hk 6408). The message carries the receipt number only.
     """
+
+
+_TIMED_RECEIPT_TEXT = re.compile(r"[T ][0-9]{2}:[0-9]{2}")
+
+
+def _keep_known_receipt_time(payload: dict[str, Any], stored_raw: Any) -> None:
+    """Do not let a date-only DART write erase a receipt time already stored (hk 6408).
+
+    The official list has no time. A write without one (an unenriched run, or a
+    scrape that failed) replaces the raw payload, so the time an earlier enriched
+    run stored would be lost. When the stored raw payload holds a timed
+    ``rcept_dt`` and the incoming one does not, keep the stored time and drop the
+    incoming publication tuple, so the timing reader still reports the time.
+    """
+    incoming_raw = payload.get("raw_payload_json") or {}
+    if not isinstance(stored_raw, dict):
+        return
+    stored_text = str(stored_raw.get("rcept_dt") or "")
+    incoming_text = str(incoming_raw.get("rcept_dt") or "")
+    if not _TIMED_RECEIPT_TEXT.search(stored_text):
+        return
+    if _TIMED_RECEIPT_TEXT.search(incoming_text):
+        return
+    payload["raw_payload_json"] = {**incoming_raw, "rcept_dt": stored_text}
+    for key in PUBLICATION_FIELDS:
+        payload.pop(key, None)
 
 
 class MarketEventsRepository:
@@ -222,7 +249,12 @@ class MarketEventsRepository:
         table = MarketEvent.__table__
         rows = (
             await self.db.execute(
-                select(table.c.id, table.c.category, table.c.market)
+                select(
+                    table.c.id,
+                    table.c.category,
+                    table.c.market,
+                    table.c.raw_payload_json,
+                )
                 .where(
                     table.c.source == DART_SOURCE,
                     table.c.source_event_id == receipt,
@@ -234,6 +266,8 @@ class MarketEventsRepository:
             raise DartIdentityConflict(
                 f"DART receipt {receipt} has {len(rows)} market_events rows"
             )
+        if rows:
+            _keep_known_receipt_time(payload, rows[0].raw_payload_json)
         if rows and (rows[0].category, rows[0].market) != (
             payload.get("category"),
             payload.get("market"),

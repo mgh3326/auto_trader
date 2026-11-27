@@ -240,7 +240,7 @@ def _connection(*, status=None, error=None):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "expected"),
-    [(404, "http_4xx"), (429, "http_4xx"), (503, "http_5xx")],
+    [(404, "http_4xx"), (429, "quota"), (503, "http_5xx")],
 )
 async def test_http_status_maps_to_4xx_or_5xx(monkeypatch, status, expected):
     monkeypatch.setattr(dart_capital.settings, "opendart_api_key", "synthetic-key")
@@ -737,3 +737,213 @@ async def test_failed_enrichment_is_fail_open_and_rows_store_date_only(monkeypat
     assert len(upserts) == 1
     assert upserts[0]["published_precision"] == "date"
     assert upserts[0]["raw_payload_json"]["rcept_dt"] == "20261127"
+
+
+# -- a date-only write must not erase a stored receipt time (hk 6408 review) ----
+
+
+def _align_db(stored_raw):
+    stored_row = SimpleNamespace(
+        id=1,
+        category="disclosure",
+        market="kr",
+        raw_payload_json=stored_raw,
+    )
+    result = MagicMock()
+    result.all.return_value = [stored_row] if stored_raw is not None else []
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    db.flush = AsyncMock()
+    return db
+
+
+def _date_only_payload() -> dict:
+    return {
+        "source": "dart",
+        "source_event_id": "20261127000001",
+        "category": "disclosure",
+        "market": "kr",
+        "raw_payload_json": {"rcept_dt": "20261127"},
+        "published_at": None,
+        "published_date": date(2026, 11, 27),
+        "published_offset": None,
+        "published_precision": "date",
+    }
+
+
+@pytest.mark.asyncio
+async def test_date_only_write_keeps_the_stored_receipt_time():
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(_align_db({"rcept_dt": "2026-11-27 16:30"}))
+    payload = _date_only_payload()
+
+    await repo._align_dart_identity(payload)
+
+    assert payload["raw_payload_json"]["rcept_dt"] == "2026-11-27 16:30"
+    assert "published_precision" not in payload
+    assert "published_date" not in payload
+
+
+@pytest.mark.asyncio
+async def test_a_date_only_write_with_nothing_stored_is_unchanged():
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(_align_db({"rcept_dt": "20261127"}))
+    payload = _date_only_payload()
+
+    await repo._align_dart_identity(payload)
+
+    assert payload["raw_payload_json"]["rcept_dt"] == "20261127"
+    assert payload["published_precision"] == "date"
+
+
+@pytest.mark.asyncio
+async def test_a_timed_incoming_write_replaces_the_stored_time():
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(_align_db({"rcept_dt": "2026-11-27 16:30"}))
+    payload = _date_only_payload()
+    payload["raw_payload_json"] = {"rcept_dt": "2026-11-27 17:00"}
+
+    await repo._align_dart_identity(payload)
+
+    assert payload["raw_payload_json"]["rcept_dt"] == "2026-11-27 17:00"
+
+
+@pytest.mark.asyncio
+async def test_backfill_commit_path_passes_the_receipt_time_loader(monkeypatch):
+    from scripts import backfill_dart_disclosures as cli
+
+    seen: dict[str, object] = {}
+
+    async def fake_ingest(db, target_date, *, fetch_rows, load_receipt_times=None, **_):
+        seen["loader"] = load_receipt_times
+        return SimpleNamespace(status="succeeded", event_count=0, error=None)
+
+    monkeypatch.setattr(cli, "ingest_kr_disclosures_for_date", fake_ingest)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    # _load_partition_states reads the partition table before the day loop.
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=True,
+        fetch_rows=AsyncMock(return_value=[]),
+        emit=lambda *_: None,
+        pace_seconds=0.0,
+    )
+
+    assert seen["loader"] is dart_helpers.fetch_dart_receipt_times_for_date
+
+
+# -- review findings on PR #2694 (pagination, 429, per-request budget) ----------
+
+
+@pytest.mark.asyncio
+async def test_an_empty_page_before_the_reported_last_page_fails_closed(monkeypatch):
+    pages = {
+        "1": {"list": [{"rcept_no": "1"}], "total_page": 3},
+        "2": {"list": [], "total_page": 3},
+    }
+
+    async def fake_page(**params):
+        return pages[params["page_no"]]
+
+    monkeypatch.setattr(dart_capital, "request_list_page", fake_page)
+
+    with pytest.raises(DartDetailError) as raised:
+        await dart_helpers.fetch_dart_filings_for_date(DAY)
+
+    assert raised.value.failure_code == "bad_response"
+
+
+@pytest.mark.asyncio
+async def test_a_page_count_that_contradicts_its_rows_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        dart_capital,
+        "request_list_page",
+        AsyncMock(return_value={"list": [{"rcept_no": "1"}], "total_page": 0}),
+    )
+
+    with pytest.raises(DartDetailError) as raised:
+        await dart_helpers.fetch_dart_filings_for_date(DAY)
+
+    assert raised.value.failure_code == "bad_response"
+
+
+@pytest.mark.asyncio
+async def test_before_request_is_awaited_before_every_list_page(monkeypatch):
+    pages = {
+        "1": {"list": [{"rcept_no": "1"}], "total_page": 2},
+        "2": {"list": [{"rcept_no": "2"}], "total_page": 2},
+    }
+    gated: list[str] = []
+
+    async def fake_page(**params):
+        gated.append(f"page{params['page_no']}")
+        return pages[params["page_no"]]
+
+    async def gate():
+        gated.append("gate")
+
+    monkeypatch.setattr(dart_capital, "request_list_page", fake_page)
+
+    await dart_helpers.fetch_dart_filings_for_date(DAY, before_request=gate)
+
+    assert gated == ["gate", "page1", "gate", "page2"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_budget_counts_every_list_page_request(monkeypatch):
+    """With max_calls=1, a two-page day must not reach the second page (hk 6408 review)."""
+    from scripts import backfill_dart_disclosures as cli
+
+    requests: list[str] = []
+
+    async def fake_page(**params):
+        requests.append(params["page_no"])
+        return {"list": [{"rcept_no": params["page_no"]}], "total_page": 2}
+
+    monkeypatch.setattr(dart_capital, "request_list_page", fake_page)
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    emitted: list[str] = []
+
+    await cli.run_backfill(
+        db=db,
+        from_date=DAY,
+        to_date=DAY,
+        commit=False,
+        emit=emitted.append,
+        pace_seconds=0.0,
+        max_calls=1,
+    )
+
+    assert requests == ["1"]
+    assert any("budget exhausted" in line for line in emitted)
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [
+        ("quota", True),  # HTTP 429 and DART 020 are rate limits
+        ("http_5xx", True),
+        ("timeout", True),
+        ("transport", True),
+        ("http_4xx", False),
+        ("bad_response", False),
+    ],
+)
+def test_backfill_retries_only_transient_dart_failure_codes(code, retryable):
+    from scripts.backfill_dart_disclosures import _transient_dart_error
+
+    tag = _transient_dart_error(DartDetailError("x", failure_code=code))
+
+    assert (tag is not None) is retryable

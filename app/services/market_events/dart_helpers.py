@@ -26,6 +26,7 @@ import re
 import tempfile
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -223,16 +224,32 @@ def _list_page_rows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]
         raise DartDetailError(
             "OpenDART filing list has no page count", failure_code="bad_response"
         ) from None
+    if total_pages < 0 or (total_pages == 0 and rows):
+        raise DartDetailError(
+            "OpenDART filing list page count contradicts its rows",
+            failure_code="bad_response",
+        )
     return rows, total_pages
 
 
-async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]:
+async def fetch_dart_filings_for_date(
+    target_date: date,
+    *,
+    before_request: Callable[[], Awaitable[None]] | None = None,
+) -> list[dict[str, Any]]:
     """Return every DART filing received on one day, from the official list API.
 
     A day with no filings (status 013) returns ``[]``; the caller decides what an
     empty day means (hk 3845 pending rule). Each paged request goes through the
     closed-error client, so failures arrive with a ``failure_code``. Rows are
     de-duplicated by receipt number: the list can shift while it is paged.
+
+    ``before_request`` is awaited before every list-page request, so a caller can
+    budget and pace the HTTP requests themselves (hk 6408 review), not one call
+    per day.
+
+    An empty page before the reported last page is a contradiction and fails
+    with ``bad_response``; it is never read as the end of the list.
 
     The official JSON API has no on-disk page cache, so there is no cache switch
     to manage here (the scraper's ``docs_cache`` problem no longer exists).
@@ -246,6 +263,8 @@ async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]
     rows: list[dict[str, Any]] = []
     page = 1
     while True:
+        if before_request is not None:
+            await before_request()
         payload = await request_list_page(
             bgn_de=day,
             end_de=day,
@@ -255,8 +274,13 @@ async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]
         if payload is None:
             break
         page_rows, total_pages = _list_page_rows(payload)
+        if not page_rows and page < total_pages:
+            raise DartDetailError(
+                "OpenDART filing list ended before its reported page count",
+                failure_code="bad_response",
+            )
         rows.extend(page_rows)
-        if page >= total_pages or not page_rows:
+        if page >= total_pages:
             break
         if page >= DART_LIST_MAX_PAGES:
             raise DartDetailError(

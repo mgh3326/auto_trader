@@ -138,6 +138,17 @@ def _corp_code(
     return next(iter(matching)) if len(matching) == 1 else None
 
 
+def _http_failure_code(status: int) -> str:
+    """Closed failure code for a non-200 HTTP status.
+
+    429 is rate limiting, so it is ``quota`` and retryable; other 4xx are
+    request errors and 5xx are server errors.
+    """
+    if status == 429:
+        return "quota"
+    return "http_5xx" if status >= 500 else "http_4xx"
+
+
 def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
     api_key = settings.opendart_api_key
     if not api_key:
@@ -152,7 +163,7 @@ def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
         if response.status != 200:
             raise DartUnavailableError(
                 f"OpenDART HTTP {response.status}",
-                failure_code="http_5xx" if response.status >= 500 else "http_4xx",
+                failure_code=_http_failure_code(response.status),
             )
         body = response.read(_MAX_BODY + 1)
         if len(body) > _MAX_BODY:

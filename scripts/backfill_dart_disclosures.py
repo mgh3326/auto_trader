@@ -75,6 +75,9 @@ from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
 from app.models.market_events import MarketEventIngestionPartition
 from app.monitoring.sentry import capture_exception
+from app.services.market_events.dart_helpers import (
+    fetch_dart_receipt_times_for_date,
+)
 from app.services.market_events.ingestion import ingest_kr_disclosures_for_date
 from app.services.market_events.normalizers import normalize_dart_disclosure_row
 from app.services.market_events.session_calendar import trading_session_status
@@ -189,6 +192,33 @@ class _DartCallBudget:
         self.retries = 0
 
 
+def _make_request_gate(
+    *,
+    budget: _DartCallBudget,
+    max_calls: int,
+    pace_seconds: float,
+    sleep: Callable[[float], Awaitable[None]],
+) -> Callable[[], Awaitable[None]]:
+    """One DART HTTP request: enforce the run budget, pace, and count it.
+
+    Every request is preceded by a ``pace_seconds`` wait (except the very first
+    of the run). Raises ``_CallBudgetExhausted`` before any request once the
+    budget is spent.
+    """
+
+    async def _gate() -> None:
+        if budget.calls >= max_calls:
+            raise _CallBudgetExhausted(
+                f"dart call budget exhausted "
+                f"({budget.calls}/{max_calls} calls this run)"
+            )
+        if budget.calls > 0:
+            await sleep(pace_seconds)
+        budget.calls += 1
+
+    return _gate
+
+
 def _make_paced_fetch(
     fetch_rows: FetchRows,
     *,
@@ -201,29 +231,35 @@ def _make_paced_fetch(
     sleep: Callable[[float], Awaitable[None]],
     rng: Callable[[], float],
     emit: Callable[[str], None],
+    per_request: bool = False,
 ) -> FetchRows:
     """Wrap ``fetch_rows`` with pacing, a call budget, and bounded retry.
 
-    Every DART call is preceded by a ``pace_seconds`` wait (except the very
-    first call of the run). Transient failures retry up to
-    ``retry_max_attempts`` total attempts with exponential backoff
+    With ``per_request=False`` (an injected fetcher) one budget unit and one
+    pacing wait are spent per day attempt, as before. With ``per_request=True``
+    (the official list fetch) the gate is handed to the fetcher, which awaits it
+    before every list-page request, so the budget, the pacing and the run summary
+    count real HTTP requests (hk 6408 review). Transient failures retry up to
+    ``retry_max_attempts`` total attempts per day with exponential backoff
     (``retry_base_seconds * 2**(attempt-1)``, capped at
     ``retry_max_seconds``) scaled by ``[0.5, 1.5)`` jitter.
     """
+    gate = _make_request_gate(
+        budget=budget,
+        max_calls=max_calls,
+        pace_seconds=pace_seconds,
+        sleep=sleep,
+    )
 
     async def _paced_fetch(target_date: date) -> list[dict[str, Any]]:
         attempt = 0
         while True:
-            if budget.calls >= max_calls:
-                raise _CallBudgetExhausted(
-                    f"dart call budget exhausted "
-                    f"({budget.calls}/{max_calls} calls this run)"
-                )
-            if budget.calls > 0:
-                await sleep(pace_seconds)
+            if not per_request:
+                await gate()
             attempt += 1
-            budget.calls += 1
             try:
+                if per_request:
+                    return await fetch_rows(target_date, before_request=gate)  # type: ignore[call-arg]
                 return await fetch_rows(target_date)
             except Exception as exc:
                 tag = _transient_dart_error(exc)
@@ -244,12 +280,16 @@ def _make_paced_fetch(
     return _paced_fetch
 
 
-async def _default_fetch(target_date: date) -> list[dict[str, Any]]:
+async def _default_fetch(
+    target_date: date,
+    *,
+    before_request: Callable[[], Awaitable[None]] | None = None,
+) -> list[dict[str, Any]]:
     from app.services.market_events.dart_helpers import fetch_dart_filings_for_date
 
-    # Bypass the OpenDartReader docs_cache: backfill retries must hit the
-    # network each attempt, and a cached error page would poison reruns.
-    return await fetch_dart_filings_for_date(target_date)
+    # The official list has no page cache, so each attempt is a real network
+    # request. ``before_request`` budgets and paces every list-page request.
+    return await fetch_dart_filings_for_date(target_date, before_request=before_request)
 
 
 def _parseable_count(rows: list[dict[str, Any]]) -> int:
@@ -354,6 +394,7 @@ async def run_backfill(
         if effective_from > to_date:
             raise ValueError("resume_from is after to_date")
 
+    per_request = fetch_rows is None
     if fetch_rows is None:
         fetch_rows = _default_fetch
     if sleep is None:
@@ -364,6 +405,7 @@ async def run_backfill(
     budget = _DartCallBudget()
     paced_fetch = _make_paced_fetch(
         fetch_rows,
+        per_request=per_request,
         budget=budget,
         max_calls=max_calls,
         pace_seconds=pace_seconds,
@@ -433,8 +475,14 @@ async def run_backfill(
                     consecutive_failures = 0
         else:
             try:
+                # The receipt-time enrichment is explicit here: an injected
+                # (paced) official fetch does not turn it on by default, and a
+                # backfill that skipped it would strip stored receipt times (hk 6408).
                 result = await ingest_kr_disclosures_for_date(
-                    db, d, fetch_rows=paced_fetch
+                    db,
+                    d,
+                    fetch_rows=paced_fetch,
+                    load_receipt_times=fetch_dart_receipt_times_for_date,
                 )
                 await db.commit()
             except Exception as exc:
