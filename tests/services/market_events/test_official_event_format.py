@@ -18,6 +18,17 @@ EVENT = {
 }
 
 
+def _insert_statement(db):
+    """The upsert statement. The DART identity lock may run first (hk 6408)."""
+    from sqlalchemy.dialects.postgresql.dml import Insert
+
+    return next(
+        call.args[0]
+        for call in db.execute.await_args_list
+        if isinstance(call.args[0], Insert)
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_date_publication_cannot_carry_a_timestamp():
@@ -114,9 +125,7 @@ async def test_provider_upsert_compares_precision_atomically_and_keeps_first_rec
         },
         [],
     )
-    compiled = (
-        db.execute.await_args_list[0].args[0].compile(dialect=postgresql.dialect())
-    )
+    compiled = _insert_statement(db).compile(dialect=postgresql.dialect())
     sql = str(compiled)
     assert "ON CONFLICT (source, category, market, source_event_id)" in sql
     updates = sql.split("DO UPDATE SET ", 1)[1]
