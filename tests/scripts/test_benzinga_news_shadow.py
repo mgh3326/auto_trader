@@ -189,6 +189,11 @@ def test_poll_writes_append_only_jsonl(
     ]
     assert frames[0]["symbols"] == ["NVDA"]
     assert frames[1]["symbols_completed"] == ["NVDA"]
+    # hk 7092: each invocation carries its own attempt id; a reused --poll-id
+    # cannot borrow a previous run's completion record.
+    assert frames[0]["attempt_id"] == frames[1]["attempt_id"]
+    assert frames[2]["attempt_id"] == frames[3]["attempt_id"]
+    assert frames[0]["attempt_id"] != frames[2]["attempt_id"]
     assert "TEST-KEY" not in (out_dir / "p1.jsonl").read_text(encoding="utf-8")
 
 

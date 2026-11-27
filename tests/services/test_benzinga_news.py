@@ -503,6 +503,89 @@ def test_summarize_completed_poll_has_no_incomplete_entry() -> None:
     assert summary["unreliable_symbol_polls"] == []
 
 
+def test_summarize_matches_poll_frames_on_poll_id_and_attempt_id() -> None:
+    """A reused --poll-id must not let an old completion satisfy a new run."""
+    frames = [
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-reused",
+            "attempt_id": "run-1",
+            "symbols": ["NVDA"],
+        },
+        {
+            "record_type": "poll_completion",
+            "poll_id": "p-reused",
+            "attempt_id": "run-1",
+            "symbols_completed": ["NVDA"],
+        },
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-reused",
+            "attempt_id": "run-2",
+            "symbols": ["NVDA", "AMD"],
+        },
+    ]
+    summary = bz.summarize_shadow([], [], frames)
+    assert summary["incomplete_polls"] == [
+        {
+            "poll_id": "p-reused",
+            "attempt_id": "run-2",
+            "reason": "no_completion_record",
+            "symbols": ["AMD", "NVDA"],
+        }
+    ]
+    assert {p["symbol"] for p in summary["unreliable_symbol_polls"]} == {
+        "AMD",
+        "NVDA",
+    }
+
+
+def test_incomplete_attempt_does_not_exclude_completed_attempt_articles() -> None:
+    """A died attempt B sharing poll_id must not hide attempt A's coverage."""
+    article_a = _record(
+        "benzinga",
+        "https://x.com/a",
+        "Attempt A story",
+        "p-reused",
+        "2025-11-25T14:00:00+00:00",
+    )
+    article_a["attempt_id"] = "run-1"
+    frames = [
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-reused",
+            "attempt_id": "run-1",
+            "symbols": ["NVDA"],
+        },
+        {
+            "record_type": "poll_completion",
+            "poll_id": "p-reused",
+            "attempt_id": "run-1",
+            "symbols_completed": ["NVDA"],
+        },
+        {
+            "record_type": "poll_header",
+            "poll_id": "p-reused",
+            "attempt_id": "run-2",
+            "symbols": ["NVDA"],
+        },
+    ]
+    summary = bz.summarize_shadow([article_a], [], frames)
+    assert summary["incomplete_polls"] == [
+        {
+            "poll_id": "p-reused",
+            "attempt_id": "run-2",
+            "reason": "no_completion_record",
+            "symbols": ["NVDA"],
+        }
+    ]
+    assert summary["benzinga_count"] == 1
+    assert summary["excluded_unreliable_articles"] == {"benzinga": 0, "finnhub": 0}
+    assert summary["unreliable_symbol_polls"] == [
+        {"poll_id": "p-reused", "attempt_id": "run-2", "symbol": "NVDA"}
+    ]
+
+
 def test_summarize_counts_benzinga_by_query_param() -> None:
     ben = [
         _record(

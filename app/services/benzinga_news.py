@@ -504,8 +504,15 @@ def _dedupe_articles(
     return list(best.values()) + unkeyed, removed
 
 
-def _cell(record: dict[str, Any]) -> tuple[Any, Any]:
-    return (record.get("poll_id"), record.get("query_symbol"))
+def _cell(record: dict[str, Any]) -> tuple[Any, Any, Any]:
+    # hk 7092: cells are per attempt so an incomplete poll sharing a reused
+    # poll_id cannot mark another attempt's articles unreliable. Rows written
+    # before attempt ids existed key on attempt_id=None.
+    return (
+        record.get("poll_id"),
+        record.get("attempt_id"),
+        record.get("query_symbol"),
+    )
 
 
 def summarize_shadow(
@@ -544,7 +551,7 @@ def summarize_shadow(
         for r in list(benzinga_records) + list(finnhub_records)
         if r.get("record_type") != "article"
     ]
-    unreliable: set[tuple[Any, Any]] = set()
+    unreliable: set[tuple[Any, Any, Any]] = set()
     for status in statuses:
         if (
             status.get("record_type") == "poll_status"
@@ -552,49 +559,48 @@ def summarize_shadow(
         ):
             unreliable.add(_cell(status))
 
-    planned: dict[Any, set[Any]] = {}
-    completed: dict[Any, set[Any]] = {}
+    planned: dict[tuple[Any, Any], set[Any]] = {}
+    completed: dict[tuple[Any, Any], set[Any]] = {}
     for frame in poll_frames:
         frame_type = frame.get("record_type")
         poll_id = frame.get("poll_id")
         if poll_id is None:
             continue
+        # hk 7092: a caller-supplied poll_id may be reused across runs, so a
+        # header and its completion must also agree on the per-run attempt id.
+        # Frames written before attempt ids existed key on (poll_id, None).
+        key = (poll_id, frame.get("attempt_id"))
         if frame_type == "poll_header":
             symbols = frame.get("symbols")
             if isinstance(symbols, list):
-                planned.setdefault(poll_id, set()).update(
+                planned.setdefault(key, set()).update(
                     s for s in symbols if isinstance(s, str)
                 )
         elif frame_type == "poll_completion":
             symbols = frame.get("symbols_completed")
             if isinstance(symbols, list):
-                completed.setdefault(poll_id, set()).update(
+                completed.setdefault(key, set()).update(
                     s for s in symbols if isinstance(s, str)
                 )
     incomplete_polls: list[dict[str, Any]] = []
-    for poll_id in sorted(planned, key=str):
-        wanted = planned[poll_id]
-        done = completed.get(poll_id)
+    for poll_id, attempt_id in sorted(planned, key=str):
+        wanted = planned[(poll_id, attempt_id)]
+        done = completed.get((poll_id, attempt_id))
+        entry: dict[str, Any] = {"poll_id": poll_id}
+        if attempt_id is not None:
+            entry["attempt_id"] = attempt_id
         if done is None:
-            incomplete_polls.append(
-                {
-                    "poll_id": poll_id,
-                    "reason": "no_completion_record",
-                    "symbols": sorted(wanted, key=str),
-                }
-            )
-            unreliable.update((poll_id, symbol) for symbol in wanted)
+            entry["reason"] = "no_completion_record"
+            entry["symbols"] = sorted(wanted, key=str)
+            incomplete_polls.append(entry)
+            unreliable.update((poll_id, attempt_id, symbol) for symbol in wanted)
         else:
             missing = wanted - done
             if missing:
-                incomplete_polls.append(
-                    {
-                        "poll_id": poll_id,
-                        "reason": "symbols_unpolled",
-                        "symbols": sorted(missing, key=str),
-                    }
-                )
-                unreliable.update((poll_id, symbol) for symbol in missing)
+                entry["reason"] = "symbols_unpolled"
+                entry["symbols"] = sorted(missing, key=str)
+                incomplete_polls.append(entry)
+                unreliable.update((poll_id, attempt_id, symbol) for symbol in missing)
     ben_all = [r for r in benzinga_records if r.get("record_type") == "article"]
     fin_all = [r for r in finnhub_records if r.get("record_type") == "article"]
     ben_excluded = [r for r in ben_all if _cell(r) in unreliable]
@@ -668,7 +674,10 @@ def summarize_shadow(
     latencies: list[float] = []
     latency_pairs = 0
     for ben_first, fin_first in overlap_pairs:
-        if ben_first.get("poll_id") != fin_first.get("poll_id"):
+        if (ben_first.get("poll_id"), ben_first.get("attempt_id")) != (
+            fin_first.get("poll_id"),
+            fin_first.get("attempt_id"),
+        ):
             continue
         ben_seen, fin_seen = _seen_at(ben_first), _seen_at(fin_first)
         if ben_seen is None or fin_seen is None:
@@ -706,8 +715,12 @@ def summarize_shadow(
         "benzinga_duplicates_removed": ben_dupes,
         "finnhub_duplicates_removed": fin_dupes,
         "unreliable_symbol_polls": [
-            {"poll_id": poll, "symbol": symbol}
-            for poll, symbol in sorted(unreliable, key=str)
+            {
+                "poll_id": poll,
+                **({"attempt_id": attempt} if attempt is not None else {}),
+                "symbol": symbol,
+            }
+            for poll, attempt, symbol in sorted(unreliable, key=str)
         ],
         "incomplete_polls": incomplete_polls,
         "excluded_unreliable_articles": {

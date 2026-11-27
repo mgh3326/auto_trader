@@ -258,6 +258,8 @@ class InvestThemeEventSnapshotStock(Base):
 RUN_ERROR_REASONS = (
     "http_4xx",
     "http_5xx",
+    "auth",
+    "rate_limited",
     "timeout",
     "transport",
     "bad_response",

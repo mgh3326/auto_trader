@@ -33,6 +33,11 @@ BENZINGA_NEWS_SHADOW_ENABLED=true BENZINGA_API_KEY=<키> \
   "뉴스 없음"으로 읽지 않는다. pass 당 1줄씩 `poll_header`(계획 심볼)와
   `poll_completion`(실행 완료 심볼)도 기록한다 — 중간에 죽은 poll 은 completion
   이 없어 summary 가 `incomplete_polls` 로 보고하고 그 셀을 unreliable 로 뺀다.
+  모든 행(article·poll_status 포함)이 호출마다 새로 발급되는 `attempt_id` 를 싣고(hk 7092),
+  summary 는 프레임을 `(poll_id, attempt_id)` 쌍으로, 신뢰성 셀을
+  `(poll_id, attempt_id, symbol)` 로 짝짓는다 — `--poll-id` 를 재사용해도 이전 실행의
+  completion 이 새 실행의 header 를 채우지 못하고, 죽은 attempt 의 미완료 판정이
+  같은 poll_id 의 완료된 attempt 기사까지 배제하지 않는다.
 - `first_received_at` 은 소스별로 그 응답이 도착한 뒤에 찍는다. 두 소스를
   순차로 읽기 때문에 차이는 순서 신호로만 읽는다(정밀 경쟁 측정이 아니다).
 - Finnhub 시각은 naive host-local 문자열이므로 host 시간대로 읽어 UTC 로

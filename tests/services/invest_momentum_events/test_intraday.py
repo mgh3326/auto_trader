@@ -97,6 +97,10 @@ def _status_error(code: int) -> httpx.HTTPStatusError:
     [
         (_status_error(400), "http_4xx"),
         (_status_error(404), "http_4xx"),
+        (_status_error(401), "auth"),
+        (_status_error(403), "auth"),
+        (_status_error(429), "rate_limited"),
+        (_status_error(418), "http_4xx"),
         (_status_error(500), "http_5xx"),
         (httpx.ReadTimeout("slow"), "timeout"),
         (httpx.ConnectError("down"), "transport"),
@@ -373,6 +377,72 @@ async def test_nxt_unsupported_ranking_falls_back_to_kis_nx_fixture() -> None:
     assert outcome.rows[0].price == Decimal("171300")
     assert outcome.rows[0].change_rate == Decimal("-0.12")
     assert kis.calls == [("fluctuation_rank", "NX", "up", intraday.PAGE_SIZE)]
+
+
+def test_kis_payload_accepts_alphanumeric_short_codes() -> None:
+    payload = [
+        {
+            "stck_shrn_iscd": "0256c0",
+            "hts_kor_isnm": "새코드",
+            "stck_prpr": "1000",
+        },
+        {"mksc_shrn_iscd": "0009K0", "hts_kor_isnm": "알파", "stck_prpr": "2000"},
+        {"stck_shrn_iscd": "bad!", "hts_kor_isnm": "무효"},
+        {"stck_shrn_iscd": "12345", "hts_kor_isnm": "짧은코드"},
+        # Unicode upper() can rewrite a non-ASCII char into ASCII ("ı" ->
+        # "I"); the raw input must be six ASCII alphanumerics before
+        # normalization, not the uppercased result.
+        {"stck_shrn_iscd": "1234ı0", "hts_kor_isnm": "비ASCII"},
+    ]
+    outcome = intraday.classify_kis_payload(payload)
+    assert outcome.status == "ok" and outcome.source == intraday.KIS_SOURCE
+    assert [row.symbol for row in outcome.rows] == ["0256C0", "0009K0"]
+
+
+def test_kis_payload_normalizes_hts_avls_to_krw() -> None:
+    outcome = intraday.classify_kis_payload(
+        [
+            {
+                "stck_shrn_iscd": "005930",
+                "hts_kor_isnm": "삼성전자",
+                "hts_avls": "10224000",
+            }
+        ]
+    )
+    assert outcome.status == "ok"
+    row = outcome.rows[0]
+    assert row.market_cap == Decimal("10224000") * 100_000_000
+    assert row.raw_payload["hts_avls_unit_krw"] == "100000000"
+    assert row.raw_payload["hts_avls"] == "10224000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "reason"),
+    [
+        (400, None),
+        (404, None),
+        (401, "auth"),
+        (403, "auth"),
+        (429, "rate_limited"),
+        (418, "http_4xx"),
+    ],
+)
+async def test_nxt_falls_back_only_for_documented_unsupported_4xx(
+    status_code, reason
+) -> None:
+    naver = FakeFetcher({"up": _status_error(status_code)})
+    kis = FakeKisFetcher([{"stck_shrn_iscd": "005930"}])
+    outcome = await intraday.fetch_extended_surface(
+        naver, kis, venue="NXT", order_type="up"
+    )
+    if reason is None:
+        assert outcome.status == "ok" and outcome.source == intraday.KIS_SOURCE
+        assert kis.calls == [("fluctuation_rank", "NX", "up", intraday.PAGE_SIZE)]
+    else:
+        assert outcome.status == "error" and outcome.reason == reason
+        assert outcome.source == "naver_stock"
+        assert kis.calls == []
 
 
 @pytest.mark.asyncio

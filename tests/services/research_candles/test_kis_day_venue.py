@@ -238,4 +238,4 @@ def test_alembic_has_one_head_and_it_is_the_kis_day_validation() -> None:
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
     heads = script.get_heads()
-    assert heads == ["20261127_hk7037_us_kis_day_val"], heads
+    assert heads == ["20261127_hk7092_run_reasons"], heads
