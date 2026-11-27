@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from research.crypto_universe.public_http import FetchResponse
-from research.data_plane.collect import CollectError, collect
+from research.data_plane.collect import FAILURE_CODES, CollectError, collect
 from research.data_plane.contract import (
     DATASET_ACTIONS,
     DATASET_BARS,
@@ -370,6 +370,43 @@ def test_a_failing_dataset_does_not_stop_the_others(tmp_path):
 
 
 @pytest.mark.unit
+def test_dataset_failures_report_closed_reason_codes(tmp_path):
+    day1, day2 = date(2026, 10, 30), date(2026, 10, 31)
+    _run(tmp_path, "crypto", day1, FakeSources())
+    src = FakeSources(
+        binance_pairs={"BTCUSDT": "TRADING", "LUNAUSDT": "BREAK"},
+        missing=frozenset({"BTCUSDT"}),
+    )
+    with pytest.raises(CollectError) as info:
+        _run(tmp_path, "crypto", day2, src)
+    failures = {f.dataset: f for f in info.value.failures}
+    bars = failures[DATASET_BARS]
+    assert bars.status == "not_collected"
+    assert bars.reason == "coverage_below_floor"
+    assert bars.reason in FAILURE_CODES
+    assert "coverage" in bars.detail
+    assert all(f.reason in FAILURE_CODES for f in info.value.failures)
+
+
+@pytest.mark.unit
+def test_refused_rows_report_the_refused_row_code(tmp_path):
+    day = date(2026, 10, 30)
+    _run(tmp_path, "kr", day, FakeSources(), datasets=[DATASET_UNIVERSE])
+    with pytest.raises(RefusedRowError) as info:
+        collect(
+            tmp_path,
+            market="kr",
+            day=day,
+            datasets=[DATASET_BARS],
+            fetch=FakeSources(),
+            now=lambda: evening("kr", day) - timedelta(hours=4),
+            commit="test-commit",
+        )
+    assert [f.reason for f in info.value.failures] == ["refused_row"]
+    assert info.value.failures[0].detail
+
+
+@pytest.mark.unit
 def test_listing_change_on_a_day_whose_actions_failed_is_recorded_next_time(tmp_path):
     day1, day2, day3 = date(2026, 10, 29), date(2026, 10, 30), date(2026, 11, 2)
     _run(tmp_path, "kr", day1, FakeSources())
@@ -459,8 +496,10 @@ def test_cli_reports_partial_success_and_exit_code_2(tmp_path, monkeypatch, caps
     ) in out.out
     assert (
         "dataset_outcome bars_1d crypto 2026-10-30 "
-        'status=not_collected reason="bars_1d crypto 2026-10-30: coverage'
+        "status=not_collected reason=coverage_below_floor"
     ) in out.out
+    assert "dataset_failure_detail bars_1d crypto 2026-10-30" in out.err
+    assert "coverage" in out.err
     assert (
         "dataset_outcome corporate_actions crypto 2026-10-30 status=written reason=none"
     ) in out.out

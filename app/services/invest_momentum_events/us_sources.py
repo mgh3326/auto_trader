@@ -898,9 +898,22 @@ def _leveraged(master: SymbolMaster) -> bool:
 def derive_asset_type(master: SymbolMaster) -> str:
     """Closed asset class from the US symbol master row (never a guess).
 
-    ``security_type`` is the Toss master vocabulary. A row without one falls back
-    to ``is_common_stock`` (NASDAQ Trader classification): ``False`` means "not a
-    common share", and the name tokens separate a warrant/right from a fund.
+    ``security_type`` is the Toss master vocabulary. Precedence, first match
+    wins (hk 7080):
+
+    1. ``security_type`` in the warrant set → ``right_or_warrant``
+    2. ``security_type`` in the fund set → ``leveraged_etf`` if leveraged, else ``etf``
+    3. ``security_type`` in the common-stock set → ``common_stock``
+    4. ``is_common_stock is True`` → ``common_stock``
+    5. ``is_common_stock is False`` → warrant/right name → ``right_or_warrant``,
+       else leveraged evidence → ``leveraged_etf``, else ``unknown``
+    6. otherwise → ``leveraged_etf`` if leveraged, else ``unknown``
+
+    An unrecognized ``security_type`` label falls through to the
+    ``is_common_stock``/name/leverage evidence instead of hiding it, and inside
+    the ``is_common_stock is False`` branch the warrant/right name check runs
+    before the leveraged fallback: ``right_or_warrant`` is the only class the
+    hk 6554 scoring excludes, so a leveraged warrant must stay excluded.
     """
     security_type = (master.security_type or "").strip().upper()
     if security_type in _WARRANT_SECURITY_TYPES:
@@ -909,24 +922,22 @@ def derive_asset_type(master: SymbolMaster) -> str:
         return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_ETF
     if security_type in _COMMON_STOCK_SECURITY_TYPES:
         return ASSET_COMMON_STOCK
-    # An unrecognized provider label does not hide positive leverage evidence:
-    # a Toss ``leverageFactor`` != 1 or a leveraged name still means a
-    # leveraged/inverse product (hk 6572).
-    if security_type:
-        return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_UNKNOWN
     if master.is_common_stock is True:
         return ASSET_COMMON_STOCK
-    if _leveraged(master):
-        return ASSET_LEVERAGED_ETF
     if master.is_common_stock is False:
         # "not a common share" is not fund evidence: the NASDAQ Trader flag is
         # also False for preferreds, depositary shares, notes and trusts. Only a
-        # warrant/right name is positive evidence here; everything else stays
-        # unknown rather than claiming an ETF.
+        # warrant/right name is positive evidence here; leveraged names are
+        # checked after it so a leveraged warrant stays excluded.
         if _name_has(master.name_en, _WARRANT_NAME_TOKENS):
             return ASSET_RIGHT_OR_WARRANT
+        if _leveraged(master):
+            return ASSET_LEVERAGED_ETF
         return ASSET_UNKNOWN
-    return ASSET_UNKNOWN
+    # An unrecognized provider label does not hide positive leverage evidence:
+    # a Toss ``leverageFactor`` != 1 or a leveraged name still means a
+    # leveraged/inverse product (hk 6572, hk 7080).
+    return ASSET_LEVERAGED_ETF if _leveraged(master) else ASSET_UNKNOWN
 
 
 __all__ = [
