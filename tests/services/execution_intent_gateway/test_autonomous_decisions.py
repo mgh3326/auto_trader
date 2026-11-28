@@ -540,7 +540,7 @@ def test_toss_us_pre_post_require_session_allowlist(sess, allowed):
     assert _code(inputs) is R.CELL_UNSUPPORTED
 
 
-def test_toss_us_regular_allows_fraction_not_amount():
+def test_toss_us_regular_integer_limit_only():
     base = {
         "account": "toss_live",
         "session": S.US_REGULAR,
@@ -548,10 +548,10 @@ def test_toss_us_regular_allows_fraction_not_amount():
         "book": _book("99.99", "100"),
     }
     assert ad.decide(
-        _inputs(
-            child=_child(quantity=Decimal("1.5"), limit_price=Decimal("100")), **base
-        )
+        _inputs(child=_child(quantity=Decimal("3"), limit_price=Decimal("100")), **base)
     ).allowed
+    fractional = _child(quantity=Decimal("1.5"), limit_price=Decimal("100"))
+    assert _code(_inputs(child=fractional, **base)) is R.ORDER_FORM_NOT_ACCEPTED
     sell_amount = _child(side="sell", quantity=None, amount=Decimal("100"))
     assert _code(_inputs(child=sell_amount, **base)) is R.ORDER_FORM_NOT_ACCEPTED
     buy_amount = _child(quantity=None, amount=Decimal("100"))

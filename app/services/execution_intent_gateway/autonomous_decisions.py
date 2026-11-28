@@ -157,9 +157,11 @@ _LIMIT = frozenset({"limit"})
 
 #: Design §2, live accounts only. Absent cells (KIS US pre/post — operator Q5,
 #: Toss US day market, KIS KR amount orders) are unsupported. NXT/after are LH
-#: cells (Q4). Toss ``orderAmount`` orders are not accepted in any cell: the
-#: broker chooses the quantity, so neither the intent quantity cap nor the
-#: position bound can be proven. Market orders are not accepted in any cell: no broker request
+#: cells (Q4). Toss orders on the autonomous path are integer-quantity limit
+#: orders only (design §2, ESC 703702): ``orderAmount`` is refused in every
+#: session because the broker chooses the quantity, so neither the intent
+#: quantity cap nor the position bound can be proven; the refusal is the closed
+#: code ``order_form_not_accepted``. Manual Toss paths are unchanged. Market orders are not accepted in any cell: no broker request
 #: carries an enforceable price bound, so the locked cap could not hold.
 CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
     ("kis_live", SessionClass.KRX_REGULAR): CellSpec(
@@ -191,7 +193,7 @@ CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
         "KRW", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
     ),
     ("toss_live", SessionClass.US_REGULAR): CellSpec(
-        "USD", _LIMIT, False, False, "regular", ArmingKind.LIVE_HALF
+        "USD", _LIMIT, True, False, "regular", ArmingKind.LIVE_HALF
     ),
     # Toss US pre/post: limit, integer qty, no orderAmount (this rule only).
     ("toss_live", SessionClass.US_PRE): CellSpec(
