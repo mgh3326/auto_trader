@@ -277,6 +277,7 @@ tests/services/market_events/test_dart_capital.py
 tests/services/market_events/test_dart_identity_db.py
 tests/services/market_events/test_dart_official_list.py
 tests/services/market_events/test_dart_today_pending.py
+tests/services/market_events/test_dart_user_agent.py
 tests/services/market_events/test_report_dart_identity_conflicts.py
 tests/services/mechanical_loss_cut/test_migration_and_wiring.py
 tests/services/mock_integration/test_coordination.py
