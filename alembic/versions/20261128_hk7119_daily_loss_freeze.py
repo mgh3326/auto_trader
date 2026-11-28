@@ -17,7 +17,7 @@ operator-produced state exists — a new account row changed away from its
 exactly the seeded rows.
 """
 
-# expand-contract: contract-step 7119
+# expand-contract: contract-step 7132
 
 from __future__ import annotations
 
