@@ -47,15 +47,36 @@ MANDATE_TERMS_VERSION = "execution-mandate/min-v1"
 MANDATE_MODES: tuple[str, ...] = ("shadow", "live")
 HANDOFF_STATES: tuple[str, ...] = ("open", "ready_for_card", "card_claimed", "closed")
 ACCOUNT_CONTROL_MODES: tuple[str, ...] = ("ACTIVE", "ENTRY_HALT", "GLOBAL_FREEZE")
+#: hk 7119: the daily-loss monitor's freeze. Only the monitor writes it (a DB
+#: trigger enforces ACTIVE -> DAILY_LOSS_FREEZE for the system writer); the
+#: operator command keeps the three modes above, so unfreezing stays manual.
+DAILY_LOSS_FREEZE_MODE = "DAILY_LOSS_FREEZE"
+ACCOUNT_CONTROL_STORED_MODES: tuple[str, ...] = (
+    *ACCOUNT_CONTROL_MODES,
+    DAILY_LOSS_FREEZE_MODE,
+)
+#: hk 7119 (6939 I13): one kill row per autonomous-order account.
+ACCOUNT_CONTROL_ACCOUNTS: tuple[str, ...] = (
+    "upbit_live",
+    "kis_live_kr",
+    "kis_live_us",
+    "toss_live_kr",
+    "toss_live_us",
+)
 BROKER_ORDER_STATES: tuple[str, ...] = ("wait", "watch", "done", "cancel")
 
 
 class ExecutionAccountControl(Base):
     __tablename__ = "execution_account_control"
     __table_args__ = (
-        CheckConstraint("account IN ('upbit_live')", name="account"),
         CheckConstraint(
-            "mode IN ('ACTIVE', 'ENTRY_HALT', 'GLOBAL_FREEZE')", name="mode"
+            "account IN ('upbit_live', 'kis_live_kr', 'kis_live_us', "
+            "'toss_live_kr', 'toss_live_us')",
+            name="account",
+        ),
+        CheckConstraint(
+            "mode IN ('ACTIVE', 'ENTRY_HALT', 'GLOBAL_FREEZE', 'DAILY_LOSS_FREEZE')",
+            name="mode",
         ),
         CheckConstraint(
             "char_length(btrim(reason)) BETWEEN 1 AND 500 "

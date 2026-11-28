@@ -697,6 +697,41 @@ async def test_mechanical_loss_cut_lots_drop_the_quarantined_row(
     assert lot.quantity == Decimal("10")
 
 
+async def test_daily_loss_monitor_drops_the_quarantined_phantom(
+    db_session, seed, monkeypatch
+) -> None:
+    """hk 7119: a quarantined websocket row is not an unreconciled fill.
+
+    The monitor freezes on any of today's websocket orders that no
+    authoritative row covers. After quarantine the phantom is gone; the mutant
+    without the in-effect filter sees it again. The real reconciler buy stays
+    in the account's history.
+    """
+    from app.services.daily_loss_monitor import reader as loss_reader
+    from app.services.daily_loss_monitor.accounts import ACCOUNTS
+    from app.services.daily_loss_monitor.monitor import kst_day_start
+
+    scenario = await seed.scenario()
+    await _quarantine(db_session, scenario)
+    scope = ACCOUNTS["kis_live_kr"]
+    day_start = kst_day_start(NOW)
+    phantom = scenario.phantom_order_no.lstrip("0")
+
+    fills = await loss_reader.load_account_fills(db_session, scope, day_start=day_start)
+    await db_session.rollback()
+    assert phantom not in fills.unreconciled_orders
+    assert [f.quantity for f in fills.history if f.symbol == scenario.symbol] == [
+        Decimal("10")
+    ]
+
+    _drop_filter(monkeypatch, loss_reader)
+    mutant = await loss_reader.load_account_fills(
+        db_session, scope, day_start=day_start
+    )
+    await db_session.rollback()
+    assert phantom in mutant.unreconciled_orders
+
+
 async def test_journal_exit_correction_drops_the_quarantined_row(
     db_session, seed
 ) -> None:

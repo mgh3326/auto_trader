@@ -357,6 +357,15 @@ H5와 같은 형태의 별도 어댑터(`app/services/brokers/binance/trend/`)�
   중복 억제·전이별 키, UUID `plan_head_id`, 웹훅 오류·타임아웃 fail-open, 게이트 off 무전송,
   정적 경계와 import 폐쇄.
 
+### 일일 손실 감시와 DAILY_LOSS_FREEZE (hk 7119, 6939 N5)
+
+설계 6939 §3 I3·I13, 운영자 답 Q2·Q6(`decision/2026-11-28/at-operator-list-recommended`).
+
+- **계좌 kill 행**: `review.execution_account_control`(hk 5441)에 `kis_live_kr`·`kis_live_us`·`toss_live_kr`·`toss_live_us`를 더하고 마이그레이션 `20261128_hk7119_loss_freeze`가 각각 `GLOBAL_FREEZE`로 심는다(I13). 행 부재·판독 실패는 기존 리더대로 freeze다. 새 저장 mode `DAILY_LOSS_FREEZE`는 리더가 `GLOBAL_FREEZE`로 읽고 사유에 원인을 남긴다. 🔴 UPDATE 트리거: account 불변, `system:` writer는 `system:daily_loss_monitor`로 `ACTIVE`→`DAILY_LOSS_FREEZE`만 가능(해제는 운영자 명령 `scripts/execution_mandates.py control` 뿐). DELETE·TRUNCATE 거부는 그대로, at_app은 조건부 SELECT·UPDATE, downgrade는 hk 7119 행이 있으면 거부. cancel 경로는 바뀌지 않는다(Q6).
+- **계산기** `app/services/daily_loss_monitor/rules.py`(순수, Decimal KRW): KST 하루 P&L = 오늘 매도의 FIFO 실현손익(시작 lot은 직전 세션 종가, 오늘 매수는 원가+수수료+세금, 매도 수수료·세금 차감) + 열린 lot의 신선한 호가(10분 이내) 평가손익. USD는 체결·호가에 FX를 곱한다. 잠금 상수 `DAILY_LOSS_LIMIT_KRW=500000`(env·CLI·인자로 바꿀 수 없음). 손실 ≥ 한도이거나 어느 부분이든 측정 불가(닫힌 사유: `fee_not_provided`·`quote_stale`·`quote_unavailable`·`reference_price_unavailable`·`position_oversold`·`fx_unavailable`·`provisional_fill_unreconciled`·`ledger_unreadable`…)면 freeze다(Q2: unknown은 0이 아니다).
+- **리더** `reader.load_account_fills`: `execution_ledger_in_effect()` AND, authoritative(`reconciler`·`manual_import`)만 체결로 쓰고, 오늘의 websocket 주문 중 authoritative 행이 덮지 않는 것이 있으면 측정 불가다.
+- **수동 CLI** `scripts/daily_loss_monitor.py`(미리보기 기본, `--commit`만 쓴다). 호가는 DB 1분봉(research KR/US, `crypto_candles_1m`), 시작가는 `strategy_sleeves.marks.latest_close_marks`, USD는 실행 시점 USD/KRW. 🔴 스케줄러·Dagu 등록 없음. 감시 패키지는 브로커·주문 모듈을 import하지 않는다(정적 테스트 `tests/services/daily_loss_monitor/test_kill_and_boundary.py`).
+
 ### Execution Intent Gateway (ROB-1440)
 
 기계식 전략용 주문 경계. Python 이 무엇을(버전·인가·상한이 있는 intent), Go 실행기가 언제·얼마에(그 안에서)를 맡는다. Go 는 브로커·DB 에 직접 닿지 않고 child request 만 보낸다. 🔴 **전송 경로는 ROB-1461 의 loopback HTTP 라우트 하나뿐이다** — `app.main`·MCP·스케줄러 연결 0, 기본 비활성. 게이트웨이를 import 하는 `app/` 모듈은 패키지 밖에서 `app/routers/execution_intent_gateway.py` 와 `app/execution_intent_gateway_server.py` 뿐이다(`test_only_the_loopback_route_wires_the_gateway_to_a_transport`).
