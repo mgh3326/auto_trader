@@ -43,6 +43,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.execution_mandates import (
+    ACCOUNT_CONTROL_ACCOUNTS,
     ACCOUNT_CONTROL_MODES,
     ExecutionExitHandoff,
     ExecutionMandate,
@@ -152,7 +153,9 @@ def _parser() -> argparse.ArgumentParser:
     exit_cmd.add_argument("--commit", action="store_true")
 
     control = sub.add_parser("control", help="Preview or set the account kill row")
-    control.add_argument("--account", required=True, choices=[UPBIT_LIVE_ACCOUNT])
+    control.add_argument(
+        "--account", required=True, choices=list(ACCOUNT_CONTROL_ACCOUNTS)
+    )
     control.add_argument("--mode", required=True, choices=list(ACCOUNT_CONTROL_MODES))
     control.add_argument("--reason", required=True)
     control.add_argument("--actor", required=True)

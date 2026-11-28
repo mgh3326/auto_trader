@@ -10,8 +10,9 @@ KST day start and now, a fresh 1-minute bar inside a trading window (NXT and
 US pre/post included), the window's last bar in a gap, else the last completed
 session close. Unreported fees use the policy round-trip cost estimate. USD
 accounts use a run-time USD/KRW snapshot (recorded with source and time). The
-ledger position is cross-checked against broker holdings (Upbit only for now;
-other accounts read ``holdings_unverified`` and freeze).
+ledger position is cross-checked against broker holdings read through a
+read-only view (``scripts/daily_loss_holdings.py``); a failed or partial read
+is ``holdings_unverified`` and freezes.
 
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL --commit
@@ -27,7 +28,7 @@ import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -37,6 +38,7 @@ from app.services.daily_loss_monitor.accounts import ACCOUNTS, AccountScope
 from app.services.daily_loss_monitor.marks import FxSnapshot, marks_at
 from app.services.daily_loss_monitor.monitor import run_once
 from app.services.daily_loss_monitor.rules import QUOTE_MAX_AGE, Mark
+from scripts.daily_loss_holdings import broker_holdings
 
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
@@ -88,34 +90,6 @@ async def bars_until(
         for row in rows
     }
     return {s: found.get(s) for s in symbols}
-
-
-async def broker_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
-    """Broker holdings for the cross-check; None (unverified) where not wired.
-
-    Only Upbit is read here (read-only ``GET /v1/accounts``). KIS and Toss
-    accounts stay unverified, so they freeze until a holdings source is added.
-    """
-    if scope.account != "upbit_live":
-        return None
-    from app.core.symbol import to_upbit_symbol
-    from app.services.upbit_wallet_status import ACCOUNTS_PATH, _authed_get
-
-    payload = await _authed_get(ACCOUNTS_PATH)
-    if not isinstance(payload, list):
-        return None
-    held: dict[str, Decimal] = {}
-    for item in payload:
-        if not isinstance(item, dict) or item.get("currency") in (None, "KRW"):
-            continue
-        try:
-            qty = Decimal(str(item.get("balance", "0"))) + Decimal(
-                str(item.get("locked", "0"))
-            )
-        except (InvalidOperation, ValueError):
-            return None
-        held[to_upbit_symbol(str(item["currency"]))] = qty
-    return held
 
 
 async def usd_krw() -> FxSnapshot | None:

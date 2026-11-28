@@ -161,6 +161,11 @@ def _order_fill(scope: AccountScope, rows: list[Any]) -> Fill | None:
         if chain is None:
             return None
         if chain is False:
+            # A Toss row stores its delta at the cumulative average price
+            # (toss_execution_ledger); without the bookkeeping only a
+            # single-row order is provable (its delta is the whole order).
+            if len(rows) != 1:
+                return None
             qty = sum((r.filled_qty for r in rows), Decimal(0))
             notional = sum((r.filled_qty * r.filled_price for r in rows), Decimal(0))
             price = notional / qty if qty else Decimal(0)

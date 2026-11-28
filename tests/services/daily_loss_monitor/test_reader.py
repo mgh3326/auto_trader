@@ -256,3 +256,27 @@ async def test_symbols_are_normalized() -> None:
         account="upbit_live",
     )
     assert set(crypto.net_quantity) == {"KRW-BTC"}
+
+
+@pytest.mark.asyncio
+async def test_multi_row_toss_order_without_bookkeeping_is_unproven() -> None:
+    rows = [
+        row(
+            broker="toss",
+            broker_order_id="T2",
+            fill_seq=1,
+            filled_at=DAY + timedelta(hours=1),
+        ),
+        row(
+            broker="toss",
+            broker_order_id="T2",
+            fill_seq=2,
+            filled_qty=Decimal("10"),
+            filled_price=Decimal("750"),
+            filled_at=DAY + timedelta(hours=2),
+        ),
+    ]
+    fills = await load(rows, account="toss_live_kr")
+    assert "order_evidence_unproven" in fills.reasons
+    single = await load(rows[:1], account="toss_live_kr")
+    assert "order_evidence_unproven" not in single.reasons
