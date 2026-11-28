@@ -20,6 +20,10 @@ hk 7005(`508cbee55`)가 `plan` 을 더했다.
 **정정 (hk 7091, 2026-11-28)**: PR #2701 리뷰에서 미룬 지적 2건(§3.3 결측 규칙, §4.2 `published_date`)을
 `auto_trader@0b05c53b8` 코드와 대조해 고쳤고, 고친 곳에는 `(hk 7091)` 을 달았다.
 
+**정정 (hk 7093, 2026-11-28)**: PR #2704 리뷰에서 미룬 지적 2건(§3.3 증명된 0건의 적용 시점, 범위 한정 수집 `sec`)을
+`auto_trader@10ac1ef7c` 코드와 대조해 고쳤고, 고친 곳에는 `(hk 7093)` 을 달았다. 두 규칙의 reader 구현은 이 정정과
+같은 PR(hk 7097)에 있으며, 인용한 줄 번호는 그 변경 전 커밋 `10ac1ef7c` 기준이다.
+
 ## 0. 결론 요약
 
 |#|결론|
@@ -355,6 +359,7 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
   **(hk 7091)** 증명되지 않은 0건은 휴장일·주말의 행이라도 `latest_collected` 를 전진시키지 않는다.
 - `gaps[]`: 최근 N일 안에서 `failed`/`pending`/행 자체 없음(`not_yet_run`)/증명되지 않은 `succeeded`+0
   (`unproven_zero`)을 닫힌 사유로 나열. **(hk 7091)** 증명된 0건만 gap 에서 뺀다(`no_notice`, §2.4 zero 규칙).
+  **(hk 7093)** 범위 한정 수집 원천의 `pending` 행은 예외로 나열하지 않는다(아래 "범위 한정 수집").
 - 기대 여부는 `expected_sources.expected_sources_for_date`(세션 달력) 재사용 — 휴장일·주말은 결측이 아니다.
 - **증명된 0건 (hk 7091)**: 파티션 행에는 완전성 증거 열이 없다
   (`auto_trader@0b05c53b8 app/models/market_events.py:337-353`). reader 는 §2.4 zero 규칙(완전한 목록, 선언된
@@ -366,6 +371,34 @@ Factortrail 이 보는 `collection` 블록은 새 계산이 아니라 `market_ev
   `succeeded` 를 쓸 수 있다. DART 도 파싱 불가 행을 건너뛴 채 확정 비세션일에 `succeeded`+0 을 쓸 수 있어
   (`auto_trader@0b05c53b8 app/services/market_events/ingestion.py:420-427`, `:465-467`, `:492`) 목록에 넣지 않는다 —
   비세션일은 기대일이 아니므로 gap 은 늘지 않는다. 수집기는 위 규칙을 지키고 테스트로 고정한 뒤 목록에 더한다.
+- **증명된 0건의 적용 시점 (hk 7093)**: 목록의 각 항목은 원천 이름과 **적용 시점(cutover)** 의 쌍이다. cutover 는
+  규칙을 지키는 수집기가 배포돼 돌기 시작한 시각이다. `succeeded`+0 행은 그 원천이 목록에 있고
+  `finished_at >= cutover` 일 때만 증명된 0건이고, 그 밖(그보다 이른 행, `finished_at` 이 NULL 인 행, 목록 밖
+  원천)은 `unproven_zero` 이며 `latest_collected` 를 전진시키지 않는다. 원천 이름만으로 정하면 옛 코드가 전 행을
+  건너뛰고 쓴 과거 0건까지 증명된 것이 되고, 그 행은 기본 실행으로 다시 쓰이지 않는다 — Finnhub 범위 경로
+  (`auto_trader@10ac1ef7c app/services/market_events/ingestion.py:178-193`)와 Benzinga 캘린더
+  (`auto_trader@10ac1ef7c app/services/benzinga_calendars/ingestion.py:105`, `:123-125`)의 기본값이
+  `skip_succeeded=True` 다. 행 단위 증거 열은 만들지 않았다(마이그레이션 없음).
+- **cutover 의 전제 (hk 7093)**: `finished_at` 은 완전성 증거가 아니라 마지막으로 `succeeded` 를 **쓴** 시각이다
+  (`auto_trader@10ac1ef7c app/services/market_events/repository.py:695-705`). 이미 `succeeded` 인 날을 범위 한정
+  실행이 복원하면 원천을 다시 완전하게 읽지 않고도 `finished_at` 이 새로 찍힌다 — Benzinga `--symbols` 강제 재조회
+  (`auto_trader@10ac1ef7c app/services/benzinga_calendars/ingestion.py:199-214`)와 SEC 복원
+  (`auto_trader@10ac1ef7c app/services/market_events/sec_edgar.py:910-917`). 그런 경로가 있는 원천은 복원이 원래
+  `finished_at` 을 보존하게 고친 뒤에만 목록에 더한다. 준수하지 않는 이전 수집기로 롤백하면 그 항목을 빼거나
+  cutover 를 다시 준수 수집기를 배포한 시각으로 옮긴다.
+- **범위 한정 수집 — `sec` (hk 7093)**: SEC 실행은 모두 symbol/CIK 범위라 정상 실행도 그날 파티션을 `pending` 으로
+  남기고 새 `succeeded` 를 쓰지 않는다
+  (`auto_trader@10ac1ef7c app/services/market_events/sec_edgar.py:789-796`, `:896-944`). coverage 서비스도 지난
+  `sec` `pending` 행을 정체로 세지 않는다
+  (`auto_trader@10ac1ef7c app/services/invest_coverage_service.py:109-113`). reader 규칙:
+  - `sec` 의 `latest_collected` 가 `null` 이면(이 수집기에서는 늘 그렇다) `unknowns` 사유는 `missing_data` 가 아니라
+    닫힌 값 `scoped_collection` 이다. 실행 여부와 무관하며 "공시가 없었다"는 뜻이 아니다. 증명된 `succeeded` 행이
+    있으면 다른 원천처럼 그 날짜를 낸다. 파티션 읽기가 실패하면 이 사유 대신 `collection` 의 읽기 실패 사유만 낸다.
+  - `sec` 의 `pending` 행은 `gaps[]` 에 **내지 않는다** — 내면 모든 실행일이 영구 gap 이 된다. 중간에 죽은 실행도
+    `pending` 으로 남아 구별되지 않지만, 어느 경우에도 그 날의 완료를 주장하지 않는다. `failed`(닫힌 실패 코드),
+    `running`·`partial`, `unproven_zero` 행은 그대로 낸다. `sec` 는 기대 원천이 아니므로
+    (`auto_trader@10ac1ef7c app/services/market_events/expected_sources.py:33-38`) 행 부재도 gap 이 아니다.
+  - 이 규칙은 `sec` 에만 적용한다. Benzinga 의 symbol 필수 카테고리 `pending` 행은 지금처럼 gap 으로 남는다.
 - **파티션을 쓰지 않는 원천 (hk 7091)**: 행 부재를 `not_yet_run` 으로 세지 않되, 결측이 없는 것처럼 두지도 않는다.
   `collection.latest_collected.<source>` 는 `null` 이고 `unknowns` 에
   `{"field": "collection.latest_collected.<source>", "reason": "no_partition"}` 을 낸다. `0b05c53b8` 에서 파티션을
