@@ -1248,6 +1248,7 @@ components:
       - redacted
       - no_partition
       - not_recorded
+      - scoped_collection
     Unknown:
       type: object
       additionalProperties: false
@@ -3358,7 +3359,8 @@ components:
         succeeded with at least one stored event (a zero that is not proven
         complete does not advance it). null means no such partition is recorded,
         never that nothing happened; the collection.latest_collected.<source>
-        unknown says why (no_partition when the source writes none).
+        unknown says why (no_partition when the source writes none,
+        scoped_collection when its runs cover only requested symbols).
       type: object
       additionalProperties: false
       properties:
@@ -3380,9 +3382,10 @@ components:
         pending, running, partial, unproven_zero (succeeded with zero events
         and no completeness proof), failed or the writer's closed failure code.
         dart days are listed only on XKRX sessions; for the other sources a
-        missing partition is not listed. gaps is null when the partition read
-        failed; when more than 200 gaps exist the newest 200 are returned and
-        gaps_truncated is true.
+        missing partition is not listed. A pending sec partition is not listed:
+        its runs are symbol-scoped and stay pending. gaps is null when the
+        partition read failed; when more than 200 gaps exist the newest 200 are
+        returned and gaps_truncated is true.
       type: object
       additionalProperties: false
       required:
