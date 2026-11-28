@@ -65,6 +65,7 @@ def _inputs(**kw) -> DecisionInputs:
         "budget_remaining_quantity": Decimal("100"),
         "budget_remaining_notional_krw": Decimal("100000000"),
         "amend_target_quantity": None,
+        "amend_target_notional_krw": None,
         "halt_suspect": False,
         "trading_flag_blocked": False,
         "price_kind": "last_trade",
@@ -278,24 +279,23 @@ def test_one_share_exception_is_shares_only(qty, price, arming, expected):
     assert _code(inputs) is expected
 
 
-AMOUNT_CASES = [
-    ("within", "2000000", "100000000", None),
-    ("over_cap", "2000001", "100000000", R.ORDER_CAP_EXCEEDED),
-    ("over_budget", "1500000", "1000000", R.BUDGET_EXCEEDED),
-    ("budget_unknown", "1500000", None, R.BUDGET_UNVERIFIED),
-]
-
-
-@pytest.mark.parametrize(("case", "amount", "budget", "expected"), AMOUNT_CASES)
-def test_toss_amount_buy_uses_notional_budget(case, amount, budget, expected):
+@pytest.mark.parametrize(
+    ("account", "sess", "fx"),
+    [
+        ("toss_live", S.KRX_REGULAR, None),
+        ("toss_live", S.US_REGULAR, Decimal("1400")),
+    ],
+)
+def test_toss_amount_buy_not_accepted(account, sess, fx):
+    # The broker picks the quantity, so the intent quantity cap is unprovable.
     inputs = _inputs(
-        account="toss_live",
-        session=S.KRX_REGULAR,
-        child=_child(quantity=None, amount=Decimal(amount)),
-        budget_remaining_quantity=None,
-        budget_remaining_notional_krw=None if budget is None else Decimal(budget),
+        account=account,
+        session=sess,
+        fx_krw_per_unit=fx,
+        child=_child(quantity=None, amount=Decimal("50000")),
+        budget_remaining_quantity=Decimal("0"),
     )
-    assert _code(inputs) is expected, case
+    assert _code(inputs) is R.ORDER_FORM_NOT_ACCEPTED
 
 
 @pytest.mark.parametrize(
@@ -338,6 +338,7 @@ def test_amend_does_not_count_as_new_working_order():
             child=_child(kind="amend"),
             working_orders=4,
             amend_target_quantity=Decimal("10"),
+            amend_target_notional_krw=Decimal("100000"),
         )
     ).allowed
 
@@ -530,7 +531,7 @@ def test_toss_us_pre_post_require_session_allowlist(sess, allowed):
     assert _code(inputs) is R.CELL_UNSUPPORTED
 
 
-def test_toss_us_regular_allows_fraction_and_amount():
+def test_toss_us_regular_allows_fraction_not_amount():
     base = {
         "account": "toss_live",
         "session": S.US_REGULAR,
@@ -545,7 +546,7 @@ def test_toss_us_regular_allows_fraction_and_amount():
     sell_amount = _child(side="sell", quantity=None, amount=Decimal("100"))
     assert _code(_inputs(child=sell_amount, **base)) is R.ORDER_FORM_NOT_ACCEPTED
     buy_amount = _child(quantity=None, amount=Decimal("100"))
-    assert ad.decide(_inputs(child=buy_amount, **base)).allowed
+    assert _code(_inputs(child=buy_amount, **base)) is R.ORDER_FORM_NOT_ACCEPTED
 
 
 def test_kr_nxt_qty_limit_only():
@@ -670,7 +671,9 @@ def test_amend_budget_reuses_target_reservation(qty, target, expected):
     inputs = _inputs(
         child=_child(kind="amend", quantity=Decimal(qty)),
         budget_remaining_quantity=Decimal("0"),
+        budget_remaining_notional_krw=Decimal("0"),
         amend_target_quantity=None if target is None else Decimal(target),
+        amend_target_notional_krw=Decimal("100000"),
     )
     assert _code(inputs) is expected
 
@@ -716,3 +719,58 @@ def test_policy_schema_accepts_spread_section_and_optional_absence():
     raw["autonomous_orders"]["spread_gate_bp"]["regular"] = 0
     with pytest.raises(ValueError):
         TradingPolicyDocument.model_validate(raw)
+
+
+# --- review round 2 (hk 7118) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("price", "target_krw", "remaining_krw", "expected"),
+    [
+        ("10000", "100000", "0", None),  # same notional
+        ("10400", "100000", "0", R.BUDGET_EXCEEDED),  # notional rises 4,000
+        ("10400", "100000", "4000", None),
+        ("10000", None, "0", R.BUDGET_UNVERIFIED),
+    ],
+)
+def test_amend_budget_checks_notional_increase(
+    price, target_krw, remaining_krw, expected
+):
+    inputs = _inputs(
+        child=_child(kind="amend", quantity=Decimal("10"), limit_price=Decimal(price)),
+        book=_book("10390", "10400"),
+        budget_remaining_quantity=Decimal("0"),
+        budget_remaining_notional_krw=Decimal(remaining_krw),
+        amend_target_quantity=Decimal("10"),
+        amend_target_notional_krw=None if target_krw is None else Decimal(target_krw),
+    )
+    assert _code(inputs) is expected
+
+
+@pytest.mark.parametrize(
+    ("remaining_krw", "expected"),
+    [("100000", None), ("99999", R.BUDGET_EXCEEDED), (None, R.BUDGET_UNVERIFIED)],
+)
+def test_submit_budget_checks_notional(remaining_krw, expected):
+    inputs = _inputs(
+        budget_remaining_notional_krw=None
+        if remaining_krw is None
+        else Decimal(remaining_krw)
+    )
+    assert _code(inputs) is expected
+
+
+def test_spread_extractor_reads_validated_policy_floats():
+    import yaml
+
+    from app.schemas.trading_policy import TradingPolicyDocument
+
+    raw = yaml.safe_load(Path("config/trading_policy.yaml").read_text())
+    raw["autonomous_orders"] = {
+        "spread_gate_bp": {"regular": 30, "extended": 15.0, "upbit": 20}
+    }
+    dumped = TradingPolicyDocument.model_validate(raw).model_dump()
+    assert ad.spread_limits_from_policy(dumped) == SPREADS
+    assert ad.spread_limits_from_policy(raw) == SPREADS
+    raw["autonomous_orders"]["spread_gate_bp"]["upbit"] = float("inf")
+    assert ad.spread_limits_from_policy(raw) is None

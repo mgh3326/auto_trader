@@ -157,7 +157,9 @@ _LIMIT = frozenset({"limit"})
 
 #: Design §2, live accounts only. Absent cells (KIS US pre/post — operator Q5,
 #: Toss US day market, KIS KR amount orders) are unsupported. NXT/after are LH
-#: cells (Q4). Market orders are not accepted in any cell: no broker request
+#: cells (Q4). Toss ``orderAmount`` orders are not accepted in any cell: the
+#: broker chooses the quantity, so neither the intent quantity cap nor the
+#: position bound can be proven. Market orders are not accepted in any cell: no broker request
 #: carries an enforceable price bound, so the locked cap could not hold.
 CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
     ("kis_live", SessionClass.KRX_REGULAR): CellSpec(
@@ -176,7 +178,7 @@ CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
         "USD", _LIMIT, True, False, "regular", ArmingKind.MOCK_FIRST
     ),
     ("toss_live", SessionClass.KRX_REGULAR): CellSpec(
-        "KRW", _LIMIT, True, True, "regular", ArmingKind.LIVE_HALF
+        "KRW", _LIMIT, True, False, "regular", ArmingKind.LIVE_HALF
     ),
     # Toss KR NXT: qty limit only until a live amount order is recorded.
     ("toss_live", SessionClass.NXT_PRE): CellSpec(
@@ -189,7 +191,7 @@ CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
         "KRW", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
     ),
     ("toss_live", SessionClass.US_REGULAR): CellSpec(
-        "USD", _LIMIT, False, True, "regular", ArmingKind.LIVE_HALF
+        "USD", _LIMIT, False, False, "regular", ArmingKind.LIVE_HALF
     ),
     # Toss US pre/post: limit, integer qty, no orderAmount (this rule only).
     ("toss_live", SessionClass.US_PRE): CellSpec(
@@ -263,7 +265,7 @@ def spread_limits_from_policy(policy: Mapping[str, Any] | None) -> SpreadLimits 
             if not isinstance(node, Mapping) or part not in node:
                 return None
             node = node[part]
-        if isinstance(node, bool) or not isinstance(node, (int, str, Decimal)):
+        if isinstance(node, bool) or not isinstance(node, (int, float, str, Decimal)):
             return None
         try:
             value = Decimal(str(node))
@@ -309,15 +311,20 @@ class DecisionInputs:
     confirmed_net_quantity: Decimal | None  # for sells (I8)
     #: Quantity of this account×symbol's sells still working or uncertain
     #: (journal rows without terminal evidence), including an amend's target.
+    #: Scope: the same intent lineage as ``confirmed_net_quantity`` (not the
+    #: whole account × symbol), so independent lineages do not block each other.
     working_sell_quantity: Decimal | None
     #: Approved − confirmed fills − working (I9), quantity form for qty buys.
     budget_remaining_quantity: Decimal | None
-    #: Same remainder in KRW, for a Toss amount buy (I9).
+    #: Same remainder in KRW (approved notional − fills − working), I9.
     budget_remaining_notional_krw: Decimal | None
     #: For an amend: the target order's reserved (high-water) quantity, already
     #: counted in ``working_sell_quantity`` / the budget remainder. None on an
     #: amend refuses; ignored on a submit.
     amend_target_quantity: Decimal | None
+    #: For an amend: the target's high-water notional in KRW, already counted in
+    #: ``budget_remaining_notional_krw``. None on a buy amend refuses.
+    amend_target_notional_krw: Decimal | None
     halt_suspect: bool | None
     trading_flag_blocked: bool | None
     price_kind: str | None  # "last_trade" | "mid" | "expected" | ...
@@ -588,20 +595,30 @@ def check_exit_quantity(inputs: DecisionInputs) -> AutonomousRefusal | None:
 def check_budget(
     inputs: DecisionInputs, notional_krw: Decimal | None
 ) -> AutonomousRefusal | None:
-    """I9 — a buy stays within approved − confirmed fills − working."""
-    if inputs.child.amount is not None:
-        remaining_krw = inputs.budget_remaining_notional_krw
-        if not _finite(remaining_krw) or notional_krw is None:
-            return AutonomousRefusal.BUDGET_UNVERIFIED
-        if notional_krw > remaining_krw:
-            return AutonomousRefusal.BUDGET_EXCEEDED
-        return None
+    """I9 — a buy stays within approved − confirmed fills − working, in both
+    quantity and KRW notional. An amend reuses only its target's reservation.
+    """
     remaining = inputs.budget_remaining_quantity
+    remaining_krw = inputs.budget_remaining_notional_krw
     qty = inputs.child.quantity
     add_back = _amend_add_back(inputs)
-    if not _finite(remaining) or qty is None or add_back is None:
+    if inputs.child.kind == "amend":
+        target_krw = inputs.amend_target_notional_krw
+        add_back_krw = target_krw if _finite(target_krw) and target_krw >= 0 else None
+    else:
+        add_back_krw = Decimal(0)
+    if (
+        not _finite(remaining)
+        or not _finite(remaining_krw)
+        or qty is None
+        or notional_krw is None
+        or add_back is None
+        or add_back_krw is None
+    ):
         return AutonomousRefusal.BUDGET_UNVERIFIED
     if qty - add_back > remaining:
+        return AutonomousRefusal.BUDGET_EXCEEDED
+    if notional_krw - add_back_krw > remaining_krw:
         return AutonomousRefusal.BUDGET_EXCEEDED
     return None
 
