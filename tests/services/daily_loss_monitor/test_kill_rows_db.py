@@ -57,8 +57,8 @@ async def test_writer_freezes_active_and_never_unfreezes(db_session) -> None:
         # A second run leaves the frozen row alone.
         assert not await freeze_if_active(db_session, account=account, reason="loss")
         # The DB refuses a system writer that unfreezes.
-        async with db_session.begin_nested():
-            with pytest.raises(sa.exc.DBAPIError):
+        with pytest.raises(sa.exc.DBAPIError):
+            async with db_session.begin_nested():
                 await db_session.execute(
                     sa.text(
                         "UPDATE review.execution_account_control SET mode = 'ACTIVE', "
@@ -66,6 +66,8 @@ async def test_writer_freezes_active_and_never_unfreezes(db_session) -> None:
                     ),
                     {"a": account},
                 )
+        # The savepoint rolled back; the row is still frozen.
+        assert await _mode(db_session, account) == "DAILY_LOSS_FREEZE"
     finally:
         await db_session.rollback()
     assert await _mode(db_session, account) == before
