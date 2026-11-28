@@ -6,7 +6,8 @@ hk 6410 retro reader). The block is a projection of the stored
 computation, no collector call, no write.
 
 * ``latest_collected`` — per source, the newest ``succeeded`` partition date
-  that stored events (or came from a source with a proven complete zero).
+  that stored events (or whose zero is proven: the source is in
+  :data:`PROVEN_ZERO_CUTOVERS` and the row finished at or after its cutover).
 * ``gaps`` — closed reasons only; a stored ``last_error`` message is never
   returned.
 * A day is *expected* only for the ``(source, category, market)`` triples of
@@ -14,16 +15,23 @@ computation, no collector call, no write.
   sessions: a weekend or holiday is not a gap, and a day the calendar cannot
   classify is ``calendar_unknown``, never silently closed.
 * A source with no partition writer answers ``null`` plus ``no_partition``.
+* A scoped source (:data:`SCOPED_SOURCES`) covers only requested symbols per
+  run: its ``pending`` row is no gap and its null day is ``scoped_collection``
+  (hk 7093).
+
+Callers pass ``cutovers``/``scoped`` explicitly so the retro reader's own
+constants (and their tests) stay the place a change takes effect there.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from datetime import date, timedelta
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_events import MarketEventIngestionPartition
@@ -37,8 +45,15 @@ _CATEGORY_TOKEN_MAX: Final = 64
 _CATEGORY_RE: Final = re.compile(r"^[A-Za-z0-9_.:\-]+$")
 
 #: Closed list of sources whose ``succeeded`` + 0 events proves a complete empty
-#: list. No collector proves it yet (design 6400 §3.3, hk 7091).
-PROVEN_ZERO_SOURCES: Final[frozenset[str]] = frozenset()
+#: list, each with the instant its compliant collector went live. Only a row
+#: finished at or after that instant counts: an older zero may come from a writer
+#: that skipped unparseable rows. No collector proves a zero yet (design 6400
+#: §3.3, hk 7091, hk 7093).
+PROVEN_ZERO_CUTOVERS: Final[Mapping[str, datetime]] = MappingProxyType({})
+#: Sources whose every run covers only a requested subset (sec: symbols or CIKs):
+#: a clean run leaves its day ``pending`` for good, so that is not a gap and no
+#: day is claimed complete (design 6400 §3.3, hk 7093).
+SCOPED_SOURCES: Final = frozenset({"sec"})
 #: Closed failure codes a v2 writer stores in ``last_error``; a copy of
 #: ``market_events.repository.CollectionFailure`` (a writer module this read
 #: module must not import), pinned by a test.
@@ -74,12 +89,28 @@ def expected_days(names: Sequence[str]) -> dict[str, tuple[str, str]]:
     }
 
 
-def partition_gap(row: Any) -> str | None:
-    """The closed gap reason of one stored partition, or ``None`` when covered."""
+def _proven_zero(row: Any, cutovers: Mapping[str, datetime]) -> bool:
+    cutover = cutovers.get(row.source)
+    return (
+        cutover is not None
+        and row.finished_at is not None
+        and row.finished_at >= cutover
+    )
+
+
+def partition_gap(
+    row: Any,
+    *,
+    cutovers: Mapping[str, datetime],
+    scoped: frozenset[str],
+) -> str | None:
+    """The closed gap reason of one stored partition, or ``None`` for no gap."""
     if row.status == "succeeded":
-        if row.event_count > 0 or row.source in PROVEN_ZERO_SOURCES:
+        if row.event_count > 0 or _proven_zero(row, cutovers):
             return None
         return "unproven_zero"
+    if row.status == "pending" and row.source in scoped:
+        return None
     if row.status in {"pending", "running", "partial"}:
         return row.status
     return row.last_error if row.last_error in FAILURE_CODES else "failed"
@@ -98,13 +129,16 @@ def collection_gaps(
     start: date,
     end: date,
     today: date,
+    *,
+    cutovers: Mapping[str, datetime] = PROVEN_ZERO_CUTOVERS,
+    scoped: frozenset[str] = SCOPED_SOURCES,
 ) -> list[dict[str, str]]:
     """Closed-reason gaps of the window from the stored partition rows.
 
     An expected source's day counts only when its exchange is open (or the
     calendar cannot say), and such a day without a partition is a gap up to
     ``today``. No other source is expected on any day, so only its stored rows
-    are judged.
+    are judged; a scoped source's ``pending`` row is no gap.
     """
     expected = expected_days(names)
     gaps: list[tuple[str, str, date, str]] = []
@@ -117,7 +151,7 @@ def collection_gaps(
             collected.add((row.source, row.partition_date))
             if trading_session_status(calendar, row.partition_date) == "closed":
                 continue
-        reason = partition_gap(row)
+        reason = partition_gap(row, cutovers=cutovers, scoped=scoped)
         if reason is not None:
             gaps.append((row.source, row.category, row.partition_date, reason))
     for source, (category, calendar) in expected.items():
@@ -148,6 +182,8 @@ def partition_statements(
     start: date,
     end: date,
     limit: int,
+    *,
+    cutovers: Mapping[str, datetime] = PROVEN_ZERO_CUTOVERS,
 ) -> tuple[Select[Any], Select[Any]]:
     """``(window rows, newest collected date per source)`` — SELECTs only."""
     p = MarketEventIngestionPartition
@@ -160,17 +196,22 @@ def partition_statements(
             p.status,
             p.event_count,
             p.last_error,
+            p.finished_at,
         )
         .where(*scope, p.partition_date >= start, p.partition_date <= end)
         .order_by(p.partition_date, p.source, p.category)
         .limit(limit)
     )
+    proven_zeros = [
+        and_(p.source == name, p.finished_at >= cutover)
+        for name, cutover in sorted(cutovers.items())
+    ]
     newest = (
         select(p.source, func.max(p.partition_date).label("latest"))
         .where(
             *scope,
             p.status == "succeeded",
-            or_(p.event_count > 0, p.source.in_(sorted(PROVEN_ZERO_SOURCES))),
+            or_(p.event_count > 0, *proven_zeros),
         )
         .group_by(p.source)
         .order_by(p.source)
@@ -187,6 +228,8 @@ def project_collection(
     end: date,
     today: date,
     ok: bool,
+    cutovers: Mapping[str, datetime] = PROVEN_ZERO_CUTOVERS,
+    scoped: frozenset[str] = SCOPED_SOURCES,
 ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     """The collection block plus its ``(field, reason)`` unknowns.
 
@@ -203,8 +246,15 @@ def project_collection(
         if name not in PARTITIONED_SOURCES:
             unknowns.append((field, "no_partition"))
         elif day is None and ok:
-            unknowns.append((field, "missing_data"))
-    gaps = collection_gaps(partitions, names, start, end, today) if ok else None
+            reason = "scoped_collection" if name in scoped else "missing_data"
+            unknowns.append((field, reason))
+    gaps = (
+        collection_gaps(
+            partitions, names, start, end, today, cutovers=cutovers, scoped=scoped
+        )
+        if ok
+        else None
+    )
     truncated = gaps is not None and len(gaps) > MAX_GAPS
     block = {
         "basis": "current_partitions",
@@ -233,7 +283,9 @@ async def read_collection(
     if start > end:
         raise ValueError("start must be <= end")
     names = COLLECTOR_SOURCES_BY_MARKET[market]
-    window, newest = partition_statements(market, names, start, end, row_limit)
+    window, newest = partition_statements(
+        market, names, start, end, row_limit, cutovers=PROVEN_ZERO_CUTOVERS
+    )
     partitions = list((await session.execute(window)).all())
     latest = list((await session.execute(newest)).all())
     ok = len(partitions) < row_limit
@@ -245,6 +297,7 @@ async def read_collection(
         end=end,
         today=today,
         ok=ok,
+        cutovers=PROVEN_ZERO_CUTOVERS,
     )
     if not ok:
         unknowns.append(("collection", "incomplete_evidence"))

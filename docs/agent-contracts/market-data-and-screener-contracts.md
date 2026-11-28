@@ -417,7 +417,8 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 **수집 범위·결측 사유 읽기** `app/services/market_events/collection.py` — 설계 §3.3 투영의 단일 정본이며 retro/v1
 `retro_symbol_events` 의 `collection` 블록이 같은 함수를 쓴다(응답 불변). 기대일은 `expected_sources.EXPECTED_SOURCES`
 의 `(source, category, market)` 와 그 시장 거래소 달력으로만 정한다(휴장·주말은 결측이 아니고, 분류 불가 날짜는
-`calendar_unknown`). 운영자 읽기는 `request_market_event_backfill.py --show-collection --market kr|us|crypto
+`calendar_unknown`). 증명된 0건의 cutover 와 범위 한정 원천(`sec` 의 `pending` 은 gap 아님, `scoped_collection`)
+규칙(hk 7093)도 이 함수에 있고, retro 는 자기 모듈의 상수를 인자로 넘긴다. 운영자 읽기는 `request_market_event_backfill.py --show-collection --market kr|us|crypto
 --from-date … --to-date …`(`REPEATABLE READ READ ONLY`, 8초 timeout)이며 KR=`dart`·`naver_disclosure`, US=`finnhub`·`sec`·
 `benzinga`, crypto=`upbit_notice`·`bithumb_notice` 를 본다. 읽기 실패·상한 초과는 `null` 이며 빈 gap 목록이 아니다.
 

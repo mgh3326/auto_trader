@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,6 +30,7 @@ def partition(day: date, status: str, **over: Any) -> SimpleNamespace:
         "status": status,
         "event_count": 0,
         "last_error": None,
+        "finished_at": None,
     }
     row.update(over)
     return SimpleNamespace(**row)
@@ -95,7 +96,8 @@ def test_the_wrong_category_never_covers_an_expected_day() -> None:
 
 def test_failure_codes_match_the_writer() -> None:
     assert mc.FAILURE_CODES == {code.value for code in CollectionFailure}
-    assert mc.PROVEN_ZERO_SOURCES == frozenset()
+    assert dict(mc.PROVEN_ZERO_CUTOVERS) == {}
+    assert mc.SCOPED_SOURCES <= mc.PARTITIONED_SOURCES
 
 
 class _Result:
@@ -135,7 +137,7 @@ async def test_the_operator_read_covers_every_collector_and_marks_unknowns() -> 
         ("finnhub", "unproven_zero")
     ]
     assert {(u["field"], u["reason"]) for u in block["unknowns"]} == {
-        ("collection.latest_collected.sec", "missing_data"),
+        ("collection.latest_collected.sec", "scoped_collection"),
         ("collection.latest_collected.benzinga", "missing_data"),
     }
     assert all(s.lstrip().startswith("SELECT") for s in session.statements)
@@ -199,3 +201,37 @@ async def test_bad_requests_run_no_statement(kwargs: dict, message: str) -> None
     with pytest.raises(ValueError, match=message):
         await mc.read_collection(session, today=FRIDAY, **kwargs)
     assert session.statements == []
+
+
+@pytest.mark.asyncio
+async def test_the_operator_read_applies_the_scoped_and_cutover_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cutover = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    monkeypatch.setattr(mc, "PROVEN_ZERO_CUTOVERS", {"benzinga": cutover})
+    rows = [
+        partition(FRIDAY, "pending", source="sec"),
+        partition(
+            FRIDAY,
+            "succeeded",
+            source="benzinga",
+            category="split",
+            finished_at=cutover,
+        ),
+        partition(
+            FRIDAY,
+            "succeeded",
+            source="benzinga",
+            category="guidance",
+            finished_at=cutover - timedelta(seconds=1),
+        ),
+    ]
+    session = _Session(rows, [])
+    block = await mc.read_collection(
+        session, market="us", start=FRIDAY, end=FRIDAY, today=FRIDAY
+    )
+    assert [(g["source"], g["category"], g["reason"]) for g in block["gaps"]] == [
+        ("benzinga", "guidance", "unproven_zero"),
+        ("finnhub", "earnings", "not_yet_run"),
+    ]
+    assert "finished_at >=" in session.statements[1]
