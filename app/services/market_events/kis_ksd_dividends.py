@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -65,6 +66,9 @@ class KSDEventSpec:
     date_fields: tuple[str, ...] = ()
     value_fields: tuple[tuple[str, str], ...] = ()
     identity_fields: tuple[str, ...] = ()
+    # The primary date is an observed "YYYY/MM/DD ~ YYYY/MM/DD" deposit range.
+    # Its start is the event date and its end is kept in value_details.
+    date_is_range: bool = False
 
 
 KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
@@ -162,6 +166,7 @@ KSD_EVENT_SPECS: dict[str, KSDEventSpec] = {
         (),
         (("stk_qty", "shares"), ("tot_issue_qty_per_rate", "%")),
         ("depo_reason", "stk_qty", "tot_issue_qty_per_rate"),
+        date_is_range=True,
     ),
     "sharehld_meet": KSDEventSpec(
         "주주총회",
@@ -211,6 +216,21 @@ def _parse_date(value: Any, field: str, *, required: bool = True) -> date | None
         except ValueError:
             continue
     raise ValueError(f"KSD row has invalid {field} shape={_shape_mask(value)}")
+
+
+# Observed shape (2026-11-28, pi read-only capture, 20/20 rows of mand_deposit):
+# "YYYY/MM/DD ~ YYYY/MM/DD". Any other shape is not parsed.
+_DEPOSIT_RANGE_RE = re.compile(r"(\d{4}/\d{2}/\d{2}) ~ (\d{4}/\d{2}/\d{2})", re.ASCII)
+
+
+def _parse_deposit_range(value: str) -> tuple[date, date]:
+    match = _DEPOSIT_RANGE_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(f"KSD row has invalid depo_date shape={_shape_mask(value)}")
+    start, end = (datetime.strptime(part, "%Y/%m/%d").date() for part in match.groups())
+    if end < start:
+        raise ValueError("KSD row has invalid depo_date order")
+    return start, end
 
 
 def _parse_amount(value: Any) -> Decimal | None:
@@ -349,7 +369,11 @@ def normalize_ksd_event_row(
         raise KSDUnscheduledRowError(
             kind, spec.date_field, UNSCHEDULED_BLANK_DATE_REASON[kind]
         )
-    event_date = _parse_date(raw_event_date, spec.date_field)
+    deposit_end: date | None = None
+    if spec.date_is_range and isinstance(raw_event_date, str) and "~" in raw_event_date:
+        event_date, deposit_end = _parse_deposit_range(raw_event_date)
+    else:
+        event_date = _parse_date(raw_event_date, spec.date_field)
     assert event_date is not None
     raw_symbol = str(row.get("sht_cd") or "").strip()
     if len(raw_symbol) != 6 or not raw_symbol.isascii() or not raw_symbol.isalnum():
@@ -364,6 +388,19 @@ def normalize_ksd_event_row(
 
     values: list[dict[str, Any]] = []
     raw_payload = dict(row)
+    if deposit_end is not None:
+        values.append(
+            {
+                "metric_name": spec.date_field,
+                "value_details": {
+                    "source_field": spec.date_field,
+                    "date_or_range": f"{event_date.isoformat()} ~ {deposit_end.isoformat()}",
+                    "deposit_start": event_date.isoformat(),
+                    "deposit_end": deposit_end.isoformat(),
+                },
+            }
+        )
+        raw_payload["deposit_end"] = deposit_end.isoformat()
     for field in spec.date_fields:
         raw_value = row.get(field)
         if raw_value is None or raw_value == "":
