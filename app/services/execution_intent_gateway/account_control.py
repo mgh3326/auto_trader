@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_mandates import (
     ACCOUNT_CONTROL_MODES,
+    DAILY_LOSS_FREEZE_MODE,
     ExecutionAccountControl,
 )
 from app.services.kis_mock_runner.control import (
@@ -67,6 +68,15 @@ class PostgresAccountControlStore:
         if values is None:
             raise KillSwitchReadError("account control row is missing")
         raw_mode, reason, updated_by, updated_at = values
+        if raw_mode == DAILY_LOSS_FREEZE_MODE:
+            # hk 7119: the daily-loss freeze blocks like GLOBAL_FREEZE; the
+            # stored reason keeps the cause visible.
+            return KillSwitchState(
+                mode=KillMode.GLOBAL_FREEZE,
+                reason=f"{DAILY_LOSS_FREEZE_MODE}: {reason}",
+                updated_by=updated_by,
+                updated_at=updated_at,
+            )
         try:
             mode = KillMode(raw_mode)
         except ValueError as exc:

@@ -247,6 +247,20 @@ def test_the_card_shape_is_checked_at_commit_and_on_a_later_rung() -> None:
     assert "FOR EACH ROW WHEN (NEW.exit_handoff_id IS NOT NULL)" in guards
 
 
+def _hk7119_ddl() -> str:
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "alembic/versions/20261128_hk7119_daily_loss_freeze.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk7119_mig", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return "\n".join(module.UPGRADE_DDL)
+
+
 @pytest.mark.parametrize(
     "model",
     [
@@ -269,9 +283,11 @@ def test_new_table_ddl_matches_the_model(model: type) -> None:
         assert f" {column.name} " in block, column.name
     checks = [c for c in table.constraints if isinstance(c, sa.CheckConstraint)]
     assert checks
+    later = _hk7119_ddl() if table.name == "execution_account_control" else ""
     for check in checks:
         assert f"CONSTRAINT {check.name}" in block, check.name
-        assert f"CHECK ({check.sqltext})" in block, str(check.sqltext)
+        # hk 7119 swaps the account and mode CHECKs of the kill row.
+        assert f"CHECK ({check.sqltext})" in block + later, str(check.sqltext)
     foreign_keys = [
         c for c in table.constraints if isinstance(c, sa.ForeignKeyConstraint)
     ]

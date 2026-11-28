@@ -212,7 +212,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # COLUMN IF NOT EXISTS for a persistent test DB), the v3 CHECK swaps, and the
 # journal guard that admits not_sent for v3, loaded from the production
 # migration 20261127_hk6991_intent_v3. It must run after the hk 5441 guard.
-SCHEMA_BOOTSTRAP_VERSION = 81
+# v82 (hk 7119): review.execution_account_control gains four accounts seeded
+# GLOBAL_FREEZE, the DAILY_LOSS_FREEZE mode and the system-writer UPDATE guard,
+# loaded from the production migration 20261128_hk7119_loss_freeze.
+SCHEMA_BOOTSTRAP_VERSION = 82
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -3093,6 +3096,25 @@ def _hk6409_backfill_ddl() -> tuple[str, ...]:
 
 
 _DDL_STATEMENTS = _DDL_STATEMENTS + _hk6409_backfill_ddl()
+
+
+def _hk7119_loss_freeze_ddl() -> tuple[str, ...]:
+    """hk 7119 kill-row DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261128_hk7119_daily_loss_freeze.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk7119_loss_freeze_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.UPGRADE_DDL
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _hk7119_loss_freeze_ddl()
 
 
 def schema_content_hash() -> str:
