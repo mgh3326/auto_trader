@@ -53,10 +53,31 @@ def test_kr_windows_include_nxt_and_after_market(at, basis) -> None:
     assert mark_plan(KR, at, _kr_bounds)[0] == basis
 
 
+def test_us_post_market_runs_to_20_et_on_an_early_close() -> None:
+    def early(market, day):  # 13:00 ET close
+        return (
+            datetime(day.year, day.month, day.day, 14, 30, tzinfo=UTC),
+            datetime(day.year, day.month, day.day, 18, 0, tzinfo=UTC),
+        )
+
+    at = datetime(2026, 11, 28, 0, 30, tzinfo=UTC)  # 19:30 ET Fri 11-27
+    assert mark_plan(US, at, early) == ("fresh_quote", at)
+
+
+@pytest.mark.asyncio
+async def test_nonpositive_bar_price_is_no_mark() -> None:
+    async def bars(session, scope, symbols, until):
+        return {s: Mark(Decimal("0"), until, None) for s in symbols}
+
+    out = await marks.marks_at(bars)(None, UPBIT, ["KRW-BTC"], _kst(3))
+    assert out["KRW-BTC"] is None
+
+
 def test_kr_gap_uses_the_window_end_as_cutoff() -> None:
+    """The 15:30 cutoff includes the closing-auction bar (bar end 15:31)."""
     assert mark_plan(KR, _kst(15, 35), _kr_bounds) == (
         "segment_close",
-        datetime(2026, 11, 27, 6, 30, tzinfo=UTC),
+        datetime(2026, 11, 27, 6, 31, tzinfo=UTC),
     )
 
 

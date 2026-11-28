@@ -350,3 +350,29 @@ def test_input_reasons_make_the_day_unmeasured() -> None:
         input_reasons=("reconcile_unproven",),
     )
     assert result.reasons == ("reconcile_unproven",) and should_freeze(result)
+
+
+def test_nonpositive_marks_are_unavailable() -> None:
+    for reference, quote, reason in (
+        (mark("0"), mark("1"), "reference_price_unavailable"),
+        (mark("1"), mark("0"), "quote_unavailable"),
+    ):
+        result = compute_daily_pnl(
+            currency="KRW",
+            history=[fill("buy", "1", "1", at=YESTERDAY)],
+            today=[],
+            reference={"005930": reference},
+            quotes={"005930": quote},
+            now=NOW,
+        )
+        assert result.reasons == (reason,)
+
+
+def test_cli_bar_queries_require_volume_and_overlay_the_auction() -> None:
+    from scripts.daily_loss_monitor import _BAR_SQL
+
+    assert "kr_auction_minute_revisions" in _BAR_SQL["equity_kr"]
+    assert "COALESCE(r.close, b.close)" in _BAR_SQL["equity_kr"]
+    assert "COALESCE(r.volume, b.volume) > 0" in _BAR_SQL["equity_kr"]
+    assert "volume > 0" in _BAR_SQL["equity_us"]
+    assert "base_volume > 0" in _BAR_SQL["crypto"]

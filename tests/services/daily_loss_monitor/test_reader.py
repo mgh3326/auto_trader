@@ -36,8 +36,11 @@ def row(**kw):
         currency="KRW",
         source="reconciler",
         raw_payload_json=None,
+        updated_at=None,
     )
     base.update(kw)
+    if base["updated_at"] is None:
+        base["updated_at"] = base["filled_at"] + timedelta(minutes=30)
     return SimpleNamespace(**base)
 
 
@@ -240,7 +243,14 @@ async def test_order_time_near_midnight_is_unproven_for_us() -> None:
 @pytest.mark.asyncio
 async def test_symbols_are_normalized() -> None:
     us = await load(
-        [row(instrument_type="equity_us", currency="USD", symbol="BRK/B")],
+        [
+            row(
+                instrument_type="equity_us",
+                currency="USD",
+                symbol="BRK/B",
+                fee_currency="USD",
+            )
+        ],
         account="kis_live_us",
     )
     assert set(us.net_quantity) == {"BRK.B"}
@@ -280,3 +290,118 @@ async def test_multi_row_toss_order_without_bookkeeping_is_unproven() -> None:
     assert "order_evidence_unproven" in fills.reasons
     single = await load(rows[:1], account="toss_live_kr")
     assert "order_evidence_unproven" not in single.reasons
+
+
+@pytest.mark.asyncio
+async def test_booking_written_before_a_later_websocket_fill_does_not_cover_it() -> (
+    None
+):
+    today = DAY + timedelta(hours=1)
+    fills = await load(
+        [
+            row(
+                broker_order_id="0007",
+                filled_qty=Decimal("5"),
+                filled_at=today,
+                updated_at=today + timedelta(minutes=1),
+            ),
+            row(
+                source="websocket",
+                broker_order_id="7",
+                filled_qty=Decimal("3"),
+                fill_seq=2,
+                filled_at=today + timedelta(minutes=10),
+            ),
+        ]
+    )
+    assert fills.provisional_unreconciled
+
+
+@pytest.mark.asyncio
+async def test_upbit_trades_keep_their_own_time_and_price() -> None:
+    def trade(seq, price, at):
+        return row(
+            broker="upbit",
+            instrument_type="crypto",
+            symbol="BTC",
+            broker_order_id="u-1",
+            fill_seq=seq,
+            filled_qty=Decimal("1"),
+            filled_price=Decimal(price),
+            filled_at=at,
+        )
+
+    fills = await load(
+        [
+            trade(1, "1000000", DAY - timedelta(minutes=30)),
+            trade(2, "3000000", DAY + timedelta(minutes=30)),
+        ],
+        account="upbit_live",
+    )
+    assert [(f.quantity, f.price) for f in fills.history] == [(1, 1000000)]
+    assert [(f.quantity, f.price) for f in fills.today] == [(1, 3000000)]
+
+
+@pytest.mark.asyncio
+async def test_upbit_order_time_row_is_unproven_however_old() -> None:
+    fills = await load(
+        [
+            row(
+                broker="upbit",
+                instrument_type="crypto",
+                symbol="BTC",
+                broker_order_id="u-2",
+                fill_seq=0,
+                filled_at_basis="broker_order_time",
+                filled_at=DAY - timedelta(days=2),
+            )
+        ],
+        account="upbit_live",
+    )
+    assert "fill_day_unproven" in fills.reasons
+
+
+@pytest.mark.asyncio
+async def test_recorded_fee_without_currency_in_a_group_is_unknown() -> None:
+    fills = await load(
+        [
+            row(
+                broker="upbit",
+                instrument_type="crypto",
+                symbol="BTC",
+                broker_order_id="u-3",
+                fill_seq=1,
+                fee_currency=None,
+            ),
+            row(
+                broker="upbit",
+                instrument_type="crypto",
+                symbol="BTC",
+                broker_order_id="u-3",
+                fill_seq=2,
+                fee_basis="not_provided",
+            ),
+        ],
+        account="upbit_live",
+    )
+    assert "fee_currency_unknown" in fills.reasons
+
+
+class _WindowSession(_Session):
+    """Records the reconcile query to prove the window predicates exist."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return await super().execute(statement)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_check_requires_a_window_covering_the_day() -> None:
+    session = _WindowSession([])
+    await load_account_fills(session, ACCOUNTS["kis_live_kr"], day_start=DAY, now=NOW)
+    sql = str(session.statements[-1])
+    assert "window_start <=" in sql and "window_end >=" in sql

@@ -136,11 +136,60 @@ def _fill_time_unproven(scope: AccountScope, row: Any, day_start: datetime) -> b
     ):
         return False
     at = _aware(row.filled_at)
+    if scope.instrument_type == "crypto":
+        # Upbit orders can rest for days and the aggregate fallback row is
+        # stamped with the order creation time: no bound proves the fill day.
+        return at < day_start + _OBSERVED_LAG
     if row.filled_at_basis == "broker_order_time":
+        # US day orders live at most one US trading day.
         return day_start - _AMBIGUOUS_BEFORE <= at < day_start
     if row.filled_at_basis == "observed_at":
         return day_start <= at < day_start + _OBSERVED_LAG
     return day_start - _AMBIGUOUS_BEFORE <= at < day_start + _OBSERVED_LAG
+
+
+def _fee_evidence(rows: list[Any]) -> str | None:
+    """A closed reason when the rows' fee evidence cannot be combined."""
+    recorded = [r for r in rows if _fee(r) is not None]
+    for r in recorded:
+        if r.fee_currency is None:
+            return "fee_currency_unknown"
+        if r.fee_currency != r.currency:
+            return "fee_currency_mismatch"
+    if recorded and len(recorded) != len(rows):
+        return "order_evidence_unproven"
+    return None
+
+
+def _row_fill(scope: AccountScope, row: Any) -> Fill:
+    fee = _fee(row)
+    return Fill(
+        symbol=symbol_key(scope, row.symbol),
+        side=row.side,
+        quantity=row.filled_qty,
+        price=row.filled_price,
+        fee=fee,
+        tax=row.tax_amount,
+        fee_currency=row.fee_currency if fee is not None else row.currency,
+        currency=row.currency,
+        filled_at=_aware(row.filled_at),
+        fx_krw=None,
+    )
+
+
+def _order_fills(scope: AccountScope, rows: list[Any]) -> list[Fill] | None:
+    """The fills of one order's authoritative rows; None when not provable.
+
+    Upbit per-trade rows (``fill_seq != 0``) and other incremental rows keep
+    their own trade time and price; only cumulative and Toss chain rows fold.
+    """
+    first = rows[0]
+    if not any(_is_cumulative(r) for r in rows) and (
+        first.broker == "upbit" or first.source == "manual_import"
+    ):
+        return [_row_fill(scope, r) for r in rows if r.filled_qty > 0] or None
+    fill = _order_fill(scope, rows)
+    return None if fill is None else [fill]
 
 
 def _order_fill(scope: AccountScope, rows: list[Any]) -> Fill | None:
@@ -171,7 +220,7 @@ def _order_fill(scope: AccountScope, rows: list[Any]) -> Fill | None:
             price = notional / qty if qty else Decimal(0)
         else:
             qty, price = chain  # type: ignore[misc]
-    elif len(rows) == 1 or first.broker == "upbit":
+    elif len(rows) == 1:
         qty = sum((r.filled_qty for r in rows), Decimal(0))
         notional = sum((r.filled_qty * r.filled_price for r in rows), Decimal(0))
         price = notional / qty if qty else Decimal(0)
@@ -194,14 +243,21 @@ def _order_fill(scope: AccountScope, rows: list[Any]) -> Fill | None:
 
 
 async def _reconcile_fresh(
-    session: AsyncSession, scope: AccountScope, now: datetime
+    session: AsyncSession, scope: AccountScope, now: datetime, day_start: datetime
 ) -> bool:
+    """A recent successful run whose window covers the KST day up to near now.
+
+    A historical backfill finished just now does not count: the window must
+    start at or before the day start and end within the freshness cap.
+    """
     finished = (
         await session.execute(
             select(func.max(ExecutionLedgerReconcileRun.finished_at)).where(
                 ExecutionLedgerReconcileRun.broker == scope.broker,
                 ExecutionLedgerReconcileRun.dry_run.is_(False),
                 ExecutionLedgerReconcileRun.finished_at.is_not(None),
+                ExecutionLedgerReconcileRun.window_start <= day_start,
+                ExecutionLedgerReconcileRun.window_end >= now - RECONCILE_MAX_AGE,
             )
         )
     ).scalar_one_or_none()
@@ -235,7 +291,7 @@ async def load_account_fills(
         .all()
     )
     reasons: set[str] = set()
-    if now is not None and not await _reconcile_fresh(session, scope, now):
+    if now is not None and not await _reconcile_fresh(session, scope, now, day_start):
         reasons.add("reconcile_unproven")
 
     by_symbol: dict[str, list[Any]] = defaultdict(list)
@@ -295,18 +351,37 @@ async def load_account_fills(
             if _aware(r.filled_at) == cutover
         ]
         for order_rows in authority.values():
-            fill = _order_fill(scope, order_rows)
-            if fill is None:
+            fee_reason = _fee_evidence(order_rows)
+            if fee_reason is not None:
+                reasons.add(fee_reason)
+                continue
+            order_fills = _order_fills(scope, order_rows)
+            if order_fills is None:
                 reasons.add("order_evidence_unproven")
                 continue
-            fills.append(fill)
+            fills.extend(order_fills)
         for ident, ws_rows in provisional.items():
             booked = sum((r.filled_qty for r in authority.get(ident, [])), Decimal(0))
             if ident not in authority:
                 booked = Decimal(0)
             elif any(_is_cumulative(r) for r in authority[ident]):
                 booked = max(r.filled_qty for r in authority[ident])
-            if sum((r.filled_qty for r in ws_rows), Decimal(0)) > booked:
+            # The authoritative booking must also have been written after the
+            # last websocket fill, or a later partial could sit outside it.
+            last_ws = max(_aware(r.filled_at) for r in ws_rows)
+            written = max(
+                (
+                    _aware(r.updated_at)
+                    for r in authority.get(ident, [])
+                    if r.updated_at
+                ),
+                default=None,
+            )
+            if (
+                sum((r.filled_qty for r in ws_rows), Decimal(0)) > booked
+                or written is None
+                or written < last_ws
+            ):
                 unreconciled.add("|".join(str(part) for part in ident))
         for fill in fills:
             sign = Decimal(1) if fill.side == "buy" else Decimal(-1)

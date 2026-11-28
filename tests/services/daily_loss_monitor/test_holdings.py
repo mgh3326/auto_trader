@@ -19,14 +19,13 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class _Kis:
-    def __init__(self, kr=None, us=None):
-        self.kr, self.us = kr, us
+    def __init__(self, kr=None, us=None, complete=True):
+        self.kr, self.us, self.complete = kr, us, complete
 
-    async def fetch_my_stocks(self, is_mock=False):
-        return self.kr
-
-    async def fetch_my_us_stocks(self, is_mock=False, exchange="NASD"):
-        return self.us
+    async def fetch_my_stocks_with_completion(
+        self, is_mock=False, is_overseas=False, **kw
+    ):
+        return {"rows": self.us if is_overseas else self.kr, "complete": self.complete}
 
     async def order_korea_stock(self, *a, **k):  # must stay unreachable
         raise AssertionError("order reached")
@@ -38,7 +37,7 @@ def test_view_refuses_anything_but_the_allowed_methods() -> None:
         _ = view.order_korea_stock
     with pytest.raises(h.BrokerMethodRefusedError):
         view.x = 1
-    assert h.ALLOWED_METHODS["kis"] == {"fetch_my_stocks", "fetch_my_us_stocks"}
+    assert h.ALLOWED_METHODS["kis"] == {"fetch_my_stocks_with_completion"}
     assert h.ALLOWED_METHODS["toss"] == {"holdings", "aclose"}
 
 
@@ -55,6 +54,32 @@ async def test_kis_rows_map_to_quantities_and_partial_rows_fail() -> None:
     assert await h.kis_holdings(ACCOUNTS["kis_live_us"], kis) == {"BRK.B": Decimal(2)}
     bad = h.read_only_view("kis", _Kis(kr=[{"pdno": "005930"}]))
     assert await h.kis_holdings(ACCOUNTS["kis_live_kr"], bad) is None
+    partial = h.read_only_view(
+        "kis", _Kis(kr=[{"pdno": "005930", "hldg_qty": "10"}], complete=False)
+    )
+    assert await h.kis_holdings(ACCOUNTS["kis_live_kr"], partial) is None
+
+
+def test_upbit_accounts_are_parsed_strictly() -> None:
+    ok = [
+        {"currency": "KRW", "balance": "1", "locked": "0"},
+        {"currency": "BTC", "balance": "0.5", "locked": "0.1"},
+    ]
+    assert h.upbit_account_map(ok) == {"KRW-BTC": Decimal("0.6")}
+    for bad in (
+        [{"currency": "BTC", "balance": "0"}],
+        [{"balance": "1", "locked": "0"}],
+        ["x"],
+        {"a": 1},
+    ):
+        assert h.upbit_account_map(bad) is None
+
+
+def test_upbit_partially_executed_open_order_is_unverified() -> None:
+    assert h.upbit_open_orders_clear([{"executed_volume": "0"}])
+    assert not h.upbit_open_orders_clear([{"executed_volume": "0.1"}])
+    assert not h.upbit_open_orders_clear([{}])
+    assert not h.upbit_open_orders_clear([{"executed_volume": "0"}] * 100)
 
 
 @pytest.mark.asyncio
@@ -144,3 +169,33 @@ def test_operator_control_accepts_the_new_accounts() -> None:
             ]
         )
         assert args.account == account
+
+
+def _quote(**kw):
+    base = {
+        "default_rate": 1400.0,
+        "source": "toss",
+        "valid_from": None,
+        "valid_until": None,
+    }
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_expired_fx_quote_is_no_snapshot() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from scripts.daily_loss_monitor import fx_snapshot
+
+    now = datetime(2026, 11, 28, 1, 0, tzinfo=UTC)
+    assert fx_snapshot(_quote(valid_until=now - timedelta(seconds=1)), now) is None
+    assert fx_snapshot(_quote(valid_from=now + timedelta(seconds=1)), now) is None
+    snap = fx_snapshot(
+        _quote(
+            valid_from=now - timedelta(minutes=1),
+            valid_until=now + timedelta(minutes=1),
+        ),
+        now,
+    )
+    assert snap is not None and snap.observed_at == now - timedelta(minutes=1)
+    assert fx_snapshot(_quote(default_rate=0.0), now) is None

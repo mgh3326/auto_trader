@@ -163,7 +163,7 @@ def compute_daily_pnl(
         if qty == 0:
             continue
         mark = reference.get(symbol)
-        if mark is None:
+        if mark is None or not mark.price.is_finite() or mark.price <= 0:
             reasons.add("reference_price_unavailable")
             continue
         unit = _krw(mark.price, currency, mark.fx_krw)
@@ -226,7 +226,7 @@ def compute_daily_pnl(
         if open_qty == 0:
             continue
         quote = quotes.get(symbol)
-        if quote is None:
+        if quote is None or not quote.price.is_finite() or quote.price <= 0:
             reasons.add("quote_unavailable")
             continue
         if quote.basis not in MARK_BASES:

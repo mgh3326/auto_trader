@@ -44,15 +44,21 @@ _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 #: Newest closed 1-minute bar per symbol with bar_end in (until - 10 min, until].
 _BAR_SQL = {
+    # KRX closing-auction corrections (hk 6757) overlay the stored bar.
     "equity_kr": (
-        "SELECT DISTINCT ON (symbol) symbol, close, time_utc FROM research.kr_candles_1m "
-        "WHERE symbol = ANY(:symbols) AND venue IN ('KRX', 'NTX') "
-        "AND time_utc + interval '1 minute' <= :until AND time_utc >= :since "
-        "ORDER BY symbol, time_utc DESC, venue"
+        "SELECT DISTINCT ON (b.symbol) b.symbol, "
+        "COALESCE(r.close, b.close) AS close, b.time_utc "
+        "FROM research.kr_candles_1m b "
+        "LEFT JOIN research.kr_auction_minute_revisions r "
+        "ON r.time_utc = b.time_utc AND r.symbol = b.symbol AND r.venue = b.venue "
+        "WHERE b.symbol = ANY(:symbols) AND b.venue IN ('KRX', 'NTX') "
+        "AND COALESCE(r.volume, b.volume) > 0 "
+        "AND b.time_utc + interval '1 minute' <= :until AND b.time_utc >= :since "
+        "ORDER BY b.symbol, b.time_utc DESC, b.venue"
     ),
     "equity_us": (
         "SELECT DISTINCT ON (symbol) symbol, close, time_utc FROM research.us_candles_1m "
-        "WHERE symbol = ANY(:symbols) "
+        "WHERE symbol = ANY(:symbols) AND volume > 0 "
         "AND time_utc + interval '1 minute' <= :until AND time_utc >= :since "
         "ORDER BY symbol, time_utc DESC, venue"
     ),
@@ -61,7 +67,7 @@ _BAR_SQL = {
         "c.time AS time_utc FROM public.crypto_candles_1m c "
         "JOIN public.crypto_instruments i ON i.id = c.instrument_id "
         "WHERE i.venue = 'upbit' AND i.product = 'spot' "
-        "AND i.venue_symbol = ANY(:symbols) "
+        "AND i.venue_symbol = ANY(:symbols) AND c.base_volume > 0 "
         "AND c.time + interval '1 minute' <= :until AND c.time >= :since "
         "ORDER BY i.venue_symbol, c.time DESC"
     ),
@@ -83,12 +89,11 @@ async def bars_until(
             },
         )
     ).all()
-    found = {
-        row.symbol: Mark(
-            Decimal(str(row.close)), row.time_utc + timedelta(minutes=1), None
-        )
-        for row in rows
-    }
+    found: dict[str, Mark] = {}
+    for row in rows:
+        price = Decimal(str(row.close))
+        if price.is_finite() and price > 0:
+            found[row.symbol] = Mark(price, row.time_utc + timedelta(minutes=1), None)
     return {s: found.get(s) for s in symbols}
 
 
@@ -96,11 +101,21 @@ async def usd_krw() -> FxSnapshot | None:
     """A run-time USD/KRW snapshot (no per-fill FX is stored)."""
     from app.services.exchange_rate_service import get_usd_krw_rate_details
 
-    quote = await get_usd_krw_rate_details()
+    return fx_snapshot(await get_usd_krw_rate_details(), datetime.now(UTC))
+
+
+def fx_snapshot(quote, now: datetime) -> FxSnapshot | None:
+    """None for an expired or not-yet-valid quote or a nonpositive rate."""
+    valid_from, valid_until = quote.valid_from, quote.valid_until
+    if valid_until is not None and valid_until <= now:
+        return None
+    if valid_from is not None and valid_from > now:
+        return None
     rate = Decimal(str(quote.default_rate))
     if not rate.is_finite() or rate <= 0:
         return None
-    return FxSnapshot(rate, f"exchange_rate_service:{quote.source}", datetime.now(UTC))
+    observed = valid_from or now
+    return FxSnapshot(rate, f"exchange_rate_service:{quote.source}", observed)
 
 
 def _database_url(args: argparse.Namespace) -> str:

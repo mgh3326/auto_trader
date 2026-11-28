@@ -6,8 +6,8 @@ current mark):
 * crypto trades 24/7: a stored 1-minute bar that closed at most 10 minutes
   before ``at`` (``fresh_quote``);
 * KR / US on a trading day, inside a trading window (KR NXT pre 08:00-08:50,
-  KRX regular, NXT/KRX after 15:40-20:00 KST; US 04:00 ET to regular close +
-  4h, which covers early closes): a fresh bar at ``at`` (``fresh_quote``);
+  KRX regular, NXT/KRX after 15:40-20:00 KST; US 04:00-20:00 ET, also on
+  early-close days): a fresh bar at ``at`` (``fresh_quote``);
 * in a gap after a window ended that day: the bar that closed within 10 minutes
   of that window's end (``segment_close``);
 * before the day's first window or on a non-trading day: the last completed
@@ -84,7 +84,11 @@ def trading_windows(
             for a, b in _KR_WINDOWS
         ]
         return sorted([*extra, bounds])
-    return [(datetime.combine(day, time(4, 0), ET), bounds[1] + timedelta(hours=4))]
+    # 04:00-20:00 ET, the extended session the research bars and the session
+    # classifier use even on early-close days.
+    return [
+        (datetime.combine(day, time(4, 0), ET), datetime.combine(day, time(20, 0), ET))
+    ]
 
 
 def mark_plan(
@@ -100,7 +104,14 @@ def mark_plan(
             return "fresh_quote", at
     ended = [end for _start, end in windows if end <= at]
     if ended:
-        return "segment_close", max(ended)
+        cutoff = max(ended)
+        if scope.instrument_type == "equity_kr" and cutoff.astimezone(
+            KST
+        ).time() == time(15, 30):
+            # KIS labels the closing-auction print with a 15:30 bar start; its
+            # bar ends 15:31, so the cutoff includes it.
+            cutoff += timedelta(minutes=1)
+        return "segment_close", cutoff
     return "last_session_close", at
 
 
@@ -126,7 +137,10 @@ def marks_at(
             found = await bar_fn(session, scope, symbols, cutoff)
             found = {
                 s: None
-                if m is None or not (cutoff - QUOTE_MAX_AGE <= m.observed_at <= cutoff)
+                if m is None
+                or not m.price.is_finite()
+                or m.price <= 0
+                or not (cutoff - QUOTE_MAX_AGE <= m.observed_at <= cutoff)
                 else Mark(m.price, m.observed_at, None, basis=basis)
                 for s, m in found.items()
             }

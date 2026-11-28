@@ -18,7 +18,9 @@ from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.services.daily_loss_monitor.accounts import AccountScope
 
 ALLOWED_METHODS: Mapping[str, frozenset[str]] = {
-    "kis": frozenset({"fetch_my_stocks", "fetch_my_us_stocks"}),
+    # The same KIS balance read as fetch_my_stocks / fetch_my_us_stocks, with
+    # the pagination-completion evidence those wrappers discard.
+    "kis": frozenset({"fetch_my_stocks_with_completion"}),
     "toss": frozenset({"holdings", "aclose"}),
 }
 
@@ -69,12 +71,20 @@ def _rows_to_map(rows: Any, symbol_field: str, qty_field: str, key) -> dict | No
 
 async def kis_holdings(scope: AccountScope, kis: Any) -> dict[str, Decimal] | None:
     if scope.instrument_type == "equity_kr":
-        rows = await kis.fetch_my_stocks(is_mock=False)
-        return _rows_to_map(rows, "pdno", "hldg_qty", lambda s: s.strip().upper())
-    rows = await kis.fetch_my_us_stocks(is_mock=False, exchange="NASD")
-    return _rows_to_map(
-        rows, "ovrs_pdno", "ovrs_cblc_qty", lambda s: to_db_symbol(s.strip()).upper()
-    )
+        result = await kis.fetch_my_stocks_with_completion(is_mock=False)
+        fields = ("pdno", "hldg_qty", lambda s: s.strip().upper())
+    else:
+        result = await kis.fetch_my_stocks_with_completion(
+            is_mock=False, is_overseas=True, exchange_code="NASD", currency_code="USD"
+        )
+        fields = (
+            "ovrs_pdno",
+            "ovrs_cblc_qty",
+            lambda s: to_db_symbol(s.strip()).upper(),
+        )
+    if not isinstance(result, dict) or result.get("complete") is not True:
+        return None
+    return _rows_to_map(result.get("rows"), *fields)
 
 
 async def toss_holdings(scope: AccountScope, toss: Any) -> dict[str, Decimal] | None:
@@ -94,21 +104,55 @@ async def toss_holdings(scope: AccountScope, toss: Any) -> dict[str, Decimal] | 
     return held
 
 
-async def upbit_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
-    from app.services.upbit_wallet_status import ACCOUNTS_PATH, _authed_get
+UPBIT_OPEN_ORDERS_PATH = "/v1/orders/open"
+_UPBIT_OPEN_PAGE = 100
 
-    payload = await _authed_get(ACCOUNTS_PATH)
+
+def upbit_account_map(payload: Any) -> dict[str, Decimal] | None:
+    """Strict ``/v1/accounts`` parse: any malformed item makes it unverified."""
     if not isinstance(payload, list):
         return None
     held: dict[str, Decimal] = {}
     for item in payload:
-        if not isinstance(item, dict) or item.get("currency") in (None, "KRW"):
-            continue
-        balance, locked = _qty(item.get("balance", "0")), _qty(item.get("locked", "0"))
+        if not isinstance(item, dict):
+            return None
+        currency = item.get("currency")
+        if not isinstance(currency, str) or not currency.strip():
+            return None
+        if "balance" not in item or "locked" not in item:
+            return None
+        balance, locked = _qty(item["balance"]), _qty(item["locked"])
         if balance is None or locked is None:
             return None
-        held[to_upbit_symbol(str(item["currency"]))] = balance + locked
+        if currency.strip().upper() == "KRW":
+            continue
+        held[to_upbit_symbol(currency.strip())] = balance + locked
     return held
+
+
+def upbit_open_orders_clear(payload: Any) -> bool:
+    """True only for a complete open-order list with no partial executions.
+
+    The Upbit reconciler books only done/cancel orders, so a partially
+    executed open order is a fill the ledger cannot have yet.
+    """
+    if not isinstance(payload, list) or len(payload) >= _UPBIT_OPEN_PAGE:
+        return False
+    for order in payload:
+        if not isinstance(order, dict):
+            return False
+        executed = _qty(order.get("executed_volume"))
+        if executed is None or executed > 0:
+            return False
+    return True
+
+
+async def upbit_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
+    from app.services.upbit_wallet_status import ACCOUNTS_PATH, _authed_get
+
+    if not upbit_open_orders_clear(await _authed_get(UPBIT_OPEN_ORDERS_PATH)):
+        return None
+    return upbit_account_map(await _authed_get(ACCOUNTS_PATH))
 
 
 async def broker_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
@@ -117,9 +161,8 @@ async def broker_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
         if scope.broker == "kis":
             from app.services.brokers.kis.client import KISClient
 
-            return await kis_holdings(
-                scope, read_only_view("kis", KISClient(is_mock=False))
-            )
+            account = KISClient(is_mock=False)._account
+            return await kis_holdings(scope, read_only_view("kis", account))
         if scope.broker == "toss":
             from app.services.brokers.toss.client import TossReadClient
 
