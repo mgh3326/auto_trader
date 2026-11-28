@@ -171,6 +171,7 @@ tests/services/dots_history_export/test_export_contract.py
 tests/services/dots_history_export/test_export_real.py
 tests/services/dots_history_export/test_export_v2_db.py
 tests/services/dots_history_export/test_read_only.py
+tests/services/execution_intent_gateway/test_autonomous_decisions.py
 tests/services/execution_intent_gateway/test_followup_capability.py
 tests/services/execution_intent_gateway/test_intent_query.py
 tests/services/execution_intent_gateway/test_intent_schema.py
