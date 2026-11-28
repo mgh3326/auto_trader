@@ -617,3 +617,4 @@ tests/unit/services/daily_candles/test_yahoo_us_fallback.py
 tests/upbit_public_read_model/test_market_warnings.py
 tests/upbit_public_read_model/test_ticker_cache.py
 tests/upbit_public_read_model/test_types.py
+tests/services/market_events/test_dart_user_agent.py

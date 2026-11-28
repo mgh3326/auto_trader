@@ -55,6 +55,9 @@ _BONDS = {
     "exbdIsDecsn": ("ex_prc", "extg_stkcnt", "extg_tisstk_vs"),
 }
 _MAX_BODY = 8 * 1024 * 1024
+# OpenDART answers HTTP 302 to /error1.html for a request without a User-Agent
+# (observed 2026-11-28: same key and params, 302 without the header, 200 with it).
+USER_AGENT = "auto-trader-opendart/1.0"
 
 
 class DartDetailError(RuntimeError):
@@ -157,7 +160,12 @@ def _get_bytes(endpoint: str, params: Mapping[str, str]) -> bytes:
     connection = HTTPSConnection("opendart.fss.or.kr", timeout=15)
     try:
         connection.request(
-            "GET", f"/api/{endpoint}?" + urlencode({"crtfc_key": api_key, **params})
+            "GET",
+            f"/api/{endpoint}?" + urlencode({"crtfc_key": api_key, **params}),
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json, application/zip, */*",
+            },
         )
         response = connection.getresponse()
         if response.status != 200:
