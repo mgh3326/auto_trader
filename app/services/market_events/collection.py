@@ -39,6 +39,9 @@ from app.services.market_events.expected_sources import EXPECTED_SOURCES
 from app.services.market_events.session_calendar import trading_session_status
 
 MAX_GAPS: Final = 200
+#: Longest operator-read window, inclusive of both ends: the day-by-day scan is
+#: bounded (the retro reader bounds its own span the same way).
+MAX_READ_DAYS: Final = 366
 DEFAULT_ROW_LIMIT: Final = 5000
 _ONE_DAY: Final = timedelta(days=1)
 _CATEGORY_TOKEN_MAX: Final = 64
@@ -265,6 +268,20 @@ def project_collection(
     return block, unknowns
 
 
+def unreadable_collection(market: str, start: date, end: date) -> dict[str, Any]:
+    """The operator block when the read failed: unknown, never "no gaps"."""
+    return {
+        "basis": "current_partitions",
+        "latest_collected": dict.fromkeys(COLLECTOR_SOURCES_BY_MARKET[market]),
+        "gaps": None,
+        "gaps_truncated": False,
+        "market": market,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "unknowns": [{"field": "collection", "reason": "upstream_error"}],
+    }
+
+
 async def read_collection(
     session: AsyncSession,
     *,
@@ -276,12 +293,15 @@ async def read_collection(
 ) -> dict[str, Any]:
     """The operator read for one market. The caller owns the (read-only) transaction.
 
-    A read error propagates to the caller: it is never reported as "no gaps".
+    A read error propagates to the caller (see :func:`unreadable_collection`); it
+    is never reported as "no gaps".
     """
     if market not in COLLECTOR_SOURCES_BY_MARKET:
         raise ValueError(f"unsupported market: {market!r}")
     if start > end:
         raise ValueError("start must be <= end")
+    if (end - start).days + 1 > MAX_READ_DAYS:
+        raise ValueError(f"window must be at most {MAX_READ_DAYS} days")
     names = COLLECTOR_SOURCES_BY_MARKET[market]
     window, newest = partition_statements(
         market, names, start, end, row_limit, cutovers=PROVEN_ZERO_CUTOVERS

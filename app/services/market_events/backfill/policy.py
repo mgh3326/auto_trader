@@ -49,10 +49,44 @@ _MARKET_ZONES: Final = {
 }
 
 
+#: Every reason a request or run can be refused for. A refusal writes nothing.
+REFUSAL_CODES: Final = frozenset(
+    {
+        # source and scope
+        "source_has_no_date_window",
+        "unsupported_source",
+        "unsupported_market",
+        "unsupported_category",
+        "category_required",
+        "symbols_not_supported",
+        "symbols_required",
+        "too_many_symbols",
+        "invalid_symbol",
+        # window
+        "window_reversed",
+        "future_date",
+        "window_too_long",
+        # audit fields
+        "invalid_reason_code",
+        "invalid_reason",
+        "invalid_requested_by",
+        # quota and run state
+        "request_quota_exceeded",
+        "run_quota_exceeded",
+        "already_run",
+        "run_unresolved",
+        # the collector's own environment gate is closed
+        "producer_gate_closed",
+    }
+)
+
+
 class BackfillRefused(ValueError):
     """A closed refusal. Nothing was written and nothing was run."""
 
     def __init__(self, code: str, detail: str) -> None:
+        if code not in REFUSAL_CODES:
+            raise AssertionError(f"unlisted refusal code: {code!r}")
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail

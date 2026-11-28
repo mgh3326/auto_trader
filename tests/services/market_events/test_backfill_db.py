@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import itertools
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -38,13 +39,19 @@ MIGRATION = (
 )
 
 
+#: A random start per process, then strictly increasing: two calls in one run
+#: never share a quota day or a request window (and so never a request hash).
+_SEQUENCE = itertools.count(secrets.randbelow(100_000))
+
+
 def _quota_day() -> datetime:
     start = datetime(2100, 1, 1, 12, tzinfo=UTC)
-    return start + timedelta(days=secrets.randbelow(200_000))
+    return start + timedelta(days=next(_SEQUENCE))
 
 
 def _request(**over) -> BackfillRequest:
-    start = date(1990, 1, 1) + timedelta(days=secrets.randbelow(10_000))
+    # From year 1000: in the past of every decision clock used here.
+    start = date(1000, 1, 1) + timedelta(days=next(_SEQUENCE))
     return make_request(from_date=start, to_date=start + timedelta(days=1), **over)
 
 

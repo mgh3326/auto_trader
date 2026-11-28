@@ -50,7 +50,9 @@ from app.services.market_events.backfill.service import (
 )
 from app.services.market_events.collection import (
     COLLECTOR_SOURCES_BY_MARKET,
+    MAX_READ_DAYS,
     read_collection,
+    unreadable_collection,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,21 +185,30 @@ async def _show_collection(ns: argparse.Namespace, session_factory: Any) -> int:
     if ns.from_date > ns.to_date:
         _emit({"status": "refused", "code": "window_reversed"})
         return EXIT_REFUSED
+    if (ns.to_date - ns.from_date).days + 1 > MAX_READ_DAYS:
+        _emit({"status": "refused", "code": "window_too_long"})
+        return EXIT_REFUSED
     calendar_market = "kr" if ns.market == "crypto" else ns.market
     today = market_today(calendar_market, datetime.now(UTC))
-    async with session_factory() as session:
-        await session.execute(
-            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        )
-        await session.execute(text("SET LOCAL statement_timeout = 8000"))
-        block = await read_collection(
-            session,
-            market=ns.market,
-            start=ns.from_date,
-            end=ns.to_date,
-            today=today,
-        )
-        await session.rollback()
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            )
+            await session.execute(text("SET LOCAL statement_timeout = 8000"))
+            block = await read_collection(
+                session,
+                market=ns.market,
+                start=ns.from_date,
+                end=ns.to_date,
+                today=today,
+            )
+            await session.rollback()
+    except Exception as exc:  # noqa: BLE001 - report unknown, never "no gaps"
+        logger.error("collection read failed: %s", type(exc).__name__)
+        block = unreadable_collection(ns.market, ns.from_date, ns.to_date)
+        _emit({"status": "unknown", "collection": block})
+        return EXIT_FAILED
     _emit({"status": "ok", "collection": block})
     return EXIT_OK
 

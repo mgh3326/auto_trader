@@ -379,7 +379,9 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 `official-events-kr-0700`(DART `[어제, 오늘]` 07:00 KST)·`official-events-kr-1830`(DART `[오늘]` 18:30 KST)·
 `official-events-us`(07:30 KST, finnhub 실적 `[-7일, +60일]` + `scripts.collect_sec_edgar` — 티커는 dotenv
 `AT_OFFICIAL_EVENTS_SEC_SYMBOLS`, 비면 step 실패)·`official-events-crypto`(06:30 KST `scripts.collect_crypto_notices --commit`;
-유의 상태 스냅숏은 기존 `at-batch2-upbit-symbol-universe` 가 만들며 여기서 다시 돌리지 않는다). 겹치는 `at-batch1-dart-*`·
+유의 상태 스냅숏은 기존 `at-batch2-upbit-symbol-universe` 가 만들며 여기서 다시 돌리지 않는다). 🔴 US 의 finnhub
+step 은 `--force` 다: 없으면 한 번 `succeeded` 가 된 날(0건인 미래 날짜 포함)을 건너뛰어 뒤의 발표·실적 값이 저장되지
+않는다(창 전체를 Finnhub 한 번 호출로 읽는다). 겹치는 `at-batch1-dart-*`·
 `at-batch1-market-events-daily`·`at-crypto-notices` 사본과 함께 등록하지 않는다. 정적 검사
 `tests/scripts/test_dagu_official_events_dags.py`(실제 수집 CLI `parse_args` 로 명령 해석).
 
@@ -390,6 +392,7 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
   `scripts.collect_sec_edgar --commit`, `benzinga`(us, `--category` 하나, short_interest 는 티커 필수) →
   `scripts.ingest_benzinga_calendars --commit`. 요청 창은 그대로 CLI 인자가 되며 새 fetch·쓰기 경로는 없다.
   `--force` 는 넘기지 않으므로 이미 `succeeded` 인 finnhub·benzinga 파티션은 다시 받지 않는다.
+- **거부 사유는 닫힌 목록** `policy.REFUSAL_CODES` 이며 목록 밖 코드는 만들 수 없다.
 - 🔴 **날짜 창이 없는 수집기는 거부한다**: `naver_disclosure`·`upbit_notice`·`bithumb_notice` 는 제공자의 최신 목록을
   읽고 저장된 ID/시각에서 멈추므로 과거 창을 채울 수 없다(`source_has_no_date_window`). `company_ir` 는 수집기가 없다
   (`unsupported_source`). 창을 조용히 무시하는 요청을 만들지 마라.
@@ -420,7 +423,8 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 `calendar_unknown`). 증명된 0건의 cutover 와 범위 한정 원천(`sec` 의 `pending` 은 gap 아님, `scoped_collection`)
 규칙(hk 7093)도 이 함수에 있고, retro 는 자기 모듈의 상수를 인자로 넘긴다. 운영자 읽기는 `request_market_event_backfill.py --show-collection --market kr|us|crypto
 --from-date … --to-date …`(`REPEATABLE READ READ ONLY`, 8초 timeout)이며 KR=`dart`·`naver_disclosure`, US=`finnhub`·`sec`·
-`benzinga`, crypto=`upbit_notice`·`bithumb_notice` 를 본다. 읽기 실패·상한 초과는 `null` 이며 빈 gap 목록이 아니다.
+`benzinga`, crypto=`upbit_notice`·`bithumb_notice` 를 본다. 읽기 창은 최대 366일(양끝 포함)이며 넘으면 `window_too_long` 으로 DB 접근 전에 거부한다. 읽기 실패·상한 초과는
+`null` 이며 빈 gap 목록이 아니다(실패는 `status=unknown`, 사유 `upstream_error`, 종료 코드 1).
 
 ### Research Reports Integration (ROB-140)
 

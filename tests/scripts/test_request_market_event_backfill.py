@@ -173,6 +173,7 @@ async def test_the_real_runner_runs_python_modules_and_kills_on_timeout(
     [
         ("jp", "2026-11-01", "2026-11-02", "unsupported_market"),
         ("kr", "2026-11-02", "2026-11-01", "window_reversed"),
+        ("kr", "0001-01-01", "2026-11-01", "window_too_long"),
     ],
 )
 @pytest.mark.asyncio
@@ -217,3 +218,27 @@ async def test_show_collection_reads_in_a_read_only_transaction(
     assert "READ ONLY" in statements[0]
     assert ended == ["rollback"]
     assert lines(capsys)[0]["collection"] == {"market": "crypto"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_collection_read_reports_unknown_never_no_gaps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Session:
+        async def execute(self, _statement: Any) -> None:
+            raise TimeoutError("secret-token")
+
+    @asynccontextmanager
+    async def factory():
+        yield Session()
+
+    argv = ["--show-collection", "--market", "kr"]
+    argv += ["--from-date", "2026-11-01", "--to-date", "2026-11-02"]
+    assert await cli.run(cli.parse_args(argv), session_factory=factory) == 1
+    (line,) = lines(capsys)
+    assert line["status"] == "unknown"
+    block = line["collection"]
+    assert block["gaps"] is None
+    assert block["latest_collected"] == {"dart": None, "naver_disclosure": None}
+    assert block["unknowns"] == [{"field": "collection", "reason": "upstream_error"}]
+    assert "secret-token" not in json.dumps(line)

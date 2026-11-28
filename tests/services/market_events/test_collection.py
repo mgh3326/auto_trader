@@ -193,6 +193,14 @@ async def test_a_long_gap_list_keeps_the_newest_and_says_so() -> None:
     [
         ({"market": "jp", "start": FRIDAY, "end": FRIDAY}, "unsupported market"),
         ({"market": "kr", "start": SATURDAY, "end": FRIDAY}, "start must be"),
+        (
+            {"market": "kr", "start": date(1, 1, 1), "end": FRIDAY},
+            "at most 366 days",
+        ),
+        (
+            {"market": "kr", "start": date(2025, 11, 19), "end": FRIDAY},
+            "at most 366 days",
+        ),
     ],
 )
 @pytest.mark.asyncio

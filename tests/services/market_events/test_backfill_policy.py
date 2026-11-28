@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -202,3 +204,17 @@ def test_the_quota_day_is_the_utc_day() -> None:
     since, until = policy.utc_day_bounds(datetime(2026, 11, 20, 23, 59, tzinfo=UTC))
     assert since == datetime(2026, 11, 20, tzinfo=UTC)
     assert until == datetime(2026, 11, 21, tzinfo=UTC)
+
+
+def test_refusal_reasons_are_a_closed_vocabulary() -> None:
+    with pytest.raises(AssertionError, match="unlisted refusal code"):
+        BackfillRefused("because", "free text")
+    root = Path(__file__).resolve().parents[3]
+    sources = [
+        *(root / "app/services/market_events/backfill").glob("*.py"),
+        root / "scripts/request_market_event_backfill.py",
+    ]
+    literal = re.compile(r'(?:BackfillRefused\(\s*|"code":\s*|code=)"([a-z_]+)"')
+    used = {code for path in sources for code in literal.findall(path.read_text())}
+    assert "source_has_no_date_window" in used
+    assert used <= policy.REFUSAL_CODES
