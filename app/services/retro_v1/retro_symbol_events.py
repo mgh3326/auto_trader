@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
@@ -44,19 +44,13 @@ from app.models.market_events import (
     MarketEventRevision,
     MarketEventSource,
 )
+from app.services.market_events import collection as coverage
 from app.services.market_events.collection import (
     FAILURE_CODES as FAILURE_CODES,
 )
 from app.services.market_events.collection import (
     PARTITIONED_SOURCES,
-    partition_statements,
-    project_collection,
-)
-from app.services.market_events.collection import (
-    PROVEN_ZERO_SOURCES as PROVEN_ZERO_SOURCES,
-)
-from app.services.market_events.collection import (
-    collection_gaps as collection_gaps,
+    SCOPED_SOURCES,
 )
 from app.services.market_events.session_calendar import (
     regular_session_bounds,
@@ -136,6 +130,10 @@ _OFFICIAL_SOURCES: Final = frozenset(
 )
 #: The official sources whose collectors write ingestion partitions.
 _PARTITIONED: Final = PARTITIONED_SOURCES & _OFFICIAL_SOURCES
+#: Run-scoped sources and proven-zero cutovers; the shared projection takes the
+#: values this module holds at call time.
+_SCOPED: Final = SCOPED_SOURCES
+PROVEN_ZERO_CUTOVERS: Final[Mapping[str, datetime]] = coverage.PROVEN_ZERO_CUTOVERS
 
 _BAR_SQL: Final = {
     "kr": """
@@ -320,10 +318,7 @@ def event_body(
     assert event.first_received_at is not None
     entries = [
         _source_entry(p.source, p.source_event_id, p.source_url, p.first_received_at)
-        for p in provenance
-        if p.source in _OFFICIAL_SOURCES
-        and p.first_received_at is not None
-        and p.first_received_at <= cutoff
+        for p in _known_provenance(provenance, cutoff)
     ]
     if not entries:
         entries = [
@@ -529,6 +524,19 @@ Timed = tuple[tuple[date, datetime, int, str], Row, datetime]
 """``(sort key, row, newest stored instant behind the row)``."""
 
 
+def _known_provenance(
+    provenance: Sequence[Provenance], cutoff: datetime
+) -> list[Provenance]:
+    """The official provenance rows received by the cutoff: the ones shown."""
+    return [
+        p
+        for p in provenance
+        if p.source in _OFFICIAL_SOURCES
+        and p.first_received_at is not None
+        and p.first_received_at <= cutoff
+    ]
+
+
 async def _events(
     session: AsyncSession,
     unknowns: Unknowns,
@@ -602,9 +610,12 @@ async def _events(
     async def provenance_rows() -> list[Any]:
         return await _read_provenance(session, [e.id for e, _ in shown])
 
-    sources, _ = await guarded(
+    sources, sources_ok = await guarded(
         session, unknowns, "source.event_sources", provenance_rows, []
     )
+    if sources_ok and len(sources) >= MAX_SOURCE_ROWS:
+        unknowns.note("source.event_sources", "incomplete_evidence")
+        sources_ok = False
     provenance: dict[int, list[Provenance]] = defaultdict(list)
     for p in sources:
         provenance[p.event_id].append(
@@ -613,15 +624,25 @@ async def _events(
 
     rows: list[Timed] = []
     for event, version in shown:
-        body = event_body(
-            event, version, provenance.get(event.id, []), market, symbol, cutoff
+        entries = provenance.get(event.id, [])
+        body = event_body(event, version, entries, market, symbol, cutoff)
+        received_at = event.first_received_at
+        assert received_at is not None
+        key = (version.event_date, received_at, 1, body[0]["event_ref"])
+        stored_at = latest(
+            [
+                received_at,
+                version.stored_at,
+                *(p.first_received_at for p in _known_provenance(entries, cutoff)),
+            ]
         )
-        assert event.first_received_at is not None
-        key = (version.event_date, event.first_received_at, 1, body[0]["event_ref"])
-        rows.append((key, body, event.first_received_at))
+        assert stored_at is not None
+        rows.append((key, body, stored_at))
     if not complete:
         counts.lose()
-    return rows, counts, complete
+    # A cut-off or failed provenance read changes no exclusion count, but the
+    # response is incomplete, so no total is claimed.
+    return rows, counts, complete and sources_ok
 
 
 async def _bars(
@@ -677,6 +698,25 @@ async def _bars(
 # --------------------------------------------------------------------------
 # collection
 # --------------------------------------------------------------------------
+def collection_gaps(
+    partitions: Sequence[Any],
+    names: Sequence[str],
+    start: date,
+    end: date,
+    today: date,
+) -> list[dict[str, str]]:
+    """Closed-reason gaps under this module's cutovers and scoped sources."""
+    return coverage.collection_gaps(
+        partitions,
+        names,
+        start,
+        end,
+        today,
+        cutovers=PROVEN_ZERO_CUTOVERS,
+        scoped=_SCOPED,
+    )
+
+
 async def _collection(
     session: AsyncSession,
     unknowns: Unknowns,
@@ -689,8 +729,13 @@ async def _collection(
     names = SOURCES_BY_MARKET[market.key]
 
     async def read() -> tuple[list[Any], list[Any]]:
-        window, newest = partition_statements(
-            market.key, names, start, end, MAX_SOURCE_ROWS
+        window, newest = coverage.partition_statements(
+            market.key,
+            names,
+            start,
+            end,
+            MAX_SOURCE_ROWS,
+            cutovers=PROVEN_ZERO_CUTOVERS,
         )
         return (
             list((await session.execute(window)).all()),
@@ -703,7 +748,7 @@ async def _collection(
         unknowns.note("collection", "incomplete_evidence")
         ok = False
 
-    block, notes = project_collection(
+    block, notes = coverage.project_collection(
         names=names,
         partitions=partitions,
         newest=newest,
@@ -711,6 +756,8 @@ async def _collection(
         end=end,
         today=today,
         ok=ok,
+        cutovers=PROVEN_ZERO_CUTOVERS,
+        scoped=_SCOPED,
     )
     for field, reason in notes:
         unknowns.note(field, reason)

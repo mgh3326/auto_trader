@@ -56,6 +56,9 @@ UNKNOWN_REASONS: Final = frozenset(
         # or the writer never recorded the value.
         "no_partition",
         "not_recorded",
+        # hk 7093 (retro_symbol_events): the source's runs cover only requested
+        # symbols, so no collected day can be claimed.
+        "scoped_collection",
     }
 )
 EVIDENCE_BASES: Final = frozenset({"broker", "inference", "unknown"})

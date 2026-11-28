@@ -151,6 +151,7 @@ def partition(
     category: str = "disclosure",
     last_error: str | None = None,
     event_count: int = 3,
+    finished_at: datetime | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         source=source,
@@ -159,6 +160,7 @@ def partition(
         status=status,
         event_count=event_count,
         last_error=last_error,
+        finished_at=finished_at,
     )
 
 

@@ -17,13 +17,17 @@ Two kinds of source:
   was known then, so its changeable values are withheld, and a symbol that was
   backfilled later proves no link at all. Naver rows are insert-only and are
   never rewritten.
+
+A ``source_url`` taken from a rebuilt or later-written row is made from the
+as-of revision or from the identity the row is keyed by, never read from the
+current row (hk 7094).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Any, Final
 from zoneinfo import ZoneInfo
@@ -54,6 +58,11 @@ _ROW_ONLY_WRITERS: Final = frozenset({"sec"})
 _NOTICE_SOURCES: Final = frozenset({"upbit_notice", "bithumb_notice"})
 #: The same parenthesized-ticker rule the notice collector attributes with.
 _NOTICE_TICKER: Final = re.compile(r"\(([A-Z0-9][A-Z0-9]{0,14})\)")
+#: Identifier shapes the document links are built from.
+_DART_RECEIPT: Final = re.compile(r"[0-9]{14}")
+_UPBIT_NOTICE_ID: Final = re.compile(r"[0-9]{1,20}")
+_SEC_ACCESSION: Final = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}")
+_SEC_CIK: Final = re.compile(r"[0-9]{1,10}")
 _KST: Final = ZoneInfo("Asia/Seoul")
 _EASTERN: Final = ZoneInfo("America/New_York")
 
@@ -125,6 +134,47 @@ class Version:
     relevance_state: str | None = None
     relevance_basis: str | None = None
     symbols: tuple[str, ...] | None = None
+    #: The newest instant at or before the cutoff at which the shown values were
+    #: stored; ``None`` when only the first receipt proves one.
+    stored_at: datetime | None = None
+
+
+def _dart_url(source_event_id: str | None) -> str | None:
+    """The viewer link of a receipt number (a copy of the writer's form)."""
+    if not source_event_id or not _DART_RECEIPT.fullmatch(source_event_id):
+        return None
+    return f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={source_event_id}"
+
+
+def _upbit_url(source_event_id: str | None) -> str | None:
+    """The notice page of a notice id (a copy of the writer's form)."""
+    if not source_event_id or not _UPBIT_NOTICE_ID.fullmatch(source_event_id):
+        return None
+    return f"https://upbit.com/service_center/notice?id={source_event_id}"
+
+
+def _sec_url(accession: str | None, revision: StoredRevision) -> str | None:
+    """The filing link one revision proves (a copy of the writer's form).
+
+    The filer CIK and document name come from that revision's payload.
+    """
+    raw = revision.raw_payload or {}
+    cik = raw.get("edgar_cik")
+    if not isinstance(cik, str) or not _SEC_CIK.fullmatch(cik):
+        return None
+    if not accession or not _SEC_ACCESSION.fullmatch(accession):
+        return None
+    folder = accession.replace("-", "")
+    base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{folder}"
+    document = raw.get("primaryDocument")
+    name = document.strip() if isinstance(document, str) else ""
+    unsafe = (
+        not name
+        or name.startswith("/")
+        or ".." in name
+        or any(char.isspace() or ord(char) < 32 for char in name)
+    )
+    return f"{base}/" if unsafe else f"{base}/{name}"
 
 
 def _row_publication(event: StoredEvent) -> Publication:
@@ -159,14 +209,12 @@ def _current_row(
     *,
     version_seq: int | None,
     version_state: str,
-    with_symbols: bool = True,
 ) -> Version:
     symbols: tuple[str, ...] | None = None
-    if with_symbols:
-        if event.symbols:
-            symbols = tuple(event.symbols)
-        elif event.symbol:
-            symbols = (event.symbol,)
+    if event.symbols:
+        symbols = tuple(event.symbols)
+    elif event.symbol:
+        symbols = (event.symbol,)
     return Version(
         event_date=event.event_date,
         version_seq=version_seq,
@@ -204,7 +252,11 @@ def _rebuilt_notice(
     tickers = set(_NOTICE_TICKER.findall(title))
     if len(tickers) != 1 or not tickers & set(candidates):
         return None
-    url = raw.get("pc_url") if event.source == "bithumb_notice" else event.source_url
+    url = (
+        raw.get("pc_url")
+        if event.source == "bithumb_notice"
+        else _upbit_url(event.source_event_id)
+    )
     return Version(
         event_date=created.astimezone(_KST).date(),
         version_seq=revision.revision_seq,
@@ -243,7 +295,7 @@ def _rebuilt_sec(
         version_seq=revision.revision_seq,
         superseded_later=True,
         version_state="as_of_revision",
-        source_url=event.source_url,
+        source_url=_sec_url(event.source_event_id, revision),
         status="released",
         publication=publication,
     )
@@ -306,6 +358,8 @@ def resolve_version(
     ``first_received_at <= cutoff``. ``None`` means no version, or no link to
     the symbol, can be proven for the cutoff: the event must not be shown.
     """
+    # The row's last write proves a vintage only when it is not after the cutoff.
+    row_write = event.updated_at if event.updated_at <= cutoff else None
     if revisions:
         ordered = sorted(revisions, key=lambda r: r.revision_seq)
         known = [r for r in ordered if r.observed_at <= cutoff]
@@ -313,31 +367,41 @@ def resolve_version(
             return None
         as_of = known[-1]
         if len(known) < len(ordered):
-            return _rebuild(event, as_of, candidates)
-        if event.source in _ROW_ONLY_WRITERS and event.updated_at > cutoff:
+            rebuilt = _rebuild(event, as_of, candidates)
+            if rebuilt is None:
+                return None
+            return replace(rebuilt, stored_at=as_of.observed_at)
+        stored_at = max(filter(None, (as_of.observed_at, row_write)))
+        current = _current_row(
+            event, version_seq=as_of.revision_seq, version_state="as_of_revision"
+        )
+        if event.source in _ROW_ONLY_WRITERS and row_write is None:
             # The row was touched later without a revision: its ticker union
             # may be newer than the cutoff.
             if event.symbol not in candidates:
                 return None
-            return _current_row(
-                event,
-                version_seq=as_of.revision_seq,
-                version_state="as_of_revision",
-                with_symbols=False,
+            return replace(
+                current,
+                symbols=None,
+                source_url=_sec_url(event.source_event_id, as_of),
+                stored_at=stored_at,
             )
-        return _current_row(
-            event, version_seq=as_of.revision_seq, version_state="as_of_revision"
-        )
+        return replace(current, stored_at=stored_at)
     if event.source == "dart" and event.symbol_resolution_reason is not None:
         # Collected without a symbol: a later backfill set it without moving
         # ``updated_at`` (hk 5623), so when the link was made is not recorded.
         return None
-    if event.source not in INSERT_ONLY_SOURCES and event.updated_at > cutoff:
+    if event.source not in INSERT_ONLY_SOURCES and row_write is None:
         return Version(
             event_date=event.event_date,
             version_seq=None,
             superseded_later=None,
             version_state="rewritten_after_cutoff",
-            source_url=event.source_url,
+            source_url=(
+                _dart_url(event.source_event_id) if event.source == "dart" else None
+            ),
         )
-    return _current_row(event, version_seq=None, version_state="unchanged_since_cutoff")
+    current = _current_row(
+        event, version_seq=None, version_state="unchanged_since_cutoff"
+    )
+    return replace(current, stored_at=row_write)
