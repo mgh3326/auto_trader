@@ -7,7 +7,9 @@ an ``ACTIVE`` kill row to ``DAILY_LOSS_FREEZE`` for an account at a loss of
 
 Marks come from the database only: the day-start mark is the previous session's
 daily close; the fresh quote is the newest stored 1-minute bar (at most ten
-minutes old). USD accounts use the run-time USD/KRW rate.
+minutes old) inside the regular session, else the last completed session
+close. Unreported fees use the policy round-trip cost estimate. USD accounts
+use a run-time USD/KRW snapshot (recorded with source and time).
 
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL --commit
@@ -30,6 +32,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.services.daily_loss_monitor.accounts import ACCOUNTS, AccountScope
+from app.services.daily_loss_monitor.marks import FxSnapshot, session_aware_marks
 from app.services.daily_loss_monitor.monitor import kst_day_start, run_once
 from app.services.daily_loss_monitor.rules import Mark
 
@@ -72,7 +75,7 @@ async def reference_marks(
     }
 
 
-async def quote_marks(
+async def fresh_quote_marks(
     session: AsyncSession, scope: AccountScope, symbols: Sequence[str], now: datetime
 ) -> dict[str, Mark | None]:
     if not symbols:
@@ -92,11 +95,15 @@ async def quote_marks(
     return {s: found.get(s) for s in symbols}
 
 
-async def usd_krw() -> Decimal | None:
-    from app.services.exchange_rate_service import get_usd_krw_rate
+async def usd_krw() -> FxSnapshot | None:
+    """A run-time USD/KRW snapshot (no per-fill FX is stored)."""
+    from app.services.exchange_rate_service import get_usd_krw_rate_details
 
-    rate = Decimal(str(await get_usd_krw_rate()))
-    return rate if rate.is_finite() and rate > 0 else None
+    quote = await get_usd_krw_rate_details()
+    rate = Decimal(str(quote.default_rate))
+    if not rate.is_finite() or rate <= 0:
+        return None
+    return FxSnapshot(rate, f"exchange_rate_service:{quote.source}", datetime.now(UTC))
 
 
 def _database_url(args: argparse.Namespace) -> str:
@@ -132,7 +139,7 @@ async def _run(args: argparse.Namespace) -> int:
                 session,
                 now=datetime.now(UTC),
                 reference_fn=reference_marks,
-                quote_fn=quote_marks,
+                quote_fn=session_aware_marks(fresh_quote_marks),
                 fx_fn=usd_krw,
                 commit=args.commit,
                 accounts=args.account,
@@ -150,6 +157,26 @@ async def _run(args: argparse.Namespace) -> int:
                     "reasons": list(outcome.reasons),
                     "would_freeze": outcome.freeze,
                     "frozen_now": outcome.frozen_now,
+                    "fee_bases": list(outcome.fee_bases),
+                    "mark_bases": list(outcome.mark_bases),
+                    "cost_estimate": None
+                    if outcome.cost_estimate is None
+                    else {
+                        "round_trip_cost_bps": str(
+                            outcome.cost_estimate.round_trip_cost_bps
+                        ),
+                        "sell_tax_bps": str(outcome.cost_estimate.sell_tax_bps),
+                        "rate_source": outcome.cost_estimate.rate_source,
+                        "policy_version": outcome.cost_estimate.policy_version,
+                        "policy_content_hash": outcome.cost_estimate.policy_content_hash,
+                    },
+                    "fx": None
+                    if outcome.fx is None
+                    else {
+                        "rate": str(outcome.fx.rate),
+                        "source": outcome.fx.source,
+                        "observed_at": outcome.fx.observed_at.isoformat(),
+                    },
                     "committed": args.commit,
                 },
                 ensure_ascii=False,

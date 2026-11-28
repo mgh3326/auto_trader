@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.daily_loss_monitor.accounts import ACCOUNTS, AccountScope
+from app.services.daily_loss_monitor.marks import FxSnapshot, policy_cost_estimate
 from app.services.daily_loss_monitor.reader import load_account_fills
 from app.services.daily_loss_monitor.rules import (
+    CostEstimate,
     LossResult,
     Mark,
     compute_daily_pnl,
@@ -27,7 +29,8 @@ MarkFn = Callable[
     [AsyncSession, AccountScope, Sequence[str], datetime],
     Awaitable[dict[str, Mark | None]],
 ]
-FxFn = Callable[[], Awaitable[Decimal | None]]
+FxFn = Callable[[], Awaitable[FxSnapshot | None]]
+CostFn = Callable[[AccountScope], CostEstimate | None]
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,10 @@ class AccountOutcome:
     reasons: tuple[str, ...]
     freeze: bool
     frozen_now: bool
+    fee_bases: tuple[str, ...] = ()
+    mark_bases: tuple[str, ...] = ()
+    cost_estimate: CostEstimate | None = None
+    fx: FxSnapshot | None = None
 
 
 def kst_day_start(now: datetime) -> datetime:
@@ -58,18 +65,20 @@ async def evaluate_account(
     reference_fn: MarkFn,
     quote_fn: MarkFn,
     fx_fn: FxFn,
-) -> LossResult:
+    cost: CostEstimate | None = None,
+) -> tuple[LossResult, FxSnapshot | None]:
     try:
         fills = await load_account_fills(session, scope, day_start=kst_day_start(now))
     except Exception:  # noqa: BLE001 - an unreadable ledger is unmeasured
-        return LossResult(pnl_krw=None, reasons=("ledger_unreadable",))
+        return LossResult(pnl_krw=None, reasons=("ledger_unreadable",)), None
     symbols = sorted({f.symbol for f in (*fills.history, *fills.today)})
-    fx: Decimal | None = None
+    snapshot: FxSnapshot | None = None
     if scope.currency != "KRW":
         try:
-            fx = await fx_fn()
+            snapshot = await fx_fn()
         except Exception:  # noqa: BLE001
-            fx = None
+            snapshot = None
+    fx: Decimal | None = None if snapshot is None else snapshot.rate
     try:
         reference = await reference_fn(session, scope, symbols, now)
     except Exception:  # noqa: BLE001
@@ -79,7 +88,7 @@ async def evaluate_account(
     except Exception:  # noqa: BLE001
         quotes = {}
     today = [dataclasses.replace(f, fx_krw=fx) for f in fills.today]
-    return compute_daily_pnl(
+    result = compute_daily_pnl(
         currency=scope.currency,
         history=fills.history,
         today=today,
@@ -87,7 +96,9 @@ async def evaluate_account(
         quotes=_with_fx(quotes, fx),
         now=now,
         provisional_unreconciled=fills.provisional_unreconciled,
+        cost_estimate=cost,
     )
+    return result, snapshot
 
 
 async def run_once(
@@ -99,17 +110,20 @@ async def run_once(
     fx_fn: FxFn,
     commit: bool,
     accounts: Sequence[str] | None = None,
+    cost_fn: CostFn = policy_cost_estimate,
 ) -> list[AccountOutcome]:
     outcomes: list[AccountOutcome] = []
     for name in accounts or tuple(ACCOUNTS):
         scope = ACCOUNTS[name]
-        result = await evaluate_account(
+        cost = cost_fn(scope)
+        result, snapshot = await evaluate_account(
             session,
             scope,
             now=now,
             reference_fn=reference_fn,
             quote_fn=quote_fn,
             fx_fn=fx_fn,
+            cost=cost,
         )
         await session.rollback()
         freeze = should_freeze(result)
@@ -123,6 +137,16 @@ async def run_once(
             frozen_now = await freeze_if_active(session, account=name, reason=why)
             await session.commit()
         outcomes.append(
-            AccountOutcome(name, result.pnl_krw, result.reasons, freeze, frozen_now)
+            AccountOutcome(
+                name,
+                result.pnl_krw,
+                result.reasons,
+                freeze,
+                frozen_now,
+                result.fee_bases,
+                result.mark_bases,
+                cost if "estimated" in result.fee_bases else None,
+                snapshot,
+            )
         )
     return outcomes

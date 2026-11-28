@@ -120,7 +120,7 @@ def test_unmeasurable_mtm_freezes() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "reason"),
     [
-        ({"today": [fill("buy", "1", "1", fee=None)]}, "fee_not_provided"),
+        ({"today": [fill("buy", "1", "1", fee=None)]}, "fee_estimate_unavailable"),
         ({"today": [fill("sell", "1", "1")]}, "position_oversold"),
         (
             {"history": [fill("buy", "1", "1", at=YESTERDAY)], "reference": {}},
@@ -177,3 +177,99 @@ def test_flat_day_does_not_freeze() -> None:
     )
     assert result == LossResult(pnl_krw=Decimal(0), reasons=())
     assert not should_freeze(result)
+
+
+# --- ESC 703542 answer: conservative bases instead of unknown ---------------
+
+ESTIMATE = rules.CostEstimate(
+    round_trip_cost_bps=Decimal("47.4"),
+    sell_tax_bps=rules.KR_SELL_TAX_BPS,
+    policy_version="v",
+    policy_content_hash="h",
+)
+
+
+def test_unreported_fee_uses_the_policy_estimate_and_overstates_the_loss() -> None:
+    today = [
+        fill("buy", "10", "100000", fee=None, at=NOW - timedelta(hours=2)),
+        fill("sell", "10", "100000", fee=None),
+    ]
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=today,
+        reference={},
+        quotes={},
+        now=NOW,
+        cost_estimate=ESTIMATE,
+    )
+    # Each leg: 1,000,000 * 47.4bp = 4,740; sell tax 18bp = 1,800.
+    assert result.pnl_krw == Decimal("-11280")
+    assert result.fee_bases == ("estimated",)
+    assert result.measured and not should_freeze(result)
+
+
+def test_estimated_fee_can_push_a_day_over_the_limit() -> None:
+    today = [
+        fill("buy", "100", "1000000", fee=None, at=NOW - timedelta(hours=2)),
+        fill("sell", "100", "1000000", fee=None),
+    ]
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=today,
+        reference={},
+        quotes={},
+        now=NOW,
+        cost_estimate=ESTIMATE,
+    )
+    assert result.pnl_krw == Decimal("-1128000")
+    assert should_freeze(result)
+
+
+def test_recorded_fee_is_used_as_recorded() -> None:
+    today = [
+        fill("buy", "1", "100", fee="3", at=NOW - timedelta(hours=2)),
+        fill("sell", "1", "100", fee="2", tax="1"),
+    ]
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=today,
+        reference={},
+        quotes={},
+        now=NOW,
+        cost_estimate=ESTIMATE,
+    )
+    assert result.pnl_krw == Decimal("-6")
+    assert result.fee_bases == ("recorded",)
+
+
+def test_last_session_close_mark_is_accepted_without_the_quote_age_rule() -> None:
+    close = Mark(
+        Decimal("55000"), NOW - timedelta(hours=14), None, basis="last_session_close"
+    )
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[fill("buy", "100", "70000", at=YESTERDAY)],
+        today=[],
+        reference={"005930": mark("60000")},
+        quotes={"005930": close},
+        now=NOW,
+    )
+    assert result.pnl_krw == Decimal("-500000")
+    assert result.mark_bases == ("last_session_close",)
+    assert should_freeze(result)
+
+
+def test_unknown_mark_basis_is_unavailable() -> None:
+    odd = Mark(Decimal("1"), NOW, None, basis="guess")
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[fill("buy", "1", "1", at=YESTERDAY)],
+        today=[],
+        reference={"005930": mark("1")},
+        quotes={"005930": odd},
+        now=NOW,
+    )
+    assert result.reasons == ("quote_unavailable",)

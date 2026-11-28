@@ -25,13 +25,23 @@ from typing import Final
 DAILY_LOSS_LIMIT_KRW: Final = Decimal("500000")
 #: A quote older than this at the run is not fresh.
 QUOTE_MAX_AGE: Final = timedelta(minutes=10)
+#: KR sell-side transaction tax used when a fill has no recorded tax (the
+#: repo's declared rate, paper_trading FEE_RATES equity_kr tax_sell).
+KR_SELL_TAX_BPS: Final = Decimal("18")
+#: Mark bases. A fresh quote must be at most QUOTE_MAX_AGE old; a last-session
+#: close is only produced by the caller when it is the exchange's last
+#: completed session close (otherwise the caller passes None).
+MARK_BASES: Final = frozenset({"fresh_quote", "last_session_close"})
+COST_RATE_SOURCE: Final = (
+    "trading_policy.order_proposals.auto_approve.round_trip_cost_bps"
+)
 
 #: Closed reasons for an unmeasurable day.
 REASONS: Final = frozenset(
     {
         "ledger_unreadable",
         "position_oversold",
-        "fee_not_provided",
+        "fee_estimate_unavailable",
         "fee_currency_mismatch",
         "fx_unavailable",
         "provisional_fill_unreconciled",
@@ -64,12 +74,28 @@ class Mark:
     price: Decimal
     observed_at: datetime
     fx_krw: Decimal | None
+    basis: str = "fresh_quote"
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    """Policy round-trip cost applied to each fill's notional (overstates)."""
+
+    round_trip_cost_bps: Decimal
+    sell_tax_bps: Decimal
+    policy_version: str | None
+    policy_content_hash: str | None
+    rate_source: str = COST_RATE_SOURCE
 
 
 @dataclass(frozen=True)
 class LossResult:
     pnl_krw: Decimal | None
     reasons: tuple[str, ...]
+    #: "recorded" and/or "estimated" for today's fills' fees.
+    fee_bases: tuple[str, ...] = ()
+    #: Mark bases used for open lots.
+    mark_bases: tuple[str, ...] = ()
 
     @property
     def measured(self) -> bool:
@@ -99,9 +125,12 @@ def compute_daily_pnl(
     quotes: dict[str, Mark | None],
     now: datetime,
     provisional_unreconciled: bool = False,
+    cost_estimate: CostEstimate | None = None,
 ) -> LossResult:
     """``history``: fills before the KST day start; ``today``: fills in the day."""
     reasons: set[str] = set()
+    fee_bases: set[str] = set()
+    mark_bases: set[str] = set()
     if provisional_unreconciled:
         reasons.add("provisional_fill_unreconciled")
 
@@ -134,14 +163,24 @@ def compute_daily_pnl(
         if fill.currency != currency:
             reasons.add("currency_mismatch")
             continue
+        notional = fill.price * fill.quantity
         if fill.fee is None:
-            reasons.add("fee_not_provided")
-            continue
-        if fill.fee_currency is not None and fill.fee_currency != fill.currency:
-            reasons.add("fee_currency_mismatch")
-            continue
+            if cost_estimate is None or cost_estimate.round_trip_cost_bps < 0:
+                reasons.add("fee_estimate_unavailable")
+                continue
+            fee = notional * cost_estimate.round_trip_cost_bps / Decimal(10_000)
+            tax = fill.tax
+            if tax is None and fill.side == "sell":
+                tax = notional * cost_estimate.sell_tax_bps / Decimal(10_000)
+            fee_bases.add("estimated")
+        else:
+            if fill.fee_currency is not None and fill.fee_currency != fill.currency:
+                reasons.add("fee_currency_mismatch")
+                continue
+            fee, tax = fill.fee, fill.tax
+            fee_bases.add("recorded")
         price = _krw(fill.price, currency, fill.fx_krw)
-        costs = _krw(fill.fee + (fill.tax or Decimal(0)), currency, fill.fx_krw)
+        costs = _krw(fee + (tax or Decimal(0)), currency, fill.fx_krw)
         if price is None or costs is None:
             reasons.add("fx_unavailable")
             continue
@@ -171,9 +210,13 @@ def compute_daily_pnl(
         if quote is None:
             reasons.add("quote_unavailable")
             continue
-        if now - quote.observed_at > QUOTE_MAX_AGE:
+        if quote.basis not in MARK_BASES:
+            reasons.add("quote_unavailable")
+            continue
+        if quote.basis == "fresh_quote" and now - quote.observed_at > QUOTE_MAX_AGE:
             reasons.add("quote_stale")
             continue
+        mark_bases.add(quote.basis)
         mark = _krw(quote.price, currency, quote.fx_krw)
         if mark is None:
             reasons.add("fx_unavailable")
@@ -182,9 +225,10 @@ def compute_daily_pnl(
             ((mark - lot.unit_cost_krw) * lot.quantity for lot in book), Decimal(0)
         )
 
+    bases = (tuple(sorted(fee_bases)), tuple(sorted(mark_bases)))
     if reasons:
-        return LossResult(pnl_krw=None, reasons=tuple(sorted(reasons)))
-    return LossResult(pnl_krw=realized + unrealized, reasons=())
+        return LossResult(None, tuple(sorted(reasons)), *bases)
+    return LossResult(realized + unrealized, (), *bases)
 
 
 def should_freeze(result: LossResult) -> bool:
