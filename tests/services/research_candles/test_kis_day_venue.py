@@ -238,4 +238,4 @@ def test_alembic_has_one_head() -> None:
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
     heads = script.get_heads()
-    assert heads == ["20261128_hk6409_backfill_req"], heads
+    assert heads == ["20261128_hk7119_loss_freeze"], heads
