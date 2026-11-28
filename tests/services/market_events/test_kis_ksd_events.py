@@ -359,7 +359,7 @@ def test_populated_list_info_list_dt_still_normalizes():
 
 
 def test_unparsed_depo_date_stays_malformed_and_reports_only_its_shape():
-    # Synthetic candidate shape, not an observed production value.
+    # Shape without the spaces around ~, so it is outside the observed form.
     with pytest.raises(
         ValueError, match=r"invalid depo_date shape=9999/99/99~9999/99/99"
     ) as excinfo:
@@ -370,6 +370,58 @@ def test_unparsed_depo_date_stays_malformed_and_reports_only_its_shape():
 
     assert not isinstance(excinfo.value, KSDUnscheduledRowError)
     assert "2026" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "start", "end"),
+    [
+        ("range_with_one_year", date(2026, 11, 27), date(2027, 11, 27)),
+        ("range_ending_new_year", date(2026, 11, 27), date(2027, 1, 1)),
+    ],
+)
+def test_observed_depo_date_range_parses_start_as_event_date_and_keeps_end(
+    key, start, end
+):
+    row = DOCUMENTED_EXAMPLES["depo_range_examples"][key]
+
+    event, values = normalize_ksd_event_row("mand_deposit", row)
+
+    assert event["event_date"] == start
+    assert event["symbol"] == row["sht_cd"]
+    assert event["raw_payload_json"]["deposit_end"] == end.isoformat()
+    deposit_values = [v for v in values if v["metric_name"] == "depo_date"]
+    assert deposit_values == [
+        {
+            "metric_name": "depo_date",
+            "value_details": {
+                "source_field": "depo_date",
+                "date_or_range": f"{start.isoformat()} ~ {end.isoformat()}",
+                "deposit_start": start.isoformat(),
+                "deposit_end": end.isoformat(),
+            },
+        }
+    ]
+
+
+def test_non_observed_depo_date_order_or_shape_stays_malformed():
+    with pytest.raises(ValueError, match="invalid depo_date order"):
+        normalize_ksd_event_row(
+            "mand_deposit",
+            {"sht_cd": "005930", "depo_date": "2027/01/01 ~ 2026/11/27"},
+        )
+    with pytest.raises(ValueError, match="invalid depo_date shape="):
+        normalize_ksd_event_row(
+            "mand_deposit",
+            {"sht_cd": "005930", "depo_date": "2026/11/27 ~ 2027/11/27 "},
+        )
+
+
+def test_range_on_a_non_range_kind_stays_malformed():
+    with pytest.raises(ValueError, match="invalid record_date"):
+        normalize_ksd_event_row(
+            "bonus_issue",
+            {"record_date": "2026/11/27 ~ 2027/11/27", "sht_cd": "005930"},
+        )
 
 
 def test_shape_mask_keeps_layout_and_hides_content():
