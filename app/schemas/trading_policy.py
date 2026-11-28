@@ -2369,6 +2369,34 @@ class DailyPlanPolicy(BaseModel):
     executable_markets: frozenset[Market] = frozenset()
 
 
+class AutonomousSpreadGatePolicy(BaseModel):
+    """hk 7118 — spread gate (basis points) for autonomous orders (6939 I11).
+
+    Every value must be a finite positive number. The whole section is
+    optional: while it is absent the autonomous decision refuses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    regular: float = Field(gt=0, allow_inf_nan=False)
+    extended: float = Field(gt=0, allow_inf_nan=False)
+    upbit: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator("regular", "extended", "upbit", mode="before")
+    @classmethod
+    def reject_booleans(cls, value: object) -> object:
+        # Lax float fields coerce true/false to 1.0/0.0; a boolean is not a limit.
+        if isinstance(value, bool):
+            raise ValueError("spread_gate_bp values must be numbers, not booleans")
+        return value
+
+
+class AutonomousOrdersPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spread_gate_bp: AutonomousSpreadGatePolicy
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2398,6 +2426,8 @@ class TradingPolicyDocument(BaseModel):
     kr_trading_sessions: KrTradingSessionsPolicy
     mechanical_loss_cut: MechanicalLossCutPolicy
     daily_plan: DailyPlanPolicy
+    # hk 7118: optional; absent means the autonomous decision fails closed.
+    autonomous_orders: AutonomousOrdersPolicy | None = None
 
     @model_validator(mode="after")
     def validate_mechanical_loss_cut_stays_inside_the_slip_band(

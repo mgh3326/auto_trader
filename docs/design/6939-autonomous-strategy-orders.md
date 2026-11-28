@@ -130,6 +130,12 @@ key), halt/VI/expected-price block. Arming: MF = mock-first, LH = live half cap 
 | nh_mock KR | yes (`_dispatch_new_intent`) | KRX regular | same | exact `"limit"`, non-SOR | existing | mock |
 | kis_futures_mock day | yes | 08:45–15:45 | same | MF200 limit 1 contract | `LOCKED_LIMITS` | mock |
 
+**Toss on the autonomous path (hk 7118, ESC 703702):** autonomous Toss KR and US orders are integer-quantity limit orders
+only, in every session, until a broker-enforced quantity bound exists. `orderAmount` is refused (closed code
+`order_form_not_accepted`), because the broker chooses the quantity, so the intent `max_quantity` and the position bound
+cannot be proven. The table rows above describe what Toss accepts; manual Toss paths are unchanged (Toss still accepts amount
+orders in KR regular and US regular, and fractional quantity in US regular; the no-amount rule there is US pre/post only).
+
 Session source: the gateway classifies sessions with the quote/session classifier that `get_quote` uses (NXT after continuous
 from 15:40 KST), **not** research `session_segment_of` (which labels `NXT_POST` only from 16:00, hk 6298). Toss KR NXT after uses the
 same boundary. Rule: the gateway refuses a new entry when the current time is inside acceptance but outside fill for that cell
