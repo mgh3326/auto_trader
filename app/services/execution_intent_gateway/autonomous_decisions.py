@@ -314,16 +314,21 @@ class DecisionInputs:
     #: Scope: the same intent lineage as ``confirmed_net_quantity`` (not the
     #: whole account × symbol), so independent lineages do not block each other.
     working_sell_quantity: Decimal | None
-    #: Approved − confirmed fills − working (I9), quantity form for qty buys.
-    budget_remaining_quantity: Decimal | None
-    #: Same remainder in KRW (approved notional − fills − working), I9.
-    budget_remaining_notional_krw: Decimal | None
+    #: I9 — the intent's approved quantity and KRW notional.
+    approved_quantity: Decimal | None
+    approved_notional_krw: Decimal | None
+    #: I9 — D-4 counted exposure of every order the intent has sent: the
+    #: per-order high-water quantity / KRW notional of working, uncertain and
+    #: terminal orders alike (a confirmed cancel releases nothing; fills are
+    #: inside their order's high-water, never added twice).
+    counted_quantity: Decimal | None
+    counted_notional_krw: Decimal | None
     #: For an amend: the target order's reserved (high-water) quantity, already
-    #: counted in ``working_sell_quantity`` / the budget remainder. None on an
+    #: counted in ``working_sell_quantity`` / ``counted_quantity``. None on an
     #: amend refuses; ignored on a submit.
     amend_target_quantity: Decimal | None
     #: For an amend: the target's high-water notional in KRW, already counted in
-    #: ``budget_remaining_notional_krw``. None on a buy amend refuses.
+    #: ``counted_notional_krw``. None on a buy amend refuses.
     amend_target_notional_krw: Decimal | None
     halt_suspect: bool | None
     trading_flag_blocked: bool | None
@@ -592,14 +597,22 @@ def check_exit_quantity(inputs: DecisionInputs) -> AutonomousRefusal | None:
     return None
 
 
+def _remainder(approved: object, counted: object) -> Decimal | None:
+    if not (_finite(approved) and _finite(counted)) or approved < 0 or counted < 0:
+        return None
+    return approved - counted
+
+
 def check_budget(
     inputs: DecisionInputs, notional_krw: Decimal | None
 ) -> AutonomousRefusal | None:
-    """I9 — a buy stays within approved − confirmed fills − working, in both
+    """I9 — a buy stays within approved − D-4 counted exposure, in both
     quantity and KRW notional. An amend reuses only its target's reservation.
     """
-    remaining = inputs.budget_remaining_quantity
-    remaining_krw = inputs.budget_remaining_notional_krw
+    remaining = _remainder(inputs.approved_quantity, inputs.counted_quantity)
+    remaining_krw = _remainder(
+        inputs.approved_notional_krw, inputs.counted_notional_krw
+    )
     qty = inputs.child.quantity
     add_back = _amend_add_back(inputs)
     if inputs.child.kind == "amend":

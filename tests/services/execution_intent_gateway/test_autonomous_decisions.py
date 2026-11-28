@@ -62,8 +62,10 @@ def _inputs(**kw) -> DecisionInputs:
         "latest_plan_change_seq": 3,
         "confirmed_net_quantity": Decimal("100"),
         "working_sell_quantity": Decimal("0"),
-        "budget_remaining_quantity": Decimal("100"),
-        "budget_remaining_notional_krw": Decimal("100000000"),
+        "approved_quantity": Decimal("100"),
+        "approved_notional_krw": Decimal("100000000"),
+        "counted_quantity": Decimal("0"),
+        "counted_notional_krw": Decimal("0"),
         "amend_target_quantity": None,
         "amend_target_notional_krw": None,
         "halt_suspect": False,
@@ -75,6 +77,13 @@ def _inputs(**kw) -> DecisionInputs:
         "toss_us_sessions": frozenset({"regular"}),
         "now": NOW,
     }
+    # Shorthand: a remaining budget means approved = remaining, nothing counted.
+    if "budget_remaining_quantity" in kw:
+        base["approved_quantity"] = kw.pop("budget_remaining_quantity")
+        base["counted_quantity"] = Decimal("0")
+    if "budget_remaining_notional_krw" in kw:
+        base["approved_notional_krw"] = kw.pop("budget_remaining_notional_krw")
+        base["counted_notional_krw"] = Decimal("0")
     base.update(kw)
     return DecisionInputs(**base)
 
@@ -773,4 +782,53 @@ def test_spread_extractor_reads_validated_policy_floats():
     assert ad.spread_limits_from_policy(dumped) == SPREADS
     assert ad.spread_limits_from_policy(raw) == SPREADS
     raw["autonomous_orders"]["spread_gate_bp"]["upbit"] = float("inf")
+    assert ad.spread_limits_from_policy(raw) is None
+
+
+# --- review round 3 (hk 7118) -------------------------------------------------
+
+
+def test_cancelled_order_exposure_is_not_released():
+    # Intent: 10 shares / 100,000 KRW. A zero-fill buy of 5 @ 10,000 was sent and
+    # cancelled; D-4 still counts its 50,000. Now 5 @ 10,500 = 52,500 > 50,000.
+    inputs = _inputs(
+        child=_child(quantity=Decimal("5"), limit_price=Decimal("10500")),
+        book=_book("10490", "10500"),
+        approved_quantity=Decimal("10"),
+        approved_notional_krw=Decimal("100000"),
+        counted_quantity=Decimal("5"),
+        counted_notional_krw=Decimal("50000"),
+    )
+    assert _code(inputs) is R.BUDGET_EXCEEDED
+    fits = dataclasses.replace(
+        inputs, child=_child(quantity=Decimal("5"), limit_price=Decimal("10000"))
+    )
+    assert _code(dataclasses.replace(fits, book=_book("9990", "10000"))) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"counted_quantity": None},
+        {"counted_notional_krw": None},
+        {"approved_notional_krw": Decimal("-1")},
+        {"counted_quantity": Decimal("NaN")},
+    ],
+)
+def test_counted_exposure_unknown_refuses(overrides):
+    assert _code(_inputs(**overrides)) is R.BUDGET_UNVERIFIED
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_policy_schema_rejects_boolean_spread(bad):
+    import yaml
+
+    from app.schemas.trading_policy import TradingPolicyDocument
+
+    raw = yaml.safe_load(Path("config/trading_policy.yaml").read_text())
+    raw["autonomous_orders"] = {
+        "spread_gate_bp": {"regular": bad, "extended": 15, "upbit": 20}
+    }
+    with pytest.raises(ValueError):
+        TradingPolicyDocument.model_validate(raw)
     assert ad.spread_limits_from_policy(raw) is None

@@ -2382,6 +2382,14 @@ class AutonomousSpreadGatePolicy(BaseModel):
     extended: float = Field(gt=0, allow_inf_nan=False)
     upbit: float = Field(gt=0, allow_inf_nan=False)
 
+    @field_validator("regular", "extended", "upbit", mode="before")
+    @classmethod
+    def reject_booleans(cls, value: object) -> object:
+        # Lax float fields coerce true/false to 1.0/0.0; a boolean is not a limit.
+        if isinstance(value, bool):
+            raise ValueError("spread_gate_bp values must be numbers, not booleans")
+        return value
+
 
 class AutonomousOrdersPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
