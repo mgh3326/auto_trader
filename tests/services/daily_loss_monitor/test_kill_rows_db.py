@@ -115,14 +115,18 @@ async def test_downgrade_with_only_seed_rows_removes_exactly_them(db_session) ->
             "upbit_live": ("GLOBAL_FREEZE", "initial_control_row", "migration-hk5441")
         }
         mode_checks = (
-            await db_session.execute(
-                sa.text(
-                    "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint AS c "
-                    "WHERE c.conrelid = 'review.execution_account_control'::regclass "
-                    "AND c.conname = 'ck_execution_account_control_mode'"
+            (
+                await db_session.execute(
+                    sa.text(
+                        "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint AS c "
+                        "WHERE c.conrelid = 'review.execution_account_control'::regclass "
+                        "AND c.conname = 'ck_execution_account_control_mode'"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(mode_checks) == 1
         assert "DAILY_LOSS_FREEZE" not in mode_checks[0]
         triggers = {
