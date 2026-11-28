@@ -13,6 +13,7 @@ from app.core.cli import setup_logging_and_sentry
 from app.services.brokers.kis.client import KISClient
 from app.services.market_events.kis_ksd_dividends import (
     KSD_EVENT_KINDS,
+    KSDUnscheduledRowError,
     fetch_ksd_event_window,
     normalize_ksd_dividend_row,
     normalize_ksd_event_row,
@@ -26,6 +27,10 @@ FETCH_METHODS: dict[str, str] = {
     "dividend": "ksd_dividends",
     **{kind: f"ksd_{kind}" for kind in KSD_EVENT_KINDS},
 }
+# A run exits 1 only when malformed rows exceed this count. Documented blank
+# schedule rows (skipped_unscheduled) never count toward it. Transport and
+# HTTP errors still raise, so they also exit nonzero.
+MALFORMED_EXIT_THRESHOLD = 5
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -59,32 +64,47 @@ def _normalize(
 
 def _normalize_rows(
     kind: str, rows: list[dict[str, Any]]
-) -> tuple[list[tuple[dict[str, Any], list[dict[str, Any]]]], int]:
+) -> tuple[list[tuple[dict[str, Any], list[dict[str, Any]]]], int, int]:
+    """Return (normalized, malformed, skipped_unscheduled) for one kind."""
     normalized: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-    failures = 0
+    malformed = 0
+    unscheduled = 0
     for index, row in enumerate(rows, start=1):
         try:
             normalized.append(_normalize(kind, row))
+        except KSDUnscheduledRowError as exc:
+            unscheduled += 1
+            logger.debug(
+                "KSD 미정 일정 생략 kind=%s row=%d reason=%s", kind, index, exc
+            )
         except ValueError as exc:
-            failures += 1
+            malformed += 1
             logger.warning(
                 "KSD 행 정규화 실패 kind=%s row=%d reason=%s", kind, index, exc
             )
-    return normalized, failures
+    return normalized, malformed, unscheduled
+
+
+def _exit_code(malformed: int) -> int:
+    return 1 if malformed > MALFORMED_EXIT_THRESHOLD else 0
 
 
 async def run(args: argparse.Namespace) -> int:
     client = KISClient(is_mock=False)
     normalized: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-    normalization_failures = 0
+    malformed_total = 0
+    unscheduled_total = 0
     truncation_count = 0
     try:
         for kind in args.kinds:
             fetch = getattr(client, FETCH_METHODS[kind])
             result = await fetch_ksd_event_window(fetch, args.from_date, args.to_date)
-            kind_events, kind_failures = _normalize_rows(kind, result.rows)
+            kind_events, kind_malformed, kind_unscheduled = _normalize_rows(
+                kind, result.rows
+            )
             normalized.extend(kind_events)
-            normalization_failures += kind_failures
+            malformed_total += kind_malformed
+            unscheduled_total += kind_unscheduled
             for start, end in result.truncated_windows:
                 truncation_count += 1
                 logger.warning(
@@ -93,18 +113,26 @@ async def run(args: argparse.Namespace) -> int:
                     start,
                     end,
                 )
-            logger.info("KSD 조회 kind=%s rows=%d", kind, len(result.rows))
+            logger.info(
+                "KSD 조회 kind=%s rows=%d malformed=%d skipped_unscheduled=%d",
+                kind,
+                len(result.rows),
+                kind_malformed,
+                kind_unscheduled,
+            )
     finally:
         await client.close()
 
     if not args.commit:
         logger.info(
-            "dry-run 조회·정규화=%d, 저장=0, 정규화 실패=%d, 절단 구간=%d",
+            "dry-run 조회·정규화=%d, 저장=0, 정규화 실패(malformed)=%d, "
+            "미정 생략(skipped_unscheduled)=%d, 절단 구간=%d",
             len(normalized),
-            normalization_failures,
+            malformed_total,
+            unscheduled_total,
             truncation_count,
         )
-        return 1 if normalization_failures else 0
+        return _exit_code(malformed_total)
 
     from app.core.db import AsyncSessionLocal
 
@@ -114,12 +142,14 @@ async def run(args: argparse.Namespace) -> int:
             await repo.upsert_event_with_values(event, values, replace_values=True)
         await db.commit()
     logger.info(
-        "KSD 저장=%d, 정규화 실패=%d, 절단 구간=%d",
+        "KSD 저장=%d, 정규화 실패(malformed)=%d, 미정 생략(skipped_unscheduled)=%d, "
+        "절단 구간=%d",
         len(normalized),
-        normalization_failures,
+        malformed_total,
+        unscheduled_total,
         truncation_count,
     )
-    return 1 if normalization_failures else 0
+    return _exit_code(malformed_total)
 
 
 def main() -> int:

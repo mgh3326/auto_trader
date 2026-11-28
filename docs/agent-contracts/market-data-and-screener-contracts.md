@@ -1428,6 +1428,12 @@ truncated_windows로 반환한다. 호출자는 각 절단 창을 경고한다.
 에는 매일 실행하도록 작성한 미등록 DAG 복사본만 있다. 스케줄러 등록은 추가하지
 않는다. US 기업 일정과 주문·계좌 API는 범위 밖이다.
 
+**정규화 실패와 미정 일정 (hk 7106)**: 세 가지를 구분해 센다.
+- `skipped_unscheduled`: `list_info`의 `list_dt`가 비어 있으면(`""` 또는 없음) 날짜가 아직 배정되지 않은 정상 일정 행이다. 달력 날짜가 없어 어디에도 놓을 수 없으므로 저장하지 않고 `KSDUnscheduledRowError(reason=no_listing_date)`로 건너뛰며 실행 요약에 따로 센다. 공식 샘플은 `list_dt`를 상장/등록일로 정의하지만 빈 값의 뜻은 문서화하지 않는다. 이 해석은 **미검증 가정**이며 실제 빈 행 한 건으로 확인해야 한다.
+- `malformed`: 나머지 모든 정규화 실패다. 빈 값을 포함한다. 파싱할 수 없는 값은 형태 마스크만 남긴다(숫자는 `9`, 구분자 `/ - ~ . ` 공백은 유지, 그 밖은 `?`, 24자 제한). 값 자체는 로그에 남기지 않는다. `mand_deposit.depo_date`처럼 형태를 확인하지 못한 값은 파싱하지 않고 malformed로 둔다. 관측된 형태를 확인하기 전에는 추측으로 파싱하지 않는다.
+- 🔴 **종료 코드 규칙**: 실행은 `malformed`가 `MALFORMED_EXIT_THRESHOLD`(5)를 넘을 때만 1로 끝난다. `skipped_unscheduled`는 종료 코드에 들지 않는다. 전송·HTTP 오류는 예외로 올라가 여전히 비정상 종료한다. 절단 구간은 경고와 요약에 남기며 종료 코드를 바꾸지 않는다. 임계값 5는 정책상 작은 값이며 운영자 확인 대상이다.
+- 요약 로그 형식: `KSD 저장=N, 정규화 실패(malformed)=M, 미정 생략(skipped_unscheduled)=K, 절단 구간=T`(dry-run은 `dry-run 조회·정규화=N, 저장=0, …`). 테스트 `tests/services/market_events/test_kis_ksd_events.py`가 이 규칙을 고정한다.
+
 배당 선행 근거: [KIS 국내주식 함수 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_functions.py),
 [KIS 국내주식 호출 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/domestic_stock/domestic_stock_examples.py).
 
