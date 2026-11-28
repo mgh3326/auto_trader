@@ -1,0 +1,34 @@
+# 미등록 Dagu 사본(hk 6409, 설계 6400 §3.1). 저장소는 이 파일을 등록하지 않으며 등록은 운영자 결정·런북으로만 한다.
+# finnhub 실적 step 은 deploy/dagu/at-batch/at-batch1-market-events-daily.yaml 제안과 겹친다. 둘 중 하나만 등록한다.
+# 07:30 KST 매일(미국 장 마감 뒤). 두 step 은 서로 독립(병렬)이라 한쪽이 실패해도 다른 쪽이 끝까지 돈다.
+# 창: finnhub = 오늘(KST) -7일 ~ +60일(기존 규약). SEC = filingDate 오늘(ET) -7일 ~ 오늘(ET).
+# finnhub step 은 --force 로 창 전체를 매번 다시 읽는다. 없으면 한 번 succeeded 가 된 날(0건인 미래 날짜 포함)을 건너뛰어
+# 뒤에 발표되는 일정·실적 값이 저장되지 않는다. 실행당 Finnhub 호출은 창 전체에 한 번이다.
+# SEC step: 컨테이너 env(.env.api)에 SEC_EDGAR_USER_AGENT 가 있어야 하며 비면 종료 코드 2.
+#   대상 티커는 dotenv 의 AT_OFFICIAL_EVENTS_SEC_SYMBOLS(공백 구분)다. 비어 있으면 CLI 가 거부해 step 이 실패한다.
+# 환경: /root/at-secrets/.env.dagu-at-official-events (AT_OFFICIAL_EVENTS_SEC_SYMBOLS, AT_OFFICIAL_EVENTS_PING_URL_US 선택).
+description: "공식 이벤트 US: finnhub 실적 + SEC EDGAR 공시"
+schedule: "CRON_TZ=Asia/Seoul 30 7 * * *"
+max_active_runs: 1
+hist_retention_days: 60
+worker_selector:
+  host: pi
+dotenv: /root/at-secrets/.env.dagu-at-official-events
+steps:
+  - name: finnhub-earnings
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.ingest_market_events --source finnhub --category earnings --market us --from-date $(TZ=Asia/Seoul date -d '7 days ago' +%F) --to-date $(TZ=Asia/Seoul date -d '60 days' +%F) --force
+    timeout_sec: 900
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+  - name: sec-edgar
+    command: docker run --rm --init --network host --workdir /app --env-file /root/at-secrets/.env.api "$(cat /root/at-run/deployed-digest)" /app/.venv/bin/python -m scripts.collect_sec_edgar --symbols ${AT_OFFICIAL_EVENTS_SEC_SYMBOLS} --from-date $(TZ=America/New_York date -d '7 days ago' +%F) --to-date $(TZ=America/New_York date +%F) --commit
+    timeout_sec: 900
+    retry_policy:
+      limit: 1
+      interval_sec: 60
+handler_on:
+  success:
+    command: 'logger -t at-dagu-official-events "dag=official-events-us status=success"; [ -z "${AT_OFFICIAL_EVENTS_PING_URL_US:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_OFFICIAL_EVENTS_PING_URL_US}"'
+  failure:
+    command: 'logger -t at-dagu-official-events "dag=official-events-us status=failure"; [ -z "${AT_OFFICIAL_EVENTS_PING_URL_US:-}" ] || curl -fsS -m 10 --retry 3 -o /dev/null "${AT_OFFICIAL_EVENTS_PING_URL_US}/fail"'

@@ -3076,6 +3076,25 @@ def _hk6586_krx_official_ddl() -> tuple[str, ...]:
 _DDL_STATEMENTS = _DDL_STATEMENTS + _hk6586_krx_official_ddl()
 
 
+def _hk6409_backfill_ddl() -> tuple[str, ...]:
+    """hk 6409 append-only guard DDL, read from the production migration (one source)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20261128_hk6409_backfill_requests.py"
+    )
+    spec = importlib.util.spec_from_file_location("hk6409_backfill_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.GUARD_DDL
+
+
+_DDL_STATEMENTS = _DDL_STATEMENTS + _hk6409_backfill_ddl()
+
+
 def schema_content_hash() -> str:
     """SHA256 hex of the bootstrap version + the DDL tuple.
 

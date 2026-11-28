@@ -303,6 +303,10 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 ## 3. 운영
 
+> **(hk 6409) 구현** — 정본은 `docs/agent-contracts/market-data-and-screener-contracts.md` 의 "공식 이벤트 운영" 절이다.
+> KR DAG 는 창이 달라 파일 둘(`official-events-kr-0700`·`-1830`)이다. US DAG 의 finnhub 창은 `--force` 로 매번 다시
+> 읽는다(없으면 이미 `succeeded` 인 날에 뒤의 발표가 저장되지 않는다). §3.2 는 구현에 맞춰 다시 썼다.
+
 ### 3.1 Dagu 사본(등록하지 않는다)
 
 기존 창구: `deploy/dagu/at-batch/at-batch1-dart-0700.yaml`, `…-dart-1830.yaml`, `…-market-events-daily.yaml`
@@ -322,28 +326,32 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 ### 3.2 한정형 보충 요청
 
-요청은 **범위가 닫힌 내부 CLI** 하나로 만든다(스케줄 아님):
+요청은 **범위가 닫힌 내부 CLI** 하나로 만든다(스케줄 아님). **(hk 6409)** 아래는 구현에 맞춰 다시 썼다.
 
 ```
 scripts/request_market_event_backfill.py \
-  --source dart|sec|company_ir|upbit|finnhub \
-  --market kr|us|crypto \
-  [--symbol 005930] \
+  --source dart|finnhub|sec|benzinga \
+  --market kr|us \
+  [--category <benzinga 카테고리>] [--symbols NVDA AMD] \
   --from-date 2026-11-01 --to-date 2026-11-20 \
-  --reason "<운영자 사유>" [--dry-run | --commit]
+  --reason-code gap_fill --reason "<운영자 사유>" --requested-by <이름> \
+  [--dry-run | --commit [--run]]
 ```
 
-- 닫힌 범위: `--source` 는 `taxonomy.SOURCES` 중 수집기가 있는 값만, `--market` 은 원천이 지원하는 시장만,
-  `--from-date/--to-date` 는 최대 31일(제안값, 6409 가 확정)·`from <= to`, 미래 날짜 금지.
-- 중복 방지: `request_hash = sha256(source|market|symbols|from|to|reason_code)` 로 한 번만 기록한다
-  (`UNIQUE(request_hash)`; 같은 요청 재실행은 기존 행을 돌려준다).
-- 출처별 쿼터: 원천별 UTC 일 1회·행 상한(제안: DART 31일/요청, SEC 5 req/s 이하[unverified], Upbit 1회)을
-  요청 시점과 실행 시점 **양쪽**에서 검사한다. 초과는 거부이며 부분 실행하지 않는다.
+- 닫힌 범위: `--source` 는 수집기 CLI 가 날짜 창을 받는 원천(`dart`·`finnhub`·`sec`·`benzinga`)만, `--market` 은 원천이
+  지원하는 시장만, `--from-date/--to-date` 는 최대 31일(양끝 포함)·`from <= to`, 시장 현지 오늘 이후 금지.
+- **날짜 창이 없는 수집기 (hk 6409)**: `upbit_notice`·`bithumb_notice`·`naver_disclosure` 는 제공자의 최신 목록을 읽고
+  저장된 ID/시각에서 멈추므로 과거 창을 채울 수 없다. 이 원천의 요청은 닫힌 사유 `source_has_no_date_window` 로
+  거부하고 아무것도 쓰지 않는다. `company_ir` 는 수집기가 없다(`unsupported_source`). 거부 사유는 모두 닫힌 목록
+  (`policy.REFUSAL_CODES`)이다.
+- 중복 방지: `request_hash = sha256(source, market, category, symbols, from, to, reason_code)` 로 한 번만 기록한다
+  (`UNIQUE(request_hash, state)`; 같은 요청 재실행은 행을 늘리지 않는다).
+- 출처별 쿼터: 원천별 UTC 일 요청 1건·실행 1건을 요청 시점과 실행 시점 **양쪽**에서 검사한다. 초과는 거부이며 부분
+  실행하지 않는다.
 - 저장: `review.market_event_backfill_requests`(append-only, `at_app` SELECT·INSERT만, 하드룰 18 조건부 GRANT).
-  필드: `request_ref`, `source`, `market`, `symbols`, `from_date`, `to_date`, `reason`, `requested_by`,
-  `request_hash`, `state`(`requested|rejected|done|failed`), `created_at`.
-- 실행: **기존 수집 경로만** 쓴다(`scripts.ingest_market_events.py`, upbit 공지는 6031 CLI). 요청 행은 작업을
-  깨우지 않는다 — 운영자(또는 6409 가 정한 한정 실행기)가 실행하고 결과를 같은 행에 기록한다.
+  상태는 같은 행을 갱신하지 않고 `requested`→`started`→`done|failed` 행을 더한다. 거부는 행을 남기지 않는다.
+- 실행: **기존 수집 CLI 만** 쓴다(`scripts.ingest_market_events`·`collect_sec_edgar`·`ingest_benzinga_calendars`). 요청
+  행은 작업을 깨우지 않는다 — 운영자가 `--commit --run` 으로 실행한다.
 
 ### 3.3 수집 범위·결측 사유 읽기
 

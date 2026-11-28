@@ -124,6 +124,8 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "public.kr_market_deposit_credit",
     # hk 6586 KRX official daily table is migration-owned and also later than the parent.
     "public.krx_official_daily",
+    # hk 6409 official-event backfill requests are later than the parent.
+    "review.market_event_backfill_requests",
     "review.kis_us_inference_expiry_events",
     "review.account_external_flows",
     "review.account_value_snapshots",

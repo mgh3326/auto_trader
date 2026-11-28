@@ -128,6 +128,7 @@ tests/scripts/test_dagu_gate_inputs_dag.py
 tests/scripts/test_dagu_kr_news_timing_dag.py
 tests/scripts/test_dagu_krx_official_daily.py
 tests/scripts/test_dagu_news_shadow_dag.py
+tests/scripts/test_dagu_official_events_dags.py
 tests/scripts/test_dagu_snapshot_refresh_dags.py
 tests/scripts/test_dagu_terminal_reconcile_dag.py
 tests/scripts/test_dagu_toss_fill_poll_dag.py
@@ -259,6 +260,7 @@ tests/services/kis_websocket/test_parsers.py
 tests/services/market_close_digest/test_formatter_flags.py
 tests/services/market_close_digest/test_mutation_and_queries.py
 tests/services/market_close_digest/test_static_boundaries.py
+tests/services/market_events/test_collection.py
 tests/services/mechanical_loss_cut/test_live_dispatch_db.py
 tests/services/mock_integration/test_authority_cessation.py
 tests/services/mock_integration/test_kis_mock_evidence_store_db.py
