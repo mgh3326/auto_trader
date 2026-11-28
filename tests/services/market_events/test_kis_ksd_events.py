@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.services.market_events.kis_ksd_dividends import (
+    KSDUnscheduledRowError,
+    _shape_mask,
     fetch_ksd_event_window,
     normalize_ksd_event_row,
 )
@@ -258,7 +260,7 @@ async def test_dry_run_normalizes_without_constructing_repository(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invalid_ksd_row_does_not_discard_valid_rows_and_returns_failure(
+async def test_invalid_ksd_row_does_not_discard_valid_rows_and_is_counted_as_malformed(
     monkeypatch, caplog
 ):
     from argparse import Namespace
@@ -316,10 +318,112 @@ async def test_invalid_ksd_row_does_not_discard_valid_rows_and_returns_failure(
         )
     )
 
-    assert result == 1
+    # One malformed row is at or below MALFORMED_EXIT_THRESHOLD, so the run passes
+    # while the row stays visible in the summary.
+    assert result == 0
     assert client.closed
     assert fake_session.committed
     assert len(fake_repo.events) == 1
     assert fake_repo.events[0][2] is True
     assert "KSD 저장=1" in caplog.text
-    assert "정규화 실패=1" in caplog.text
+    assert "정규화 실패(malformed)=1" in caplog.text
+    assert "미정 생략(skipped_unscheduled)=0" in caplog.text
+
+
+@pytest.mark.parametrize("blank", ["", None])
+def test_blank_list_info_list_dt_is_an_unscheduled_skip_not_a_malformed_row(blank):
+    fixture = DOCUMENTED_EXAMPLES["unscheduled_examples"]["list_info_blank_list_dt"]
+
+    with pytest.raises(KSDUnscheduledRowError) as excinfo:
+        normalize_ksd_event_row("list_info", {**fixture, "list_dt": blank})
+
+    assert excinfo.value.kind == "list_info"
+    assert excinfo.value.field == "list_dt"
+    assert excinfo.value.reason == "no_listing_date"
+
+
+def test_blank_date_outside_the_unscheduled_mapping_stays_malformed():
+    with pytest.raises(ValueError, match="missing record_date") as excinfo:
+        normalize_ksd_event_row("bonus_issue", {"record_date": "", "sht_cd": "005930"})
+
+    assert not isinstance(excinfo.value, KSDUnscheduledRowError)
+
+
+def test_populated_list_info_list_dt_still_normalizes():
+    fixture = next(
+        item for item in DOCUMENTED_EXAMPLES["events"] if item["kind"] == "list_info"
+    )
+    event, _ = normalize_ksd_event_row("list_info", fixture["row"])
+
+    assert event["event_date"] == EXPECTED_DATES["list_info"]
+
+
+def test_unparsed_depo_date_stays_malformed_and_reports_only_its_shape():
+    # Synthetic candidate shape, not an observed production value.
+    with pytest.raises(
+        ValueError, match=r"invalid depo_date shape=9999/99/99~9999/99/99"
+    ) as excinfo:
+        normalize_ksd_event_row(
+            "mand_deposit",
+            {"sht_cd": "005930", "depo_date": "2026/11/20~2026/11/25"},
+        )
+
+    assert not isinstance(excinfo.value, KSDUnscheduledRowError)
+    assert "2026" not in str(excinfo.value)
+
+
+def test_shape_mask_keeps_layout_and_hides_content():
+    assert _shape_mask("20261120") == "99999999"
+    assert _shape_mask("abc 2026") == "??? 9999"
+    assert _shape_mask("x" * 30) == "?" * 24 + "+"
+
+
+@pytest.mark.parametrize(
+    ("malformed", "expected_exit"),
+    [(5, 0), (6, 1)],
+)
+def test_exit_code_fails_only_above_malformed_threshold(malformed, expected_exit):
+    from scripts import ingest_kis_ksd_dividends as cli
+
+    assert cli.MALFORMED_EXIT_THRESHOLD == 5
+    assert cli._exit_code(malformed) == expected_exit
+
+
+@pytest.mark.asyncio
+async def test_documented_blank_rows_are_summarized_separately_and_do_not_fail(
+    monkeypatch, caplog
+):
+    from argparse import Namespace
+
+    from scripts import ingest_kis_ksd_dividends as cli
+
+    valid = next(
+        item["row"]
+        for item in DOCUMENTED_EXAMPLES["events"]
+        if item["kind"] == "list_info"
+    )
+    blank = DOCUMENTED_EXAMPLES["unscheduled_examples"]["list_info_blank_list_dt"]
+
+    class FakeKISClient:
+        async def ksd_list_info(self, _start: str, _end: str):
+            return [valid, blank, blank, blank, {**valid, "list_dt": "2026-13-45"}]
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(cli, "KISClient", lambda **_kwargs: FakeKISClient())
+    caplog.set_level(logging.INFO)
+
+    result = await cli.run(
+        Namespace(
+            from_date=date(2026, 11, 20),
+            to_date=date(2026, 11, 20),
+            kinds=["list_info"],
+            commit=False,
+        )
+    )
+
+    assert result == 0
+    assert "미정 생략(skipped_unscheduled)=3" in caplog.text
+    assert "정규화 실패(malformed)=1" in caplog.text
+    assert "invalid list_dt shape=9999-99-99" in caplog.text

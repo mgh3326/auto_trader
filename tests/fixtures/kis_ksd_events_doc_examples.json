@@ -56,5 +56,9 @@
       "sample": "examples_llm/domestic_stock/ksdinfo_sharehld_meet/ksdinfo_sharehld_meet.py",
       "row": {"record_date": "20261120", "sht_cd": "005930", "isin_name": "삼성전자", "gen_meet_dt": "20261201", "gen_meet_type": "정기주주총회", "agenda": "재무제표 승인", "vote_tot_qty": "1000000"}
     }
-  ]
+  ],
+  "unscheduled_examples": {
+    "source_note": "Synthetic: built from the documented list_info row (KIS examples_llm/domestic_stock/ksdinfo_list_info) with list_dt blanked. The official sample defines list_dt as 상장/등록일 but does not document a blank value; the blank meaning (no listing date assigned yet) is an unverified assumption.",
+    "list_info_blank_list_dt": {"list_dt": "", "sht_cd": "005930", "isin_name": "삼성전자", "stk_kind": "보통주", "issue_type": "신주상장", "issue_stk_qty": "250000", "tot_issue_stk_qty": "1000000", "issue_price": "72000"}
+  }
 }

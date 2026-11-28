@@ -16,6 +16,37 @@ from app.services.market_events.taxonomy import validate_category, validate_mark
 KSD_RESPONSE_LIMIT = 100
 KSD_SOURCE = "kis_ksd"
 
+# Kinds whose primary date may be blank without making the row malformed.
+# A blank here means the schedule row has no date assigned yet, so there is
+# no calendar day to place it on. The row is skipped, counted separately, and
+# never written. Other blank dates stay malformed. See the contract in
+# docs/agent-contracts/market-data-and-screener-contracts.md.
+UNSCHEDULED_BLANK_DATE_REASON: dict[str, str] = {"list_info": "no_listing_date"}
+_SHAPE_KEEP = frozenset("/-~ .")
+_DIGITS = frozenset("0123456789")
+
+
+class KSDUnscheduledRowError(ValueError):
+    """A valid KSD schedule row whose primary date is documented as blank."""
+
+    def __init__(self, kind: str, field: str, reason: str) -> None:
+        super().__init__(f"KSD row has no {field} ({reason})")
+        self.kind = kind
+        self.field = field
+        self.reason = reason
+
+
+def _shape_mask(value: str) -> str:
+    """Show the layout of an unparsed value without logging its content.
+
+    Digits become ``9``, separators are kept, and anything else becomes ``?``.
+    """
+    head = value[:24]
+    masked = "".join(
+        "9" if ch in _DIGITS else ch if ch in _SHAPE_KEEP else "?" for ch in head
+    )
+    return masked + ("+" if len(value) > 24 else "")
+
 
 @dataclass(frozen=True)
 class KSDEventFetch:
@@ -179,7 +210,7 @@ def _parse_date(value: Any, field: str, *, required: bool = True) -> date | None
             return datetime.strptime(value, date_format).date()
         except ValueError:
             continue
-    raise ValueError(f"KSD row has invalid {field}")
+    raise ValueError(f"KSD row has invalid {field} shape={_shape_mask(value)}")
 
 
 def _parse_amount(value: Any) -> Decimal | None:
@@ -311,7 +342,14 @@ def normalize_ksd_event_row(
     except KeyError as exc:
         raise ValueError(f"Unsupported KSD event kind: {kind}") from exc
 
-    event_date = _parse_date(row.get(spec.date_field), spec.date_field)
+    raw_event_date = row.get(spec.date_field)
+    if kind in UNSCHEDULED_BLANK_DATE_REASON and (
+        raw_event_date is None or raw_event_date == ""
+    ):
+        raise KSDUnscheduledRowError(
+            kind, spec.date_field, UNSCHEDULED_BLANK_DATE_REASON[kind]
+        )
+    event_date = _parse_date(raw_event_date, spec.date_field)
     assert event_date is not None
     raw_symbol = str(row.get("sht_cd") or "").strip()
     if len(raw_symbol) != 6 or not raw_symbol.isascii() or not raw_symbol.isalnum():
