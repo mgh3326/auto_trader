@@ -60,5 +60,10 @@
   "unscheduled_examples": {
     "source_note": "Synthetic: built from the documented list_info row (KIS examples_llm/domestic_stock/ksdinfo_list_info) with list_dt blanked. The official sample defines list_dt as 상장/등록일 but does not document a blank value; the blank meaning (no listing date assigned yet) is an unverified assumption.",
     "list_info_blank_list_dt": {"list_dt": "", "sht_cd": "005930", "isin_name": "삼성전자", "stk_kind": "보통주", "issue_type": "신주상장", "issue_stk_qty": "250000", "tot_issue_stk_qty": "1000000", "issue_price": "72000"}
+  },
+  "depo_range_examples": {
+    "source_note": "Observed on 2026-11-28 (pi, read-only capture, mand_deposit 20261101..20261231, 20/20 rows with depo_date shape YYYY/MM/DD ~ YYYY/MM/DD). Only these three fields were captured; no account data. Symbols and depo_reason are public listing data.",
+    "range_with_one_year": {"sht_cd": "035420", "depo_date": "2026/11/27 ~ 2027/11/27", "depo_reason": "모집매출"},
+    "range_ending_new_year": {"sht_cd": "0039P0", "depo_date": "2026/11/27 ~ 2027/01/01", "depo_reason": "-"}
   }
 }

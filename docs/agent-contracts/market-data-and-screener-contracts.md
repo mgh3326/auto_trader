@@ -1430,7 +1430,7 @@ truncated_windows로 반환한다. 호출자는 각 절단 창을 경고한다.
 
 **정규화 실패와 미정 일정 (hk 7106)**: 세 가지를 구분해 센다.
 - `skipped_unscheduled`: `list_info`의 `list_dt`가 비어 있으면(`""` 또는 없음) 날짜가 아직 배정되지 않은 정상 일정 행이다. 달력 날짜가 없어 어디에도 놓을 수 없으므로 저장하지 않고 `KSDUnscheduledRowError(reason=no_listing_date)`로 건너뛰며 실행 요약에 따로 센다. 공식 샘플은 `list_dt`를 상장/등록일로 정의하지만 빈 값의 뜻은 문서화하지 않는다. 이 해석은 **미검증 가정**이며 실제 빈 행 한 건으로 확인해야 한다.
-- `malformed`: 나머지 모든 정규화 실패다. 빈 값을 포함한다. 파싱할 수 없는 값은 형태 마스크만 남긴다(숫자는 `9`, 구분자 `/ - ~ . ` 공백은 유지, 그 밖은 `?`, 24자 제한). 값 자체는 로그에 남기지 않는다. `mand_deposit.depo_date`처럼 형태를 확인하지 못한 값은 파싱하지 않고 malformed로 둔다. 관측된 형태를 확인하기 전에는 추측으로 파싱하지 않는다.
+- `malformed`: 나머지 모든 정규화 실패다. 빈 값을 포함한다. 파싱할 수 없는 값은 형태 마스크만 남긴다(숫자는 `9`, 구분자 `/ - ~ . ` 공백은 유지, 그 밖은 `?`, 24자 제한). 값 자체는 로그에 남기지 않는다. `mand_deposit.depo_date`는 2026-11-28 pi 읽기 전용 관측(mand_deposit 20261101..20261231, 20/20행)에서 항상 `YYYY/MM/DD ~ YYYY/MM/DD`이었다. 이 형태만 파싱한다. 시작일은 `event_date`, 종료일은 `value_details.deposit_end`(ISO)와 `raw_payload_json.deposit_end`에 둔다. 종료일이 시작일보다 이르거나 형태가 다르면 malformed다. 단일 날짜는 기존 규칙대로 받는다. `depo_reason`의 `-` 같은 값은 원문 문자열로 둔다. `list_info.list_dt`의 빈 값 가정은 같은 관측에서 확인되지 않았다(window 내 8자리 100/100행). 그대로 가정으로 둔다.
 - 🔴 **종료 코드 규칙**: 실행은 `malformed`가 `MALFORMED_EXIT_THRESHOLD`(5)를 넘을 때만 1로 끝난다. `skipped_unscheduled`는 종료 코드에 들지 않는다. 전송·HTTP 오류는 예외로 올라가 여전히 비정상 종료한다. 절단 구간은 경고와 요약에 남기며 종료 코드를 바꾸지 않는다. 임계값 5는 정책상 작은 값이며 운영자 확인 대상이다.
 - 요약 로그 형식: `KSD 저장=N, 정규화 실패(malformed)=M, 미정 생략(skipped_unscheduled)=K, 절단 구간=T`(dry-run은 `dry-run 조회·정규화=N, 저장=0, …`). 테스트 `tests/services/market_events/test_kis_ksd_events.py`가 이 규칙을 고정한다.
 
