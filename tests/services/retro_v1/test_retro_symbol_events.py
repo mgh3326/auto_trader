@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.models.market_events import MarketEvent
+from app.services.market_events.crypto_notices import normalize_upbit_notice
+from app.services.market_events.normalizers import normalize_dart_disclosure_row
 from app.services.market_events.repository import CollectionFailure
+from app.services.market_events.sec_edgar import normalize_sec_filing
 from app.services.retro_v1 import RetroReadError, read_retro_symbol_events
 from app.services.retro_v1 import retro_symbol_events as rse
+from app.services.retro_v1 import symbol_event_versions as versions
 from app.services.retro_v1.market import resolve_market
 from app.services.retro_v1.symbol_event_versions import (
     INSERT_ONLY_SOURCES,
@@ -456,18 +461,6 @@ async def test_an_unrecorded_publication_is_never_filled_from_another_column() -
 @pytest.mark.asyncio
 async def test_provenance_rows_after_the_cutoff_are_left_out() -> None:
     current = sec_event()
-
-    def provenance(received: datetime, source_event_id: str) -> Any:
-        from types import SimpleNamespace
-
-        return SimpleNamespace(
-            event_id=1,
-            source="sec",
-            source_event_id=source_event_id,
-            source_url=None,
-            first_received_at=received,
-        )
-
     response = await read(
         session(
             events=[current],
@@ -505,6 +498,250 @@ async def test_no_raw_payload_text_or_foreign_link_leaves_the_reader() -> None:
     assert row["sources"] == [
         {"source": "upbit_notice", "first_received_at": "2026-11-21T00:00:00Z"}
     ]
+
+
+# --------------------------------------------------------------------------
+# review follow-ups (hk 7094): URL vintage, data_as_of, the provenance cap
+# --------------------------------------------------------------------------
+ACCESSION = "0001045810-26-000001"
+SEC_URL = "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/a.htm"
+LATER_SEC_URL = (
+    "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/later.htm"
+)
+
+
+def sec_payload(**kw: Any) -> dict[str, Any]:
+    """The part of a stored SEC revision payload that names the document."""
+    raw: dict[str, Any] = {
+        "accessionNumber": ACCESSION,
+        "filingDate": "2026-11-20",
+        "edgar_cik": "0001045810",
+        "primaryDocument": "a.htm",
+    }
+    raw.update(kw)
+    return raw
+
+
+def source_urls(response: dict[str, Any]) -> list[str | None]:
+    return [
+        entry.get("source_url")
+        for row in events_of(response)
+        for entry in row["sources"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "later_revision",
+    [
+        pytest.param(True, id="superseded_by_a_revision"),
+        pytest.param(False, id="row_touched_without_a_revision"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_sec_url_after_the_cutoff_comes_from_the_revision(
+    later_revision: bool,
+) -> None:
+    current = sec_event(updated_at=AFTER, source_url=LATER_SEC_URL)
+    log = [revision(current, 1, BEFORE, sec_payload())]
+    if later_revision:
+        log.append(
+            revision(current, 2, AFTER, sec_payload(primaryDocument="later.htm"))
+        )
+    response = await read(session(events=[current], revisions=log), symbol="NVDA")
+    assert source_urls(response) == [SEC_URL]
+    assert "later.htm" not in json.dumps(response)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"filingDate": "2026-11-20"}, id="no_cik"),
+        pytest.param(sec_payload(edgar_cik="../../x"), id="malformed_cik"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_sec_url_the_revision_cannot_prove_has_no_key(
+    payload: dict[str, Any],
+) -> None:
+    current = sec_event(updated_at=AFTER, source_url=LATER_SEC_URL)
+    log = [revision(current, 1, BEFORE, payload), revision(current, 2, AFTER, payload)]
+    response = await read(session(events=[current], revisions=log), symbol="NVDA")
+    assert source_urls(response) == [None]
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_upbit_url_is_built_from_the_notice_id() -> None:
+    current = notice_event(
+        1,
+        updated_at=AFTER,
+        source_url="https://upbit.com/service_center/notice?id=999999",
+    )
+    created = datetime(2026, 11, 20, 3, 0, tzinfo=UTC)
+    log = [
+        revision(
+            current, 1, BEFORE, {"title": "안내 (XYZ)"}, provider_created_at=created
+        ),
+        revision(
+            current, 2, AFTER, {"title": "정정 (XYZ)"}, provider_created_at=created
+        ),
+    ]
+    response = await read(
+        session(events=[current], revisions=log, bar_table="public.crypto_candles_1d"),
+        symbol="KRW-XYZ",
+    )
+    assert source_urls(response) == ["https://upbit.com/service_center/notice?id=5001"]
+    assert "999999" not in json.dumps(response)
+
+
+@pytest.mark.asyncio
+async def test_a_rewritten_dart_url_is_derived_from_the_receipt_number() -> None:
+    rewritten = event(
+        1, updated_at=AFTER, source_url="https://dart.fss.or.kr/written/later"
+    )
+    response = await read(session(events=[rewritten]))
+    assert source_urls(response) == [
+        "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261120000001"
+    ]
+    assert "written/later" not in json.dumps(response)
+    # an id that is not a receipt number proves no document
+    odd = event(1, updated_at=AFTER, source_event_id="legacy-1")
+    response = await read(session(events=[odd]))
+    assert source_urls(response) == [None]
+
+
+def test_the_rebuilt_urls_are_the_writers_urls() -> None:
+    received = datetime(2026, 11, 20, 22, 0, tzinfo=UTC)
+    for document in ("a.htm", "xsl/a.xml", None, "../up.htm"):
+        written = normalize_sec_filing(
+            {**sec_payload(primaryDocument=document), "form": "8-K"},
+            cik=1045810,
+            symbol="NVDA",
+            symbols=["NVDA"],
+            company_name=None,
+            received_at=received,
+        )
+        stored = versions.StoredRevision(1, received, None, written["raw_payload_json"])
+        assert versions._sec_url(ACCESSION, stored) == written["source_url"]
+    notice = normalize_upbit_notice(
+        {
+            "id": 5001,
+            "title": "안내",
+            "category": "거래",
+            "first_listed_at": "2026-11-20T12:00:00+09:00",
+            "listed_at": "2026-11-20T12:00:00+09:00",
+        },
+        known_tickers=(),
+        received_at=received,
+    )
+    assert versions._upbit_url(notice["source_event_id"]) == notice["source_url"]
+    filing = normalize_dart_disclosure_row(
+        {
+            "rcept_no": "20261120000001",
+            "rcept_dt": "20261120",
+            "stock_code": "005930",
+            "corp_name": "삼성전자",
+            "report_nm": "단일판매ㆍ공급계약체결",
+        }
+    )
+    assert versions._dart_url("20261120000001") == filing[0]["source_url"]
+
+
+STORED = CUTOFF - timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+async def test_data_as_of_is_the_as_of_revisions_observation_when_superseded() -> None:
+    current = benzinga_event(1, updated_at=AFTER)
+    log = [
+        revision(current, 1, STORED, benzinga_row()),
+        revision(current, 2, AFTER, benzinga_row(eps="9.99")),
+    ]
+    response = await read(session(events=[current], revisions=log), symbol="NVDA")
+    assert response["data_as_of"] == "2026-11-22T23:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("observed", "updated"),
+    [
+        pytest.param(STORED, BEFORE, id="newer_revision"),
+        pytest.param(BEFORE, STORED, id="newer_row_write"),
+        pytest.param(STORED, AFTER, id="row_touched_after_the_cutoff"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_data_as_of_of_a_current_version_is_its_newest_stored_instant(
+    observed: datetime, updated: datetime
+) -> None:
+    current = sec_event(updated_at=updated)
+    log = [revision(current, 1, observed, sec_payload())]
+    response = await read(session(events=[current], revisions=log), symbol="NVDA")
+    assert response["data_as_of"] == "2026-11-22T23:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_data_as_of_of_a_row_without_a_log_is_its_last_write() -> None:
+    response = await read(session(events=[event(1, updated_at=STORED)]))
+    assert response["data_as_of"] == "2026-11-22T23:00:00Z"
+    # written after the cutoff: only the receipt is a proven stored instant
+    for row in (
+        event(1, updated_at=AFTER),
+        event(1, source="naver_disclosure", source_url=None, updated_at=AFTER),
+    ):
+        response = await read(session(events=[row]))
+        assert len(events_of(response)) == 1
+        assert response["data_as_of"] == "2026-11-21T00:00:00Z"
+
+
+def provenance(received: datetime, source_event_id: str) -> Any:
+    return SimpleNamespace(
+        event_id=1,
+        source="sec",
+        source_event_id=source_event_id,
+        source_url=None,
+        first_received_at=received,
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_as_of_covers_the_provenance_entries_shown() -> None:
+    response = await read(
+        session(
+            events=[sec_event()],
+            sources=[provenance(STORED, "later-1"), provenance(AFTER, "after-1")],
+        ),
+        symbol="NVDA",
+    )
+    assert response["data_as_of"] == "2026-11-22T23:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_a_capped_provenance_read_is_incomplete(monkeypatch) -> None:
+    monkeypatch.setattr(rse, "MAX_SOURCE_ROWS", 2)
+    response = await read(
+        session(
+            events=[sec_event()],
+            sources=[provenance(BEFORE, "one"), provenance(BEFORE, "two")],
+        ),
+        symbol="NVDA",
+    )
+    assert len(events_of(response)) == 1
+    assert response["total"] is None
+    pairs = unknown_pairs(response)
+    assert ("source.event_sources", "incomplete_evidence") in pairs
+    assert ("total", "count_unavailable") in pairs
+    # the provenance read decides no exclusion, so those counts stay counted
+    assert response["excluded_after_cutoff"] == {"events": 0, "bars": 0}
+    assert response["excluded_unproven"] == {"events": 0, "bars": 0}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_provenance_read_claims_no_total() -> None:
+    response = await read(
+        session(events=[sec_event()], sources=operational_error()), symbol="NVDA"
+    )
+    assert len(events_of(response)) == 1
+    assert response["total"] is None
+    assert ("source.event_sources", "upstream_error") in unknown_pairs(response)
 
 
 @pytest.mark.parametrize(
@@ -718,7 +955,7 @@ def test_an_unproven_zero_is_a_gap_on_expected_days_only() -> None:
     zero = [partition(saturday, "succeeded", event_count=0)]
     assert rse.collection_gaps(zero, kr, saturday, saturday, saturday) == []
     # no collector proves a zero yet
-    assert rse.PROVEN_ZERO_SOURCES == frozenset()
+    assert dict(rse.PROVEN_ZERO_CUTOVERS) == {}
 
 
 @pytest.mark.asyncio
@@ -733,6 +970,85 @@ async def test_an_unproven_zero_never_advances_latest_collected() -> None:
     assert "event_count >" in newest and "status =" in newest
 
 
+CUTOVER = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("finished_at", "reasons"),
+    [
+        pytest.param(CUTOVER - timedelta(seconds=1), ["unproven_zero"], id="before"),
+        pytest.param(None, ["unproven_zero"], id="never_finished"),
+        pytest.param(CUTOVER, [], id="at_the_cutover"),
+        pytest.param(CUTOVER + timedelta(days=1), [], id="after"),
+    ],
+)
+def test_a_listed_source_proves_only_zeros_finished_after_its_cutover(
+    monkeypatch, finished_at: datetime | None, reasons: list[str]
+) -> None:
+    monkeypatch.setattr(rse, "PROVEN_ZERO_CUTOVERS", {"dart": CUTOVER}, raising=False)
+    kr = SOURCES_BY_MARKET["kr"]
+    zero = [partition(DAY, "succeeded", event_count=0, finished_at=finished_at)]
+    gaps = rse.collection_gaps(zero, kr, DAY, DAY, DAY)
+    assert [g["reason"] for g in gaps] == reasons
+    # another source's cutover proves nothing here
+    other = [
+        partition(
+            DAY,
+            "succeeded",
+            source="benzinga",
+            category="split",
+            event_count=0,
+            finished_at=finished_at,
+        )
+    ]
+    gaps = rse.collection_gaps(other, SOURCES_BY_MARKET["us"], DAY, DAY, DAY)
+    assert [g["reason"] for g in gaps] == ["unproven_zero"]
+
+
+@pytest.mark.asyncio
+async def test_latest_collected_applies_the_cutover_in_the_query(monkeypatch) -> None:
+    monkeypatch.setattr(rse, "PROVEN_ZERO_CUTOVERS", {"dart": CUTOVER}, raising=False)
+    fake = session()
+    await read(fake)
+    newest = next(s for s in fake.statements if "max(" in s.lower())
+    assert "event_count >" in newest
+    assert "market_event_ingestion_partitions.finished_at >=" in newest
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_collector_has_a_named_reason_and_no_pending_gap() -> None:
+    rows = [
+        partition(DAY - timedelta(days=1), "pending", source="sec"),
+        partition(DAY, "failed", source="sec", last_error="timeout"),
+    ]
+    response = await read(
+        session(partitions=rows, bar_table="public.us_candles_1d"),
+        symbol="NVDA",
+        from_=DAY - timedelta(days=1),
+        to=DAY,
+    )
+    collection = response["collection"]
+    assert [(g["source"], g["date"], g["reason"]) for g in collection["gaps"]] == [
+        ("sec", "2026-11-20", "timeout")
+    ]
+    assert collection["latest_collected"]["sec"] is None
+    reasons = {
+        reason
+        for field, reason in unknown_pairs(response)
+        if field == "collection.latest_collected.sec"
+    }
+    assert reasons == {"scoped_collection"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_partition_read_gives_no_scoped_reason() -> None:
+    response = await read(
+        session(partitions=operational_error(), bar_table="public.us_candles_1d"),
+        symbol="NVDA",
+    )
+    assert "scoped_collection" not in {r for _, r in unknown_pairs(response)}
+
+
 def test_us_sources_have_no_expected_days() -> None:
     rows = [
         partition(DAY, "pending", source="sec"),
@@ -744,10 +1060,10 @@ def test_us_sources_have_no_expected_days() -> None:
     us = SOURCES_BY_MARKET["us"]
     gaps = rse.collection_gaps(rows, us, DAY, DAY, date(2026, 11, 28))
     # a missing row says nothing for these sources
+    # sec runs are symbol-scoped: their pending rows are not gaps (hk 7093)
     assert sorted((g["source"], g["category"], g["reason"]) for g in gaps) == [
         ("benzinga", "earnings", "pending"),
         ("benzinga", "split", "unproven_zero"),
-        ("sec", "disclosure", "pending"),
         ("sec", "disclosure", "timeout"),
     ]
 
@@ -763,7 +1079,7 @@ async def test_expected_days_are_only_counted_for_the_kr_market() -> None:
         "benzinga": None,
     }
     pairs = unknown_pairs(response)
-    assert ("collection.latest_collected.sec", "missing_data") in pairs
+    assert ("collection.latest_collected.sec", "scoped_collection") in pairs
     assert ("collection.latest_collected.benzinga", "missing_data") in pairs
 
 
@@ -877,6 +1193,7 @@ def test_source_sets_agree() -> None:
     )
     assert REVISIONED_SOURCES | INSERT_ONLY_SOURCES | {"dart"} == official
     assert not REVISIONED_SOURCES & INSERT_ONLY_SOURCES
+    assert rse._SCOPED <= rse._PARTITIONED
 
 
 def test_event_ref_matches_the_model_ref() -> None:

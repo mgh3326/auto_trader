@@ -27,9 +27,10 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from types import MappingProxyType
 from typing import Any, Final
 from urllib.parse import parse_qsl, urlsplit
 
@@ -125,9 +126,16 @@ _OFFICIAL_SOURCES: Final = frozenset(
 _PARTITIONED: Final = frozenset({"dart", "sec", "benzinga"})
 #: Sources expected to have a partition on every XKRX session.
 _SESSION_EXPECTED: Final = frozenset({"dart"})
+#: Sources whose every run covers only a requested subset (sec: symbols or CIKs):
+#: a clean run leaves its day ``pending`` for good, so that is not a gap and no
+#: day is claimed complete (design 6400 §3.3, hk 7093).
+_SCOPED: Final = frozenset({"sec"})
 #: Closed list of sources whose ``succeeded`` + 0 events proves a complete empty
-#: list. No collector proves it yet (design 6400 §3.3, hk 7091).
-PROVEN_ZERO_SOURCES: Final[frozenset[str]] = frozenset()
+#: list, each with the instant its compliant collector went live. Only a row
+#: finished at or after that instant counts: an older zero may come from a writer
+#: that skipped unparseable rows. No collector proves a zero yet (design 6400
+#: §3.3, hk 7091, hk 7093).
+PROVEN_ZERO_CUTOVERS: Final[Mapping[str, datetime]] = MappingProxyType({})
 #: Closed failure codes a v2 writer stores in ``last_error``; a copy of
 #: ``market_events.repository.CollectionFailure`` (that module is a writer the
 #: retro import guard keeps out), pinned by a test.
@@ -326,10 +334,7 @@ def event_body(
     assert event.first_received_at is not None
     entries = [
         _source_entry(p.source, p.source_event_id, p.source_url, p.first_received_at)
-        for p in provenance
-        if p.source in _OFFICIAL_SOURCES
-        and p.first_received_at is not None
-        and p.first_received_at <= cutoff
+        for p in _known_provenance(provenance, cutoff)
     ]
     if not entries:
         entries = [
@@ -535,6 +540,19 @@ Timed = tuple[tuple[date, datetime, int, str], Row, datetime]
 """``(sort key, row, newest stored instant behind the row)``."""
 
 
+def _known_provenance(
+    provenance: Sequence[Provenance], cutoff: datetime
+) -> list[Provenance]:
+    """The official provenance rows received by the cutoff: the ones shown."""
+    return [
+        p
+        for p in provenance
+        if p.source in _OFFICIAL_SOURCES
+        and p.first_received_at is not None
+        and p.first_received_at <= cutoff
+    ]
+
+
 async def _events(
     session: AsyncSession,
     unknowns: Unknowns,
@@ -608,9 +626,12 @@ async def _events(
     async def provenance_rows() -> list[Any]:
         return await _read_provenance(session, [e.id for e, _ in shown])
 
-    sources, _ = await guarded(
+    sources, sources_ok = await guarded(
         session, unknowns, "source.event_sources", provenance_rows, []
     )
+    if sources_ok and len(sources) >= MAX_SOURCE_ROWS:
+        unknowns.note("source.event_sources", "incomplete_evidence")
+        sources_ok = False
     provenance: dict[int, list[Provenance]] = defaultdict(list)
     for p in sources:
         provenance[p.event_id].append(
@@ -619,15 +640,25 @@ async def _events(
 
     rows: list[Timed] = []
     for event, version in shown:
-        body = event_body(
-            event, version, provenance.get(event.id, []), market, symbol, cutoff
+        entries = provenance.get(event.id, [])
+        body = event_body(event, version, entries, market, symbol, cutoff)
+        received_at = event.first_received_at
+        assert received_at is not None
+        key = (version.event_date, received_at, 1, body[0]["event_ref"])
+        stored_at = latest(
+            [
+                received_at,
+                version.stored_at,
+                *(p.first_received_at for p in _known_provenance(entries, cutoff)),
+            ]
         )
-        assert event.first_received_at is not None
-        key = (version.event_date, event.first_received_at, 1, body[0]["event_ref"])
-        rows.append((key, body, event.first_received_at))
+        assert stored_at is not None
+        rows.append((key, body, stored_at))
     if not complete:
         counts.lose()
-    return rows, counts, complete
+    # A cut-off or failed provenance read changes no exclusion count, but the
+    # response is incomplete, so no total is claimed.
+    return rows, counts, complete and sources_ok
 
 
 async def _bars(
@@ -683,12 +714,23 @@ async def _bars(
 # --------------------------------------------------------------------------
 # collection
 # --------------------------------------------------------------------------
+def _proven_zero(row: Any) -> bool:
+    cutover = PROVEN_ZERO_CUTOVERS.get(row.source)
+    return (
+        cutover is not None
+        and row.finished_at is not None
+        and row.finished_at >= cutover
+    )
+
+
 def _partition_gap(row: Any) -> str | None:
-    """The closed gap reason of one stored partition, or ``None`` when covered."""
+    """The closed gap reason of one stored partition, or ``None`` for no gap."""
     if row.status == "succeeded":
-        if row.event_count > 0 or row.source in PROVEN_ZERO_SOURCES:
+        if row.event_count > 0 or _proven_zero(row):
             return None
         return "unproven_zero"
+    if row.status == "pending" and row.source in _SCOPED:
+        return None
     if row.status in {"pending", "running", "partial"}:
         return row.status
     return row.last_error if row.last_error in FAILURE_CODES else "failed"
@@ -705,7 +747,8 @@ def collection_gaps(
 
     A DART day counts only when XKRX is open (or the calendar cannot say), and
     such a day without a partition is a gap up to ``today``. No other source is
-    expected on any day, so only its stored rows are judged.
+    expected on any day, so only its stored rows are judged; a scoped source's
+    ``pending`` row is no gap.
     """
     gaps: list[tuple[str, str, date, str]] = []
     collected: set[tuple[str, date]] = set()
@@ -764,17 +807,22 @@ async def _collection(
                 p.status,
                 p.event_count,
                 p.last_error,
+                p.finished_at,
             )
             .where(*scope, p.partition_date >= start, p.partition_date <= end)
             .order_by(p.partition_date, p.source, p.category)
             .limit(MAX_SOURCE_ROWS)
         )
+        proven_zeros = [
+            and_(p.source == name, p.finished_at >= cutover)
+            for name, cutover in sorted(PROVEN_ZERO_CUTOVERS.items())
+        ]
         newest = (
             select(p.source, func.max(p.partition_date).label("latest"))
             .where(
                 *scope,
                 p.status == "succeeded",
-                or_(p.event_count > 0, p.source.in_(sorted(PROVEN_ZERO_SOURCES))),
+                or_(p.event_count > 0, *proven_zeros),
             )
             .group_by(p.source)
             .order_by(p.source)
@@ -799,7 +847,8 @@ async def _collection(
         if name not in _PARTITIONED:
             unknowns.note(field, "no_partition")
         elif day is None and ok:
-            unknowns.note(field, "missing_data")
+            reason = "scoped_collection" if name in _SCOPED else "missing_data"
+            unknowns.note(field, reason)
     gaps = collection_gaps(partitions, names, start, end, today) if ok else None
     truncated = gaps is not None and len(gaps) > _MAX_GAPS
     return {

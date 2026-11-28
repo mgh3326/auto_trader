@@ -36,6 +36,7 @@ from app.services.market_events.ingestion import ingest_kr_disclosures_for_date
 from app.services.market_events.repository import MarketEventsRepository
 from app.services.market_events.sec_edgar import collect_sec_filings
 from app.services.retro_v1 import read_retro_symbol_events
+from app.services.retro_v1 import retro_symbol_events as rse
 from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import market_events_test_lock
 from tests.services.retro_v1.support import validate
@@ -344,3 +345,47 @@ async def test_sample_3_upbit_designation_and_release(db) -> None:
         "collection.latest_collected.upbit_notice",
         "collection.latest_collected.bithumb_notice",
     }
+
+
+async def test_a_zero_is_proven_only_after_the_sources_cutover(db, monkeypatch) -> None:
+    # Far-future days so no other suite's partition can be the newest one.
+    first, second = date(2098, 1, 2), date(2098, 1, 3)
+    cutover = datetime(2098, 1, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(rse, "PROVEN_ZERO_CUTOVERS", {"benzinga": cutover})
+    mine = MarketEventIngestionPartition.partition_date.in_([first, second])
+    await db.execute(delete(MarketEventIngestionPartition).where(mine))
+    db.add_all(
+        MarketEventIngestionPartition(
+            source="benzinga",
+            category="earnings",
+            market="us",
+            partition_date=day,
+            status="succeeded",
+            event_count=0,
+            finished_at=finished_at,
+        )
+        for day, finished_at in (
+            (first, cutover),
+            (second, cutover - timedelta(seconds=1)),
+        )
+    )
+    try:
+        response = await _retro(
+            db, symbol=US, known_cutoff=_at(26, 0), from_=first, to=second
+        )
+        collection = response["collection"]
+        assert collection["latest_collected"]["benzinga"] == "2098-01-02"
+        assert [(g["date"], g["reason"]) for g in collection["gaps"]] == [
+            ("2098-01-03", "unproven_zero")
+        ]
+        # with no listed source, neither zero counts
+        monkeypatch.setattr(rse, "PROVEN_ZERO_CUTOVERS", {})
+        response = await _retro(
+            db, symbol=US, known_cutoff=_at(26, 0), from_=first, to=second
+        )
+        assert response["collection"]["latest_collected"]["benzinga"] is None
+        assert len(response["collection"]["gaps"]) == 2
+    finally:
+        await db.rollback()
+        await db.execute(delete(MarketEventIngestionPartition).where(mine))
+        await db.commit()
