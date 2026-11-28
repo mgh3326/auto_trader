@@ -11,8 +11,10 @@ Additive. ``review.execution_account_control`` (hk 5441) gets:
   A system writer can never unfreeze; unfreezing stays the operator command.
 
 The existing DELETE/TRUNCATE triggers stay. ``at_app`` gets the same
-privileges conditionally (hard rule 18). ``downgrade`` refuses while any new
-account row or any ``DAILY_LOSS_FREEZE`` row exists.
+privileges conditionally (hard rule 18). ``downgrade`` refuses while
+operator-produced state exists — a new account row changed away from its
+``GLOBAL_FREEZE`` seed, or any ``DAILY_LOSS_FREEZE`` row — and otherwise removes
+exactly the seeded rows.
 """
 
 # expand-contract: contract-step 7119
@@ -38,6 +40,11 @@ NEW_ACCOUNTS: tuple[str, ...] = (
     "toss_live_us",
 )
 SYSTEM_WRITER = "system:daily_loss_monitor"
+#: Only the upgrade writes this exact row shape. Anything else on a new account
+#: (an operator arm, a monitor or operator freeze) or a ``DAILY_LOSS_FREEZE`` on
+#: any account is operator-produced state the downgrade must not forget.
+SEED_REASON = "initial_control_row"
+SEED_WRITER = "migration-hk7119"
 _RESTRICT = "USING ERRCODE = 'restrict_violation'"
 
 ACCOUNT_CHECK = (
@@ -84,8 +91,8 @@ UPGRADE_DDL: tuple[str, ...] = (
     """,
     *(
         f"INSERT INTO {TABLE} (account, mode, reason, updated_by) "
-        f"VALUES ('{account}', 'GLOBAL_FREEZE', 'initial_control_row', "
-        "'migration-hk7119') ON CONFLICT (account) DO NOTHING"
+        f"VALUES ('{account}', 'GLOBAL_FREEZE', '{SEED_REASON}', "
+        f"'{SEED_WRITER}') ON CONFLICT (account) DO NOTHING"
         for account in NEW_ACCOUNTS
     ),
 )
@@ -109,14 +116,36 @@ def downgrade() -> None:
     count = bind.execute(
         sa.text(
             f"SELECT count(*) FROM {TABLE} "
-            "WHERE account = ANY(:accounts) OR mode = 'DAILY_LOSS_FREEZE'"
+            "WHERE mode = 'DAILY_LOSS_FREEZE' "
+            "OR (account = ANY(:accounts) AND ("
+            f"mode IS DISTINCT FROM 'GLOBAL_FREEZE' "
+            f"OR reason IS DISTINCT FROM '{SEED_REASON}' "
+            f"OR updated_by IS DISTINCT FROM '{SEED_WRITER}'))"
         ),
         {"accounts": list(NEW_ACCOUNTS)},
     ).scalar_one()
     if count:
         raise RuntimeError(
-            f"refusing downgrade: {count} hk 7119 account control rows exist"
+            f"refusing downgrade: {count} hk 7119 account control rows "
+            "hold operator or monitor state"
         )
+    # The hk 5441 DELETE trigger makes the table append-only. The migration
+    # owns the table: lift it for this one statement and restore it in the same
+    # transaction.
+    op.execute(
+        f"ALTER TABLE {TABLE} DISABLE TRIGGER trg_execution_account_control_delete"
+    )
+    bind.execute(
+        sa.text(
+            f"DELETE FROM {TABLE} WHERE account = ANY(:accounts) "
+            f"AND mode = 'GLOBAL_FREEZE' AND reason = '{SEED_REASON}' "
+            f"AND updated_by = '{SEED_WRITER}'"
+        ),
+        {"accounts": list(NEW_ACCOUNTS)},
+    )
+    op.execute(
+        f"ALTER TABLE {TABLE} ENABLE TRIGGER trg_execution_account_control_delete"
+    )
     op.execute(
         f"DROP TRIGGER IF EXISTS trg_execution_account_control_update ON {TABLE}"
     )
