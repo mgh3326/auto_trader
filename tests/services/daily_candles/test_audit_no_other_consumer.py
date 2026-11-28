@@ -40,6 +40,10 @@ ALLOWED = {
     # readers, to say whether the last closed day is present. No write, broker
     # call or schedule; the output is one data_gaps row or nothing.
     "app/services/retro_v1/data_gaps.py",
+    # hk 6410: retro_symbol_events reads completed crypto daily closes for the
+    # retro/v1 symbol timeline inside the same one READ ONLY snapshot as the
+    # other retro/v1 readers. No write, broker call or schedule.
+    "app/services/retro_v1/retro_symbol_events.py",
 }
 
 
