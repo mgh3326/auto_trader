@@ -61,13 +61,17 @@ def _inputs(**kw) -> DecisionInputs:
         "plan_version": 3,
         "latest_plan_change_seq": 3,
         "confirmed_net_quantity": Decimal("100"),
+        "working_sell_quantity": Decimal("0"),
         "budget_remaining_quantity": Decimal("100"),
+        "budget_remaining_notional_krw": Decimal("100000000"),
+        "amend_target_quantity": None,
         "halt_suspect": False,
         "trading_flag_blocked": False,
         "price_kind": "last_trade",
         "book": _book(),
         "in_fill_window": True,
         "spread_limits": SPREADS,
+        "toss_us_sessions": frozenset({"regular"}),
         "now": NOW,
     }
     base.update(kw)
@@ -237,30 +241,76 @@ def test_us_caps_use_publish_fx(case, fx, qty, price, expected):
     assert _code(inputs) is expected, case
 
 
-def test_market_order_without_bound_is_unverifiable():
-    inputs = _inputs(child=_child(order_type="market", limit_price=None))
-    assert _code(inputs) is R.ORDER_CAP_UNVERIFIABLE
-    bounded = _inputs(
-        child=_child(
-            order_type="market", limit_price=None, price_bound=Decimal("10000")
-        )
+@pytest.mark.parametrize(
+    ("account", "sess", "fx"),
+    [
+        ("kis_live", S.KRX_REGULAR, None),
+        ("toss_live", S.US_REGULAR, Decimal("1400")),
+    ],
+)
+def test_market_orders_are_never_accepted(account, sess, fx):
+    # No broker request enforces a price bound, so the cap cannot hold.
+    inputs = _inputs(
+        account=account,
+        session=sess,
+        fx_krw_per_unit=fx,
+        child=_child(order_type="market", limit_price=None, quantity=Decimal("3")),
     )
-    assert ad.decide(bounded).allowed
+    assert _code(inputs) is R.ORDER_FORM_NOT_ACCEPTED
 
 
-def test_toss_amount_order_has_no_one_share_exception():
-    base = {"account": "toss_live", "session": S.KRX_REGULAR}
-    ok = _inputs(
-        child=_child(
-            quantity=None, limit_price=Decimal("10000"), amount=Decimal("2000000")
-        ),
+@pytest.mark.parametrize(
+    ("qty", "price", "arming", "expected"),
+    [
+        ("1", "6000000", Arming.LIVE_FULL, R.ORDER_CAP_EXCEEDED),
+        ("1", "1500000", Arming.LIVE_HALF, R.ARMING_HALF_CAP),
+        ("0.3", "6000000", Arming.LIVE_FULL, None),  # 1,800,000 KRW
+    ],
+)
+def test_one_share_exception_is_shares_only(qty, price, arming, expected):
+    inputs = _inputs(
+        account="upbit_live",
+        session=S.CRYPTO_24H,
+        arming=arming,
+        child=_child(quantity=Decimal(qty), limit_price=Decimal(price)),
+        book=_book(str(Decimal(price) - 1), price),
+    )
+    assert _code(inputs) is expected
+
+
+AMOUNT_CASES = [
+    ("within", "2000000", "100000000", None),
+    ("over_cap", "2000001", "100000000", R.ORDER_CAP_EXCEEDED),
+    ("over_budget", "1500000", "1000000", R.BUDGET_EXCEEDED),
+    ("budget_unknown", "1500000", None, R.BUDGET_UNVERIFIED),
+]
+
+
+@pytest.mark.parametrize(("case", "amount", "budget", "expected"), AMOUNT_CASES)
+def test_toss_amount_buy_uses_notional_budget(case, amount, budget, expected):
+    inputs = _inputs(
+        account="toss_live",
+        session=S.KRX_REGULAR,
+        child=_child(quantity=None, amount=Decimal(amount)),
         budget_remaining_quantity=None,
-        **base,
+        budget_remaining_notional_krw=None if budget is None else Decimal(budget),
     )
-    # amount orders carry no quantity, so the buy budget (quantity) is unverified
-    assert _code(ok) is R.BUDGET_UNVERIFIED
-    over = _inputs(child=_child(quantity=None, amount=Decimal("2000001")), **base)
-    assert _code(over) is R.ORDER_CAP_EXCEEDED
+    assert _code(inputs) is expected, case
+
+
+@pytest.mark.parametrize(
+    "child_kw",
+    [{"side": "sell"}, {"kind": "amend"}],
+)
+def test_toss_amount_sell_or_amend_not_accepted(child_kw):
+    # A sell by amount cannot bound the share quantity it sells (I8).
+    inputs = _inputs(
+        account="toss_live",
+        session=S.KRX_REGULAR,
+        child=_child(quantity=None, amount=Decimal("100000"), **child_kw),
+        amend_target_quantity=Decimal("0"),
+    )
+    assert _code(inputs) is R.ORDER_FORM_NOT_ACCEPTED
 
 
 # --- I2 working orders ------------------------------------------------------
@@ -283,7 +333,13 @@ def test_working_orders(count, expected):
 
 
 def test_amend_does_not_count_as_new_working_order():
-    assert ad.decide(_inputs(child=_child(kind="amend"), working_orders=4)).allowed
+    assert ad.decide(
+        _inputs(
+            child=_child(kind="amend"),
+            working_orders=4,
+            amend_target_quantity=Decimal("10"),
+        )
+    ).allowed
 
 
 # --- I7 plan supersession ---------------------------------------------------
@@ -433,7 +489,7 @@ TOSS_US_EXT = [
     ),
     (
         "market",
-        {"order_type": "market", "limit_price": None, "price_bound": Decimal("100")},
+        {"order_type": "market", "limit_price": None},
         R.ORDER_FORM_NOT_ACCEPTED,
     ),
 ]
@@ -448,8 +504,30 @@ def test_toss_us_pre_post_limit_integer_no_amount(sess, case, child_kw, expected
         fx_krw_per_unit=Decimal("1400"),
         child=_child(**child_kw),
         book=_book("99.99", "100"),
+        toss_us_sessions=frozenset({"regular", "pre", "post"}),
     )
     assert _code(inputs) is expected, case
+
+
+@pytest.mark.parametrize(
+    ("sess", "allowed"),
+    [
+        (S.US_PRE, frozenset({"regular"})),
+        (S.US_POST, frozenset({"regular", "pre"})),
+        (S.US_PRE, None),
+        (S.US_POST, frozenset()),
+    ],
+)
+def test_toss_us_pre_post_require_session_allowlist(sess, allowed):
+    inputs = _inputs(
+        account="toss_live",
+        session=sess,
+        fx_krw_per_unit=Decimal("1400"),
+        child=_child(quantity=Decimal("3"), limit_price=Decimal("100")),
+        book=_book("99.99", "100"),
+        toss_us_sessions=allowed,
+    )
+    assert _code(inputs) is R.CELL_UNSUPPORTED
 
 
 def test_toss_us_regular_allows_fraction_and_amount():
@@ -464,16 +542,10 @@ def test_toss_us_regular_allows_fraction_and_amount():
             child=_child(quantity=Decimal("1.5"), limit_price=Decimal("100")), **base
         )
     ).allowed
-    sell_amount = _child(
-        side="sell",
-        quantity=None,
-        amount=Decimal("100"),
-        limit_price=None,
-        order_type="market",
-        price_bound=None,
-    )
-    # amount order: shape ok, but a sell needs a quantity to prove I8 -> unverified
-    assert _code(_inputs(child=sell_amount, **base)) is R.EXIT_QUANTITY_UNVERIFIED
+    sell_amount = _child(side="sell", quantity=None, amount=Decimal("100"))
+    assert _code(_inputs(child=sell_amount, **base)) is R.ORDER_FORM_NOT_ACCEPTED
+    buy_amount = _child(quantity=None, amount=Decimal("100"))
+    assert ad.decide(_inputs(child=buy_amount, **base)).allowed
 
 
 def test_kr_nxt_qty_limit_only():
@@ -556,3 +628,91 @@ def test_policy_file_has_no_spread_keys_yet_so_decision_fails_closed():
     limits = ad.spread_limits_from_policy(raw)
     if limits is None:
         assert _code(_inputs(spread_limits=limits)) is R.SPREAD_LIMIT_UNAVAILABLE
+
+
+# --- review round 1 (hk 7118) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "qty", "working", "target", "expected"),
+    [
+        ("submit", "10", "0", None, None),
+        ("submit", "10", "10", None, R.EXIT_EXCEEDS_CONFIRMED_QTY),  # second sell
+        ("submit", "5", "5", None, None),
+        ("submit", "10", None, None, R.EXIT_QUANTITY_UNVERIFIED),
+        ("submit", "10", "-1", None, R.EXIT_QUANTITY_UNVERIFIED),
+        ("amend", "10", "10", "10", None),  # reprice the only working sell
+        ("amend", "11", "10", "10", R.EXIT_EXCEEDS_CONFIRMED_QTY),
+        ("amend", "10", "10", None, R.EXIT_QUANTITY_UNVERIFIED),
+        ("amend", "10", "5", "6", R.EXIT_QUANTITY_UNVERIFIED),  # target > working
+    ],
+)
+def test_exit_counts_working_sells(kind, qty, working, target, expected):
+    inputs = _inputs(
+        child=_child(kind=kind, side="sell", quantity=Decimal(qty)),
+        confirmed_net_quantity=Decimal("10"),
+        working_sell_quantity=None if working is None else Decimal(working),
+        amend_target_quantity=None if target is None else Decimal(target),
+    )
+    assert _code(inputs) is expected
+
+
+@pytest.mark.parametrize(
+    ("qty", "target", "expected"),
+    [
+        ("10", "10", None),  # price-only amend of a fully reserved order
+        ("5", "10", None),  # reduce
+        ("11", "10", R.BUDGET_EXCEEDED),
+        ("10", None, R.BUDGET_UNVERIFIED),
+    ],
+)
+def test_amend_budget_reuses_target_reservation(qty, target, expected):
+    inputs = _inputs(
+        child=_child(kind="amend", quantity=Decimal(qty)),
+        budget_remaining_quantity=Decimal("0"),
+        amend_target_quantity=None if target is None else Decimal(target),
+    )
+    assert _code(inputs) is expected
+
+
+@pytest.mark.parametrize("kind", ["", "stale", "LAST_TRADE", "closing"])
+def test_unknown_price_kinds_refused(kind):
+    assert _code(_inputs(price_kind=kind)) is R.QUOTE_STALE
+
+
+def test_mid_price_kind_allowed():
+    assert ad.decide(_inputs(price_kind="mid")).allowed
+
+
+def test_naive_timestamps_refused():
+    naive = NOW.replace(tzinfo=None)
+    both_naive = Book(Decimal("9990"), Decimal("10000"), naive, naive)
+    assert _code(_inputs(book=both_naive, now=naive)) is R.QUOTE_STALE
+    mixed = Book(Decimal("9990"), Decimal("10000"), naive, NOW)
+    assert _code(_inputs(book=mixed)) is R.QUOTE_STALE
+
+
+@pytest.mark.parametrize(
+    "bad", [Decimal("Infinity"), Decimal("NaN"), Decimal("0"), Decimal("-5"), 30]
+)
+def test_spread_limit_validated_at_decision(bad):
+    limits = SpreadLimits(bad, Decimal("15"), Decimal("20"))
+    assert _code(_inputs(spread_limits=limits)) is R.SPREAD_LIMIT_UNAVAILABLE
+
+
+def test_policy_schema_accepts_spread_section_and_optional_absence():
+    import yaml
+
+    from app.schemas.trading_policy import TradingPolicyDocument
+
+    raw = yaml.safe_load(Path("config/trading_policy.yaml").read_text())
+    assert TradingPolicyDocument.model_validate(raw).autonomous_orders is None
+    raw["autonomous_orders"] = {
+        "spread_gate_bp": {"regular": 30, "extended": 15, "upbit": 20}
+    }
+    doc = TradingPolicyDocument.model_validate(raw)
+    assert doc.autonomous_orders is not None
+    assert ad.spread_limits_from_policy(raw) == SPREADS
+    raw["autonomous_orders"]["spread_gate_bp"]["regular"] = 0
+    with pytest.raises(ValueError):
+        TradingPolicyDocument.model_validate(raw)

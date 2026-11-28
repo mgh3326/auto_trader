@@ -147,17 +147,21 @@ class CellSpec:
     amount_allowed: bool
     spread_class: str  # key of SPREAD_POLICY_KEYS
     arming_kind: ArmingKind
+    #: I1a applies to shares only; crypto is divisible (Upbit is False).
+    share_instrument: bool = True
+    #: Session name that ``toss_live_us_sessions`` must list for this cell.
+    requires_toss_us_session: str | None = None
 
 
 _LIMIT = frozenset({"limit"})
-_LIMIT_MARKET = frozenset({"limit", "market"})
 
 #: Design §2, live accounts only. Absent cells (KIS US pre/post — operator Q5,
-#: Toss US day market, KIS KR amount orders) are unsupported. "market" is listed
-#: only where the design marks it confirmed. NXT/after are LH cells (Q4).
+#: Toss US day market, KIS KR amount orders) are unsupported. NXT/after are LH
+#: cells (Q4). Market orders are not accepted in any cell: no broker request
+#: carries an enforceable price bound, so the locked cap could not hold.
 CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
     ("kis_live", SessionClass.KRX_REGULAR): CellSpec(
-        "KRW", _LIMIT_MARKET, True, False, "regular", ArmingKind.MOCK_FIRST
+        "KRW", _LIMIT, True, False, "regular", ArmingKind.MOCK_FIRST
     ),
     ("kis_live", SessionClass.NXT_PRE): CellSpec(
         "KRW", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
@@ -185,22 +189,42 @@ CELLS: Final[Mapping[tuple[str, SessionClass], CellSpec]] = {
         "KRW", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
     ),
     ("toss_live", SessionClass.US_REGULAR): CellSpec(
-        "USD", _LIMIT_MARKET, False, True, "regular", ArmingKind.LIVE_HALF
+        "USD", _LIMIT, False, True, "regular", ArmingKind.LIVE_HALF
     ),
     # Toss US pre/post: limit, integer qty, no orderAmount (this rule only).
     ("toss_live", SessionClass.US_PRE): CellSpec(
-        "USD", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
+        "USD",
+        _LIMIT,
+        True,
+        False,
+        "extended",
+        ArmingKind.LIVE_HALF,
+        requires_toss_us_session="pre",
     ),
     ("toss_live", SessionClass.US_POST): CellSpec(
-        "USD", _LIMIT, True, False, "extended", ArmingKind.LIVE_HALF
+        "USD",
+        _LIMIT,
+        True,
+        False,
+        "extended",
+        ArmingKind.LIVE_HALF,
+        requires_toss_us_session="post",
     ),
     ("upbit_live", SessionClass.CRYPTO_24H): CellSpec(
-        "KRW", _LIMIT, False, False, "upbit", ArmingKind.LIVE_HALF
+        "KRW",
+        _LIMIT,
+        False,
+        False,
+        "upbit",
+        ArmingKind.LIVE_HALF,
+        share_instrument=False,
     ),
 }
 
 _KINDS: Final = frozenset({"submit", "amend", "cancel"})
 _SIDES: Final = frozenset({"buy", "sell"})
+#: ``kr_quote_price`` kinds a quote may be used on; every other value refuses.
+TRUSTED_PRICE_KINDS: Final = frozenset({"last_trade", "mid"})
 
 
 # --------------------------------------------------------------------------
@@ -215,11 +239,13 @@ class SpreadLimits:
     upbit_bp: Decimal
 
     def for_class(self, spread_class: str) -> Decimal | None:
-        return {
+        """The class limit, or None unless it is a finite positive Decimal."""
+        value = {
             "regular": self.regular_bp,
             "extended": self.extended_bp,
             "upbit": self.upbit_bp,
         }.get(spread_class)
+        return value if _positive(value) else None
 
 
 def spread_limits_from_policy(policy: Mapping[str, Any] | None) -> SpreadLimits | None:
@@ -261,12 +287,10 @@ class Book:
 class ChildOrder:
     kind: str  # submit | amend | cancel
     side: str  # buy | sell
-    order_type: str  # limit | market
+    order_type: str  # only "limit" is accepted
     quantity: Decimal | None
-    limit_price: Decimal | None  # quote currency; None for market/amount
-    amount: Decimal | None = None  # Toss orderAmount (quote currency)
-    #: Price bound for a market order (quote currency); used for the cap.
-    price_bound: Decimal | None = None
+    limit_price: Decimal | None  # quote currency
+    amount: Decimal | None = None  # Toss orderAmount (quote currency), buys only
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,13 +307,25 @@ class DecisionInputs:
     plan_version: int | None
     latest_plan_change_seq: int | None
     confirmed_net_quantity: Decimal | None  # for sells (I8)
-    budget_remaining_quantity: Decimal | None  # for buys (I9)
+    #: Quantity of this account×symbol's sells still working or uncertain
+    #: (journal rows without terminal evidence), including an amend's target.
+    working_sell_quantity: Decimal | None
+    #: Approved − confirmed fills − working (I9), quantity form for qty buys.
+    budget_remaining_quantity: Decimal | None
+    #: Same remainder in KRW, for a Toss amount buy (I9).
+    budget_remaining_notional_krw: Decimal | None
+    #: For an amend: the target order's reserved (high-water) quantity, already
+    #: counted in ``working_sell_quantity`` / the budget remainder. None on an
+    #: amend refuses; ignored on a submit.
+    amend_target_quantity: Decimal | None
     halt_suspect: bool | None
     trading_flag_blocked: bool | None
     price_kind: str | None  # "last_trade" | "mid" | "expected" | ...
     book: Book | None
     in_fill_window: bool | None
     spread_limits: SpreadLimits | None
+    #: Policy ``order_proposals.approval_window.toss_live_us_sessions``.
+    toss_us_sessions: frozenset[str] | None
     now: datetime
 
 
@@ -346,12 +382,23 @@ def check_plan_version(inputs: DecisionInputs) -> AutonomousRefusal | None:
 def check_order_form(
     cell: CellSpec, inputs: DecisionInputs
 ) -> AutonomousRefusal | None:
-    """I11 — per-cell order shape."""
+    """I11 — per-cell order shape and the Toss US session allowlist."""
     child = inputs.child
+    if cell.requires_toss_us_session is not None:
+        allowed = inputs.toss_us_sessions
+        if not isinstance(allowed, frozenset) or (
+            cell.requires_toss_us_session not in allowed
+        ):
+            return AutonomousRefusal.CELL_UNSUPPORTED
     if child.order_type not in cell.order_types:
         return AutonomousRefusal.ORDER_FORM_NOT_ACCEPTED
     if child.amount is not None:
-        if not cell.amount_allowed or child.quantity is not None:
+        if (
+            not cell.amount_allowed
+            or child.quantity is not None
+            or child.side != "buy"
+            or child.kind != "submit"
+        ):
             return AutonomousRefusal.ORDER_FORM_NOT_ACCEPTED
         if not _positive(child.amount):
             return AutonomousRefusal.CHILD_INVALID
@@ -386,15 +433,22 @@ def check_halt_and_quote(inputs: DecisionInputs) -> AutonomousRefusal | None:
         return AutonomousRefusal.HALT_SUSPECT
     if inputs.trading_flag_blocked:
         return AutonomousRefusal.TRADING_FLAG_BLOCKED
-    if inputs.price_kind is None or inputs.price_kind == "unavailable":
-        return AutonomousRefusal.QUOTE_STALE
     if inputs.price_kind == "expected":
         return AutonomousRefusal.EXPECTED_PRICE
+    if inputs.price_kind not in TRUSTED_PRICE_KINDS:
+        return AutonomousRefusal.QUOTE_STALE
     return None
 
 
+def _aware(value: object) -> bool:
+    return isinstance(value, datetime) and value.utcoffset() is not None
+
+
 def _fresh(observed_at: datetime | None, now: datetime) -> bool:
-    return observed_at is not None and timedelta(0) <= now - observed_at <= BOOK_MAX_AGE
+    if not (_aware(observed_at) and _aware(now)):
+        return False
+    assert observed_at is not None
+    return timedelta(0) <= now - observed_at <= BOOK_MAX_AGE
 
 
 def spread_bp(bid: Decimal, ask: Decimal) -> Decimal:
@@ -459,7 +513,7 @@ def check_caps(cell: CellSpec, inputs: DecisionInputs) -> AutonomousDecision:
         notional = child.amount * fx
         unit_krw = None
     else:
-        price = child.limit_price if child.order_type == "limit" else child.price_bound
+        price = child.limit_price if child.order_type == "limit" else None
         if not _positive(price) or child.quantity is None:
             return _refuse(AutonomousRefusal.ORDER_CAP_UNVERIFIABLE)
         assert price is not None
@@ -470,7 +524,7 @@ def check_caps(cell: CellSpec, inputs: DecisionInputs) -> AutonomousDecision:
     )
     if notional <= cap:
         return result
-    if child.quantity == 1 and unit_krw is not None:
+    if cell.share_instrument and child.quantity == 1 and unit_krw is not None:
         # I1a: one share costs more than the cap in force.
         if unit_krw <= ONE_SHARE_CEILING_KRW:
             return result
@@ -497,38 +551,57 @@ def check_working_orders(inputs: DecisionInputs) -> AutonomousRefusal | None:
     return None
 
 
-def _child_quantity_or_none(child: ChildOrder) -> Decimal | None:
-    return child.quantity if child.amount is None else None
+def _finite(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite()
+
+
+def _amend_add_back(inputs: DecisionInputs) -> Decimal | None:
+    """The target's reservation an amend may reuse; 0 on a submit."""
+    if inputs.child.kind != "amend":
+        return Decimal(0)
+    target = inputs.amend_target_quantity
+    if not _finite(target) or target < 0:
+        return None
+    return target
 
 
 def check_exit_quantity(inputs: DecisionInputs) -> AutonomousRefusal | None:
-    """I8 — a sell never exceeds the ledger-confirmed net quantity."""
+    """I8 — sells working plus this one never exceed confirmed net quantity."""
     confirmed = inputs.confirmed_net_quantity
-    qty = _child_quantity_or_none(inputs.child)
+    working = inputs.working_sell_quantity
+    qty = inputs.child.quantity
+    add_back = _amend_add_back(inputs)
     if (
-        confirmed is None
+        not _finite(confirmed)
+        or not _finite(working)
+        or working < 0
         or qty is None
-        or not isinstance(confirmed, Decimal)
-        or not confirmed.is_finite()
+        or add_back is None
+        or add_back > working
     ):
         return AutonomousRefusal.EXIT_QUANTITY_UNVERIFIED
-    if qty > confirmed:
+    if qty + working - add_back > confirmed:
         return AutonomousRefusal.EXIT_EXCEEDS_CONFIRMED_QTY
     return None
 
 
-def check_budget(inputs: DecisionInputs) -> AutonomousRefusal | None:
+def check_budget(
+    inputs: DecisionInputs, notional_krw: Decimal | None
+) -> AutonomousRefusal | None:
     """I9 — a buy stays within approved − confirmed fills − working."""
+    if inputs.child.amount is not None:
+        remaining_krw = inputs.budget_remaining_notional_krw
+        if not _finite(remaining_krw) or notional_krw is None:
+            return AutonomousRefusal.BUDGET_UNVERIFIED
+        if notional_krw > remaining_krw:
+            return AutonomousRefusal.BUDGET_EXCEEDED
+        return None
     remaining = inputs.budget_remaining_quantity
-    qty = _child_quantity_or_none(inputs.child)
-    if (
-        remaining is None
-        or qty is None
-        or not isinstance(remaining, Decimal)
-        or not remaining.is_finite()
-    ):
+    qty = inputs.child.quantity
+    add_back = _amend_add_back(inputs)
+    if not _finite(remaining) or qty is None or add_back is None:
         return AutonomousRefusal.BUDGET_UNVERIFIED
-    if qty > remaining:
+    if qty - add_back > remaining:
         return AutonomousRefusal.BUDGET_EXCEEDED
     return None
 
@@ -568,8 +641,10 @@ def decide(inputs: DecisionInputs) -> AutonomousDecision:
         refusal = check_working_orders(inputs)
         if refusal is not None:
             return AutonomousDecision(refusal, caps.notional_krw, caps.cap_in_force_krw)
-    side_rule = check_exit_quantity if child.side == "sell" else check_budget
-    refusal = side_rule(inputs)
+    if child.side == "sell":
+        refusal = check_exit_quantity(inputs)
+    else:
+        refusal = check_budget(inputs, caps.notional_krw)
     if refusal is not None:
         return AutonomousDecision(refusal, caps.notional_krw, caps.cap_in_force_krw)
     return caps
