@@ -5,11 +5,13 @@ reasons it cannot be measured, and whether it would freeze. ``--commit`` moves
 an ``ACTIVE`` kill row to ``DAILY_LOSS_FREEZE`` for an account at a loss of
 500,000 KRW or more or with an unmeasured day. Nothing here unfreezes.
 
-Marks come from the database only: the day-start mark is the previous session's
-daily close; the fresh quote is the newest stored 1-minute bar (at most ten
-minutes old) inside the regular session, else the last completed session
-close. Unreported fees use the policy round-trip cost estimate. USD accounts
-use a run-time USD/KRW snapshot (recorded with source and time).
+Marks come from stored bars and closes (``daily_loss_monitor.marks``): at the
+KST day start and now, a fresh 1-minute bar inside a trading window (NXT and
+US pre/post included), the window's last bar in a gap, else the last completed
+session close. Unreported fees use the policy round-trip cost estimate. USD
+accounts use a run-time USD/KRW snapshot (recorded with source and time). The
+ledger position is cross-checked against broker holdings (Upbit only for now;
+other accounts read ``holdings_unverified`` and freeze).
 
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL
     uv run python -m scripts.daily_loss_monitor --database-url-env DATABASE_URL --commit
@@ -25,28 +27,31 @@ import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.services.daily_loss_monitor.accounts import ACCOUNTS, AccountScope
-from app.services.daily_loss_monitor.marks import FxSnapshot, session_aware_marks
-from app.services.daily_loss_monitor.monitor import kst_day_start, run_once
-from app.services.daily_loss_monitor.rules import Mark
+from app.services.daily_loss_monitor.marks import FxSnapshot, marks_at
+from app.services.daily_loss_monitor.monitor import run_once
+from app.services.daily_loss_monitor.rules import QUOTE_MAX_AGE, Mark
 
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
-_QUOTE_SQL = {
+#: Newest closed 1-minute bar per symbol with bar_end in (until - 10 min, until].
+_BAR_SQL = {
     "equity_kr": (
         "SELECT DISTINCT ON (symbol) symbol, close, time_utc FROM research.kr_candles_1m "
-        "WHERE symbol = ANY(:symbols) AND venue = 'KRX' AND time_utc >= :since "
-        "ORDER BY symbol, time_utc DESC"
+        "WHERE symbol = ANY(:symbols) AND venue IN ('KRX', 'NTX') "
+        "AND time_utc + interval '1 minute' <= :until AND time_utc >= :since "
+        "ORDER BY symbol, time_utc DESC, venue"
     ),
     "equity_us": (
         "SELECT DISTINCT ON (symbol) symbol, close, time_utc FROM research.us_candles_1m "
-        "WHERE symbol = ANY(:symbols) AND time_utc >= :since "
+        "WHERE symbol = ANY(:symbols) "
+        "AND time_utc + interval '1 minute' <= :until AND time_utc >= :since "
         "ORDER BY symbol, time_utc DESC, venue"
     ),
     "crypto": (
@@ -54,36 +59,26 @@ _QUOTE_SQL = {
         "c.time AS time_utc FROM public.crypto_candles_1m c "
         "JOIN public.crypto_instruments i ON i.id = c.instrument_id "
         "WHERE i.venue = 'upbit' AND i.product = 'spot' "
-        "AND i.venue_symbol = ANY(:symbols) AND c.time >= :since "
+        "AND i.venue_symbol = ANY(:symbols) "
+        "AND c.time + interval '1 minute' <= :until AND c.time >= :since "
         "ORDER BY i.venue_symbol, c.time DESC"
     ),
 }
 
 
-async def reference_marks(
-    session: AsyncSession, scope: AccountScope, symbols: Sequence[str], now: datetime
-) -> dict[str, Mark | None]:
-    from app.services.strategy_sleeves.marks import latest_close_marks
-
-    day_start = kst_day_start(now)
-    closes = await latest_close_marks(
-        session, scope.instrument_type, list(symbols), day_start
-    )
-    return {
-        s: None if closes.get(s) is None else Mark(closes[s], day_start, None)
-        for s in symbols
-    }
-
-
-async def fresh_quote_marks(
-    session: AsyncSession, scope: AccountScope, symbols: Sequence[str], now: datetime
+async def bars_until(
+    session: AsyncSession, scope: AccountScope, symbols: Sequence[str], until: datetime
 ) -> dict[str, Mark | None]:
     if not symbols:
         return {}
     rows = (
         await session.execute(
-            text(_QUOTE_SQL[scope.instrument_type]),
-            {"symbols": list(symbols), "since": now - timedelta(days=3)},
+            text(_BAR_SQL[scope.instrument_type]),
+            {
+                "symbols": list(symbols),
+                "until": until,
+                "since": until - QUOTE_MAX_AGE - timedelta(minutes=1),
+            },
         )
     ).all()
     found = {
@@ -93,6 +88,34 @@ async def fresh_quote_marks(
         for row in rows
     }
     return {s: found.get(s) for s in symbols}
+
+
+async def broker_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
+    """Broker holdings for the cross-check; None (unverified) where not wired.
+
+    Only Upbit is read here (read-only ``GET /v1/accounts``). KIS and Toss
+    accounts stay unverified, so they freeze until a holdings source is added.
+    """
+    if scope.account != "upbit_live":
+        return None
+    from app.core.symbol import to_upbit_symbol
+    from app.services.upbit_wallet_status import ACCOUNTS_PATH, _authed_get
+
+    payload = await _authed_get(ACCOUNTS_PATH)
+    if not isinstance(payload, list):
+        return None
+    held: dict[str, Decimal] = {}
+    for item in payload:
+        if not isinstance(item, dict) or item.get("currency") in (None, "KRW"):
+            continue
+        try:
+            qty = Decimal(str(item.get("balance", "0"))) + Decimal(
+                str(item.get("locked", "0"))
+            )
+        except (InvalidOperation, ValueError):
+            return None
+        held[to_upbit_symbol(str(item["currency"]))] = qty
+    return held
 
 
 async def usd_krw() -> FxSnapshot | None:
@@ -138,8 +161,9 @@ async def _run(args: argparse.Namespace) -> int:
             outcomes = await run_once(
                 session,
                 now=datetime.now(UTC),
-                reference_fn=reference_marks,
-                quote_fn=session_aware_marks(fresh_quote_marks),
+                reference_fn=marks_at(bars_until, day_start=True),
+                quote_fn=marks_at(bars_until),
+                holdings_fn=broker_holdings,
                 fx_fn=usd_krw,
                 commit=args.commit,
                 accounts=args.account,

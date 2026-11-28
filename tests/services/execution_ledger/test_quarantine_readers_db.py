@@ -717,9 +717,12 @@ async def test_daily_loss_monitor_drops_the_quarantined_phantom(
     day_start = kst_day_start(NOW)
     phantom = scenario.phantom_order_no.lstrip("0")
 
+    def flagged(orders) -> bool:
+        return any(phantom in key for key in orders)
+
     fills = await loss_reader.load_account_fills(db_session, scope, day_start=day_start)
     await db_session.rollback()
-    assert phantom not in fills.unreconciled_orders
+    assert not flagged(fills.unreconciled_orders)
     assert [f.quantity for f in fills.history if f.symbol == scenario.symbol] == [
         Decimal("10")
     ]
@@ -729,7 +732,7 @@ async def test_daily_loss_monitor_drops_the_quarantined_phantom(
         db_session, scope, day_start=day_start
     )
     await db_session.rollback()
-    assert phantom in mutant.unreconciled_orders
+    assert flagged(mutant.unreconciled_orders)
 
 
 async def test_journal_exit_correction_drops_the_quarantined_row(

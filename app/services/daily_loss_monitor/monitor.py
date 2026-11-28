@@ -12,7 +12,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.daily_loss_monitor.accounts import ACCOUNTS, AccountScope
-from app.services.daily_loss_monitor.marks import FxSnapshot, policy_cost_estimate
+from app.services.daily_loss_monitor.marks import (
+    FxSnapshot,
+    policy_cost_estimate,
+    sell_tax_bps,
+)
 from app.services.daily_loss_monitor.reader import load_account_fills
 from app.services.daily_loss_monitor.rules import (
     CostEstimate,
@@ -31,6 +35,24 @@ MarkFn = Callable[
 ]
 FxFn = Callable[[], Awaitable[FxSnapshot | None]]
 CostFn = Callable[[AccountScope], CostEstimate | None]
+#: Broker-reported holdings now: {symbol key: quantity}, or None when unknown.
+HoldingsFn = Callable[[AccountScope], Awaitable[dict[str, Decimal] | None]]
+
+
+async def _no_holdings(scope: AccountScope) -> dict[str, Decimal] | None:
+    return None
+
+
+def holdings_match(
+    ledger: dict[str, Decimal], broker: dict[str, Decimal] | None
+) -> bool:
+    """The ledger position must equal the broker's, symbol by symbol."""
+    if broker is None:
+        return False
+    keys = {k for k, v in ledger.items() if v != 0} | {
+        k for k, v in broker.items() if v != 0
+    }
+    return all(ledger.get(k, Decimal(0)) == broker.get(k, Decimal(0)) for k in keys)
 
 
 @dataclass(frozen=True)
@@ -66,11 +88,21 @@ async def evaluate_account(
     quote_fn: MarkFn,
     fx_fn: FxFn,
     cost: CostEstimate | None = None,
+    holdings_fn: HoldingsFn = _no_holdings,
 ) -> tuple[LossResult, FxSnapshot | None]:
     try:
-        fills = await load_account_fills(session, scope, day_start=kst_day_start(now))
+        fills = await load_account_fills(
+            session, scope, day_start=kst_day_start(now), now=now
+        )
     except Exception:  # noqa: BLE001 - an unreadable ledger is unmeasured
         return LossResult(pnl_krw=None, reasons=("ledger_unreadable",)), None
+    extra = set(fills.reasons)
+    try:
+        broker = await holdings_fn(scope)
+    except Exception:  # noqa: BLE001
+        broker = None
+    if not holdings_match(fills.net_quantity, broker):
+        extra.add("holdings_unverified")
     symbols = sorted({f.symbol for f in (*fills.history, *fills.today)})
     snapshot: FxSnapshot | None = None
     if scope.currency != "KRW":
@@ -97,6 +129,8 @@ async def evaluate_account(
         now=now,
         provisional_unreconciled=fills.provisional_unreconciled,
         cost_estimate=cost,
+        sell_tax_bps=sell_tax_bps(scope),
+        input_reasons=tuple(sorted(extra)),
     )
     return result, snapshot
 
@@ -111,6 +145,7 @@ async def run_once(
     commit: bool,
     accounts: Sequence[str] | None = None,
     cost_fn: CostFn = policy_cost_estimate,
+    holdings_fn: HoldingsFn = _no_holdings,
 ) -> list[AccountOutcome]:
     outcomes: list[AccountOutcome] = []
     for name in accounts or tuple(ACCOUNTS):
@@ -124,6 +159,7 @@ async def run_once(
             quote_fn=quote_fn,
             fx_fn=fx_fn,
             cost=cost,
+            holdings_fn=holdings_fn,
         )
         await session.rollback()
         freeze = should_freeze(result)

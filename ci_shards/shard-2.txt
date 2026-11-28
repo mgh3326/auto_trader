@@ -218,6 +218,7 @@ tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_loss_monitor/test_kill_and_boundary.py
 tests/services/daily_loss_monitor/test_kill_rows_db.py
 tests/services/daily_loss_monitor/test_marks.py
+tests/services/daily_loss_monitor/test_reader.py
 tests/services/daily_loss_monitor/test_rules.py
 tests/services/daily_plan/test_allocation_boundary.py
 tests/services/daily_plan/test_bundle_assembler_boundary.py

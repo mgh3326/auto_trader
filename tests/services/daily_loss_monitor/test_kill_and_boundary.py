@@ -180,9 +180,18 @@ async def test_missing_row_and_daily_loss_freeze_read_frozen() -> None:
         await engine.dispose()
 
 
+async def _held_100(scope):
+    return {"005930": Decimal("100")}
+
+
 def _fills(history, today, provisional=frozenset()):
-    async def load(session, scope, *, day_start):
-        return AccountFills(history, today, provisional)
+    async def load(session, scope, *, day_start, now=None):
+        net = {}
+        for f in (*history, *today):
+            net[f.symbol] = net.get(f.symbol, 0) + (
+                f.quantity if f.side == "buy" else -f.quantity
+            )
+        return AccountFills(history, today, provisional, (), net)
 
     return load
 
@@ -223,6 +232,7 @@ async def test_run_once_freezes_on_loss_and_previews_without_writing(
         now=NOW,
         reference_fn=ref,
         quote_fn=quote,
+        holdings_fn=_held_100,
         fx_fn=fx,
         commit=False,
         accounts=["kis_live_kr"],
@@ -236,6 +246,7 @@ async def test_run_once_freezes_on_loss_and_previews_without_writing(
         now=NOW,
         reference_fn=ref,
         quote_fn=quote,
+        holdings_fn=_held_100,
         fx_fn=fx,
         commit=True,
         accounts=["kis_live_kr"],
@@ -246,7 +257,7 @@ async def test_run_once_freezes_on_loss_and_previews_without_writing(
 
 @pytest.mark.asyncio
 async def test_unreadable_ledger_freezes(monkeypatch) -> None:
-    async def boom(session, scope, *, day_start):
+    async def boom(session, scope, *, day_start, now=None):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(monitor, "load_account_fills", boom)

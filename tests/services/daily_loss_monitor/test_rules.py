@@ -202,6 +202,7 @@ def test_unreported_fee_uses_the_policy_estimate_and_overstates_the_loss() -> No
         quotes={},
         now=NOW,
         cost_estimate=ESTIMATE,
+        sell_tax_bps=rules.KR_SELL_TAX_BPS,
     )
     # Each leg: 1,000,000 * 47.4bp = 4,740; sell tax 18bp = 1,800.
     assert result.pnl_krw == Decimal("-11280")
@@ -222,6 +223,7 @@ def test_estimated_fee_can_push_a_day_over_the_limit() -> None:
         quotes={},
         now=NOW,
         cost_estimate=ESTIMATE,
+        sell_tax_bps=rules.KR_SELL_TAX_BPS,
     )
     assert result.pnl_krw == Decimal("-1128000")
     assert should_freeze(result)
@@ -240,6 +242,7 @@ def test_recorded_fee_is_used_as_recorded() -> None:
         quotes={},
         now=NOW,
         cost_estimate=ESTIMATE,
+        sell_tax_bps=rules.KR_SELL_TAX_BPS,
     )
     assert result.pnl_krw == Decimal("-6")
     assert result.fee_bases == ("recorded",)
@@ -273,3 +276,77 @@ def test_unknown_mark_basis_is_unavailable() -> None:
         now=NOW,
     )
     assert result.reasons == ("quote_unavailable",)
+
+
+# --- review round (PR #2714) ------------------------------------------------
+
+
+def test_history_oversell_is_caught_even_when_later_netted_back() -> None:
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[
+            fill("sell", "10", "1", at=YESTERDAY - timedelta(hours=2)),
+            fill("buy", "10", "1", at=YESTERDAY),
+        ],
+        today=[],
+        reference={},
+        quotes={},
+        now=NOW,
+    )
+    assert "position_oversold" in result.reasons and should_freeze(result)
+
+
+def test_recorded_fee_without_currency_is_unknown() -> None:
+    f = Fill(
+        "005930",
+        "buy",
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        None,
+        None,
+        "KRW",
+        NOW - timedelta(hours=1),
+        None,
+    )
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=[f],
+        reference={},
+        quotes={"005930": mark("1")},
+        now=NOW,
+    )
+    assert result.reasons == ("fee_currency_unknown",)
+
+
+def test_missing_sell_tax_is_estimated_even_with_a_recorded_fee() -> None:
+    today = [
+        fill("buy", "1", "1500000", at=NOW - timedelta(hours=2)),
+        fill("sell", "1", "1001000", fee="0", tax=None),
+    ]
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=today,
+        reference={},
+        quotes={},
+        now=NOW,
+        sell_tax_bps=rules.KR_SELL_TAX_BPS,
+    )
+    # pre-tax loss 499,000; 18bp of 1,001,000 = 1,801.8 -> over the limit.
+    assert result.pnl_krw == Decimal("-500801.8")
+    assert should_freeze(result)
+
+
+def test_input_reasons_make_the_day_unmeasured() -> None:
+    result = compute_daily_pnl(
+        currency="KRW",
+        history=[],
+        today=[],
+        reference={},
+        quotes={},
+        now=NOW,
+        input_reasons=("reconcile_unproven",),
+    )
+    assert result.reasons == ("reconcile_unproven",) and should_freeze(result)

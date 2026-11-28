@@ -31,7 +31,7 @@ KR_SELL_TAX_BPS: Final = Decimal("18")
 #: Mark bases. A fresh quote must be at most QUOTE_MAX_AGE old; a last-session
 #: close is only produced by the caller when it is the exchange's last
 #: completed session close (otherwise the caller passes None).
-MARK_BASES: Final = frozenset({"fresh_quote", "last_session_close"})
+MARK_BASES: Final = frozenset({"fresh_quote", "segment_close", "last_session_close"})
 COST_RATE_SOURCE: Final = (
     "trading_policy.order_proposals.auto_approve.round_trip_cost_bps"
 )
@@ -43,6 +43,13 @@ REASONS: Final = frozenset(
         "position_oversold",
         "fee_estimate_unavailable",
         "fee_currency_mismatch",
+        "fee_currency_unknown",
+        "reconcile_unproven",
+        "seed_within_day",
+        "order_evidence_unproven",
+        "fill_day_unproven",
+        "holdings_unverified",
+        "day_start_mark_unavailable",
         "fx_unavailable",
         "provisional_fill_unreconciled",
         "reference_price_unavailable",
@@ -126,20 +133,27 @@ def compute_daily_pnl(
     now: datetime,
     provisional_unreconciled: bool = False,
     cost_estimate: CostEstimate | None = None,
+    sell_tax_bps: Decimal = Decimal(0),
+    input_reasons: tuple[str, ...] = (),
 ) -> LossResult:
     """``history``: fills before the KST day start; ``today``: fills in the day."""
     reasons: set[str] = set()
     fee_bases: set[str] = set()
     mark_bases: set[str] = set()
+    reasons.update(input_reasons)
     if provisional_unreconciled:
         reasons.add("provisional_fill_unreconciled")
 
+    # Fold chronologically: a position that goes negative at any point proves
+    # the opening buy is missing, even if a later buy nets it back to zero.
     start_qty: dict[str, Decimal] = {}
-    for fill in history:
+    for fill in sorted(history, key=lambda f: f.filled_at):
         sign = Decimal(1) if fill.side == "buy" else Decimal(-1)
         start_qty[fill.symbol] = start_qty.get(fill.symbol, Decimal(0)) + (
             sign * fill.quantity
         )
+        if start_qty[fill.symbol] < 0:
+            reasons.add("position_oversold")
 
     lots: dict[str, deque[_Lot]] = {}
     for symbol, qty in sorted(start_qty.items()):
@@ -169,16 +183,21 @@ def compute_daily_pnl(
                 reasons.add("fee_estimate_unavailable")
                 continue
             fee = notional * cost_estimate.round_trip_cost_bps / Decimal(10_000)
-            tax = fill.tax
-            if tax is None and fill.side == "sell":
-                tax = notional * cost_estimate.sell_tax_bps / Decimal(10_000)
             fee_bases.add("estimated")
         else:
-            if fill.fee_currency is not None and fill.fee_currency != fill.currency:
+            if fill.fee_currency is None:
+                reasons.add("fee_currency_unknown")
+                continue
+            if fill.fee_currency != fill.currency:
                 reasons.add("fee_currency_mismatch")
                 continue
-            fee, tax = fill.fee, fill.tax
+            fee = fill.fee
             fee_bases.add("recorded")
+        tax = fill.tax
+        if tax is None and fill.side == "sell":
+            # The sell tax is estimated whatever the fee basis (Toss records
+            # commission and tax independently).
+            tax = notional * sell_tax_bps / Decimal(10_000)
         price = _krw(fill.price, currency, fill.fx_krw)
         costs = _krw(fee + (tax or Decimal(0)), currency, fill.fx_krw)
         if price is None or costs is None:
