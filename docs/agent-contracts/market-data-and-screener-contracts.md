@@ -371,6 +371,56 @@ v2 수집기는 실패 시 `failure_code`에 `http_4xx/http_5xx/timeout/transpor
 - 기존 값과 개정 이력·provenance 연결을 보존하고, 원천 ID가 없는 자연키 경로 및 기존 reader 응답을 검증한다.
 - 원천별 전환 전에 보관 정리 정책을 점검한다. provenance가 참조하는 현재 행은 FK가 삭제를 거부한다.
 
+### 공식 이벤트 운영 — Dagu 사본·한정 보충 요청·수집 범위 읽기 (hk 6409, 설계 6400 §3)
+
+런타임 수집 경로는 바꾸지 않는다. 주문·계좌·원장·승인 접근 0, 스케줄러 등록 0.
+
+**Dagu 사본** `deploy/dagu/at-official-events/` (미등록, 하드룰 6 — `deploy/dagu/**` 는 `deploy_approval` 대상):
+`official-events-kr-0700`(DART `[어제, 오늘]` 07:00 KST)·`official-events-kr-1830`(DART `[오늘]` 18:30 KST)·
+`official-events-us`(07:30 KST, finnhub 실적 `[-7일, +60일]` + `scripts.collect_sec_edgar` — 티커는 dotenv
+`AT_OFFICIAL_EVENTS_SEC_SYMBOLS`, 비면 step 실패)·`official-events-crypto`(06:30 KST `scripts.collect_crypto_notices --commit`;
+유의 상태 스냅숏은 기존 `at-batch2-upbit-symbol-universe` 가 만들며 여기서 다시 돌리지 않는다). 겹치는 `at-batch1-dart-*`·
+`at-batch1-market-events-daily`·`at-crypto-notices` 사본과 함께 등록하지 않는다. 정적 검사
+`tests/scripts/test_dagu_official_events_dags.py`(실제 수집 CLI `parse_args` 로 명령 해석).
+
+**한정 보충 요청** `scripts/request_market_event_backfill.py`(수동, 기본 드라이런 = DB 연결 없음, `--commit` 기록,
+`--commit --run` 기록 후 1회 실행) + `review.market_event_backfill_requests`.
+
+- **닫힌 원천**: `dart`(kr)·`finnhub`(us) → `scripts.ingest_market_events`, `sec`(us, 티커 1..20) →
+  `scripts.collect_sec_edgar --commit`, `benzinga`(us, `--category` 하나, short_interest 는 티커 필수) →
+  `scripts.ingest_benzinga_calendars --commit`. 요청 창은 그대로 CLI 인자가 되며 새 fetch·쓰기 경로는 없다.
+  `--force` 는 넘기지 않으므로 이미 `succeeded` 인 finnhub·benzinga 파티션은 다시 받지 않는다.
+- 🔴 **날짜 창이 없는 수집기는 거부한다**: `naver_disclosure`·`upbit_notice`·`bithumb_notice` 는 제공자의 최신 목록을
+  읽고 저장된 ID/시각에서 멈추므로 과거 창을 채울 수 없다(`source_has_no_date_window`). `company_ir` 는 수집기가 없다
+  (`unsupported_source`). 창을 조용히 무시하는 요청을 만들지 마라.
+- **범위**: `from <= to`, `to <= 시장 현지 오늘`(kr=KST, us=ET), 최대 31일(양끝 포함). benzinga 는 카테고리의
+  `lookback_days` 를 수집 일수에 더해 같은 상한을 적용한다. 부분 실행·절단 없음.
+- **중복**: `request_hash = sha256(source, market, category, 정렬된 symbols, from, to, reason_code)`. 사유 문장과 요청자는
+  해시에 들어가지 않는다. `reason_code` 는 닫힌 목록(`gap_fill`·`collection_failure`·`correction_recheck`·`new_symbol`·
+  `retry_after_failure`·`verification`). 같은 요청 재실행은 `duplicate` 이고 행이 늘지 않는다.
+- **쿼터**: 원천별 UTC 일 요청 1건(`requested`)과 실행 1건(`started`). 요청 시점과 실행 시점 양쪽에서, 원천별
+  `pg_advisory_xact_lock` 아래 DB 시계로 판정한다. `--commit --run` 의 요청 행과 실행 claim 은 한 트랜잭션이므로
+  거부는 아무것도 쓰지 않는다. 종료 코드 2 = 쓰기 0 거부, 1 = 수집 CLI 실패.
+- **실행 상태**: 같은 행을 갱신하지 않고 `(request_hash, state)` 유일 행을 더한다 — `requested` → `started`(수집 시작
+  **전** 커밋) → `done`(exit 0) 또는 `failed`(`exit_nonzero`·`timeout`·`spawn_failed`). 각 행의 `reason`·`requested_by` 는
+  그 행을 쓴 호출의 값이다. `done` 은 수집 CLI 의 종료 코드일
+  뿐 범위 완결의 증거가 아니다(아래 collection 으로 확인). 중단돼 `started` 로 남은 요청은 다시 실행하지 않으며
+  (`run_unresolved`), 결과가 있는 요청도 다시 실행하지 않는다(`already_run`) — 새 `reason_code` 로 새 요청을 낸다.
+  수집 게이트가 닫혀 있으면(`SEC_EDGAR_USER_AGENT` 빈 값, `BENZINGA_CALENDARS_ENABLED` off) `--run` 은 기록 전에
+  `producer_gate_closed` 로 거부한다.
+- **저장**: append-only — UPDATE·DELETE·TRUNCATE 를 모든 역할에 트리거가 거부하고, `at_app` 은 조건부
+  SELECT·INSERT(+시퀀스) 만, downgrade 는 행이 있으면 거부(`20261128_hk6409_backfill_req`). 유일 writer
+  `app/services/market_events/backfill/store.py`.
+- 🔴 **누구도 수집을 깨우지 않는다**: 이 패키지를 import 하거나 CLI 를 부르는 `app/` 모듈·router·MCP·retro/v1(Factortrail)·
+  task·workflow·DAG 는 없어야 한다(`tests/services/market_events/test_backfill_static_guard.py`). 요청 행은 작업을 깨우지 않는다.
+
+**수집 범위·결측 사유 읽기** `app/services/market_events/collection.py` — 설계 §3.3 투영의 단일 정본이며 retro/v1
+`retro_symbol_events` 의 `collection` 블록이 같은 함수를 쓴다(응답 불변). 기대일은 `expected_sources.EXPECTED_SOURCES`
+의 `(source, category, market)` 와 그 시장 거래소 달력으로만 정한다(휴장·주말은 결측이 아니고, 분류 불가 날짜는
+`calendar_unknown`). 운영자 읽기는 `request_market_event_backfill.py --show-collection --market kr|us|crypto
+--from-date … --to-date …`(`REPEATABLE READ READ ONLY`, 8초 timeout)이며 KR=`dart`·`naver_disclosure`, US=`finnhub`·`sec`·
+`benzinga`, crypto=`upbit_notice`·`bithumb_notice` 를 본다. 읽기 실패·상한 초과는 `null` 이며 빈 gap 목록이 아니다.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.

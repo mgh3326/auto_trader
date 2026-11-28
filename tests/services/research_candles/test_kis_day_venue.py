@@ -232,10 +232,10 @@ def test_downgrade_refuses_while_kis_day_rows_exist_and_restores_the_old_list() 
     assert "'TOSS_INTEGRATED'" in restored and "NOT VALID" in restored
 
 
-def test_alembic_has_one_head_and_it_is_the_kis_day_validation() -> None:
+def test_alembic_has_one_head() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
     heads = script.get_heads()
-    assert heads == ["20261127_hk7092_run_reasons"], heads
+    assert heads == ["20261128_hk6409_backfill_req"], heads

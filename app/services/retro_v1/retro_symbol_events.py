@@ -16,7 +16,9 @@ Cutoff rules (nothing after the cutoff is returned, only counted):
   counted in ``excluded_unproven``, never shown and never counted as zero.
 
 ``collection`` is the ingestion state at generation time, not at the cutoff: a
-partition row is overwritten by later runs, so its past state is not stored.
+partition row is overwritten by later runs, so its past state is not stored. Its
+projection is shared with the operator read
+(:mod:`app.services.market_events.collection`).
 
 Read-only: SELECT inside the reader's own ``REPEATABLE READ READ ONLY`` snapshot,
 every source in a SAVEPOINT. No broker call and no wait for any collector.
@@ -33,15 +35,28 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 from urllib.parse import parse_qsl, urlsplit
 
-from sqlalchemy import and_, exists, func, or_, select, text, tuple_
+from sqlalchemy import and_, exists, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_kis_symbol, to_yahoo_symbol
 from app.models.market_events import (
     MarketEvent,
-    MarketEventIngestionPartition,
     MarketEventRevision,
     MarketEventSource,
+)
+from app.services.market_events.collection import (
+    FAILURE_CODES as FAILURE_CODES,
+)
+from app.services.market_events.collection import (
+    PARTITIONED_SOURCES,
+    partition_statements,
+    project_collection,
+)
+from app.services.market_events.collection import (
+    PROVEN_ZERO_SOURCES as PROVEN_ZERO_SOURCES,
+)
+from app.services.market_events.collection import (
+    collection_gaps as collection_gaps,
 )
 from app.services.market_events.session_calendar import (
     regular_session_bounds,
@@ -88,7 +103,6 @@ from app.services.retro_v1.symbol_event_versions import (
 _CUTOFF_RE: Final = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
 )
-_MAX_GAPS: Final = 200
 #: KR daily bars move until the KRX and NXT after-markets close (20:00 KST).
 _KR_BAR_END: Final = time(20, 0)
 _ONE_DAY: Final = timedelta(days=1)
@@ -120,28 +134,8 @@ _SECRET_QUERY_RE: Final = re.compile(r"token|key|secret|auth|sig|pass", re.IGNOR
 _OFFICIAL_SOURCES: Final = frozenset(
     name for names in SOURCES_BY_MARKET.values() for name in names
 )
-#: Sources whose collectors write ingestion partitions: dart one per day, benzinga
-#: one per category and event date, sec one per collector run day.
-_PARTITIONED: Final = frozenset({"dart", "sec", "benzinga"})
-#: Sources expected to have a partition on every XKRX session.
-_SESSION_EXPECTED: Final = frozenset({"dart"})
-#: Closed list of sources whose ``succeeded`` + 0 events proves a complete empty
-#: list. No collector proves it yet (design 6400 §3.3, hk 7091).
-PROVEN_ZERO_SOURCES: Final[frozenset[str]] = frozenset()
-#: Closed failure codes a v2 writer stores in ``last_error``; a copy of
-#: ``market_events.repository.CollectionFailure`` (that module is a writer the
-#: retro import guard keeps out), pinned by a test.
-FAILURE_CODES: Final = frozenset(
-    {
-        "http_4xx",
-        "http_5xx",
-        "timeout",
-        "transport",
-        "bad_response",
-        "unparseable",
-        "quota",
-    }
-)
+#: The official sources whose collectors write ingestion partitions.
+_PARTITIONED: Final = PARTITIONED_SOURCES & _OFFICIAL_SOURCES
 
 _BAR_SQL: Final = {
     "kr": """
@@ -683,66 +677,6 @@ async def _bars(
 # --------------------------------------------------------------------------
 # collection
 # --------------------------------------------------------------------------
-def _partition_gap(row: Any) -> str | None:
-    """The closed gap reason of one stored partition, or ``None`` when covered."""
-    if row.status == "succeeded":
-        if row.event_count > 0 or row.source in PROVEN_ZERO_SOURCES:
-            return None
-        return "unproven_zero"
-    if row.status in {"pending", "running", "partial"}:
-        return row.status
-    return row.last_error if row.last_error in FAILURE_CODES else "failed"
-
-
-def collection_gaps(
-    partitions: Sequence[Any],
-    names: Sequence[str],
-    start: date,
-    end: date,
-    today: date,
-) -> list[dict[str, str]]:
-    """Closed-reason gaps of the window from the stored partition rows.
-
-    A DART day counts only when XKRX is open (or the calendar cannot say), and
-    such a day without a partition is a gap up to ``today``. No other source is
-    expected on any day, so only its stored rows are judged.
-    """
-    gaps: list[tuple[str, str, date, str]] = []
-    collected: set[tuple[str, date]] = set()
-    for row in partitions:
-        if row.source in _SESSION_EXPECTED:
-            if row.category != "disclosure":
-                continue
-            collected.add((row.source, row.partition_date))
-            if trading_session_status("kr", row.partition_date) == "closed":
-                continue
-        reason = _partition_gap(row)
-        if reason is not None:
-            gaps.append((row.source, row.category, row.partition_date, reason))
-    for source in names:
-        if source not in _SESSION_EXPECTED:
-            continue
-        day = start
-        while day <= min(end, today):
-            if (source, day) not in collected:
-                status = trading_session_status("kr", day)
-                if status != "closed":
-                    reason = "not_yet_run" if status == "open" else "calendar_unknown"
-                    gaps.append((source, "disclosure", day, reason))
-            day += _ONE_DAY
-    return [
-        {
-            "source": source,
-            "category": safe_code(category) or "unclassified",
-            "date": day.isoformat(),
-            "reason": reason,
-        }
-        for source, category, day, reason in sorted(
-            gaps, key=lambda g: (g[2], g[0], g[1])
-        )
-    ]
-
-
 async def _collection(
     session: AsyncSession,
     unknowns: Unknowns,
@@ -751,33 +685,12 @@ async def _collection(
     end: date,
     today: date,
 ) -> dict[str, Any]:
+    """The shared projection (:mod:`app.services.market_events.collection`)."""
     names = SOURCES_BY_MARKET[market.key]
-    p = MarketEventIngestionPartition
-    scope = (p.market == market.key, p.source.in_(names))
 
     async def read() -> tuple[list[Any], list[Any]]:
-        window = (
-            select(
-                p.source,
-                p.category,
-                p.partition_date,
-                p.status,
-                p.event_count,
-                p.last_error,
-            )
-            .where(*scope, p.partition_date >= start, p.partition_date <= end)
-            .order_by(p.partition_date, p.source, p.category)
-            .limit(MAX_SOURCE_ROWS)
-        )
-        newest = (
-            select(p.source, func.max(p.partition_date).label("latest"))
-            .where(
-                *scope,
-                p.status == "succeeded",
-                or_(p.event_count > 0, p.source.in_(sorted(PROVEN_ZERO_SOURCES))),
-            )
-            .group_by(p.source)
-            .order_by(p.source)
+        window, newest = partition_statements(
+            market.key, names, start, end, MAX_SOURCE_ROWS
         )
         return (
             list((await session.execute(window)).all()),
@@ -790,24 +703,18 @@ async def _collection(
         unknowns.note("collection", "incomplete_evidence")
         ok = False
 
-    found = {row.source: row.latest for row in newest} if ok else {}
-    latest_collected: dict[str, str | None] = {}
-    for name in names:
-        day = found.get(name)
-        latest_collected[name] = day.isoformat() if day else None
-        field = f"collection.latest_collected.{name}"
-        if name not in _PARTITIONED:
-            unknowns.note(field, "no_partition")
-        elif day is None and ok:
-            unknowns.note(field, "missing_data")
-    gaps = collection_gaps(partitions, names, start, end, today) if ok else None
-    truncated = gaps is not None and len(gaps) > _MAX_GAPS
-    return {
-        "basis": "current_partitions",
-        "latest_collected": latest_collected,
-        "gaps": None if gaps is None else gaps[-_MAX_GAPS:],
-        "gaps_truncated": truncated,
-    }
+    block, notes = project_collection(
+        names=names,
+        partitions=partitions,
+        newest=newest,
+        start=start,
+        end=end,
+        today=today,
+        ok=ok,
+    )
+    for field, reason in notes:
+        unknowns.note(field, reason)
+    return block
 
 
 # --------------------------------------------------------------------------

@@ -108,6 +108,7 @@ from .manual_holdings import (
     MarketType,
     StockAlias,
 )
+from .market_event_backfill import MarketEventBackfillRequest
 from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
@@ -363,6 +364,7 @@ __all__ = [
     "StockAlias",
     "ManualHolding",
     "MarketReport",
+    "MarketEventBackfillRequest",
     "MarketQuoteSnapshot",
     "MarketValuationSnapshot",
     "NaverResearchDetailCache",

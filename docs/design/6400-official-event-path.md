@@ -299,6 +299,12 @@ Finnhub 성공 시 그 값을, 실패 시 저장분을 `degraded=true`+`fallback
 
 ## 3. 운영
 
+> **(hk 6409) 구현** — 정본은 `docs/agent-contracts/market-data-and-screener-contracts.md` 의 "공식 이벤트 운영" 절이다.
+> 아래 제안과 다른 점: KR DAG 는 창이 달라 파일 둘(`official-events-kr-0700`·`-1830`)이다. 요청 표는 append-only 라
+> 같은 행을 갱신하지 않고 `requested`/`started`/`done`/`failed` 행을 더하며, 거부는 행을 남기지 않아 `rejected` 상태가
+> 없다. 해시에는 `category` 가 더해진다. 날짜 창이 없는 수집기(`upbit_notice`·`bithumb_notice`·`naver_disclosure`)는
+> 보충 요청을 받지 않고 거부한다. `company_ir` 는 수집기가 없다.
+
 ### 3.1 Dagu 사본(등록하지 않는다)
 
 기존 창구: `deploy/dagu/at-batch/at-batch1-dart-0700.yaml`, `…-dart-1830.yaml`, `…-market-events-daily.yaml`

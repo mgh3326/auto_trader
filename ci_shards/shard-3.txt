@@ -130,6 +130,7 @@ tests/scripts/test_policy_table_us.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
 tests/scripts/test_quarantine_execution_ledger_rows_cli.py
 tests/scripts/test_r4_p0_manifest_cli.py
+tests/scripts/test_request_market_event_backfill.py
 tests/scripts/test_spot_demo_confirm_lifecycle.py
 tests/scripts/test_terminal_auto_reconcile_cli.py
 tests/services/account_value/test_flows.py
@@ -263,6 +264,7 @@ tests/services/mandate/test_projection_rules.py
 tests/services/mandate/test_static_boundary.py
 tests/services/mandate/test_store_inputs.py
 tests/services/market_close_digest/test_calendar.py
+tests/services/market_events/test_backfill_policy.py
 tests/services/market_events/test_benzinga_pro_freshness.py
 tests/services/market_events/test_dart_symbol_backfill.py
 tests/services/market_events/test_earnings_decision_time.py

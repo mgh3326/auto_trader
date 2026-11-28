@@ -410,6 +410,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 text("DROP TABLE review.execution_mandate_revocations")
             )
             await connection.execute(text("DROP TABLE review.execution_mandates"))
+            # hk 6409 backfill requests are later than the stamped boundary and
+            # already in Base.metadata.
+            await connection.execute(
+                text("DROP TABLE review.market_event_backfill_requests")
+            )
             await connection.execute(
                 text("DROP TABLE review.execution_account_control")
             )
