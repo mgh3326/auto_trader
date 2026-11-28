@@ -227,7 +227,7 @@ def _connection(*, status=None, error=None):
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
-        def request(self, method, path):
+        def request(self, method, path, headers=None):
             if error is not None:
                 raise error
 
